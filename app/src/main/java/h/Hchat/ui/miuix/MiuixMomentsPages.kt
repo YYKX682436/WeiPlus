@@ -4591,7 +4591,7 @@ internal fun WeChatKeepAliveMiuixPage(
 
     fun saveBoolean(key: String, value: Boolean) {
         sp.edit().putBoolean(key, value).apply()
-        WeChatKeepAliveRuntime.apply(context)
+        WeChatKeepAliveRuntime.apply(context, allowForegroundStart = true)
     }
 
     fun openBatterySettings() {
@@ -4632,7 +4632,7 @@ internal fun WeChatKeepAliveMiuixPage(
                     SwitchRow(
                         checked = foregroundService,
                         title = "前台服务保活",
-                        summary = "通过常驻通知提高后台存活率",
+                        summary = "看门狗或网络监测启用时显示常驻通知；系统仍可限制后台启动或结束服务",
                         onCheckedChange = {
                             foregroundService = it
                             saveBoolean(WeChatKeepAliveSettings.KEY_FOREGROUND_SERVICE, it)
@@ -4672,7 +4672,7 @@ internal fun WeChatKeepAliveMiuixPage(
                     SwitchRow(
                         checked = watchdog,
                         title = "看门狗拉起微信",
-                        summary = "前台服务存活时定期尝试拉起微信",
+                        summary = "检查微信主进程；后台启动可能受系统限制，有 Root 时只尝试启动两个受支持的微信包名",
                         onCheckedChange = {
                             watchdog = it
                             saveBoolean(WeChatKeepAliveSettings.KEY_WATCHDOG, it)
@@ -4694,6 +4694,11 @@ internal fun WeChatKeepAliveMiuixPage(
             item {
                 SettingsCard {
                     InfoRow(
+                        "监测服务降级",
+                        "Android 可能拒绝跨应用绑定或后台启动前台服务；此时看门狗和网络心跳不运行，本地 WakeLock / Root 选项仍按系统结果生效。"
+                    )
+                    InsetDivider()
+                    InfoRow(
                         "电池优化白名单",
                         if (ignoringBattery) "微信已在白名单" else "微信可能仍受系统省电影响"
                     )
@@ -4707,10 +4712,10 @@ internal fun WeChatKeepAliveMiuixPage(
                         Toast.makeText(context, "状态已刷新", Toast.LENGTH_SHORT).show()
                     }
                     InsetDivider()
-                    ActionRow("立即应用保活", "重新启动服务并应用 WakeLock / Root 白名单") {
-                        WeChatKeepAliveRuntime.apply(context)
+                    ActionRow("立即应用保活", "应用 WakeLock / Root 选项；在前台请求启动可见监测通知") {
+                        WeChatKeepAliveRuntime.apply(context, allowForegroundStart = true)
                         ignoringBattery = WeChatKeepAliveRuntime.isIgnoringBatteryOptimizations(context)
-                        Toast.makeText(context, "已应用", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "已提交配置；监测服务仍受 Android 系统限制", Toast.LENGTH_SHORT).show()
                     }
                 }
             }

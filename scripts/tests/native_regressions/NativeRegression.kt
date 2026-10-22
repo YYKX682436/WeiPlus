@@ -12,6 +12,9 @@ import h.Hchat.hooks.items.autoreply.AutoReplyObservationRetryBudget
 import h.Hchat.hooks.items.autoreply.AutoReplyObservationState
 import h.Hchat.hooks.items.keepalive.WeChatKeepAliveTargetOptions
 import h.Hchat.hooks.items.keepalive.WeChatKeepAliveTargetState
+import h.Hchat.hooks.items.keepalive.WeChatKeepAliveCallerPolicy
+import h.Hchat.hooks.items.keepalive.WeChatKeepAliveRootState
+import h.Hchat.hooks.items.payment.transfer.AutoTransferRunSessionRegression
 import h.Hchat.hooks.items.sendbutton.NativeSendButtonHandlers
 import h.Hchat.preferences.HchatStorage
 import java.io.File
@@ -34,6 +37,32 @@ fun main() {
     check(!WeChatKeepAliveTargetState.shouldLaunch(modulePackage, false)) {
         "The module package must never be interpreted as a WeChat host"
     }
+    check(!WeChatKeepAliveCallerPolicy.isAuthorized(official, arrayOf(modulePackage))) {
+        "The module UID must not act as a WeChat caller"
+    }
+    check(WeChatKeepAliveCallerPolicy.isAuthorized(official, arrayOf(official)))
+    check(WeChatKeepAliveCallerPolicy.isAuthorized(modified, arrayOf(modified)))
+    check(!WeChatKeepAliveCallerPolicy.isAuthorized(official, arrayOf(modified)))
+    check(!WeChatKeepAliveCallerPolicy.isAuthorized(official, arrayOf(official, modified))) {
+        "A shared UID containing both supported hosts must not allow cross-target control"
+    }
+    check(!WeChatKeepAliveCallerPolicy.isAuthorized(official, arrayOf(official, "com.example.other"))) {
+        "A UID shared with an unrelated package must not control the service"
+    }
+    check(WeChatKeepAliveRootState.isPackageWhitelisted("user,com.tencent.mm.wx,10234", modified))
+    check(!WeChatKeepAliveRootState.isPackageWhitelisted("user,com.tencent.mm.wx,10234", official)) {
+        "Root whitelist parsing must compare complete package tokens"
+    }
+    check(WeChatKeepAliveRootState.parseAppOpMode("No operations.", "RUN_ANY_IN_BACKGROUND") == "default")
+    check(WeChatKeepAliveRootState.parseAppOpMode("Default mode: allow", "RUN_ANY_IN_BACKGROUND") == "default")
+    check(WeChatKeepAliveRootState.parseAppOpMode("RUN_ANY_IN_BACKGROUND: ignore; time=now", "RUN_ANY_IN_BACKGROUND") == "ignore")
+    check(WeChatKeepAliveRootState.parseAppOpMode("unexpected output", "RUN_ANY_IN_BACKGROUND") == null)
+    check(WeChatKeepAliveRootState.dozeWhitelistShouldBeRemoved(false, true))
+    check(!WeChatKeepAliveRootState.dozeWhitelistShouldBeRemoved(true, false))
+    check(WeChatKeepAliveRootState.appOpModeToRestore("allow", "ignore") == "ignore")
+    check(WeChatKeepAliveRootState.appOpModeToRestore("ignore", "default") == null) {
+        "Root restore must preserve an AppOps mode changed elsewhere while enabled"
+    }
     check(WeChatKeepAliveTargetState.shouldLaunch(official, false))
     check(WeChatKeepAliveTargetState.shouldLaunch(modified, false))
     check(!WeChatKeepAliveTargetState.shouldLaunch(official, true))
@@ -42,12 +71,13 @@ fun main() {
         WeChatKeepAliveTargetOptions(watchdog = true, networkHeartbeat = false))
     keepAliveTargets = WeChatKeepAliveTargetState.update(keepAliveTargets, modified,
         WeChatKeepAliveTargetOptions(watchdog = false, networkHeartbeat = true))
-    check(WeChatKeepAliveTargetState.decode(WeChatKeepAliveTargetState.encode(keepAliveTargets)) == keepAliveTargets) {
-        "A sticky service restart must restore both host targets and their independent options"
+    check(keepAliveTargets.keys == setOf(official, modified)) {
+        "Both package targets must be independently registered"
     }
     keepAliveTargets = WeChatKeepAliveTargetState.update(keepAliveTargets, official, null)
     check(keepAliveTargets.keys == setOf(modified)) { "Stopping one host must preserve the other host's target" }
-    check(WeChatKeepAliveTargetState.decode(setOf("com.tencent.mm.fake\ttrue\ttrue")).isEmpty())
+    check(WeChatKeepAliveTargetState.update(keepAliveTargets, "com.tencent.mm.fake",
+        WeChatKeepAliveTargetOptions(watchdog = true, networkHeartbeat = true)) == keepAliveTargets)
     val enabledOptions = WeChatKeepAliveTargetState.serviceOptions(
         enabled = true,
         foregroundService = true,
@@ -72,6 +102,15 @@ fun main() {
         watchdog = true,
         networkHeartbeat = true
     ) == null) { "Turning off the service sub-option must immediately remove that host target" }
+    check(WeChatKeepAliveTargetState.serviceOptions(
+        enabled = true,
+        foregroundService = true,
+        watchdog = false,
+        networkHeartbeat = false
+    ) == null) { "An idle foreground service must not run as a keep-alive loophole" }
+    check(WeChatKeepAliveTargetState.update(emptyMap(), official, null).isEmpty()) {
+        "An unbound service restart must not restore stale target registrations"
+    }
 
     val observation = AutoReplyObservationState()
     check(observation.startFallback())
@@ -169,8 +208,9 @@ fun main() {
     AutoReplyFriendRequestHook.uninstall()
 
     AutoReplyFeatureRegression.run()
+    AutoTransferRunSessionRegression.run()
     KeepAliveFeatureRegression.run()
 
-    println("PASS: dual-package keep-alive state, module/host identity, independent stop and restart state; auto-reply lifecycle, fallback recovery, live toggles, teardown, and friend-request dedupe")
+    println("PASS: dual-package keep-alive registration, strict caller identity, independent removal and empty-service restart; auto-reply lifecycle, fallback recovery, live toggles, teardown, and friend-request dedupe")
     println("PASS: isolated host config, ordinary/early toggle decisions, and native send dispatch")
 }

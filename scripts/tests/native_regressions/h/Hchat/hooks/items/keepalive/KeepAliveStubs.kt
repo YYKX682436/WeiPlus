@@ -20,23 +20,19 @@ object WeChatKeepAliveSettings {
 class WeChatKeepAliveSettingsProvider
 
 object WeChatKeepAliveRuntime {
-    data class ApplyCall(val hostPackage: String, val modulePackage: String)
+    data class ApplyCall(val hostPackage: String, val modulePackage: String, val allowForegroundStart: Boolean)
 
     val applyCalls = mutableListOf<ApplyCall>()
     val stopCalls = mutableListOf<Pair<String, String>>()
 
-    fun apply(hostContext: Context?, moduleContext: Context? = null) {
+    fun apply(hostContext: Context?, moduleContext: Context? = null, allowForegroundStart: Boolean = false) {
         if (hostContext != null && moduleContext != null) {
-            applyCalls += ApplyCall(hostContext.packageName, moduleContext.packageName)
+            applyCalls += ApplyCall(hostContext.packageName, moduleContext.packageName, allowForegroundStart)
         }
     }
 
-    fun stop(hostPackage: String?, moduleContext: Context? = null) {
-        if (hostPackage != null && moduleContext != null) stopCalls += hostPackage to moduleContext.packageName
-    }
-
-    fun stop(context: Context?) {
-        if (context != null) stopCalls += "<module-only>" to context.packageName
+    fun stop(hostContext: Context?, moduleContext: Context? = null) {
+        if (hostContext != null && moduleContext != null) stopCalls += hostContext.packageName to moduleContext.packageName
     }
 
     fun reset() {

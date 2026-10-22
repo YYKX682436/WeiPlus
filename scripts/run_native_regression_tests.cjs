@@ -31,6 +31,7 @@ const sources = [
   'app/src/main/java/h/Hchat/hooks/api/model/WeChatMessage.kt',
   'app/src/main/java/h/Hchat/hooks/core/FeatureInstallDecision.kt',
   'app/src/main/java/h/Hchat/hooks/items/keepalive/WeChatKeepAliveTargetState.kt',
+  'app/src/main/java/h/Hchat/hooks/items/payment/transfer/AutoTransferRunSession.kt',
   'app/src/main/java/h/Hchat/hooks/items/autoreply/AutoReplyObservationState.kt',
   'app/src/main/java/h/Hchat/hooks/items/sendbutton/NativeSendButtonHandlers.kt',
   'app/src/main/java/h/Hchat/hooks/items/autoreply/AutoReplyFriendRequestHook.kt',
@@ -53,6 +54,8 @@ const featureManager = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hcha
 const keepAliveRuntime = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/items/keepalive/WeChatKeepAliveRuntime.kt'), 'utf8');
 const keepAliveService = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/items/keepalive/WeChatKeepAliveService.kt'), 'utf8');
 const keepAliveFeature = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/items/keepalive/WeChatKeepAliveFeature.kt'), 'utf8');
+const keepAliveTargetState = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/items/keepalive/WeChatKeepAliveTargetState.kt'), 'utf8');
+const manifest = fs.readFileSync(path.join(root, 'app/src/main/AndroidManifest.xml'), 'utf8');
 const autoReplyFeature = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/items/autoreply/AutoReplyFeature.kt'), 'utf8');
 const autoTransferFeature = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/items/payment/transfer/AutoTransferFeature.kt'), 'utf8');
 const momentsAutoCommentFeature = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/items/moments/MomentsAutoCommentFeature.kt'), 'utf8');
@@ -67,11 +70,31 @@ assert.match(packageHelper, /packageName == OFFICIAL \|\| packageName == MODIFIE
 assert.match(featureManager, /lifecycleFeatures\.toList\(\)\.asReversed\(\)/);
 assert.doesNotMatch(featureManager, /observeConfigChanges|notifyConfigChanged|configPreferenceListeners|getFeaturePrefs/);
 assert.match(keepAliveRuntime, /watchdogTick\(moduleContext: Context\?, hostPackage: String\?, enabled: Boolean\)/);
-assert.match(keepAliveRuntime, /launchWeChatIfNeeded\(moduleAppContext, hostPackage!!\)/);
-assert.match(keepAliveService, /readTargets\(\)/);
-assert.match(keepAliveService, /ACTION_REMOVE_TARGET/);
-assert.match(keepAliveService, /putStringSet\(KEY_TARGETS, WeChatKeepAliveTargetState\.encode\(updated\)\)\s*\.commit\(\)/);
-assert.match(keepAliveService, /heartbeatTick\(targets\.values\.any \{ it\.networkHeartbeat \}\)/);
+assert.match(keepAliveRuntime, /launchWeChatIfNeeded\(moduleContext\.applicationContext \?: moduleContext, hostPackage!!\)/);
+assert.match(keepAliveService, /Binder\.getCallingUid\(\)/);
+assert.match(keepAliveService, /packageManager\.getPackagesForUid\(callerUid\)/);
+assert.match(keepAliveTargetState, /packages\.size == 1 && packages\.single\(\) == hostPackage/);
+assert.match(keepAliveService, /return START_NOT_STICKY/);
+assert.match(keepAliveService, /EXTRA_PROMOTION_TOKEN/);
+assert.match(keepAliveService, /override fun onTimeout\(startId: Int, fgsType: Int\)/);
+assert.match(keepAliveService, /if \(targets\.isEmpty\(\)\) \{[\s\S]*?stopForeground\(STOP_FOREGROUND_REMOVE\)/);
+assert.doesNotMatch(keepAliveService, /START_STICKY|KEY_TARGETS|putStringSet/);
+assert.match(keepAliveRuntime, /hostContext\.bindService\([\s\S]*?Context\.BIND_AUTO_CREATE or Context\.BIND_IMPORTANT/);
+assert.match(keepAliveRuntime, /hostContext\.startForegroundService\(intent\)/);
+assert.match(keepAliveRuntime, /val requestForegroundStart = allowStart\s+allowStart = false/);
+assert.match(keepAliveRuntime, /getLaunchIntentSenderForPackage\(hostPackage\)/);
+assert.match(keepAliveRuntime, /private fun runRootLaunch\(hostPackage: String\)/);
+assert.match(keepAliveRuntime, /applyRootOptions\(hostPackage, serviceContext \?: appContext, rootDozeWhitelist, rootAppOps\)/);
+assert.match(keepAliveRuntime, /ROOT_STATE_PREFS/);
+assert.match(keepAliveRuntime, /cmd appops set \$hostPackage \$op \$modeToRestore/);
+assert.match(keepAliveRuntime, /state\.contains\("doze_original_\$hostPackage"\)/);
+assert.match(keepAliveRuntime, /state\.getBoolean\("appops_snapshot_\$hostPackage", false\)/);
+assert.match(keepAliveRuntime, /ROOT_COMMAND_TIMEOUT_SECONDS/);
+assert.match(manifest, /android:name="\.hooks\.items\.keepalive\.WeChatKeepAliveService"\s+android:exported="true"\s+android:foregroundServiceType="specialUse"/);
+assert.match(manifest, /android\.app\.PROPERTY_SPECIAL_USE_FGS_SUBTYPE/);
+assert.doesNotMatch(manifest, /FOREGROUND_SERVICE_DATA_SYNC|foregroundServiceType="dataSync"/);
+assert.match(manifest, /<package android:name="com\.tencent\.mm"\s*\/>/);
+assert.match(manifest, /<package android:name="com\.tencent\.mm\.wx"\s*\/>/);
 assert.match(keepAliveFeature, /HchatStorage\.preferences\(context\.hostContext\(\), WeChatKeepAliveSettings\.PREFS_NAME\)/);
 assert.match(keepAliveFeature, /unregisterOnSharedPreferenceChangeListener/);
 assert.match(autoReplyFeature, /AutoReplySettings\.KEY_ENABLE/);
@@ -81,8 +104,10 @@ assert.match(autoReplyFeature, /AutoReplyRuntime\.handleMessage\(hostContext, me
 assert.match(autoReplyFeature, /AutoReplyFriendRequestHook\.handleMessage\(message\)/);
 assert.match(autoReplyFeature, /if \(!autoReplyEnabled && !autoAcceptEnabled\) return/);
 assert.doesNotMatch(autoReplyFeature, /messageObservationInstalled/);
-assert.match(autoTransferFeature, /if \(!transferEnabled\(context\)\) return/);
 assert.match(autoTransferFeature, /AutoTransferSettings\.KEY_ENABLE/);
+assert.match(autoTransferFeature, /runSession\.runIfCurrent\(session\)/);
+assert.match(autoTransferFeature, /runSession\.invalidate\(\)/);
+assert.doesNotMatch(autoTransferFeature, /handledTransfers\.clear\(\)/);
 assert.match(momentsAutoCommentFeature, /syncEnabledResourcesLocked\(enabled\)/);
 assert.match(momentsAutoCommentFeature, /if \(enabled\)/);
 assert.match(quickReadFeature, /override fun onFeatureDestroy/);

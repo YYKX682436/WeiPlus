@@ -38,6 +38,9 @@ object KeepAliveFeatureRegression {
         check(WeChatKeepAliveRuntime.applyCalls.all { it.modulePackage == module.packageName }) {
             "The module service context must remain distinct from each host identity"
         }
+        check(WeChatKeepAliveRuntime.applyCalls.all { !it.allowForegroundStart }) {
+            "Background setting listeners must not try to start a foreground service"
+        }
 
         officialPrefs.setBoolean(WeChatKeepAliveSettings.KEY_ENABLE, false)
         check(WeChatKeepAliveRuntime.applyCalls.last().hostPackage == official.packageName)

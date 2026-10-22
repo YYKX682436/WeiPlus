@@ -7,7 +7,7 @@ internal data class WeChatKeepAliveTargetOptions(
     val networkHeartbeat: Boolean
 )
 
-/** Persistent service targets are package scoped; the module process is never a host identity. */
+/** Active service targets are package scoped; registrations live only for the bound runtime. */
 internal object WeChatKeepAliveTargetState {
     fun serviceOptions(
         enabled: Boolean,
@@ -15,7 +15,11 @@ internal object WeChatKeepAliveTargetState {
         watchdog: Boolean,
         networkHeartbeat: Boolean
     ): WeChatKeepAliveTargetOptions? =
-        if (enabled && foregroundService) WeChatKeepAliveTargetOptions(watchdog, networkHeartbeat) else null
+        if (enabled && foregroundService && (watchdog || networkHeartbeat)) {
+            WeChatKeepAliveTargetOptions(watchdog, networkHeartbeat)
+        } else {
+            null
+        }
 
     fun update(
         current: Map<String, WeChatKeepAliveTargetOptions>,
@@ -28,26 +32,39 @@ internal object WeChatKeepAliveTargetState {
         }
     }
 
-    fun encode(targets: Map<String, WeChatKeepAliveTargetOptions>): Set<String> =
-        targets.entries
-            .filter { WechatPackage.isTarget(it.key) }
-            .mapTo(linkedSetOf()) { (hostPackage, options) ->
-                "$hostPackage\t${options.watchdog}\t${options.networkHeartbeat}"
-            }
-
-    fun decode(records: Set<String>?): Map<String, WeChatKeepAliveTargetOptions> {
-        val result = linkedMapOf<String, WeChatKeepAliveTargetOptions>()
-        records.orEmpty().forEach { record ->
-            val fields = record.split('\t')
-            val hostPackage = fields.getOrNull(0)
-            if (fields.size != 3 || !WechatPackage.isTarget(hostPackage)) return@forEach
-            val watchdog = fields[1].toBooleanStrictOrNull() ?: return@forEach
-            val heartbeat = fields[2].toBooleanStrictOrNull() ?: return@forEach
-            result[hostPackage!!] = WeChatKeepAliveTargetOptions(watchdog, heartbeat)
-        }
-        return result
-    }
-
     fun shouldLaunch(hostPackage: String?, processAlive: Boolean): Boolean =
         WechatPackage.isTarget(hostPackage) && !processAlive
+}
+
+internal object WeChatKeepAliveCallerPolicy {
+    fun isAuthorized(hostPackage: String?, callerPackages: Array<out String>?): Boolean {
+        if (!WechatPackage.isTarget(hostPackage)) return false
+        val packages = callerPackages?.toSet() ?: return false
+        // Binder identifies a UID, not a package. Refuse shared UIDs (even if every package
+        // is supported) because one host must never control or remove the other.
+        return packages.size == 1 && packages.single() == hostPackage
+    }
+}
+
+/** Safe parsing and restoration rules for the opt-in Root-only keep-alive adjustments. */
+internal object WeChatKeepAliveRootState {
+    private val modes = setOf("allow", "ignore", "default", "foreground", "errored", "ask", "deny")
+
+    fun isPackageWhitelisted(output: String, hostPackage: String): Boolean =
+        output.split(Regex("[,\\s]+")).any { it.trim() == hostPackage }
+
+    fun parseAppOpMode(output: String, operation: String): String? {
+        if (output.contains("No operations.", ignoreCase = true)) return "default"
+        val lines = output.lineSequence().map(String::trim).toList()
+        if (lines.any { it.startsWith("Default mode:", ignoreCase = true) }) return "default"
+        val line = lines.firstOrNull { it.startsWith("$operation:") } ?: return null
+        val mode = line.substringAfter(':').trim().substringBefore(';').substringBefore(' ').lowercase()
+        return mode.takeIf { it in modes }
+    }
+
+    fun dozeWhitelistShouldBeRemoved(originallyWhitelisted: Boolean, currentlyWhitelisted: Boolean): Boolean =
+        !originallyWhitelisted && currentlyWhitelisted
+
+    fun appOpModeToRestore(currentMode: String, originalMode: String): String? =
+        originalMode.takeIf { currentMode == "allow" && originalMode != "allow" }
 }

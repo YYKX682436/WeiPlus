@@ -31,7 +31,7 @@ class WeChatKeepAliveFeature : BaseFeature() {
         settingsListener?.let { settingsPrefs?.unregisterOnSharedPreferenceChangeListener(it) }
         settingsListener = null
         settingsPrefs = null
-        WeChatKeepAliveRuntime.stop(context.hostContext().packageName, context.moduleContext())
+        WeChatKeepAliveRuntime.stop(context.hostContext(), context.moduleContext())
     }
 
     companion object {

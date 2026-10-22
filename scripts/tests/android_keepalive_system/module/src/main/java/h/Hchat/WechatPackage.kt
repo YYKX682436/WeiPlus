@@ -1,0 +1,1 @@
+../../../../../../../../../app/src/main/java/h/Hchat/WechatPackage.kt
