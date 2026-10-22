@@ -99,7 +99,7 @@ import h.Hchat.hooks.items.hidemenu.HideChatMenuFeature
 import h.Hchat.hooks.items.hotupdate.DisableHotUpdateFeature
 import h.Hchat.hooks.items.hometextcolor.HomeTextColorFeature
 import h.Hchat.hooks.items.inputhint.InputHintFeature
-import h.Hchat.hooks.items.keepalive.WeChatKeepAliveFeature
+import h.Hchat.hooks.items.backgroundassist.BackgroundRunAssistFeature
 import h.Hchat.hooks.items.keywordnotify.KeywordNotificationFeature
 import h.Hchat.hooks.items.zombiecheck.ZombieCheckFeature
 import h.Hchat.hooks.items.membertitle.MemberTitleFeature
@@ -452,7 +452,7 @@ private fun practicalFeatureGroups(
         FeatureGroupEntry(
             title = "杂项",
             providers = practicalProviders.filterByIds(
-                WeChatKeepAliveFeature.ID,
+                BackgroundRunAssistFeature.ID,
                 WeChatTabletFeature.ID,
                 DisableHotUpdateFeature.ID,
                 FakeMiniProgramBaseLibFeature.ID,
@@ -1094,7 +1094,7 @@ private fun featureSubSearchTerms(featureId: String): List<String> {
         QuickMomentsFeature.ID -> listOf("快捷查看朋友圈", "朋友圈", "会话长按菜单", "个人朋友圈", "聊天分组", "自己", "企业微信联系人")
         QuickTerminateFeature.ID -> listOf("快捷终止", "结束微信", "终止微信", "加号菜单", "关闭微信")
         HideChatMenuFeature.ID -> listOf("隐藏聊天菜单", "长按菜单", "隐藏菜单项", "提醒", "搜一搜", "收藏")
-        WeChatKeepAliveFeature.ID -> listOf("微信保活", "常驻通知", "WakeLock", "Root保活", "保活服务")
+        BackgroundRunAssistFeature.ID -> listOf("后台运行辅助", "WakeLock", "Root Doze 白名单", "后台 AppOps")
         WeChatTabletFeature.ID -> listOf("平板模式", "Pad模式", "设备登录", "多设备登录", "登录为平板")
         DisableHotUpdateFeature.ID -> listOf("屏蔽热更新", "禁用热更新", "Tinker", "补丁", "热补丁")
         FakeScanCameraFeature.ID -> listOf("伪造扫码相机", "扫码相机", "扫一扫", "相册扫码", "扫码入口")
@@ -1782,7 +1782,7 @@ internal fun FeatureSettingsPage(
         TextSpeechFeature.ID -> TextSpeechMiuixPage(context, provider, onBack)
         ZombieCheckFeature.ID -> ZombieCheckMiuixPage(context, provider, onBack)
         QQMusicOrderFeature.ID -> QQMusicOrderMiuixPage(context, provider, onBack)
-        WeChatKeepAliveFeature.ID -> WeChatKeepAliveMiuixPage(context, provider, onBack)
+        BackgroundRunAssistFeature.ID -> BackgroundRunAssistMiuixPage(context, provider, onBack)
         QuoteDeleteClearFeature.ID -> QuoteDeleteClearMiuixPage(context, provider, onBack)
         EmojiSaveFeature.ID -> EmojiSaveMiuixPage(context, provider, onBack)
         SwipeQuoteFeature.ID -> SwipeQuoteMiuixPage(context, provider, onBack)

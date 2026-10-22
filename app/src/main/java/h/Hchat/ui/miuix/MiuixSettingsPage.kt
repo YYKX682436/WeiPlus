@@ -81,7 +81,7 @@ import h.Hchat.hooks.items.hideavatar.HideChatAvatarSettings
 import h.Hchat.hooks.items.hidemenu.HideChatMenuSettings
 import h.Hchat.hooks.items.hotupdate.DisableHotUpdateSettings
 import h.Hchat.hooks.items.inputhint.InputHintSettings
-import h.Hchat.hooks.items.keepalive.WeChatKeepAliveSettings
+import h.Hchat.hooks.items.backgroundassist.BackgroundRunAssistSettings
 import h.Hchat.hooks.items.keywordnotify.KeywordNotificationSettings
 import h.Hchat.hooks.items.zombiecheck.ZombieCheckSettings
 import h.Hchat.hooks.items.membertitle.MemberTitleSettings
@@ -1741,7 +1741,7 @@ private object HchatConfigBackup {
         TextSpeechSettings.PREFS_NAME,
         TextVoiceSettings.PREFS_NAME,
         ZombieCheckSettings.PREFS_NAME,
-        WeChatKeepAliveSettings.PREFS_NAME,
+        BackgroundRunAssistSettings.PREFS_NAME,
         QuoteDeleteClearSettings.PREFS_NAME,
         ChatTimeStyleSettings.PREFS_NAME,
         EmojiSaveSettings.PREFS_NAME,

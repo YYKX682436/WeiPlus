@@ -33,7 +33,7 @@ import h.Hchat.hooks.items.hidemenu.HideChatMenuFeature
 import h.Hchat.hooks.items.hotupdate.DisableHotUpdateFeature
 import h.Hchat.hooks.items.hometextcolor.HomeTextColorFeature
 import h.Hchat.hooks.items.inputhint.InputHintFeature
-import h.Hchat.hooks.items.keepalive.WeChatKeepAliveFeature
+import h.Hchat.hooks.items.backgroundassist.BackgroundRunAssistFeature
 import h.Hchat.hooks.items.keywordnotify.KeywordNotificationFeature
 import h.Hchat.hooks.items.membertitle.MemberTitleFeature
 import h.Hchat.hooks.items.messageaffix.MessageAffixFeature
@@ -140,7 +140,7 @@ object FeatureRegistry {
             .register(TextSpeechFeature())
             .register(TextVoiceFeature())
             .register(ZombieCheckFeature())
-            .register(WeChatKeepAliveFeature())
+            .register(BackgroundRunAssistFeature())
             .register(QuoteDeleteClearFeature())
             .register(SwipeQuoteFeature())
             .register(AudioTransformFeature())

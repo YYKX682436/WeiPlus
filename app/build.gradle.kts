@@ -14,8 +14,7 @@ android {
     val autoVersionName = System.getenv("HCAT_VERSION_NAME")?.takeIf { it.isNotBlank() } ?: "1.0.0"
 
     defaultConfig {
-        applicationId = providers.gradleProperty("isolatedKeepAliveTestApplicationId").orNull
-            ?.takeIf { it.isNotBlank() } ?: "h.Hchat"
+        applicationId = "h.Hchat"
         minSdk = 27
         targetSdk = 37
         versionCode = autoVersionCode
@@ -58,7 +57,6 @@ android {
     }
 
     buildFeatures {
-        aidl = true
         compose = true
         buildConfig = true
     }

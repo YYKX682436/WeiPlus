@@ -62,8 +62,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import h.Hchat.hooks.api.core.WeChatApis
 import h.Hchat.hooks.items.hidemenu.HideChatMenuSettings
-import h.Hchat.hooks.items.keepalive.WeChatKeepAliveRuntime
-import h.Hchat.hooks.items.keepalive.WeChatKeepAliveSettings
+import h.Hchat.hooks.items.backgroundassist.BackgroundRunAssistRuntime
+import h.Hchat.hooks.items.backgroundassist.BackgroundRunAssistSettings
 import h.Hchat.hooks.items.membertitle.MemberTitleStore
 import h.Hchat.hooks.items.moments.OriginalMomentsUploadSettings
 import h.Hchat.hooks.items.moments.MomentsAutoCommentSettings
@@ -4572,26 +4572,22 @@ internal fun QuickMarkReadMiuixPage(
 }
 
 @Composable
-internal fun WeChatKeepAliveMiuixPage(
+internal fun BackgroundRunAssistMiuixPage(
     context: Context,
     provider: FeatureSettingsProvider,
     onBack: () -> Unit
 ) {
-    val sp = remember { HchatStorage.preferences(context, WeChatKeepAliveSettings.PREFS_NAME) }
-    var enabled by remember { mutableStateOf(sp.getBoolean(WeChatKeepAliveSettings.KEY_ENABLE, WeChatKeepAliveSettings.DEFAULT_ENABLE)) }
-    var foregroundService by remember { mutableStateOf(sp.getBoolean(WeChatKeepAliveSettings.KEY_FOREGROUND_SERVICE, WeChatKeepAliveSettings.DEFAULT_FOREGROUND_SERVICE)) }
-    var wakeLock by remember { mutableStateOf(sp.getBoolean(WeChatKeepAliveSettings.KEY_WAKE_LOCK, WeChatKeepAliveSettings.DEFAULT_WAKE_LOCK)) }
-    var rootWhitelist by remember { mutableStateOf(sp.getBoolean(WeChatKeepAliveSettings.KEY_ROOT_DOZE_WHITELIST, WeChatKeepAliveSettings.DEFAULT_ROOT_DOZE_WHITELIST)) }
-    var watchdog by remember { mutableStateOf(sp.getBoolean(WeChatKeepAliveSettings.KEY_WATCHDOG, WeChatKeepAliveSettings.DEFAULT_WATCHDOG)) }
-    var rootAppOps by remember { mutableStateOf(sp.getBoolean(WeChatKeepAliveSettings.KEY_ROOT_APP_OPS, WeChatKeepAliveSettings.DEFAULT_ROOT_APP_OPS)) }
-    var networkHeartbeat by remember { mutableStateOf(sp.getBoolean(WeChatKeepAliveSettings.KEY_NETWORK_HEARTBEAT, WeChatKeepAliveSettings.DEFAULT_NETWORK_HEARTBEAT)) }
-    var ignoringBattery by remember { mutableStateOf(WeChatKeepAliveRuntime.isIgnoringBatteryOptimizations(context)) }
+    val sp = remember { HchatStorage.preferences(context, BackgroundRunAssistSettings.PREFS_NAME) }
+    var enabled by remember { mutableStateOf(sp.getBoolean(BackgroundRunAssistSettings.KEY_ENABLE, BackgroundRunAssistSettings.DEFAULT_ENABLE)) }
+    var wakeLock by remember { mutableStateOf(sp.getBoolean(BackgroundRunAssistSettings.KEY_WAKE_LOCK, BackgroundRunAssistSettings.DEFAULT_WAKE_LOCK)) }
+    var rootWhitelist by remember { mutableStateOf(sp.getBoolean(BackgroundRunAssistSettings.KEY_ROOT_DOZE_WHITELIST, BackgroundRunAssistSettings.DEFAULT_ROOT_DOZE_WHITELIST)) }
+    var rootAppOps by remember { mutableStateOf(sp.getBoolean(BackgroundRunAssistSettings.KEY_ROOT_APP_OPS, BackgroundRunAssistSettings.DEFAULT_ROOT_APP_OPS)) }
+    var ignoringBattery by remember { mutableStateOf(BackgroundRunAssistRuntime.isIgnoringBatteryOptimizations(context)) }
     val listState = rememberLazyListState()
     val scrollBehavior = MiuixScrollBehavior()
 
     fun saveBoolean(key: String, value: Boolean) {
         sp.edit().putBoolean(key, value).apply()
-        WeChatKeepAliveRuntime.apply(context, allowForegroundStart = true)
     }
 
     fun openBatterySettings() {
@@ -4616,76 +4612,46 @@ internal fun WeChatKeepAliveMiuixPage(
                 bottom = padding.calculateBottomPadding() + 84.dp
             )
         ) {
-            item { SmallTitle(text = "强保活") }
+            item { SmallTitle(text = "后台运行辅助") }
             item {
                 SettingsCard {
                     SwitchRow(
                         checked = enabled,
-                        title = "启用微信强保活",
-                        summary = "开启后尝试保持微信息屏运行",
+                        title = "启用后台运行辅助",
+                        summary = "仅应用下方明确选择的辅助选项，不承诺阻止系统结束微信",
                         onCheckedChange = {
                             enabled = it
-                            saveBoolean(WeChatKeepAliveSettings.KEY_ENABLE, it)
-                        }
-                    )
-                    InsetDivider()
-                    SwitchRow(
-                        checked = foregroundService,
-                        title = "前台服务保活",
-                        summary = "看门狗或网络监测启用时显示常驻通知；系统仍可限制后台启动或结束服务",
-                        onCheckedChange = {
-                            foregroundService = it
-                            saveBoolean(WeChatKeepAliveSettings.KEY_FOREGROUND_SERVICE, it)
+                            saveBoolean(BackgroundRunAssistSettings.KEY_ENABLE, it)
                         }
                     )
                     InsetDivider()
                     SwitchRow(
                         checked = wakeLock,
-                        title = "WakeLock 保活",
-                        summary = "息屏后保持 CPU 运行，耗电会增加",
+                        title = "限时 WakeLock",
+                        summary = "单次最多持有 10 分钟，之后由系统自动释放；会增加耗电且不能绕过 Doze",
                         onCheckedChange = {
                             wakeLock = it
-                            saveBoolean(WeChatKeepAliveSettings.KEY_WAKE_LOCK, it)
+                            saveBoolean(BackgroundRunAssistSettings.KEY_WAKE_LOCK, it)
                         }
                     )
                     InsetDivider()
                     SwitchRow(
                         checked = rootWhitelist,
                         title = "Root Doze 白名单",
-                        summary = "有 Root 时执行 deviceidle 白名单命令",
+                        summary = "需要 Root。仅调整当前微信包名；关闭时尝试恢复保存的原状态，Root 命令会修改系统设置",
                         onCheckedChange = {
                             rootWhitelist = it
-                            saveBoolean(WeChatKeepAliveSettings.KEY_ROOT_DOZE_WHITELIST, it)
+                            saveBoolean(BackgroundRunAssistSettings.KEY_ROOT_DOZE_WHITELIST, it)
                         }
                     )
                     InsetDivider()
                     SwitchRow(
                         checked = rootAppOps,
                         title = "Root 后台限制放行",
-                        summary = "有 Root 时放行微信后台运行相关 AppOps",
+                        summary = "需要 Root。仅调整当前微信包名的后台 AppOps；关闭时尝试恢复保存的原状态，Root 命令会修改系统设置",
                         onCheckedChange = {
                             rootAppOps = it
-                            saveBoolean(WeChatKeepAliveSettings.KEY_ROOT_APP_OPS, it)
-                        }
-                    )
-                    InsetDivider()
-                    SwitchRow(
-                        checked = watchdog,
-                        title = "看门狗拉起微信",
-                        summary = "检查微信主进程；后台启动可能受系统限制，有 Root 时只尝试启动两个受支持的微信包名",
-                        onCheckedChange = {
-                            watchdog = it
-                            saveBoolean(WeChatKeepAliveSettings.KEY_WATCHDOG, it)
-                        }
-                    )
-                    InsetDivider()
-                    SwitchRow(
-                        checked = networkHeartbeat,
-                        title = "网络心跳保活",
-                        summary = "定时发起轻量网络请求保持链路活跃",
-                        onCheckedChange = {
-                            networkHeartbeat = it
-                            saveBoolean(WeChatKeepAliveSettings.KEY_NETWORK_HEARTBEAT, it)
+                            saveBoolean(BackgroundRunAssistSettings.KEY_ROOT_APP_OPS, it)
                         }
                     )
                 }
@@ -4694,13 +4660,13 @@ internal fun WeChatKeepAliveMiuixPage(
             item {
                 SettingsCard {
                     InfoRow(
-                        "监测服务降级",
-                        "Android 可能拒绝跨应用绑定或后台启动前台服务；此时看门狗和网络心跳不运行，本地 WakeLock / Root 选项仍按系统结果生效。"
+                        "能力边界",
+                        "本页不启动服务、不监测或拉起微信。WakeLock 仅在当前注入进程运行期间生效；Root 选项只修改系统可查询到的包状态，不能保证后台运行。"
                     )
                     InsetDivider()
                     InfoRow(
                         "电池优化白名单",
-                        if (ignoringBattery) "微信已在白名单" else "微信可能仍受系统省电影响"
+                        if (ignoringBattery) "当前宿主微信已忽略电池优化" else "当前宿主微信仍可能受系统省电影响"
                     )
                     InsetDivider()
                     ActionRow("打开电池优化设置", "建议把微信设置为不限制") {
@@ -4708,14 +4674,8 @@ internal fun WeChatKeepAliveMiuixPage(
                     }
                     InsetDivider()
                     ActionRow("刷新状态", if (ignoringBattery) "当前已忽略优化" else "当前未忽略优化") {
-                        ignoringBattery = WeChatKeepAliveRuntime.isIgnoringBatteryOptimizations(context)
+                        ignoringBattery = BackgroundRunAssistRuntime.isIgnoringBatteryOptimizations(context)
                         Toast.makeText(context, "状态已刷新", Toast.LENGTH_SHORT).show()
-                    }
-                    InsetDivider()
-                    ActionRow("立即应用保活", "应用 WakeLock / Root 选项；在前台请求启动可见监测通知") {
-                        WeChatKeepAliveRuntime.apply(context, allowForegroundStart = true)
-                        ignoringBattery = WeChatKeepAliveRuntime.isIgnoringBatteryOptimizations(context)
-                        Toast.makeText(context, "已提交配置；监测服务仍受 Android 系统限制", Toast.LENGTH_SHORT).show()
                     }
                 }
             }
