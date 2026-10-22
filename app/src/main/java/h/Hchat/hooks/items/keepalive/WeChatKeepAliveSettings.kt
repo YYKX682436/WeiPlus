@@ -17,4 +17,14 @@ object WeChatKeepAliveSettings {
     const val DEFAULT_WATCHDOG = false
     const val DEFAULT_ROOT_APP_OPS = false
     const val DEFAULT_NETWORK_HEARTBEAT = false
+
+    val CONFIG_KEYS = setOf(
+        KEY_ENABLE,
+        KEY_FOREGROUND_SERVICE,
+        KEY_WAKE_LOCK,
+        KEY_ROOT_DOZE_WHITELIST,
+        KEY_WATCHDOG,
+        KEY_ROOT_APP_OPS,
+        KEY_NETWORK_HEARTBEAT
+    )
 }

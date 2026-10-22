@@ -7,6 +7,11 @@ import h.Hchat.hooks.api.model.DatabaseChange
 import h.Hchat.hooks.api.runtime.WeChatDatabaseListenerApi
 import h.Hchat.hooks.core.FeatureInstallDecision
 import h.Hchat.hooks.items.autoreply.AutoReplyFriendRequestHook
+import h.Hchat.hooks.items.autoreply.AutoReplyMessageDeduplicator
+import h.Hchat.hooks.items.autoreply.AutoReplyObservationRetryBudget
+import h.Hchat.hooks.items.autoreply.AutoReplyObservationState
+import h.Hchat.hooks.items.keepalive.WeChatKeepAliveTargetOptions
+import h.Hchat.hooks.items.keepalive.WeChatKeepAliveTargetState
 import h.Hchat.hooks.items.sendbutton.NativeSendButtonHandlers
 import h.Hchat.preferences.HchatStorage
 import java.io.File
@@ -22,6 +27,74 @@ fun main() {
     check(WechatPackage.isAppBrandProcess("com.tencent.mm", "com.tencent.mm:appbrand0"))
     check(WechatPackage.isAppBrandProcess("com.tencent.mm.wx", "com.tencent.mm.wx:appbrand2"))
     check(!WechatPackage.isAppBrandProcess("com.tencent.mm.fake", "com.tencent.mm.fake:appbrand0"))
+
+    val modulePackage = "h.Hchat"
+    val official = "com.tencent.mm"
+    val modified = "com.tencent.mm.wx"
+    check(!WeChatKeepAliveTargetState.shouldLaunch(modulePackage, false)) {
+        "The module package must never be interpreted as a WeChat host"
+    }
+    check(WeChatKeepAliveTargetState.shouldLaunch(official, false))
+    check(WeChatKeepAliveTargetState.shouldLaunch(modified, false))
+    check(!WeChatKeepAliveTargetState.shouldLaunch(official, true))
+    var keepAliveTargets = emptyMap<String, WeChatKeepAliveTargetOptions>()
+    keepAliveTargets = WeChatKeepAliveTargetState.update(keepAliveTargets, official,
+        WeChatKeepAliveTargetOptions(watchdog = true, networkHeartbeat = false))
+    keepAliveTargets = WeChatKeepAliveTargetState.update(keepAliveTargets, modified,
+        WeChatKeepAliveTargetOptions(watchdog = false, networkHeartbeat = true))
+    check(WeChatKeepAliveTargetState.decode(WeChatKeepAliveTargetState.encode(keepAliveTargets)) == keepAliveTargets) {
+        "A sticky service restart must restore both host targets and their independent options"
+    }
+    keepAliveTargets = WeChatKeepAliveTargetState.update(keepAliveTargets, official, null)
+    check(keepAliveTargets.keys == setOf(modified)) { "Stopping one host must preserve the other host's target" }
+    check(WeChatKeepAliveTargetState.decode(setOf("com.tencent.mm.fake\ttrue\ttrue")).isEmpty())
+    val enabledOptions = WeChatKeepAliveTargetState.serviceOptions(
+        enabled = true,
+        foregroundService = true,
+        watchdog = true,
+        networkHeartbeat = false
+    )
+    check(enabledOptions != null)
+    keepAliveTargets = WeChatKeepAliveTargetState.update(keepAliveTargets, modified, enabledOptions)
+    check(keepAliveTargets.containsKey(modified))
+    val disabledOptions = WeChatKeepAliveTargetState.serviceOptions(
+        enabled = false,
+        foregroundService = true,
+        watchdog = true,
+        networkHeartbeat = false
+    )
+    check(disabledOptions == null)
+    keepAliveTargets = WeChatKeepAliveTargetState.update(keepAliveTargets, modified, disabledOptions)
+    check(keepAliveTargets.isEmpty()) { "Switching the master option off must remove only that host target" }
+    check(WeChatKeepAliveTargetState.serviceOptions(
+        enabled = true,
+        foregroundService = false,
+        watchdog = true,
+        networkHeartbeat = true
+    ) == null) { "Turning off the service sub-option must immediately remove that host target" }
+
+    val observation = AutoReplyObservationState()
+    check(observation.startFallback())
+    check(observation.acceptsFallback() && !observation.acceptsObserved()) {
+        "An unavailable observer must keep normal message event handling active"
+    }
+    check(observation.activateObserver())
+    check(observation.activateObserver()) { "Repeated DexReady must not create another observer mode" }
+    check(!observation.acceptsFallback() && observation.acceptsObserved())
+    observation.stop()
+    check(!observation.acceptsFallback() && !observation.acceptsObserved())
+    check(observation.startFallback()) { "A destroyed feature instance must support lifecycle recreation" }
+    val retries = AutoReplyObservationRetryBudget(3)
+    check(listOf(retries.reserve(), retries.reserve(), retries.reserve()) == listOf(0, 1, 2))
+    check(retries.reserve() == null) { "Observer retries must have a finite budget" }
+    retries.reset()
+    check(retries.reserve() == 0)
+    val replyDeduplicator = AutoReplyMessageDeduplicator(ttlMillis = 100, maxEntries = 4)
+    check(replyDeduplicator.claim("message-1", 10))
+    check(!replyDeduplicator.claim("message-1", 20))
+    check(replyDeduplicator.claim("message-1", 111))
+    replyDeduplicator.clear()
+    check(replyDeduplicator.claim("message-1", 112))
 
     var enabledReads = 0
     check(FeatureInstallDecision.shouldInstall(false, { enabledReads++; false }, {}))
@@ -58,12 +131,22 @@ fun main() {
     check(HchatStorage.storageDir(officialContext) != HchatStorage.storageDir(modifiedContext))
 
     val db = WeChatDatabaseListenerApi()
-    WeChatApis.databaseChangesApi = db
     AutoReplyFriendRequestHook.uninstall()
+    db.isAvailable = false
+    WeChatApis.databaseChangesApi = db
+    check(!AutoReplyFriendRequestHook.install()) { "Database hook readiness must remain retryable" }
+    check(db.installCalls == 0)
+    db.isAvailable = true
+    check(AutoReplyFriendRequestHook.install())
+    check(db.installCalls == 1)
+    AutoReplyFriendRequestHook.uninstall()
+
+    val requestDb = WeChatDatabaseListenerApi()
+    WeChatApis.databaseChangesApi = requestDb
     val requests = mutableListOf<AutoReplyFriendRequestHook.NewFriendEvent>()
     val subscription = AutoReplyFriendRequestHook.subscribe(requests::add)
     check(AutoReplyFriendRequestHook.install())
-    check(db.installCalls == 1)
+    check(requestDb.installCalls == 1)
     val body = "<msg><encryptusername>v3_alice@stranger</encryptusername><fromusername>wxid_alice</fromusername><ticket>ticket-a</ticket><scene>3</scene></msg>"
     AutoReplyFriendRequestHook.handleMessage(Events.MessageReceived(false, content = body, msgType = "37"))
     AutoReplyFriendRequestHook.handleMessage(Events.MessageReceived(false, content = body, msgType = "37"))
@@ -74,7 +157,7 @@ fun main() {
     AutoReplyFriendRequestHook.handleMessage(Events.MessageReceived(false, content = body, msgType = "42"))
     AutoReplyFriendRequestHook.handleMessage(Events.MessageReceived(true, content = body, msgType = "37"))
     check(requests.size == 1) { "Contact cards or outgoing messages must not trigger friend request handling" }
-    db.emit(DatabaseChange("fmessage_msginfo", ContentValues(mapOf(
+    requestDb.emit(DatabaseChange("fmessage_msginfo", ContentValues(mapOf(
         "isSend" to 0,
         "msgContent" to "<msg><fromusername>wxid_bob</fromusername><ticket>ticket-b</ticket><scene>1</scene></msg>"
     ))))
@@ -85,5 +168,9 @@ fun main() {
     check(requests.size == 2) { "Unsubscribed native listener received a friend request" }
     AutoReplyFriendRequestHook.uninstall()
 
-    println("PASS: exact dual-package/process rules, isolated host config, ordinary/early toggle decisions, native send dispatch, friend request parse/dedupe/verification")
+    AutoReplyFeatureRegression.run()
+    KeepAliveFeatureRegression.run()
+
+    println("PASS: dual-package keep-alive state, module/host identity, independent stop and restart state; auto-reply lifecycle, fallback recovery, live toggles, teardown, and friend-request dedupe")
+    println("PASS: isolated host config, ordinary/early toggle decisions, and native send dispatch")
 }

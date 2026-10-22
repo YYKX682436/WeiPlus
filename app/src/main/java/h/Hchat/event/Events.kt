@@ -93,11 +93,6 @@ object Events {
 
     class DexReady
 
-    class ConfigChanged(
-        @JvmField val featureId: String?,
-        @JvmField val key: String?
-    )
-
     class FeatureInstalled(
         @JvmField val featureName: String?
     )

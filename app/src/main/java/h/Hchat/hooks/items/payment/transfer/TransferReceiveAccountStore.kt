@@ -51,6 +51,7 @@ object TransferReceiveAccountStore {
             ?: return false
         HookRegistry.get().hook(method, object : XC_MethodHook() {
             override fun beforeHookedMethod(param: MethodHookParam) {
+                if (!AutoTransferSettings(context.hostContext()).isEnabled()) return
                 val json = param.args.firstOrNull() as? JSONObject ?: return
                 captureItem(context.hostContext(), json)
             }

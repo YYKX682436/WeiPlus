@@ -6,7 +6,6 @@ import h.Hchat.hooks.items.conversationgroup.ConversationGroupHomeProjection
 import h.Hchat.preferences.TermsGate
 import h.Hchat.utils.HLog
 import java.util.Collections
-import android.content.SharedPreferences
 
 /**
  * 功能模块调度器。
@@ -16,7 +15,6 @@ class FeatureManager {
     private val features = ArrayList<Feature>()
     private val lifecycleFeatures = ArrayList<Feature>()
     private val installedFeatures = ArrayList<Feature>()
-    private val configPreferenceListeners = ArrayList<Pair<SharedPreferences, SharedPreferences.OnSharedPreferenceChangeListener>>()
     @Volatile private var lifecycleInstalled = false
     private var lifecycleGeneration = 0L
 
@@ -108,39 +106,17 @@ class FeatureManager {
             }
         }
         if (!isLifecycleCurrent(lifecycleToken)) return
-        observeConfigChanges(context, lifecycleToken)
         if (isLifecycleCurrent(lifecycleToken)) DexInstallScheduler.markDexBridgeReady()
     }
 
-    fun notifyConfigChanged(context: FeatureContext, featureId: String?, key: String?) {
-        val tokenAndFeatures = synchronized(stateLock) {
-            if (!lifecycleInstalled) return
-            lifecycleGeneration to installedFeatures.toList()
-        }
-        for (feature in tokenAndFeatures.second) {
-            if (!isLifecycleCurrent(tokenAndFeatures.first)) return
-            if (featureId != null && featureId != feature.featureId()) continue
-            try {
-                feature.onConfigChanged(context, key)
-            } catch (e: Throwable) {
-                HLog.e("$TAG onConfigChanged 异常: ${safeName(feature)}, error=$e", e)
-            }
-        }
-    }
-
     fun destroyAll(context: FeatureContext) {
-        val (listeners, featuresToDestroy) = synchronized(stateLock) {
+        val featuresToDestroy = synchronized(stateLock) {
             lifecycleInstalled = false
             ++lifecycleGeneration
-            val listenerSnapshot = configPreferenceListeners.toList()
-            configPreferenceListeners.clear()
             val featureSnapshot = lifecycleFeatures.toList().asReversed()
             lifecycleFeatures.clear()
             installedFeatures.clear()
-            listenerSnapshot to featureSnapshot
-        }
-        listeners.forEach { (prefs, listener) ->
-            runCatching { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
+            featureSnapshot
         }
         DexInstallScheduler.cancelAll()
         // 先使旧安装租约失效，不等待后台定位，也不允许销毁后重新挂钩。
@@ -154,39 +130,6 @@ class FeatureManager {
         }
         // 首页投影由聊天分组与标签栏共享，只在全量卸载后复位。
         ConversationGroupHomeProjection.resetAfterUnhookAll()
-    }
-
-    private fun observeConfigChanges(context: FeatureContext, lifecycleToken: Long) {
-        val listeners = ArrayList<Pair<SharedPreferences, SharedPreferences.OnSharedPreferenceChangeListener>>()
-        val globalPrefs = runCatching { context.configStore().getGlobalPrefs() }.getOrNull()
-        if (globalPrefs != null) {
-            val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-                notifyConfigChanged(context, null, key)
-            }
-            globalPrefs.registerOnSharedPreferenceChangeListener(listener)
-            listeners += globalPrefs to listener
-        }
-        features().forEach { feature ->
-            val prefs = runCatching { context.configStore().getFeaturePrefs(feature.featureId()) }.getOrNull()
-                ?: return@forEach
-            val featureId = feature.featureId()
-            val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-                notifyConfigChanged(context, featureId, key)
-            }
-            prefs.registerOnSharedPreferenceChangeListener(listener)
-            listeners += prefs to listener
-        }
-        val retained = synchronized(stateLock) {
-            if (lifecycleInstalled && lifecycleGeneration == lifecycleToken) {
-                configPreferenceListeners.addAll(listeners)
-                true
-            } else false
-        }
-        if (!retained) {
-            listeners.forEach { (prefs, listener) ->
-                runCatching { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
-            }
-        }
     }
 
     private fun isLifecycleCurrent(token: Long): Boolean =

@@ -58,50 +58,61 @@ private class MomentsAutoCommentRuntime(
     private val worker = ScheduledThreadPoolExecutor(1) { runnable ->
         Thread(runnable, "Hchat-MomentsAutoComment").apply { isDaemon = true }
     }.apply { removeOnCancelPolicy = true }
+    private val resourceLock = Any()
     private val stateLock = Any()
     private val dailyCommentLock = Any()
     private val states = LinkedHashMap<String, State>()
     private val successfulCommentIds = LinkedHashSet<String>()
     private val pendingComments = ConcurrentHashMap<String, ScheduledFuture<*>>()
     private val snsApi: WeChatSnsApi? get() = WeChatApis.snsApi()
-    private var enabledState = prefs.getBoolean(MomentsAutoCommentSettings.KEY_ENABLE, false)
+    @Volatile private var enabledState = prefs.getBoolean(MomentsAutoCommentSettings.KEY_ENABLE, false)
     private val preferenceListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key == MomentsAutoCommentSettings.KEY_ENABLE) {
-            val enabled = prefs.getBoolean(MomentsAutoCommentSettings.KEY_ENABLE, false)
-            if (enabled && !enabledState) {
-                prefs.edit()
-                    .putLong(MomentsAutoCommentSettings.KEY_ENABLED_AT_SECONDS, nowSeconds())
-                    .apply()
-            } else if (!enabled) {
-                prefs.edit().putLong(MomentsAutoCommentSettings.KEY_ENABLED_AT_SECONDS, 0L).apply()
-                cancelPendingComments()
+            synchronized(resourceLock) {
+                val enabled = prefs.getBoolean(MomentsAutoCommentSettings.KEY_ENABLE, false)
+                if (enabled && !enabledState) {
+                    prefs.edit()
+                        .putLong(MomentsAutoCommentSettings.KEY_ENABLED_AT_SECONDS, nowSeconds())
+                        .apply()
+                } else if (!enabled && enabledState) {
+                    prefs.edit().putLong(MomentsAutoCommentSettings.KEY_ENABLED_AT_SECONDS, 0L).apply()
+                }
+                enabledState = enabled
+                syncEnabledResourcesLocked(enabled)
             }
-            enabledState = enabled
         }
     }
     private var postSubscription: WeChatSnsPostObserver.Subscription? = null
     private var deleteSubscription: WeChatDatabaseListenerApi.Subscription? = null
 
     fun start() {
-        loadSuccessfulCommentRecords()
-        if (enabledState && prefs.getLong(MomentsAutoCommentSettings.KEY_ENABLED_AT_SECONDS, 0L) <= 0L) {
-            prefs.edit()
-                .putLong(MomentsAutoCommentSettings.KEY_ENABLED_AT_SECONDS, nowSeconds())
-                .apply()
-        }
         prefs.registerOnSharedPreferenceChangeListener(preferenceListener)
-        postSubscription = snsApi?.observePosts(::onPostStored)
-        deleteSubscription = WeChatApis.databaseChanges()?.subscribe(::onDatabaseChange)
+        synchronized(resourceLock) { syncEnabledResourcesLocked(enabledState) }
     }
 
     fun destroy() {
         prefs.unregisterOnSharedPreferenceChangeListener(preferenceListener)
-        postSubscription?.unsubscribe()
-        postSubscription = null
-        deleteSubscription?.unsubscribe()
-        deleteSubscription = null
-        cancelPendingComments()
+        synchronized(resourceLock) { syncEnabledResourcesLocked(false) }
         worker.shutdownNow()
+    }
+
+    private fun syncEnabledResourcesLocked(enabled: Boolean) {
+        if (enabled) {
+            loadSuccessfulCommentRecords()
+            if (prefs.getLong(MomentsAutoCommentSettings.KEY_ENABLED_AT_SECONDS, 0L) <= 0L) {
+                prefs.edit()
+                    .putLong(MomentsAutoCommentSettings.KEY_ENABLED_AT_SECONDS, nowSeconds())
+                    .apply()
+            }
+            if (postSubscription == null) postSubscription = snsApi?.observePosts(::onPostStored)
+            if (deleteSubscription == null) deleteSubscription = WeChatApis.databaseChanges()?.subscribe(::onDatabaseChange)
+        } else {
+            postSubscription?.unsubscribe()
+            postSubscription = null
+            deleteSubscription?.unsubscribe()
+            deleteSubscription = null
+            cancelPendingComments()
+        }
     }
 
     private fun onDatabaseChange(change: DatabaseChange?) {

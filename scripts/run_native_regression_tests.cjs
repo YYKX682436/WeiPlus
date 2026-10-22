@@ -28,12 +28,19 @@ function run(args) {
 }
 const sources = [
   'app/src/main/java/h/Hchat/WechatPackage.kt',
+  'app/src/main/java/h/Hchat/hooks/api/model/WeChatMessage.kt',
   'app/src/main/java/h/Hchat/hooks/core/FeatureInstallDecision.kt',
+  'app/src/main/java/h/Hchat/hooks/items/keepalive/WeChatKeepAliveTargetState.kt',
+  'app/src/main/java/h/Hchat/hooks/items/autoreply/AutoReplyObservationState.kt',
   'app/src/main/java/h/Hchat/hooks/items/sendbutton/NativeSendButtonHandlers.kt',
   'app/src/main/java/h/Hchat/hooks/items/autoreply/AutoReplyFriendRequestHook.kt',
   'app/src/main/java/h/Hchat/preferences/HchatStorage.kt',
   ...walk(testRoot)
 ];
+sources.push(process.env.WEIPLUS_AUTOREPLY_FEATURE_SOURCE ||
+  'app/src/main/java/h/Hchat/hooks/items/autoreply/AutoReplyFeature.kt');
+sources.push(process.env.WEIPLUS_KEEPALIVE_FEATURE_SOURCE ||
+  'app/src/main/java/h/Hchat/hooks/items/keepalive/WeChatKeepAliveFeature.kt');
 const jar = path.join(output, 'native-regressions.jar');
 run(['-Xmx384m', '-cp', jars.map(file => path.join(lib, file)).join(path.delimiter),
   'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler', '-no-stdlib', '-no-reflect',
@@ -43,6 +50,12 @@ const entry = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/ModuleE
 const packageHelper = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/WechatPackage.kt'), 'utf8');
 const scope = fs.readFileSync(path.join(root, 'app/src/main/res/values/arrays.xml'), 'utf8');
 const featureManager = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/core/FeatureManager.kt'), 'utf8');
+const keepAliveRuntime = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/items/keepalive/WeChatKeepAliveRuntime.kt'), 'utf8');
+const keepAliveService = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/items/keepalive/WeChatKeepAliveService.kt'), 'utf8');
+const keepAliveFeature = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/items/keepalive/WeChatKeepAliveFeature.kt'), 'utf8');
+const autoReplyFeature = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/items/autoreply/AutoReplyFeature.kt'), 'utf8');
+const autoTransferFeature = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/items/payment/transfer/AutoTransferFeature.kt'), 'utf8');
+const momentsAutoCommentFeature = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/items/moments/MomentsAutoCommentFeature.kt'), 'utf8');
 const dexFinder = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/dexkit/DexFinder.java'), 'utf8');
 const quickReadFeature = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/items/quickread/QuickMarkReadFeature.kt'), 'utf8');
 const nativeSendFeature = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/items/sendbutton/NativeSendButtonFeature.kt'), 'utf8');
@@ -52,8 +65,26 @@ assert.match(scope, /<item>com\.tencent\.mm<\/item>/);
 assert.match(scope, /<item>com\.tencent\.mm\.wx<\/item>/);
 assert.match(packageHelper, /packageName == OFFICIAL \|\| packageName == MODIFIED/);
 assert.match(featureManager, /lifecycleFeatures\.toList\(\)\.asReversed\(\)/);
-assert.match(featureManager, /globalPrefs\.registerOnSharedPreferenceChangeListener/);
-assert.match(featureManager, /prefs\.registerOnSharedPreferenceChangeListener/);
+assert.doesNotMatch(featureManager, /observeConfigChanges|notifyConfigChanged|configPreferenceListeners|getFeaturePrefs/);
+assert.match(keepAliveRuntime, /watchdogTick\(moduleContext: Context\?, hostPackage: String\?, enabled: Boolean\)/);
+assert.match(keepAliveRuntime, /launchWeChatIfNeeded\(moduleAppContext, hostPackage!!\)/);
+assert.match(keepAliveService, /readTargets\(\)/);
+assert.match(keepAliveService, /ACTION_REMOVE_TARGET/);
+assert.match(keepAliveService, /putStringSet\(KEY_TARGETS, WeChatKeepAliveTargetState\.encode\(updated\)\)\s*\.commit\(\)/);
+assert.match(keepAliveService, /heartbeatTick\(targets\.values\.any \{ it\.networkHeartbeat \}\)/);
+assert.match(keepAliveFeature, /HchatStorage\.preferences\(context\.hostContext\(\), WeChatKeepAliveSettings\.PREFS_NAME\)/);
+assert.match(keepAliveFeature, /unregisterOnSharedPreferenceChangeListener/);
+assert.match(autoReplyFeature, /AutoReplySettings\.KEY_ENABLE/);
+assert.match(autoReplyFeature, /registerOnSharedPreferenceChangeListener/);
+assert.match(autoReplyFeature, /observationState\.acceptsFallback\(\)/);
+assert.match(autoReplyFeature, /AutoReplyRuntime\.handleMessage\(hostContext, message\)/);
+assert.match(autoReplyFeature, /AutoReplyFriendRequestHook\.handleMessage\(message\)/);
+assert.match(autoReplyFeature, /if \(!autoReplyEnabled && !autoAcceptEnabled\) return/);
+assert.doesNotMatch(autoReplyFeature, /messageObservationInstalled/);
+assert.match(autoTransferFeature, /if \(!transferEnabled\(context\)\) return/);
+assert.match(autoTransferFeature, /AutoTransferSettings\.KEY_ENABLE/);
+assert.match(momentsAutoCommentFeature, /syncEnabledResourcesLocked\(enabled\)/);
+assert.match(momentsAutoCommentFeature, /if \(enabled\)/);
 assert.match(quickReadFeature, /override fun onFeatureDestroy/);
 assert.match(quickReadFeature, /QuickMarkReadRuntime\.destroy\(\)/);
 assert.match(nativeSendFeature, /chatPage\.subscribe/);

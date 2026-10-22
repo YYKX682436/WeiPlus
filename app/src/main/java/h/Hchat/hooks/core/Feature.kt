@@ -28,9 +28,6 @@ interface Feature {
     @Throws(Throwable::class)
     fun install(context: FeatureContext)
 
-    fun onConfigChanged(context: FeatureContext, key: String?) {
-    }
-
     fun onDestroy(context: FeatureContext) {
     }
 }

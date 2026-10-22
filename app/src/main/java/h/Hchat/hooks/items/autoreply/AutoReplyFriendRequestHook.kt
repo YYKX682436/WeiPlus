@@ -32,22 +32,26 @@ object AutoReplyFriendRequestHook {
         val generation = HookRegistry.get().installationGeneration()
         if (installedGeneration == generation) return true
         val databaseChanges = runCatching { WeChatApis.databaseChanges() }.getOrNull()
-        if (databaseChanges?.isAvailable == true) {
-            runCatching { databaseChanges.install() }
-            databaseSubscription = databaseChanges.subscribe(::handleDatabaseChange)
-        }
+        if (databaseChanges?.isAvailable != true) return false
+        runCatching { databaseChanges.install() }
+        databaseSubscription = databaseChanges.subscribe(::handleDatabaseChange)
         installedGeneration = generation
         return true
     }
 
     @Synchronized
     fun uninstall() {
-        databaseSubscription?.unsubscribe()
-        databaseSubscription = null
-        installedGeneration = -1L
+        stopDatabaseObserver()
         recentEvents.clear()
         recentVerifyAliases.clear()
         nativeListeners.clear()
+    }
+
+    @Synchronized
+    fun stopDatabaseObserver() {
+        databaseSubscription?.unsubscribe()
+        databaseSubscription = null
+        installedGeneration = -1L
     }
 
     fun handleMessage(message: WeChatMessageObserveApi.ObservedMessage) {

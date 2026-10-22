@@ -2,7 +2,15 @@ package android.content
 
 import java.io.File
 
-interface SharedPreferences
+interface SharedPreferences {
+    fun getBoolean(key: String, defaultValue: Boolean): Boolean = defaultValue
+    fun registerOnSharedPreferenceChangeListener(listener: OnSharedPreferenceChangeListener) = Unit
+    fun unregisterOnSharedPreferenceChangeListener(listener: OnSharedPreferenceChangeListener) = Unit
+
+    fun interface OnSharedPreferenceChangeListener {
+        fun onSharedPreferenceChanged(sharedPreferences: SharedPreferences, key: String?)
+    }
+}
 
 open class Context(
     open val packageName: String,

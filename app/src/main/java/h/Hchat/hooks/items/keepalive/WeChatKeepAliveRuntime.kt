@@ -11,7 +11,7 @@ import h.Hchat.utils.HLog
 object WeChatKeepAliveRuntime {
     private const val TAG = "[Hchat:KeepAlive]"
     private const val WAKE_LOCK_TAG = "Hchat:WeChatKeepAlive"
-    private var wakeLock: PowerManager.WakeLock? = null
+    private val wakeLocks = java.util.concurrent.ConcurrentHashMap<String, PowerManager.WakeLock>()
     private val rootWhitelistApplied = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private val rootAppOpsApplied = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
@@ -24,29 +24,40 @@ object WeChatKeepAliveRuntime {
         val prefs = HchatStorage.preferences(appContext, WeChatKeepAliveSettings.PREFS_NAME)
         val enabled = prefs.getBoolean(WeChatKeepAliveSettings.KEY_ENABLE, WeChatKeepAliveSettings.DEFAULT_ENABLE)
         if (!enabled) {
-            releaseWakeLock()
-            if (serviceContext != null) runCatching { WeChatKeepAliveService.stop(serviceContext) }
+            releaseWakeLock(hostPackage)
+            if (serviceContext != null) runCatching { WeChatKeepAliveService.stop(serviceContext, hostPackage) }
             return
         }
         if (prefs.getBoolean(WeChatKeepAliveSettings.KEY_WAKE_LOCK, WeChatKeepAliveSettings.DEFAULT_WAKE_LOCK)) {
-            acquireWakeLock(appContext)
+            acquireWakeLock(appContext, hostPackage)
         } else {
-            releaseWakeLock()
+            releaseWakeLock(hostPackage)
         }
-        if (prefs.getBoolean(WeChatKeepAliveSettings.KEY_FOREGROUND_SERVICE, WeChatKeepAliveSettings.DEFAULT_FOREGROUND_SERVICE)) {
-            if (serviceContext != null) {
-                val watchdog = prefs.getBoolean(WeChatKeepAliveSettings.KEY_WATCHDOG, WeChatKeepAliveSettings.DEFAULT_WATCHDOG)
-                val networkHeartbeat = prefs.getBoolean(
-                    WeChatKeepAliveSettings.KEY_NETWORK_HEARTBEAT,
-                    WeChatKeepAliveSettings.DEFAULT_NETWORK_HEARTBEAT
+        val serviceOptions = WeChatKeepAliveTargetState.serviceOptions(
+            enabled = enabled,
+            foregroundService = prefs.getBoolean(
+                WeChatKeepAliveSettings.KEY_FOREGROUND_SERVICE,
+                WeChatKeepAliveSettings.DEFAULT_FOREGROUND_SERVICE
+            ),
+            watchdog = prefs.getBoolean(WeChatKeepAliveSettings.KEY_WATCHDOG, WeChatKeepAliveSettings.DEFAULT_WATCHDOG),
+            networkHeartbeat = prefs.getBoolean(
+                WeChatKeepAliveSettings.KEY_NETWORK_HEARTBEAT,
+                WeChatKeepAliveSettings.DEFAULT_NETWORK_HEARTBEAT
+            )
+        )
+        if (serviceContext == null) {
+            if (serviceOptions != null) HLog.e("$TAG 模块 Context 不可用，跳过前台服务")
+        } else if (serviceOptions != null) {
+            runCatching {
+                WeChatKeepAliveService.start(
+                    serviceContext,
+                    hostPackage,
+                    serviceOptions.watchdog,
+                    serviceOptions.networkHeartbeat
                 )
-                runCatching { WeChatKeepAliveService.start(serviceContext, watchdog, networkHeartbeat) }
-                    .onFailure { HLog.e("$TAG 启动前台服务失败: ${it.message}", it) }
-            } else {
-                HLog.e("$TAG 模块 Context 不可用，跳过前台服务")
-            }
+            }.onFailure { HLog.e("$TAG 启动前台服务失败: ${it.message}", it) }
         } else {
-            if (serviceContext != null) runCatching { WeChatKeepAliveService.stop(serviceContext) }
+            runCatching { WeChatKeepAliveService.stop(serviceContext, hostPackage) }
         }
         if (prefs.getBoolean(WeChatKeepAliveSettings.KEY_ROOT_DOZE_WHITELIST, WeChatKeepAliveSettings.DEFAULT_ROOT_DOZE_WHITELIST)) {
             applyRootDozeWhitelistOnce(hostPackage)
@@ -56,11 +67,12 @@ object WeChatKeepAliveRuntime {
         }
     }
 
-    fun stop(moduleContext: Context? = null) {
-        releaseWakeLock()
+    fun stop(hostPackage: String?, moduleContext: Context? = null) {
+        if (!WechatPackage.isTarget(hostPackage)) return
+        releaseWakeLock(hostPackage!!)
         val serviceContext = moduleContext?.applicationContext ?: moduleContext
         if (serviceContext != null) {
-            runCatching { WeChatKeepAliveService.stop(serviceContext) }
+            runCatching { WeChatKeepAliveService.stop(serviceContext, hostPackage) }
         }
     }
 
@@ -73,11 +85,12 @@ object WeChatKeepAliveRuntime {
         }.getOrDefault(false)
     }
 
-    fun watchdogTick(context: Context?, enabled: Boolean) {
-        if (context == null) return
+    fun watchdogTick(moduleContext: Context?, hostPackage: String?, enabled: Boolean) {
+        if (!WechatPackage.isTarget(hostPackage)) return
+        if (moduleContext == null) return
         if (!enabled) return
-        val appContext = context.applicationContext ?: context
-        launchWeChatIfNeeded(appContext)
+        val moduleAppContext = moduleContext.applicationContext ?: moduleContext
+        launchWeChatIfNeeded(moduleAppContext, hostPackage!!)
     }
 
     fun heartbeatTick(enabled: Boolean) {
@@ -100,8 +113,9 @@ object WeChatKeepAliveRuntime {
         }.start()
     }
 
-    private fun acquireWakeLock(context: Context) {
-        val current = wakeLock
+    private fun acquireWakeLock(context: Context, hostPackage: String) {
+        if (!WechatPackage.isTarget(hostPackage)) return
+        val current = wakeLocks[hostPackage]
         if (current?.isHeld == true) return
         runCatching {
             val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -110,19 +124,20 @@ object WeChatKeepAliveRuntime {
                 setReferenceCounted(false)
                 acquire()
             }
-            wakeLock = lock
+            wakeLocks.put(hostPackage, lock)?.let { old ->
+                runCatching { old.takeIf { it.isHeld }?.release() }
+            }
         }.onFailure {
             HLog.e("$TAG 获取 WakeLock 失败: ${it.message}", it)
         }
     }
 
-    private fun releaseWakeLock() {
+    private fun releaseWakeLock(hostPackage: String) {
         runCatching {
-            wakeLock?.takeIf { it.isHeld }?.release()
+            wakeLocks.remove(hostPackage)?.takeIf { it.isHeld }?.release()
         }.onFailure {
             HLog.e("$TAG 释放 WakeLock 失败: ${it.message}", it)
         }
-        wakeLock = null
     }
 
     private fun applyRootDozeWhitelistOnce(hostPackage: String) {
@@ -174,14 +189,14 @@ object WeChatKeepAliveRuntime {
         }.getOrDefault(false)
     }
 
-    private fun launchWeChatIfNeeded(context: Context) {
+    private fun launchWeChatIfNeeded(moduleContext: Context, hostPackage: String) {
         runCatching {
-            val hostPackage = context.packageName
-            if (!WechatPackage.isTarget(hostPackage) || isWeChatProcessAlive(hostPackage)) return
-            val manager = context.packageManager
+            val alive = isWeChatProcessAlive(hostPackage)
+            if (!WeChatKeepAliveTargetState.shouldLaunch(hostPackage, alive)) return
+            val manager = moduleContext.packageManager
             val intent = manager.getLaunchIntentForPackage(hostPackage) ?: return
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            context.startActivity(intent)
+            moduleContext.startActivity(intent)
         }.onFailure {
             HLog.e("$TAG 看门狗拉起微信失败: ${it.message}", it)
         }

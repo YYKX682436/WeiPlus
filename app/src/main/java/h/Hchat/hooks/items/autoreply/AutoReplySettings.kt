@@ -1,12 +1,15 @@
 package h.Hchat.hooks.items.autoreply
 
 import android.content.Context
+import android.content.SharedPreferences
 import h.Hchat.preferences.HchatStorage
 import org.json.JSONArray
 import org.json.JSONObject
 
 class AutoReplySettings(context: Context?) {
     private val prefs = context?.let { HchatStorage.preferences(it, PREFS_NAME) }
+
+    fun getHostPreferences(): SharedPreferences? = prefs
 
     fun isEnabled(): Boolean = getBoolean(KEY_ENABLE, DEFAULT_ENABLE)
 

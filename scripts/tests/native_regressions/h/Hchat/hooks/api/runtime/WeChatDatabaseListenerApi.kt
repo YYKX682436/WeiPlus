@@ -3,7 +3,7 @@ package h.Hchat.hooks.api.runtime
 import h.Hchat.hooks.api.model.DatabaseChange
 
 class WeChatDatabaseListenerApi {
-    val isAvailable: Boolean = true
+    var isAvailable: Boolean = true
     private var listener: ((DatabaseChange?) -> Unit)? = null
     var installCalls: Int = 0
         private set

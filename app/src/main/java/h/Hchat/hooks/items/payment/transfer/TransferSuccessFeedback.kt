@@ -32,6 +32,15 @@ class TransferSuccessFeedback(
     private var ttsReady = false
     private val pendingSpeech = ArrayDeque<String>()
 
+    fun shutdown() {
+        mainHandler.removeCallbacksAndMessages(null)
+        pendingSpeech.clear()
+        runCatching { tts?.stop() }
+        runCatching { tts?.shutdown() }
+        tts = null
+        ttsReady = false
+    }
+
     fun onReceived(
         key: String,
         message: h.Hchat.hooks.api.message.WeChatMessageObserveApi.ObservedMessage,

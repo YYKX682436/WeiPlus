@@ -3,6 +3,7 @@ package h.Hchat.hooks.items.payment.transfer
 import android.os.Handler
 import android.os.Looper
 import android.text.TextUtils
+import android.content.SharedPreferences
 import h.Hchat.event.Events
 import h.Hchat.hooks.api.core.WeChatApis
 import h.Hchat.hooks.api.message.WeChatMessageObserveApi
@@ -11,6 +12,7 @@ import h.Hchat.hooks.api.payment.TransferQueryParams
 import h.Hchat.hooks.core.BaseFeature
 import h.Hchat.hooks.core.DexInstallScheduler
 import h.Hchat.hooks.core.FeatureContext
+import h.Hchat.preferences.HchatStorage
 import java.util.concurrent.ConcurrentHashMap
 
 class AutoTransferFeature : BaseFeature() {
@@ -18,6 +20,9 @@ class AutoTransferFeature : BaseFeature() {
     private val handledTransfers = ConcurrentHashMap<String, Long>()
     @Volatile private var observerInstalled = false
     @Volatile private var feedback: TransferSuccessFeedback? = null
+    @Volatile private var messageSubscription: WeChatMessageObserveApi.Subscription? = null
+    private var settingsPrefs: SharedPreferences? = null
+    private var settingsListener: SharedPreferences.OnSharedPreferenceChangeListener? = null
 
     private data class TransferAttempt(val success: Boolean, val failure: String = "")
 
@@ -31,16 +36,31 @@ class AutoTransferFeature : BaseFeature() {
 
     @Throws(Throwable::class)
     override fun onFeatureInstall(context: FeatureContext) {
+        settingsPrefs = HchatStorage.preferences(context.hostContext(), AutoTransferSettings.PREFS_NAME)
+        settingsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key != AutoTransferSettings.KEY_ENABLE) return@OnSharedPreferenceChangeListener
+            if (transferEnabled(context)) scheduleInstall(context) else stopFeatureWork()
+        }.also { settingsPrefs?.registerOnSharedPreferenceChangeListener(it) }
         scheduleInstall(context)
         subscribe(Events.DexReady::class.java) {
-            scheduleInstall(context)
+            if (transferEnabled(context)) scheduleInstall(context)
         }
     }
 
+    override fun onFeatureDestroy(context: FeatureContext) {
+        settingsListener?.let { settingsPrefs?.unregisterOnSharedPreferenceChangeListener(it) }
+        settingsListener = null
+        settingsPrefs = null
+        stopFeatureWork()
+    }
+
     private fun scheduleInstall(context: FeatureContext) {
+        if (!transferEnabled(context)) return
         DexInstallScheduler.schedule(ID, name(), stage = DexInstallScheduler.Stage.WARMUP) {
             try {
+                if (!transferEnabled(context)) return@schedule true
                 TransferReceiveAccountStore.install(context, ::logError)
+                if (!transferEnabled(context)) return@schedule true
                 if (feedback == null) {
                     feedback = TransferSuccessFeedback(context.hostContext(), ::logError)
                 }
@@ -50,8 +70,15 @@ class AutoTransferFeature : BaseFeature() {
                     logError("消息观察不可用，自动收款未安装", null)
                     return@schedule false
                 } else {
-                    trackSubscription(observer.subscribe { message -> handleMessage(context, message) })
+                    val subscription = observer.subscribe { message -> handleMessage(context, message) }
+                    if (!transferEnabled(context)) {
+                        subscription?.unsubscribe()
+                        return@schedule true
+                    }
+                    messageSubscription?.unsubscribe()
+                    messageSubscription = subscription
                     observerInstalled = true
+                    if (!transferEnabled(context)) stopFeatureWork()
                     return@schedule true
                 }
             } catch (e: Throwable) {
@@ -62,7 +89,7 @@ class AutoTransferFeature : BaseFeature() {
     }
 
     private fun handleMessage(context: FeatureContext, message: WeChatMessageObserveApi.ObservedMessage?) {
-        if (message == null) return
+        if (message == null || !transferEnabled(context)) return
         val rawContent = message.content.ifBlank { message.xml }
         if (message.outgoing) {
             return
@@ -107,6 +134,20 @@ class AutoTransferFeature : BaseFeature() {
         } else {
             action.run()
         }
+    }
+
+    private fun transferEnabled(context: FeatureContext): Boolean =
+        AutoTransferSettings(context.hostContext()).isEnabled()
+
+    private fun stopFeatureWork() {
+        DexInstallScheduler.cancel(ID)
+        messageSubscription?.unsubscribe()
+        messageSubscription = null
+        observerInstalled = false
+        mainHandler.removeCallbacksAndMessages(null)
+        handledTransfers.clear()
+        feedback?.shutdown()
+        feedback = null
     }
 
     private fun rejectReason(
