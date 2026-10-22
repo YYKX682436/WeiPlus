@@ -315,7 +315,7 @@ class ProbeActivity : Activity() {
 
     private fun startInvalidPromotion() {
         val serviceIntent = Intent().setComponent(ComponentName(modulePackage, SERVICE_CLASS)).apply {
-            action = "h.Hchat.action.INVALID_PROMOTION_TEST"
+            action = PROMOTE_ACTION
             putExtra(PROMOTION_EXTRA, "invalid-test-token")
         }
         try {
