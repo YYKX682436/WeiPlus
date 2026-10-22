@@ -48,7 +48,9 @@ object WeChatKeepAliveRuntime {
             WeChatKeepAliveSettings.KEY_ROOT_APP_OPS,
             WeChatKeepAliveSettings.DEFAULT_ROOT_APP_OPS
         )
-        applyRootOptions(hostPackage, serviceContext ?: appContext, rootDozeWhitelist, rootAppOps)
+        // This code runs under the target WeChat UID. A Context created for the module app does
+        // not grant its filesystem identity, so persist rollback state in the actual host sandbox.
+        applyRootOptions(hostPackage, appContext, rootDozeWhitelist, rootAppOps)
         if (!enabled) {
             releaseWakeLock(hostPackage)
             stopTarget(hostPackage, appContext, serviceContext)

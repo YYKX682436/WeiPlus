@@ -3,7 +3,7 @@ plugins {
 }
 
 android {
-    namespace = "h.Hchat.keepalivesystemtest"
+    namespace = "h.Hchat"
     compileSdk = 37
 
     defaultConfig {
@@ -13,7 +13,7 @@ android {
         versionName = "1.0"
     }
 
-    flavorDimensions += "caller"
+    flavorDimensions += listOf("caller", "visibility")
     productFlavors {
         create("official") {
             dimension = "caller"
@@ -27,14 +27,22 @@ android {
             dimension = "caller"
             applicationId = "com.example.keepalive.attacker"
         }
+        create("visible") {
+            dimension = "visibility"
+        }
+        create("hidden") {
+            dimension = "visibility"
+        }
     }
 
     buildFeatures {
         aidl = true
-        buildConfig = true
+        buildConfig = false
     }
 
     sourceSets.getByName("main").aidl.srcDir("${rootDir}/../../../app/src/main/aidl")
 }
 
-dependencies {}
+dependencies {
+    implementation("io.github.billywei01:fastkv:3.0.1")
+}

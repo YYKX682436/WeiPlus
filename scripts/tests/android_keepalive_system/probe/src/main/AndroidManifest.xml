@@ -3,13 +3,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
-    <queries>
-        <package android:name="h.Hchat.r2system" />
-    </queries>
-
     <application android:label="KeepAlive system probe">
         <activity
-            android:name=".ProbeActivity"
+            android:name="h.Hchat.keepalivesystemtest.ProbeActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -17,11 +13,11 @@
             </intent-filter>
         </activity>
         <service
-            android:name=".DataSyncTimeoutProbeService"
+            android:name="h.Hchat.keepalivesystemtest.DataSyncTimeoutProbeService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
         <service
-            android:name=".BackgroundStartProbeService"
+            android:name="h.Hchat.keepalivesystemtest.BackgroundStartProbeService"
             android:exported="false"
             android:foregroundServiceType="specialUse">
             <property

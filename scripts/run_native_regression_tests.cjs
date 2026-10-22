@@ -32,6 +32,7 @@ const sources = [
   'app/src/main/java/h/Hchat/hooks/core/FeatureInstallDecision.kt',
   'app/src/main/java/h/Hchat/hooks/items/keepalive/WeChatKeepAliveTargetState.kt',
   'app/src/main/java/h/Hchat/hooks/items/payment/transfer/AutoTransferRunSession.kt',
+  'app/src/main/java/h/Hchat/hooks/items/payment/transfer/AutoTransferActionDispatcher.kt',
   'app/src/main/java/h/Hchat/hooks/items/autoreply/AutoReplyObservationState.kt',
   'app/src/main/java/h/Hchat/hooks/items/sendbutton/NativeSendButtonHandlers.kt',
   'app/src/main/java/h/Hchat/hooks/items/autoreply/AutoReplyFriendRequestHook.kt',
@@ -54,6 +55,7 @@ const featureManager = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hcha
 const keepAliveRuntime = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/items/keepalive/WeChatKeepAliveRuntime.kt'), 'utf8');
 const keepAliveService = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/items/keepalive/WeChatKeepAliveService.kt'), 'utf8');
 const keepAliveFeature = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/items/keepalive/WeChatKeepAliveFeature.kt'), 'utf8');
+const keepAliveSettingsPage = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/ui/miuix/MiuixMomentsPages.kt'), 'utf8');
 const keepAliveTargetState = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/items/keepalive/WeChatKeepAliveTargetState.kt'), 'utf8');
 const manifest = fs.readFileSync(path.join(root, 'app/src/main/AndroidManifest.xml'), 'utf8');
 const autoReplyFeature = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/items/autoreply/AutoReplyFeature.kt'), 'utf8');
@@ -84,7 +86,7 @@ assert.match(keepAliveRuntime, /hostContext\.startForegroundService\(intent\)/);
 assert.match(keepAliveRuntime, /val requestForegroundStart = allowStart\s+allowStart = false/);
 assert.match(keepAliveRuntime, /getLaunchIntentSenderForPackage\(hostPackage\)/);
 assert.match(keepAliveRuntime, /private fun runRootLaunch\(hostPackage: String\)/);
-assert.match(keepAliveRuntime, /applyRootOptions\(hostPackage, serviceContext \?: appContext, rootDozeWhitelist, rootAppOps\)/);
+assert.match(keepAliveRuntime, /applyRootOptions\(hostPackage, appContext, rootDozeWhitelist, rootAppOps\)/);
 assert.match(keepAliveRuntime, /ROOT_STATE_PREFS/);
 assert.match(keepAliveRuntime, /cmd appops set \$hostPackage \$op \$modeToRestore/);
 assert.match(keepAliveRuntime, /state\.contains\("doze_original_\$hostPackage"\)/);
@@ -97,6 +99,8 @@ assert.match(manifest, /<package android:name="com\.tencent\.mm"\s*\/>/);
 assert.match(manifest, /<package android:name="com\.tencent\.mm\.wx"\s*\/>/);
 assert.match(keepAliveFeature, /HchatStorage\.preferences\(context\.hostContext\(\), WeChatKeepAliveSettings\.PREFS_NAME\)/);
 assert.match(keepAliveFeature, /unregisterOnSharedPreferenceChangeListener/);
+assert.match(keepAliveSettingsPage, /WeChatKeepAliveRuntime\.apply\(context, allowForegroundStart = true\)/);
+assert.match(keepAliveRuntime, /applyRootOptions\(hostPackage, appContext, rootDozeWhitelist, rootAppOps\)/);
 assert.match(autoReplyFeature, /AutoReplySettings\.KEY_ENABLE/);
 assert.match(autoReplyFeature, /registerOnSharedPreferenceChangeListener/);
 assert.match(autoReplyFeature, /observationState\.acceptsFallback\(\)/);
@@ -106,6 +110,9 @@ assert.match(autoReplyFeature, /if \(!autoReplyEnabled && !autoAcceptEnabled\) r
 assert.doesNotMatch(autoReplyFeature, /messageObservationInstalled/);
 assert.match(autoTransferFeature, /AutoTransferSettings\.KEY_ENABLE/);
 assert.match(autoTransferFeature, /runSession\.runIfCurrent\(session\)/);
+assert.match(autoTransferFeature, /dispatchTransferAction\(session\) \{ handleMessage\(context, message, session\) \}/);
+assert.match(autoTransferFeature, /Thread\(runnable, "Hchat-AutoTransfer"\)/);
+assert.match(autoTransferFeature, /ArrayBlockingQueue\(ACTION_QUEUE_CAPACITY\)/);
 assert.match(autoTransferFeature, /runSession\.invalidate\(\)/);
 assert.doesNotMatch(autoTransferFeature, /handledTransfers\.clear\(\)/);
 assert.match(momentsAutoCommentFeature, /syncEnabledResourcesLocked\(enabled\)/);

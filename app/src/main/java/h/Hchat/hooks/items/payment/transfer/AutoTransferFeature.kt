@@ -13,12 +13,25 @@ import h.Hchat.hooks.core.BaseFeature
 import h.Hchat.hooks.core.DexInstallScheduler
 import h.Hchat.hooks.core.FeatureContext
 import h.Hchat.preferences.HchatStorage
+import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 
 class AutoTransferFeature : BaseFeature() {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val handledTransfers = ConcurrentHashMap<String, Long>()
     private val runSession = AutoTransferRunSession()
+    private val transferExecutor = ThreadPoolExecutor(
+        1,
+        1,
+        30L,
+        TimeUnit.SECONDS,
+        ArrayBlockingQueue(ACTION_QUEUE_CAPACITY),
+        { runnable -> Thread(runnable, "Hchat-AutoTransfer").apply { isDaemon = true } },
+        ThreadPoolExecutor.AbortPolicy()
+    ).apply { allowCoreThreadTimeOut(true) }
+    private val actionDispatcher = AutoTransferActionDispatcher(runSession, transferExecutor)
     @Volatile private var observerInstalled = false
     @Volatile private var feedback: TransferSuccessFeedback? = null
     @Volatile private var messageSubscription: WeChatMessageObserveApi.Subscription? = null
@@ -71,7 +84,9 @@ class AutoTransferFeature : BaseFeature() {
                     logError("消息观察不可用，自动收款未安装", null)
                     return@schedule false
                 } else {
-                    val subscription = observer.subscribe { message -> handleMessage(context, message, session) }
+                    val subscription = observer.subscribe { message ->
+                        dispatchTransferAction(session) { handleMessage(context, message, session) }
+                    }
                     if (!runSession.isCurrent(session) || !transferEnabled(context)) {
                         subscription?.unsubscribe()
                         return@schedule true
@@ -129,8 +144,8 @@ class AutoTransferFeature : BaseFeature() {
         val rejectReason = rejectReason(rule, info, message)
         val delay = rule.nextDelayMillis()
         val action = Runnable {
-            runSession.runIfCurrent(session) {
-                if (!settings.isEnabled()) return@runIfCurrent
+            dispatchTransferAction(session) {
+                if (!settings.isEnabled()) return@dispatchTransferAction
                 if (rejectReason == null) {
                     receiveTransfer(settings, rule, message, info, session)
                 } else if (rule.refundRejected) {
@@ -155,8 +170,15 @@ class AutoTransferFeature : BaseFeature() {
         messageSubscription = null
         observerInstalled = false
         mainHandler.removeCallbacksAndMessages(null)
+        transferExecutor.queue.clear()
         feedback?.shutdown()
         feedback = null
+    }
+
+    private fun dispatchTransferAction(session: Long, action: () -> Unit) {
+        if (!actionDispatcher.dispatch(session, action) && runSession.isCurrent(session)) {
+            logError("自动收款任务队列已满，跳过本次转账动作", null)
+        }
     }
 
     private fun rejectReason(
@@ -232,8 +254,8 @@ class AutoTransferFeature : BaseFeature() {
                     groupUsername = if (message.talker.endsWith("@chatroom")) message.talker else "",
                     transferAttach = info.transferAttach
                 ), callback = { result ->
-                    runSession.runIfCurrent(session) {
-                        if (!settings.isEnabled()) return@runIfCurrent
+                    dispatchTransferAction(session) {
+                        if (!settings.isEnabled()) return@dispatchTransferAction
                         val accounts = if (result != null && result.errorCode == 0) {
                             TransferReceiveAccountStore.captureResponse(settings.hostContext(), result.response)
                         } else {
@@ -359,5 +381,6 @@ class AutoTransferFeature : BaseFeature() {
     companion object {
         const val ID = "auto_transfer"
         private const val HANDLED_TRANSFER_TTL_MS = 60 * 60 * 1000L
+        private const val ACTION_QUEUE_CAPACITY = 64
     }
 }

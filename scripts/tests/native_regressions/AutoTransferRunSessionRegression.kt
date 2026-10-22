@@ -1,6 +1,7 @@
 package h.Hchat.hooks.items.payment.transfer
 
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -8,6 +9,7 @@ object AutoTransferRunSessionRegression {
     fun run() {
         reproduceLegacyQueryRace()
         verifyCloseAndReopenRejectOldCallbacks()
+        verifyBlockedPaymentDoesNotBlockCloseOrMainCaller()
     }
 
     private fun reproduceLegacyQueryRace() {
@@ -72,5 +74,62 @@ object AutoTransferRunSessionRegression {
         check(receiveCalls.get() == 1) { "Current session did not accept its own operation" }
         session.invalidate()
         println("PASS: delayed query callbacks cannot receive, refund, cache accounts, or invalidate a reopened session")
+    }
+
+    private fun verifyBlockedPaymentDoesNotBlockCloseOrMainCaller() {
+        val session = AutoTransferRunSession()
+        val executor = Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "AutoTransferRegressionWorker").apply { isDaemon = true }
+        }
+        val dispatcher = AutoTransferActionDispatcher(session, executor)
+        val firstGeneration = session.activate()
+        val apiStarted = CountDownLatch(1)
+        val releaseApi = CountDownLatch(1)
+        val apiCalls = AtomicInteger()
+        val staleApiCalls = AtomicInteger()
+        val currentApiCalls = AtomicInteger()
+        val currentActionDone = CountDownLatch(1)
+
+        try {
+            check(dispatcher.dispatch(firstGeneration) {
+                apiStarted.countDown()
+                check(releaseApi.await(3, TimeUnit.SECONDS))
+                apiCalls.incrementAndGet()
+            })
+            check(apiStarted.await(2, TimeUnit.SECONDS))
+
+            val releaseTimer = Thread {
+                Thread.sleep(700)
+                releaseApi.countDown()
+            }.apply { isDaemon = true }
+            releaseTimer.start()
+            val startedAt = System.nanoTime()
+            session.invalidate()
+            val closeMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt)
+            check(closeMillis < 350L) {
+                "Disabling auto-transfer waited $closeMillis ms for a blocked payment API"
+            }
+
+            val secondGeneration = session.activate()
+            check(secondGeneration != firstGeneration)
+            check(!dispatcher.dispatch(firstGeneration) { staleApiCalls.incrementAndGet() }) {
+                "A callback from the closed session was admitted after reopen"
+            }
+            check(dispatcher.dispatch(secondGeneration) {
+                currentApiCalls.incrementAndGet()
+                currentActionDone.countDown()
+            })
+            releaseApi.countDown()
+            check(currentActionDone.await(2, TimeUnit.SECONDS))
+            check(apiCalls.get() == 1) { "The already-started fake API call did not finish exactly once" }
+            check(staleApiCalls.get() == 0) { "A stale callback initiated a payment API call" }
+            check(currentApiCalls.get() == 1) { "The reopened session could not execute its own action" }
+            println("PASS: blocked payment API runs off the caller, close does not wait, stale work is rejected")
+        } finally {
+            releaseApi.countDown()
+            executor.shutdownNow()
+            executor.awaitTermination(2, TimeUnit.SECONDS)
+            session.invalidate()
+        }
     }
 }

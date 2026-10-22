@@ -21,10 +21,13 @@ internal class AutoTransferRunSession {
         generation.incrementAndGet()
     }
 
-    /** Serializes only the final action boundary with disable/destroy. */
-    fun runIfCurrent(token: Long, action: () -> Unit): Boolean = synchronized(operationLock) {
-        if (activeGeneration.get() != token || token == 0L) return@synchronized false
+    /** Admit an action under the lifecycle lock, then execute it without holding that lock. */
+    fun runIfCurrent(token: Long, action: () -> Unit): Boolean {
+        val admitted = synchronized(operationLock) {
+            activeGeneration.get() == token && token != 0L
+        }
+        if (!admitted) return false
         action()
-        true
+        return true
     }
 }
