@@ -1,9 +1,12 @@
 package h.Hchat.hooks.items.zombiecheck
 
+import android.Manifest
+import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.PowerManager
 import h.Hchat.hooks.api.core.WeChatApis
@@ -557,6 +560,7 @@ class ZombieCheckRuntime(
         wakeLock = null
     }
 
+    @SuppressLint("NotificationPermission")
     private fun updateNotification() {
         runCatching {
             val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
@@ -585,6 +589,9 @@ class ZombieCheckRuntime(
                 .setProgress(state.totalCount, state.checkedCount, false)
                 .setOngoing(state.running)
                 .setOnlyAlertOnce(true)
+            if (Build.VERSION.SDK_INT >= 33 &&
+                context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+            ) return
             manager.notify(NOTIFICATION_ID, builder.build())
         }.onFailure { logger("更新僵尸粉检测通知失败", it) }
     }

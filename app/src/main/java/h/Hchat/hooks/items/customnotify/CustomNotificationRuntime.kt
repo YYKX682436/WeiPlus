@@ -1,5 +1,7 @@
 package h.Hchat.hooks.items.customnotify
 
+import android.Manifest
+import android.annotation.SuppressLint
 import android.app.ActivityManager
 import android.app.Notification
 import android.app.NotificationChannel
@@ -11,6 +13,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.Ringtone
@@ -1014,6 +1017,8 @@ object CustomNotificationRuntime {
         }
     }
 
+    // The runtime permission check immediately before notify() uses the current host package context.
+    @SuppressLint("NotificationPermission")
     private fun publishNotification(
         context: Context,
         manager: NotificationManager,
@@ -1110,6 +1115,9 @@ object CustomNotificationRuntime {
                 extras?.putCharSequenceArray(Notification.EXTRA_TEXT_LINES, mergedLines.toTypedArray())
             }
         }
+        if (Build.VERSION.SDK_INT >= 33 &&
+            context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) return
         manager.notify(notificationId, notification)
         if (rule.mergeByTalker) {
             cancelOtherCustomNotificationsForTalker(manager, rule.talker, notificationId)
@@ -1315,6 +1323,8 @@ object CustomNotificationRuntime {
         }.getOrNull()
     }
 
+    // The pre-33 overload has no flags; Android 13+ explicitly keeps this module action receiver private.
+    @SuppressLint("UnspecifiedRegisterReceiverFlag")
     private fun registerNotificationActionReceiver(context: Context) {
         if (!receiverRegistered.compareAndSet(false, true)) return
         val receiver = object : BroadcastReceiver() {
@@ -1397,6 +1407,8 @@ object CustomNotificationRuntime {
         return sender.sendText(talker, reply)
     }
 
+    // A successful reply still cancels its card if the host has disabled notifications.
+    @SuppressLint("NotificationPermission")
     private fun finishQuickReply(
         context: Context,
         notificationId: Int,
@@ -1430,6 +1442,12 @@ object CustomNotificationRuntime {
                     putLong(EXTRA_REPLY_COMPLETION_TOKEN, completionToken)
                 })
             if (sent) builder.setRemoteInputHistory(arrayOf<CharSequence>(reply))
+            if (Build.VERSION.SDK_INT >= 33 &&
+                context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+            ) {
+                if (sent) manager.cancel(notificationId)
+                return
+            }
             manager.notify(notificationId, builder.build())
         }.onFailure {
             HLog.e("$TAG 快捷回复通知状态更新失败: $notificationId", it)

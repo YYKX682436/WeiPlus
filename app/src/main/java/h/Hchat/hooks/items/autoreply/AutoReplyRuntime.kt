@@ -12,7 +12,6 @@ import android.speech.tts.UtteranceProgressListener
 import android.widget.Toast
 import h.Hchat.hooks.api.core.WeChatApis
 import h.Hchat.hooks.api.message.WeChatMessageObserveApi
-import h.Hchat.hooks.items.script.ScriptPluginRuntime
 import h.Hchat.utils.HLog
 import me.yun.silk.AacCodec
 import me.yun.silk.SilkCodec
@@ -231,7 +230,7 @@ object AutoReplyRuntime {
         if (!settings.getBoolean(AutoReplySettings.KEY_AUTO_ACCEPT_ENABLE, false)) return
         executor.execute {
             runCatching {
-                val verifyWxid = h.Hchat.hooks.items.script.ScriptNewFriendHook.resolveVerifyUsername(wxid, ticket, scene)
+                val verifyWxid = AutoReplyFriendRequestHook.resolveVerifyUsername(wxid, ticket, scene)
                 WeChatApis.contact().verifyUser()?.verifyUser(verifyWxid, ticket, scene)
                 modifyLabelIfNeeded(
                     wxid,
@@ -760,7 +759,6 @@ object AutoReplyRuntime {
                 voiceSegments.forEach { segment -> runCatching { segment.file.delete() } }
             }
             val durationMs = fallbackFrames.size * frameDurationMs
-            maybeFallbackKugouTool(config, talker, question, requestStartAt)
             XiaozhiReply(
                 text = answerRef.get(),
                 voicePath = file?.takeIf { it.isFile && it.length() > 0L }?.absolutePath.orEmpty(),
@@ -1315,36 +1313,10 @@ object AutoReplyRuntime {
             ((bytes[offset + 2].toInt() and 0xFF) shl 16) or
             ((bytes[offset + 3].toInt() and 0xFF) shl 24)
 
-    private fun maybeFallbackKugouTool(
-        config: AutoReplyXiaozhiConfig,
-        talker: String,
-        question: String,
-        requestStartAt: Long
-    ) {
-        if (!config.mcpKugouEnabled || config.mcpKugouPluginId.trim().isBlank()) return
-        val functionName = xiaozhiKugouFunctionName(config)
-        val keyword = extractMusicKeyword(question)
-        if (keyword.isBlank()) return
-        val lastCallAt = xiaozhiMcpToolCallTimes[talker] ?: 0L
-        if (lastCallAt >= requestStartAt) return
-        ScriptPluginRuntime.callPluginFunction(
-            config.mcpKugouPluginId.trim(),
-            functionName,
-            talker,
-            keyword
-        )
-    }
-
-    private fun xiaozhiKugouFunctionName(config: AutoReplyXiaozhiConfig): String =
-        config.mcpKugouFunctionName.trim().ifBlank { AutoReplySettings.DEFAULT_XIAOZHI_MCP_KUGOU_FUNCTION }
-
     private fun xiaozhiToolAwareQuestion(question: String, config: AutoReplyXiaozhiConfig): String {
         val keyword = extractMusicKeyword(question)
-        if (keyword.isBlank() || (!config.musicMcpEnabled && !config.mcpKugouEnabled)) return question
-        val tools = buildList {
-            if (config.musicMcpEnabled) add("官方 Music MCP")
-            if (config.mcpKugouEnabled && config.mcpKugouPluginId.trim().isNotBlank()) add("Hchat 点歌工具")
-        }.joinToString(" 或 ")
+        if (keyword.isBlank() || !config.musicMcpEnabled) return question
+        val tools = "官方 Music MCP"
         if (tools.isBlank()) return question
         return "用户想听歌，关键词是「$keyword」。请优先调用${tools}播放或发送音乐卡片；不要先说你不能播放、没有找到或需要用户自己打开播放器。原始请求：$question"
     }
@@ -1570,16 +1542,10 @@ object AutoReplyRuntime {
             return null
         }
         val current = xiaozhiMcpBridgeRef.get()
-        val kugouEnabled = config.mcpKugouEnabled
-        val kugouPluginId = config.mcpKugouPluginId.trim()
-        val kugouFunctionName = xiaozhiKugouFunctionName(config)
         val idleCloseMs = config.mcpIdleSeconds.coerceIn(10, 600) * 1000L
         if (current != null &&
             !current.isClosed() &&
             current.endpoint == endpoint &&
-            current.kugouEnabled == kugouEnabled &&
-            current.kugouPluginId == kugouPluginId &&
-            current.kugouFunctionName == kugouFunctionName &&
             current.idleCloseMs == idleCloseMs
         ) {
             current.target.set(target)
@@ -1587,7 +1553,7 @@ object AutoReplyRuntime {
             return current
         }
         current?.close("endpoint changed")
-        val bridge = XiaozhiMcpBridge(endpoint, target, kugouEnabled, kugouPluginId, kugouFunctionName, idleCloseMs)
+        val bridge = XiaozhiMcpBridge(endpoint, target, idleCloseMs)
         bridge.registerSession(sessionId, target)
         if (xiaozhiMcpBridgeRef.compareAndSet(current, bridge)) {
             bridge.connect()
@@ -1601,9 +1567,6 @@ object AutoReplyRuntime {
     private class XiaozhiMcpBridge(
         val endpoint: String,
         initialTarget: String,
-        val kugouEnabled: Boolean,
-        val kugouPluginId: String,
-        val kugouFunctionName: String,
         val idleCloseMs: Long
     ) {
         private data class SessionTarget(
@@ -1829,23 +1792,6 @@ object AutoReplyRuntime {
                         },
                         JSONArray().put("title").put("musicUrl").put("musicDataUrl")
                     ))
-                    if (kugouEnabled && kugouPluginId.isNotBlank()) {
-                        put(mcpTool(
-                            "hchat_kugou_order_music",
-                            "当用户表达想听歌、放一首歌、播放音乐、来一首某歌手或某歌曲时，先从用户话里提取歌曲名、歌手名或组合关键词，然后使用此工具调用 Hchat 配置的点歌工具，在当前微信会话搜索并发送音乐卡片。",
-                            JSONObject().apply {
-                                put("keyword", JSONObject().apply {
-                                    put("type", "string")
-                                    put("description", "从用户请求中提取出的歌曲名、歌手名或组合关键词，例如 晴天、周杰伦 晴天、林俊杰 黑夜问白天")
-                                })
-                                put("session_id", JSONObject().apply {
-                                    put("type", "string")
-                                    put("description", "当前 Hchat 会话 session_id；如果你拿得到，请使用用户消息里的原值")
-                                })
-                            },
-                            JSONArray().put("keyword")
-                        ))
-                    }
                 })
             }
         }
@@ -1894,10 +1840,6 @@ object AutoReplyRuntime {
                             appId
                         ) == true
                 }
-                "hchat_kugou_order_music" -> {
-                    val keyword = args.optString("keyword").trim()
-                    keyword.isNotBlank() && invokeKugouOrderMusic(args, keyword)
-                }
                 else -> false
             }
             return JSONObject().apply {
@@ -1914,19 +1856,6 @@ object AutoReplyRuntime {
             val resolved = sessionTargets[sessionId]?.target ?: target.get()
             xiaozhiMcpToolCallTimes[resolved] = System.currentTimeMillis()
             return resolved
-        }
-
-        private fun invokeKugouOrderMusic(args: JSONObject, keyword: String): Boolean {
-            if (kugouEnabled && kugouPluginId.isNotBlank()) {
-                val result = ScriptPluginRuntime.callPluginFunction(
-                    kugouPluginId,
-                    kugouFunctionName,
-                    targetFor(args),
-                    keyword
-                )
-                if (result.isSuccess) return true
-            }
-            return false
         }
 
         private fun mcpClientNotification(method: String): JSONObject {

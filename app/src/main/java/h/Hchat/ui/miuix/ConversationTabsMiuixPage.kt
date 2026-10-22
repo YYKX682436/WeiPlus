@@ -1,6 +1,8 @@
 package h.Hchat.ui.miuix
 
+import android.app.Activity
 import android.content.Context
+import android.content.ContextWrapper
 import android.widget.Toast
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
@@ -65,7 +67,7 @@ internal fun ConversationTabsMiuixPage(context: Context, onBack: () -> Unit) {
     }
 
     fun pickIcon() {
-        val activity = ScriptPluginAgentUi.findAgentActivity(context) ?: return
+        val activity = findConversationTabsActivity(context) ?: return
         val id = draft.id
         ConversationTabsIconPicker.launch(activity, id) { result ->
             when (result) {
@@ -215,4 +217,13 @@ internal fun ConversationTabsMiuixPage(context: Context, onBack: () -> Unit) {
             }
         }
     }
+}
+
+private fun findConversationTabsActivity(context: Context?): Activity? {
+    var current = context
+    while (current is ContextWrapper) {
+        if (current is Activity) return current
+        current = current.baseContext
+    }
+    return current as? Activity
 }

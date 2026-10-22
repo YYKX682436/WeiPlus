@@ -74,7 +74,7 @@ import h.Hchat.hooks.items.quickterminate.QuickTerminateFeature
 import h.Hchat.hooks.items.realtail.RealNameTailFeature
 import h.Hchat.hooks.items.roundavatar.RoundAvatarFeature
 
-import h.Hchat.hooks.items.script.ScriptPluginFeature
+import h.Hchat.hooks.items.sendbutton.NativeSendButtonFeature
 import h.Hchat.hooks.items.scheduledtask.ScheduledTaskFeature
 import h.Hchat.hooks.items.selectedmessages.SelectedMessagesFeature
 import h.Hchat.hooks.items.settings.SettingsFeature
@@ -99,6 +99,7 @@ object FeatureRegistry {
         return FeatureManager()
             .register(SettingsFeature())
             .register(WechatApiFeature())
+            .register(NativeSendButtonFeature())
 
             .register(FloatingShortcutFeature())
             .register(CustomBottomBarFeature())
@@ -185,6 +186,5 @@ object FeatureRegistry {
             .register(StatusTextLimitFeature())
             .register(FinderMediaDownloadFeature())
             .register(HchatExtraFeature())
-            .register(ScriptPluginFeature())
     }
 }

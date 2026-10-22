@@ -27,7 +27,9 @@ android {
 
     signingConfigs {
         create("。。") {
-            storeFile = file("keystore/。。.jks")
+            storeFile = providers.environmentVariable("HCAT_KEYSTORE_PATH").orNull
+                ?.let { file(it) }
+                ?: file("keystore/。。.jks")
             storePassword = providers.environmentVariable("HCAT_STORE_PASSWORD").orNull
                 ?: error("缺少 HCAT_STORE_PASSWORD")
             keyAlias = providers.environmentVariable("HCAT_KEY_ALIAS").orNull
@@ -60,12 +62,6 @@ android {
     }
 
     packaging {
-        jniLibs {
-            // 保持 true：proot 需要 libproot.so 被解压到 nativeLibraryDir 才能 exec 运行。
-            // libtermux.so 的加载不走 classloader.findLibrary，改由 Hchat 用绝对路径
-            // System.load() 加载（见 NativeLibraryLoader.loadTermux + com.termux.terminal.JNI 补丁）。
-            useLegacyPackaging = true
-        }
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
             excludes += "DebugProbesKt.bin"
@@ -84,7 +80,6 @@ android {
             excludes += "android/res-map.txt"
             excludes += "clst/core.jcst"
             excludes += "export/**"
-            excludes += "jadx/core/deobf/conditions/tlds.txt"
         }
     }
 }
@@ -99,19 +94,12 @@ dependencies {
     compileOnly("de.robv.android.xposed:api:82")
     implementation("io.github.billywei01:fastkv:3.0.1")
     implementation(files("libs/dexkit-2.2.0-76551eb-idle.aar"))
-    implementation("com.google.flatbuffers:flatbuffers-java:23.5.26")
     implementation("dev.rikka.ndk.thirdparty:cxx:1.2.0")
-    implementation("com.github.REAndroid:ARSCLib:V1.3.8")
-    implementation("io.github.skylot:jadx-dex-input:1.5.5") {
-        exclude(group = "com.google.guava", module = "guava")
-    }
-    implementation("com.google.guava:guava:33.5.0-android")
-    implementation("com.android.tools.smali:smali-baksmali:3.0.9")
+    implementation("com.google.flatbuffers:flatbuffers-java:23.5.26")
     implementation("com.highcapable.kavaref:kavaref-core:1.1.0")
     implementation("com.jakewharton.android.repackaged:dalvik-dx:16.0.1")
     implementation("com.linkedin.dexmaker:dexmaker:2.28.3")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    implementation("com.alibaba.fastjson2:fastjson2:2.0.61.android8")
     implementation(compose.runtime)
     implementation(compose.foundation)
     implementation(compose.ui)
@@ -132,9 +120,6 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
     implementation(files("libs/miuix-blur-android-0.9.4.aar"))
     implementation(files("libs/miuix-shader-android-0.9.4.aar"))
-    // Termux 终端（GPLv3，LSPilot 同款）：terminal-view 依赖 terminal-emulator
-    implementation(files("libs/terminal-emulator-0.118.0.aar"))
-    implementation(files("libs/terminal-view-0.118.0.aar"))
 }
 
 // 构建完成后自动复制 APK 到 dist/

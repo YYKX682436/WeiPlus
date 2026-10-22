@@ -16,7 +16,7 @@ WeChatApis.payment()
 
 ## Settings UI Boundary
 
-模块设置入口通过 `hooks/api/ui/SettingsInjector` 注入到微信设置页。`main` 和 `alt-entry` 当前使用同一套入口：微信设置页入口，以及按入口设置开关启用的 LauncherUI 右上角加号菜单和长按右上角加号入口。点击任一入口后只调用 `ui/SettingsUI.show(context)`，再由 `ui/miuix/MiuixSettingsPage.kt` 把 Miuix Compose 页面嵌入当前微信 `Activity`。
+模块设置入口通过 `hooks/api/ui/SettingsInjector` 注入到微信设置页。当前使用的微信包均使用同一套入口：微信设置页入口，以及按入口设置开关启用的 LauncherUI 右上角加号菜单和长按右上角加号入口。点击任一入口后只调用 `ui/SettingsUI.show(context)`，再由 `ui/miuix/MiuixSettingsPage.kt` 把 Miuix Compose 页面嵌入当前微信 `Activity`。
 
 微信设置页入口必须在 `Hchat-Init` 功能安装阶段尽早安装，不等待普通 `DexInstallScheduler` 队列或 `DexReady` 补装，避免微信设置页 UI 已构建后入口才补 Hook 导致偶发不显示。入口定位和安装仍通过 `DexInstallScheduler.runDexKitTask(...)` 与其它共享 `DexKitBridge` 查询串行执行，不能再启动独立线程并发进入 DexKit。
 
@@ -36,7 +36,7 @@ WeChatApis.payment()
 规则：
 
 - 不要从功能代码启动模块 app 的 Activity。
-- 不要用 `Dialog` / `AlertDialog` / feature-local floating view 做功能设置页；当前唯一例外是脚本插件 README 说明窗口，它只是轻量文档弹窗，不承载配置流程。
+- 不要用 `Dialog` / `AlertDialog` / feature-local floating view 做功能设置页。
 - 不要在 `FeatureSettingsProvider` 里恢复 `showDetail(Context)`；Provider 只提供 `featureId/title/subtitle/category` 元信息。
 - 新增功能设置页要接入 `MiuixSettingsPage.FeatureSettingsPage(...)` 的 `featureId()` 分支。
 - 页面内二级选择统一用 `OptionPickerPage` / `ContactPickerPage`，不要在功能页里手写新选择弹窗；群成员这类共享联系人选择器无法覆盖的场景才使用专用选择页。
@@ -159,7 +159,7 @@ val refunded = WeChatApis.payment().transfers().refund(params)
 
 `WeChatApis.message().sender()`
 
-发送文本消息。底层使用本模块 DexKit 解析出的微信文本发送类和网络发包器，不使用 WA API。启用 `发送文本格式` 后，`sendText()`、`sendTextAsync()`、`sendTextWithAtList()`、`sendAt()`、`sendAtAll()` 以及 `sendRaw(..., type=1)` 都会先经过统一出站文本格式化器；因此模块和脚本插件只要复用这些公共文本接口，发送内容同样应用模板。公共接口没有输入框交互时，`${sendDuration}` 为 `0秒`；从发送按钮同步回调中调用公共接口时会沿用本次输入框计时上下文。非文本类型的 `sendRaw()` 不应用文本格式。
+发送文本消息。底层使用本模块 DexKit 解析出的微信文本发送类和网络发包器，不使用 WA API。启用 `发送文本格式` 后，`sendText()`、`sendTextAsync()`、`sendTextWithAtList()`、`sendAt()`、`sendAtAll()` 以及 `sendRaw(..., type=1)` 都会先经过统一出站文本格式化器；模块功能复用这些公共文本接口时，发送内容同样应用模板。公共接口没有输入框交互时，`${sendDuration}` 为 `0秒`；从发送按钮同步回调中调用公共接口时会沿用本次输入框计时上下文。非文本类型的 `sendRaw()` 不应用文本格式。
 
 ```java
 boolean ok = WeChatApis.message().sender().sendText(talker, "hello");
@@ -233,7 +233,7 @@ WeChatApis.message().store().clearConversationMessages(talker);
 WeChatApis.message().store().clearConversationMessages(talkers);
 ```
 
-常规会话查询读取 `message` 表稳定字段；`getOutgoingMessages(startTime, endTime)` 专门汇总时间范围内 `isSend=1` 的消息，每次完整校准都会重新发现 `message`、`message_*`、`*_message` 表并确认统计所需列，再按 `msgId` 去重，因此运行期间新增的分表不会被旧缓存漏掉。`getOutgoingMessagesOrNull(...)` 语义相同，但任一有效消息表读取失败时返回 `null`，供不能把查询失败当成空结果的内部统计使用。输入框提示和发送文本格式用该接口生成本地自然日统计，所以手动、模块和脚本插件发送的消息只要已由微信实际记录，都会进入同一统计快照。已用 DexClub 在 `8.0.49`、`8.0.58`、`8.0.72`、`8.0.74` 确认 `message/createTime/talker/content` 查询基础仍存在。APK 的绝对路径由开发者在本机自行设置，不在文档中固定目录或文件名。
+常规会话查询读取 `message` 表稳定字段；`getOutgoingMessages(startTime, endTime)` 专门汇总时间范围内 `isSend=1` 的消息，每次完整校准都会重新发现 `message`、`message_*`、`*_message` 表并确认统计所需列，再按 `msgId` 去重，因此运行期间新增的分表不会被旧缓存漏掉。`getOutgoingMessagesOrNull(...)` 语义相同，但任一有效消息表读取失败时返回 `null`，供不能把查询失败当成空结果的内部统计使用。输入框提示和发送文本格式用该接口生成本地自然日统计，所以手动和模块发送的消息只要已由微信实际记录，都会进入同一统计快照。已用 DexClub 在 `8.0.49`、`8.0.58`、`8.0.72`、`8.0.74` 确认 `message/createTime/talker/content` 查询基础仍存在。APK 的绝对路径由开发者在本机自行设置，不在文档中固定目录或文件名。
 
 `clearConversationMessages(...)` 复用微信设置页的 `MsgInfoStorageLogic` Stage1/Stage2 异步清理链路，不直接 SQL 删除消息。单个或批量方法返回 `true` 只表示清理任务已成功提交，不表示后台删除已经完成。8.0.49 至 8.0.74 的批量入口为 `(List,callback,long)`，8.0.76 为 `(List,callback)`；运行时通过 `summerdel deleteMsgByTalker`、`AsyncDeleteMessageStage1` 等稳定字符串定位并按微信运行时 key 缓存。
 
@@ -326,7 +326,7 @@ WeChatApis.message().changes().subscribe(change -> {
 - PB 可用时，数据库变化只补自己发出的消息，避免收到的消息重复触发。
 - 用户在微信输入框手动发送的消息不经过 `WeChatMessageApi`，靠 DB 出站补偿，来源为 `source=message_db`。
 - 模块或脚本通过 `WeChatMessageApi` 主动发送成功后，会先登记一条延迟兜底事件；PB 或 DB 任一路观察到同一条出站消息都会取消兜底并正常派发，只有 2.5 秒内两路都没有观察到时才派发 `source=local_send`，避免插件发送的消息漏监听。
-- 脚本插件的普通消息 `onHandleMsg` 不订阅 `observe()`，而是只订阅 `message` 数据库变化，以获得更稳定的本地 `msgId`；`onNewFriend` 优先监听 `fmessage_msginfo` 好友申请表，消息观察入口只补充归一化类型 `37` 的好友申请消息，不能把含相似票据字段的联系人名片 `42/66` 当成好友申请；其它脚本回调来源不受影响。
+- 原生自动回复的好友申请监听优先观察 `fmessage_msginfo` 表插入；消息观察入口只补充归一化类型 `37` 的好友申请消息，不根据联系人名片类型 `42/66` 中相似的票据字段触发。
 - DB 出站补偿不能只 hook 微信 DB wrapper。手动发送消息可能直接走 `com.tencent.wcdb.database.SQLiteDatabase` 或系统 `android.database.sqlite.SQLiteDatabase` 的 `insertWithOnConflict/updateWithOnConflict/replace` 等方法，所以公共 `WeChatDatabaseListenerApi` 同时 hook wrapper、WCDB SQLiteDatabase 和 Android SQLiteDatabase，并从参数中泛化查找 table、ContentValues、where、whereArgs。微信 wrapper 的写入方法名会被混淆，必须按已横向确认的参数与返回值签名识别 insert/replace/update/delete，不能只匹配英文方法名。同一笔写入从 wrapper 委托到 WCDB/Android 或从 `insert` 委托到 `insertWithOnConflict` 时，使用线程内嵌套深度只派发最外层成功写入；不按时间窗口去重，后续独立写入仍会逐笔派发。启动早期 wrapper 尚未解析时可以先尝试通用 SQLite Hook，但只有真实 wrapper 至少一个写入方法完成 Hook 后才算可用；DexKit warmup 后通过独立任务补定位和有限重试，Hook 失败的方法不能提前写入成功集合，也不能被首次 `installed` 状态锁死。消息变更 API 和脚本消息监听必须等该可用状态成立后才能标记安装成功，同时接受 `message`、`message_*` 和 `*_message` 命名的消息表。
 - 同一条接收消息可能先以 `msgSvrId=0` 的半成品记录插入，再通过独立写入补齐服务端 ID、正文或媒体元数据。普通 `onHandleMsg` 仍按稳定消息 ID 去重；图片、视频和视频号下载必须使用独立媒体队列重新读取最新记录，不能让第一次半成品事件提前占用普通消息的 60 秒去重键。
 - PB 不可用时，业务可以按自身需要决定是否 fallback 到数据库层；红包助手有 fallback，自动收款没有 fallback。
@@ -534,7 +534,7 @@ WeChatApis.message().conversations().deleteConversation(talker);
 
 `WeChatApis.runtime().database()`
 
-微信数据库 API。提供 `rawQuery/query/queryFirstString/insert/update/delete` 基础 CRUD 能力，其中写操作通过参数签名定位当前微信 SqliteDB wrapper 的原生方法。常规业务优先只用查询封装；确实需要调用微信原生 storage 方法时，应先用 DexKit 精确定位目标 `Method`，再通过 `storageObjectForMethod(method)` 从 CoreStorage 对象图找到真实实例，不要在业务功能里重复遍历微信 storage 字段。脚本插件通过 `getDatabaseApi()` 获取同一 API，R8 必须保留该类的方法名。修改已有消息正文可调用 `updateNativeMessageContent(msgId, content, nativeMessage)`：传入当前菜单或消息行已经持有的原生消息对象时会优先使用该对象，并按已确认的 `(long, MsgInfo) -> int` 签名调用原生 `MsgInfoStorage` 更新入口；该签名覆盖 8.0.58、8.0.66、8.0.68、8.0.72、8.0.74、8.0.76，8.0.49 不匹配时返回 `false`，由调用方决定是否回退 SQL。
+微信数据库 API。提供 `rawQuery/query/queryFirstString/insert/update/delete` 基础 CRUD 能力，其中写操作通过参数签名定位当前微信 SqliteDB wrapper 的原生方法。常规业务优先只用查询封装；确实需要调用微信原生 storage 方法时，应先用 DexKit 精确定位目标 `Method`，再通过 `storageObjectForMethod(method)` 从 CoreStorage 对象图找到真实实例，不要在业务功能里重复遍历微信 storage 字段。R8 和反射调用必须保留该 API 的公开方法名。修改已有消息正文可调用 `updateNativeMessageContent(msgId, content, nativeMessage)`：传入当前菜单或消息行已经持有的原生消息对象时会优先使用该对象，并按已确认的 `(long, MsgInfo) -> int` 签名调用原生 `MsgInfoStorage` 更新入口；该签名覆盖 8.0.58、8.0.66、8.0.68、8.0.72、8.0.74、8.0.76，8.0.49 不匹配时返回 `false`，由调用方决定是否回退 SQL。
 
 ```java
 String value = WeChatApis.runtime().database().queryFirstString(sql, args, column);
@@ -558,7 +558,7 @@ WeChatApis.runtime().databaseChanges().subscribe(change -> {
 });
 ```
 
-模块内部需要在 SQLite 执行前改写原始查询时使用 `subscribeQuery(...)`，回调必须返回原 SQL 或改写后的 SQL。公共入口同时覆盖 SqliteDB wrapper、`com.tencent.wcdb.compat.SQLiteDatabase`、`com.tencent.wcdb.database.SQLiteDatabase` 和系统 SQLite 的 `rawQuery/rawQueryWithFactory`，并通过线程内嵌套深度只处理最外层查询，避免同一条 SQL 在 wrapper 委托链中重复改写。该低层入口不向脚本插件开放。
+模块内部需要在 SQLite 执行前改写原始查询时使用 `subscribeQuery(...)`，回调必须返回原 SQL 或改写后的 SQL。公共入口同时覆盖 SqliteDB wrapper、`com.tencent.wcdb.compat.SQLiteDatabase`、`com.tencent.wcdb.database.SQLiteDatabase` 和系统 SQLite 的 `rawQuery/rawQueryWithFactory`，并通过线程内嵌套深度只处理最外层查询，避免同一条 SQL 在 wrapper 委托链中重复改写。该低层入口只供模块内部功能使用。
 
 `WeChatApis.runtime().conversationChanges()`
 
@@ -966,12 +966,7 @@ boolean ok = WeChatApis.runtime().network().send(request);
 推荐构建命令：
 
 ```sh
-ANDROID_HOME="/data/data/com.termux/files/usr/var/lib/proot-distro/installed-rootfs/ubuntu/root/Android/Sdk" \
-ANDROID_SDK_ROOT="/data/data/com.termux/files/usr/var/lib/proot-distro/installed-rootfs/ubuntu/root/Android/Sdk" \
-GRADLE_USER_HOME="$PWD/.gradle-home" \
-sh ./gradlew :app:assembleRelease --no-daemon --no-watch-fs \
--x lintVitalRelease -x lintVitalAnalyzeRelease -x lintVitalReportRelease \
--Pandroid.aapt2FromMavenOverride=/data/data/com.termux/files/usr/bin/aapt2
+./gradlew :app:assembleRelease --no-daemon --no-watch-fs
 ```
 
 输出：

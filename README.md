@@ -1,3 +1,3 @@
-# 上游仓库
+# WeiPlus
 
-[ljh520134/Hchat-alt-entry](https://github.com/ljh520134/Hchat-alt-entry)
+Android LSPosed 模块仓库。

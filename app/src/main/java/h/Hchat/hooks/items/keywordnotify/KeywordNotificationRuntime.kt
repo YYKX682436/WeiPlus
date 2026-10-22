@@ -1,5 +1,7 @@
 package h.Hchat.hooks.items.keywordnotify
 
+import android.Manifest
+import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -7,6 +9,7 @@ import android.app.PendingIntent
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
@@ -367,6 +370,7 @@ object KeywordNotificationRuntime {
         }
     }
 
+    @SuppressLint("NotificationPermission")
     private fun sendNotification(
         context: Context,
         settings: KeywordNotificationSettings,
@@ -429,6 +433,9 @@ object KeywordNotificationRuntime {
             if (sound && ringtone.isNotBlank()) builder.setSound(soundUri(ringtone))
             if (vibrate) builder.setVibrate(longArrayOf(0, 250, 250, 250))
         }
+        if (Build.VERSION.SDK_INT >= 33 &&
+            context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) return
         manager.notify(id, builder.build())
         if (Build.VERSION.SDK_INT >= 26 && sound) {
             playManualNotificationSound(context, soundUri(ringtone))

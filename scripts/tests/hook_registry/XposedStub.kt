@@ -14,5 +14,11 @@ open class XC_MethodHook {
 }
 
 object XposedBridge {
-    fun hookMethod(method: Member, callback: XC_MethodHook): XC_MethodHook.Unhook = callback.Unhook()
+    var totalHookCalls = 0
+        private set
+
+    fun hookMethod(method: Member, callback: XC_MethodHook): XC_MethodHook.Unhook {
+        totalHookCalls++
+        return callback.Unhook()
+    }
 }

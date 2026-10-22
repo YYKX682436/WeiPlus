@@ -12,12 +12,12 @@ function jar(group, name, version) {
     }
     throw new Error('Missing dependency: ' + directory);
 }
-const stdlib = jar('org.jetbrains.kotlin', 'kotlin-stdlib', '2.4.0');
+const stdlib = jar('org.jetbrains.kotlin', 'kotlin-stdlib', '2.4.20');
 const json = process.env.JSON_JAR || jar('org.json', 'json', '20240303');
 const compiler = [
-    jar('org.jetbrains.kotlin', 'kotlin-compiler-embeddable', '2.4.0'), stdlib,
-    jar('org.jetbrains.kotlin', 'kotlin-reflect', '2.3.20'),
-    jar('org.jetbrains.kotlin', 'kotlin-script-runtime', '2.4.0'),
+    jar('org.jetbrains.kotlin', 'kotlin-compiler-embeddable', '2.4.20'), stdlib,
+    jar('org.jetbrains.kotlin', 'kotlin-reflect', '2.4.0'),
+    jar('org.jetbrains.kotlin', 'kotlin-script-runtime', '2.4.20'),
     jar('org.jetbrains.kotlinx', 'kotlinx-coroutines-core-jvm', '1.8.0'),
     jar('org.jetbrains', 'annotations', '13.0')
 ];
@@ -38,11 +38,13 @@ fs.writeFileSync(extracted, `package h.Hchat.hooks.items.conversationgroup
 import android.content.SharedPreferences
 import h.Hchat.utils.HLog
 import org.json.JSONObject
-import java.util.concurrent.ConcurrentHashMap
+import java.util.LinkedHashMap
 internal object ParentRuntimeUnderTest {
     private const val TAG = "ConversationGroupTest"
     private const val KEY_ORIGINAL_PARENT_REFS = "original_parent_refs"
-    private val parentRestoreFailures = ConcurrentHashMap.newKeySet<String>()
+    private const val PARENT_FAILURE_HISTORY_MAX = 4096
+    private const val PARENT_FAILURE_HISTORY_TTL_MS = 24 * 60 * 60 * 1000L
+    private val parentRestoreFailures = LinkedHashMap<String, Long>(128, 0.75f, true)
     private fun updateParentRefs(database: h.Hchat.hooks.api.runtime.WeChatDatabaseApi,
         talkers: List<String>, parent: String): Boolean = database.updateParents(talkers, parent)
 ` + sourceBetween('    private fun applyParentPlan(', '    private fun syncDatabase(') +

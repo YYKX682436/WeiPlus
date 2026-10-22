@@ -4,7 +4,7 @@ import android.content.Context
 import android.media.MediaMetadataRetriever
 import h.Hchat.hooks.api.core.WeChatApis
 import h.Hchat.hooks.api.message.WeChatMessageChangeApi
-import h.Hchat.hooks.items.script.ScriptSendButtonHook
+import h.Hchat.hooks.items.sendbutton.NativeSendButtonHook
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -29,7 +29,7 @@ internal class QQMusicOrderRuntime(
                 .onFailure { logError("QQ点歌数据库监听安装失败", it) }
             changes.subscribe(::onMessageChanged)?.let(track)
         }
-        track(ScriptSendButtonHook.registerHandler(QQMusicOrderFeature.ID, ::onSendButton))
+        track(NativeSendButtonHook.registerHandler(QQMusicOrderFeature.ID, ::onSendButton))
     }
 
     fun destroy() {

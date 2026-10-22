@@ -11,41 +11,89 @@ import java.util.concurrent.CancellationException
 class HookRegistry private constructor() {
     private val lock = Any()
     private val unhooks = ArrayList<XC_MethodHook.Unhook>()
-    private val installationLease = ThreadLocal<Long>()
+    private val keyedHooks = HashMap<String, KeyedHook>()
+    private val installationLease = ThreadLocal<InstallationLease>()
     @Volatile private var generation = 0L
 
-    fun installationGeneration(): Long = installationLease.get() ?: generation
+    fun installationGeneration(): Long = installationLease.get()?.generation ?: generation
 
     fun isInstallationGenerationActive(generation: Long): Boolean = this.generation == generation
 
-    fun <T> withInstallationGeneration(generation: Long, action: () -> T): T {
+    fun <T> withInstallationGeneration(
+        generation: Long,
+        isLeaseActive: () -> Boolean = { true },
+        action: () -> T
+    ): T {
         val previous = installationLease.get()
-        if (!isInstallationGenerationActive(generation) || previous != null && previous != generation) {
+        if (!isInstallationGenerationActive(generation) || previous != null && previous.generation != generation ||
+            previous != null && !isInstallationLeaseActive(previous) || !runCatching { isLeaseActive() }.getOrDefault(false)
+        ) {
             throw CancellationException("安装代次已失效")
         }
-        installationLease.set(generation)
-        try { return action() }
+        val lease = previous ?: InstallationLease(generation, isLeaseActive)
+        val ownsLease = previous == null
+        installationLease.set(lease)
+        var completed = false
+        try {
+            return action().also { completed = true }
+        }
         finally {
-            if (previous == null) installationLease.remove() else installationLease.set(previous)
+            if (ownsLease) {
+                val active = isInstallationLeaseActive(lease)
+                installationLease.remove()
+                if (!completed || !active) {
+                    // A partially completed install must not leave Hooks behind after failure or cancellation.
+                    if (isInstallationGenerationActive(generation)) {
+                        lease.installedHooks.asReversed().forEach { runCatching { unhook(it) } }
+                    }
+                }
+            } else {
+                installationLease.set(previous)
+            }
         }
     }
 
+    private fun isInstallationLeaseActive(lease: InstallationLease?): Boolean =
+        lease == null || isInstallationGenerationActive(lease.generation) &&
+            runCatching { lease.isActive() }.getOrDefault(false)
+
     fun hook(method: Member, callback: XC_MethodHook): XC_MethodHook.Unhook = synchronized(lock) {
-        if (!isInstallationGenerationActive(installationGeneration())) {
+        if (!isInstallationGenerationActive(installationGeneration()) || !isInstallationLeaseActive(installationLease.get())) {
             throw CancellationException("安装代次已失效")
         }
         val unhook = XposedBridge.hookMethod(method, callback)
-        if (unhook != null) {
-            unhooks.add(unhook)
-        }
+        unhooks.add(unhook)
+        installationLease.get()?.installedHooks?.add(unhook)
         unhook
     }
+
+    /** Install a shared hook at most once per key and installation generation. */
+    fun hookOnce(key: String, method: Member, callback: XC_MethodHook): XC_MethodHook.Unhook =
+        synchronized(lock) {
+            require(key.isNotBlank()) { "Hook key must not be blank" }
+            if (!isInstallationGenerationActive(installationGeneration()) || !isInstallationLeaseActive(installationLease.get())) {
+                throw CancellationException("安装代次已失效")
+            }
+            keyedHooks[key]?.let { existing ->
+                check(existing.generation == installationGeneration()) {
+                    "Hook key '$key' is still owned by an earlier generation"
+                }
+                check(existing.member == method) { "Hook key '$key' is already assigned to ${existing.member}" }
+                return@synchronized existing.unhook
+            }
+            val unhook = XposedBridge.hookMethod(method, callback)
+            unhooks.add(unhook)
+            installationLease.get()?.installedHooks?.add(unhook)
+            keyedHooks[key] = KeyedHook(installationGeneration(), method, unhook)
+            unhook
+        }
 
     fun add(unhook: XC_MethodHook.Unhook?) {
         if (unhook == null) return
         synchronized(lock) {
-            if (isInstallationGenerationActive(installationGeneration())) {
+            if (isInstallationGenerationActive(installationGeneration()) && isInstallationLeaseActive(installationLease.get())) {
                 unhooks.add(unhook)
+                installationLease.get()?.installedHooks?.add(unhook)
                 return
             }
         }
@@ -58,20 +106,21 @@ class HookRegistry private constructor() {
     fun unhook(unhook: XC_MethodHook.Unhook?) {
         if (unhook == null) return
         unhook.unhook()
-        // Xposed 解除回调后，还必须释放模块注册表持有的句柄及脚本解释器。
-        synchronized(lock) { unhooks.remove(unhook) }
+        // Release the module's handle after Xposed has removed the callback.
+        synchronized(lock) {
+            unhooks.remove(unhook)
+            keyedHooks.entries.removeAll { it.value.unhook === unhook }
+            installationLease.get()?.installedHooks?.remove(unhook)
+        }
     }
 
     fun unhookAll() {
         val previous = synchronized(lock) {
             generation++
-            unhooks.toList().also { unhooks.clear() }
+            unhooks.toList()
         }
         for (unhook in previous) {
-            try {
-                unhook.unhook()
-            } catch (_: Throwable) {
-            }
+            runCatching { this.unhook(unhook) }
         }
     }
 
@@ -81,4 +130,16 @@ class HookRegistry private constructor() {
         @JvmStatic
         fun get(): HookRegistry = INSTANCE
     }
+
+    private data class KeyedHook(
+        val generation: Long,
+        val member: Member,
+        val unhook: XC_MethodHook.Unhook
+    )
+
+    private data class InstallationLease(
+        val generation: Long,
+        val isActive: () -> Boolean,
+        val installedHooks: MutableList<XC_MethodHook.Unhook> = ArrayList()
+    )
 }

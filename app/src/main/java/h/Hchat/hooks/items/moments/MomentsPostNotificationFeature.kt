@@ -1,5 +1,7 @@
 package h.Hchat.hooks.items.moments
 
+import android.Manifest
+import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -7,6 +9,7 @@ import android.app.PendingIntent
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.SharedPreferences
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -169,6 +172,7 @@ private class MomentsPostNotificationRuntime(
         }
     }
 
+    @SuppressLint("NotificationPermission")
     private fun sendNotification(post: MomentsPostRecord, title: String, body: String) {
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
         if (Build.VERSION.SDK_INT >= 26 && manager.getNotificationChannel(CHANNEL_ID) == null) {
@@ -206,6 +210,9 @@ private class MomentsPostNotificationRuntime(
             .setVisibility(Notification.VISIBILITY_PRIVATE)
             .setContentIntent(openMomentsIntent(post.key.hashCode()))
         loadAvatarBitmap(post.userName)?.let { builder.setLargeIcon(it) }
+        if (Build.VERSION.SDK_INT >= 33 &&
+            context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) return
         manager.notify(("hchat_sns_" + post.key).hashCode(), builder.build())
     }
 

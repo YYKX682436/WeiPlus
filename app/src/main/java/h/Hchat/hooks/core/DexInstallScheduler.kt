@@ -98,6 +98,11 @@ object DexInstallScheduler {
         state.installed.set(true)
     }
 
+    /** Cancel one pending/running install request without invalidating other hooks. */
+    fun cancel(key: String) = synchronized(stateLock) {
+        states.remove(key)?.let(::cancelState)
+    }
+
     /** 不等待无法中断的 DexKit 调用；它返回后由旧代次租约拒绝后续挂钩。 */
     fun cancelAll() = synchronized(stateLock) {
         val previous = states.values.toList()
@@ -107,6 +112,7 @@ object DexInstallScheduler {
     }
 
     private fun cancelState(state: State) {
+        state.cancelled.set(true)
         state.installer = null
         state.retryTask?.let(mainHandler::removeCallbacks)
         state.retryTask = null
@@ -144,7 +150,10 @@ object DexInstallScheduler {
                 val installer = synchronized(stateLock) {
                     if (isCurrent(key, state) && !state.installed.get()) state.installer else null
                 } ?: return
-                ok = HookRegistry.get().withInstallationGeneration(state.generation) { installer() }
+                ok = HookRegistry.get().withInstallationGeneration(
+                    state.generation,
+                    isLeaseActive = { !state.cancelled.get() && isCurrent(key, state) }
+                ) { installer() }
             }
         } catch (_: CancellationException) {
             // 卸载与正在执行的定位竞争时，旧租约失效属于正常取消。
@@ -214,6 +223,7 @@ object DexInstallScheduler {
         var future: FutureTask<Unit>? = null
         var retryTask: Runnable? = null
         val installed = AtomicBoolean(false)
+        val cancelled = AtomicBoolean(false)
         val running = AtomicBoolean(false)
         val retryScheduled = AtomicBoolean(false)
         val retryIndex = AtomicInteger(0)

@@ -4,7 +4,7 @@ import h.Hchat.event.Events
 import h.Hchat.hooks.core.BaseFeature
 import h.Hchat.hooks.core.DexInstallScheduler
 import h.Hchat.hooks.core.FeatureContext
-import h.Hchat.hooks.items.script.ScriptSendButtonHook
+import h.Hchat.hooks.items.sendbutton.NativeSendButtonHook
 
 class TextVoiceFeature : BaseFeature() {
     private var runtime: TextVoiceRuntime? = null
@@ -21,12 +21,10 @@ class TextVoiceFeature : BaseFeature() {
         val current = TextVoiceRuntime(context, ::logFeatureError)
         runtime = current
         trackSubscription(
-            ScriptSendButtonHook.registerHandler(ID) { text -> current.handleSendButton(text) }
+            NativeSendButtonHook.registerHandler(ID) { text -> current.handleSendButton(text) }
         )
-        scheduleSendButtonHook(context)
         scheduleMessageMenuInstall()
         subscribe(Events.DexReady::class.java) {
-            scheduleSendButtonHook(context)
             scheduleMessageMenuInstall()
         }
     }
@@ -34,16 +32,6 @@ class TextVoiceFeature : BaseFeature() {
     override fun onFeatureDestroy(context: FeatureContext) {
         runtime?.destroy()
         runtime = null
-    }
-
-    private fun scheduleSendButtonHook(context: FeatureContext) {
-        DexInstallScheduler.schedule(
-            "shared:send_button",
-            "聊天发送按钮",
-            stage = DexInstallScheduler.Stage.WARMUP
-        ) {
-            ScriptSendButtonHook.install(context)
-        }
     }
 
     private fun scheduleMessageMenuInstall() {

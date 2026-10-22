@@ -17,7 +17,7 @@ import java.io.StringReader
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicLong
 
-/** Shared Finder media path used by the alt-entry menu and script bridge. */
+/** Shared Finder media path owned by the native media-download feature. */
 internal object FinderMediaDownloadSupport {
     const val MEDIA_TYPE_IMAGE = 2
     const val MEDIA_TYPE_VIDEO = 4

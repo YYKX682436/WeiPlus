@@ -39,18 +39,13 @@ jobs:
         with:
           packages: platform-tools
 
-      - name: 准备单频道构建配置
+      - name: 准备构建配置
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -e
 
-          current_branch="${GITHUB_REF_NAME}"
-          if [ "$current_branch" = "alt-entry" ]; then
-            apk_name="Hchat-alt-entry-release-signed.apk"
-          else
-            apk_name="Hchat-release-signed.apk"
-          fi
+          apk_name="Hchat-release-signed.apk"
 
           latest_semver="$(
             {

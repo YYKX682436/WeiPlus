@@ -73,7 +73,7 @@ private class MessageBubbleRenderer(
     private val bindStates = ThreadLocal<ArrayDeque<BindState>>()
     private val bubbleViewIds by lazy {
         BUBBLE_VIEW_RESOURCES.associateWith { name ->
-            context.hostContext().resources.getIdentifier(name, "id", HOST_PACKAGE)
+            context.hostContext().resources.getIdentifier(name, "id", context.hostContext().packageName)
         }.filterValues { it != 0 }
     }
     @Volatile private var adapterBindInstalled = false
@@ -1001,7 +1001,6 @@ private class MessageBubbleRenderer(
 
     private companion object {
         const val TAG = "[Hchat:MessageBubble]"
-        const val HOST_PACKAGE = "com.tencent.mm"
         const val CHATTING_VIEW_ITEMS_PACKAGE = "com.tencent.mm.ui.chatting.viewitems."
         const val FOLD_SYSTEM_VIEW_CLASS =
             "com.tencent.mm.ui.chatting.viewitems.foldItem.ChattingItemFoldSys\$ExpandTextView"

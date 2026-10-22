@@ -38,6 +38,6 @@ class FloatingShortcutFeature : BaseFeature() {
 private class FloatingShortcutSettingsProvider : SimpleFeatureSettingsProvider(
     FloatingShortcutFeature.ID,
     "悬浮快捷菜单",
-    "展开插件 Agent、自定义快捷项或微信页面",
+    "展开常用快捷项或微信页面",
     FeatureSettingsProvider.CATEGORY_PRACTICAL
 )

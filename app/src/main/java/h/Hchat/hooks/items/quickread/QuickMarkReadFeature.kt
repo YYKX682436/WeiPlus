@@ -39,6 +39,12 @@ class QuickMarkReadFeature : BaseFeature() {
         controller.install()
     }
 
+    override fun onFeatureDestroy(context: FeatureContext) {
+        QuickMarkReadRuntime.destroy()
+        dragController?.destroy()
+        dragController = null
+    }
+
     companion object {
         const val ID = "quick_mark_read"
     }
@@ -80,6 +86,11 @@ private class QuickMarkReadDragController(
             logger("快捷已读拖拽Hook安装失败", lastError)
         }
         return installed
+    }
+
+    fun destroy() {
+        clearGesture(resetActive = true)
+        installed = false
     }
 
     private fun collectDispatchMethods(): Set<Method> {

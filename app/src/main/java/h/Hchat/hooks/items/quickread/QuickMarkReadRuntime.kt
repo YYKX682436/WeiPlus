@@ -19,6 +19,7 @@ import h.Hchat.utils.KavaReflector
 import org.luckypray.dexkit.query.FindMethod
 import org.luckypray.dexkit.query.matchers.MethodMatcher
 import java.lang.reflect.Method
+import java.util.concurrent.atomic.AtomicLong
 
 object QuickMarkReadRuntime {
     private const val TAG = "[Hchat:QuickRead]"
@@ -61,21 +62,40 @@ object QuickMarkReadRuntime {
     )
 
     private val installed = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val runtimeGeneration = AtomicLong(0L)
+    private val lifecycleLock = Any()
     @Volatile private var featureContext: FeatureContext? = null
     @Volatile private var nativeMarkReadMethod: Method? = null
     @Volatile private var nativeMarkReadStorage: Any? = null
 
     fun install(context: FeatureContext) {
-        featureContext = context
-        if (!installed.compareAndSet(false, true)) return
-        prepareNativeMarkRead(context, allowDexSearch = false)
+        val generation = synchronized(lifecycleLock) {
+            if (!installed.compareAndSet(false, true)) {
+                featureContext = context
+                return
+            }
+            featureContext = context
+            runtimeGeneration.incrementAndGet()
+        }
+        prepareNativeMarkRead(context, allowDexSearch = false, generation = generation)
         DexInstallScheduler.schedule(
             "${QuickMarkReadFeature.ID}:native_mark_read",
             "快捷已读原生已读入口",
             stage = DexInstallScheduler.Stage.WARMUP
         ) {
-            prepareNativeMarkRead(context, allowDexSearch = true)
+            prepareNativeMarkRead(context, allowDexSearch = true, generation = generation)
         }
+    }
+
+    fun destroy() {
+        synchronized(lifecycleLock) {
+            installed.set(false)
+            runtimeGeneration.incrementAndGet()
+            featureContext = null
+            nativeMarkReadMethod = null
+            nativeMarkReadStorage = null
+        }
+        DexInstallScheduler.cancel("${QuickMarkReadFeature.ID}:native_mark_read")
     }
 
     @JvmStatic
@@ -343,14 +363,24 @@ object QuickMarkReadRuntime {
     private fun nativeMarkReadMethod(): Method? {
         nativeMarkReadMethod?.let { return it }
         val context = featureContext ?: return null
-        return locateNativeMarkReadMethod(context, allowDexSearch = false)
+        return locateNativeMarkReadMethod(context, allowDexSearch = false, generation = runtimeGeneration.get())
     }
 
-    private fun prepareNativeMarkRead(context: FeatureContext, allowDexSearch: Boolean): Boolean {
-        val method = locateNativeMarkReadMethod(context, allowDexSearch) ?: return false
+    private fun prepareNativeMarkRead(context: FeatureContext, allowDexSearch: Boolean, generation: Long): Boolean {
+        if (!isGenerationActive(generation)) return false
+        val method = locateNativeMarkReadMethod(context, allowDexSearch, generation) ?: return false
+        if (!isGenerationActive(generation)) return false
         val database = WeChatApis.database() ?: return false
-        return nativeMarkReadStorage(database, method) != null
+        val storage = database.storageObjectForMethod(method) ?: return false
+        return synchronized(lifecycleLock) {
+            if (!installed.get() || runtimeGeneration.get() != generation) return@synchronized false
+            nativeMarkReadStorage = storage
+            true
+        }
     }
+
+    private fun isGenerationActive(generation: Long): Boolean =
+        installed.get() && runtimeGeneration.get() == generation
 
     private fun nativeMarkReadStorage(database: WeChatDatabaseApi, method: Method): Any? {
         nativeMarkReadStorage?.let { cached ->
@@ -362,7 +392,12 @@ object QuickMarkReadRuntime {
         }
     }
 
-    private fun locateNativeMarkReadMethod(context: FeatureContext, allowDexSearch: Boolean): Method? {
+    private fun locateNativeMarkReadMethod(
+        context: FeatureContext,
+        allowDexSearch: Boolean,
+        generation: Long
+    ): Method? {
+        if (!isGenerationActive(generation)) return null
         val prefs = DexMethodCache.prefs(context.hostContext(), CACHE_PREFS)
         val methodCacheKey = methodCacheKey(context)
         val cached = DexMethodCache.load(
@@ -372,29 +407,46 @@ object QuickMarkReadRuntime {
             CACHE_NATIVE_MARK_READ
         )
         if (cached != null && isNativeMarkReadMethod(cached)) {
-            nativeMarkReadMethod = cached
-            return cached
+            return synchronized(lifecycleLock) {
+                if (!installed.get() || runtimeGeneration.get() != generation) return@synchronized null
+                nativeMarkReadMethod = cached
+                cached
+            }
         }
         if (cached != null) {
             DexMethodCache.clear(prefs, methodCacheKey, CACHE_NATIVE_MARK_READ)
-            nativeMarkReadMethod = null
-            nativeMarkReadStorage = null
+            synchronized(lifecycleLock) {
+                if (installed.get() && runtimeGeneration.get() == generation) {
+                    nativeMarkReadMethod = null
+                    nativeMarkReadStorage = null
+                }
+            }
         }
         if (!allowDexSearch) return null
 
         val located = findNativeMarkReadMethods(context)
             .filter { isNativeMarkReadMethod(it) }
             .distinctBy { it.toGenericString() }
+        if (!isGenerationActive(generation)) return null
         val method = located.singleOrNull()
         if (method != null) {
-            nativeMarkReadMethod = method
-            nativeMarkReadStorage = null
+            val retained = synchronized(lifecycleLock) {
+                if (!installed.get() || runtimeGeneration.get() != generation) return@synchronized false
+                nativeMarkReadMethod = method
+                nativeMarkReadStorage = null
+                true
+            }
+            if (!retained) return null
             DexMethodCache.save(prefs, methodCacheKey, CACHE_NATIVE_MARK_READ, method)
             return method
         }
         DexMethodCache.clear(prefs, methodCacheKey, CACHE_NATIVE_MARK_READ)
-        nativeMarkReadMethod = null
-        nativeMarkReadStorage = null
+        synchronized(lifecycleLock) {
+            if (installed.get() && runtimeGeneration.get() == generation) {
+                nativeMarkReadMethod = null
+                nativeMarkReadStorage = null
+            }
+        }
         HLog.e("$TAG 原生已读入口定位失败，候选数=${located.size}")
         return null
     }

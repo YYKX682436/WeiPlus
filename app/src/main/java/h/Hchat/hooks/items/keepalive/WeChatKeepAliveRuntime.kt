@@ -4,20 +4,22 @@ import android.content.Context
 import android.content.Intent
 import android.os.PowerManager
 import h.Hchat.BuildConfig
+import h.Hchat.WechatPackage
 import h.Hchat.preferences.HchatStorage
 import h.Hchat.utils.HLog
 
 object WeChatKeepAliveRuntime {
     private const val TAG = "[Hchat:KeepAlive]"
     private const val WAKE_LOCK_TAG = "Hchat:WeChatKeepAlive"
-    private const val WECHAT_PACKAGE = "com.tencent.mm"
     private var wakeLock: PowerManager.WakeLock? = null
-    @Volatile private var rootWhitelistApplied = false
-    @Volatile private var rootAppOpsApplied = false
+    private val rootWhitelistApplied = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val rootAppOpsApplied = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
     fun apply(hostContext: Context?, moduleContext: Context? = null) {
         if (hostContext == null) return
         val appContext = hostContext.applicationContext ?: hostContext
+        val hostPackage = appContext.packageName
+        if (!WechatPackage.isTarget(hostPackage)) return
         val serviceContext = (moduleContext ?: resolveModuleContext(appContext))?.let { it.applicationContext ?: it }
         val prefs = HchatStorage.preferences(appContext, WeChatKeepAliveSettings.PREFS_NAME)
         val enabled = prefs.getBoolean(WeChatKeepAliveSettings.KEY_ENABLE, WeChatKeepAliveSettings.DEFAULT_ENABLE)
@@ -47,10 +49,10 @@ object WeChatKeepAliveRuntime {
             if (serviceContext != null) runCatching { WeChatKeepAliveService.stop(serviceContext) }
         }
         if (prefs.getBoolean(WeChatKeepAliveSettings.KEY_ROOT_DOZE_WHITELIST, WeChatKeepAliveSettings.DEFAULT_ROOT_DOZE_WHITELIST)) {
-            applyRootDozeWhitelistOnce()
+            applyRootDozeWhitelistOnce(hostPackage)
         }
         if (prefs.getBoolean(WeChatKeepAliveSettings.KEY_ROOT_APP_OPS, WeChatKeepAliveSettings.DEFAULT_ROOT_APP_OPS)) {
-            applyRootAppOpsOnce()
+            applyRootAppOpsOnce(hostPackage)
         }
     }
 
@@ -66,7 +68,8 @@ object WeChatKeepAliveRuntime {
         if (context == null) return false
         return runCatching {
             val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
-            pm?.isIgnoringBatteryOptimizations(WECHAT_PACKAGE) == true
+            WechatPackage.isTarget(context.packageName) &&
+                pm?.isIgnoringBatteryOptimizations(context.packageName) == true
         }.getOrDefault(false)
     }
 
@@ -122,13 +125,13 @@ object WeChatKeepAliveRuntime {
         wakeLock = null
     }
 
-    private fun applyRootDozeWhitelistOnce() {
-        if (rootWhitelistApplied) return
-        rootWhitelistApplied = true
+    private fun applyRootDozeWhitelistOnce(hostPackage: String) {
+        if (!WechatPackage.isTarget(hostPackage) || !rootWhitelistApplied.add(hostPackage)) return
         Thread {
-            val result = runRootCommand("cmd deviceidle whitelist +com.tencent.mm")
+            val result = runRootCommand("cmd deviceidle whitelist +$hostPackage")
             if (!result) {
                 HLog.e("$TAG Root Doze 白名单执行失败")
+                rootWhitelistApplied.remove(hostPackage)
             }
         }.apply {
             name = "Hchat-KeepAlive-RootWhitelist"
@@ -136,19 +139,19 @@ object WeChatKeepAliveRuntime {
         }.start()
     }
 
-    private fun applyRootAppOpsOnce() {
-        if (rootAppOpsApplied) return
-        rootAppOpsApplied = true
+    private fun applyRootAppOpsOnce(hostPackage: String) {
+        if (!WechatPackage.isTarget(hostPackage) || !rootAppOpsApplied.add(hostPackage)) return
         Thread {
             val commands = listOf(
-                "cmd appops set $WECHAT_PACKAGE RUN_ANY_IN_BACKGROUND allow",
-                "cmd appops set $WECHAT_PACKAGE RUN_IN_BACKGROUND allow",
-                "cmd appops set $WECHAT_PACKAGE WAKE_LOCK allow",
-                "cmd appops set $WECHAT_PACKAGE START_FOREGROUND allow"
+                "cmd appops set $hostPackage RUN_ANY_IN_BACKGROUND allow",
+                "cmd appops set $hostPackage RUN_IN_BACKGROUND allow",
+                "cmd appops set $hostPackage WAKE_LOCK allow",
+                "cmd appops set $hostPackage START_FOREGROUND allow"
             )
             val ok = commands.all { runRootCommand(it) }
             if (!ok) {
                 HLog.e("$TAG Root AppOps 放行执行不完整")
+                rootAppOpsApplied.remove(hostPackage)
             }
         }.apply {
             name = "Hchat-KeepAlive-RootAppOps"
@@ -173,9 +176,10 @@ object WeChatKeepAliveRuntime {
 
     private fun launchWeChatIfNeeded(context: Context) {
         runCatching {
-            if (isWeChatProcessAlive()) return
+            val hostPackage = context.packageName
+            if (!WechatPackage.isTarget(hostPackage) || isWeChatProcessAlive(hostPackage)) return
             val manager = context.packageManager
-            val intent = manager.getLaunchIntentForPackage(WECHAT_PACKAGE) ?: return
+            val intent = manager.getLaunchIntentForPackage(hostPackage) ?: return
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             context.startActivity(intent)
         }.onFailure {
@@ -183,9 +187,10 @@ object WeChatKeepAliveRuntime {
         }
     }
 
-    private fun isWeChatProcessAlive(): Boolean {
+    private fun isWeChatProcessAlive(hostPackage: String): Boolean {
+        if (!WechatPackage.isTarget(hostPackage)) return false
         return runCatching {
-            val process = ProcessBuilder("sh", "-c", "pidof $WECHAT_PACKAGE")
+            val process = ProcessBuilder("pidof", hostPackage)
                 .redirectErrorStream(true)
                 .start()
             process.waitFor() == 0

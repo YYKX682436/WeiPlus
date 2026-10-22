@@ -13,11 +13,11 @@ function jar(group, name, version) {
     throw new Error('Missing dependency: ' + directory);
 }
 const json = process.env.JSON_JAR || jar('org.json', 'json', '20240303');
-const stdlib = jar('org.jetbrains.kotlin', 'kotlin-stdlib', '2.4.0');
+const stdlib = jar('org.jetbrains.kotlin', 'kotlin-stdlib', '2.4.20');
 const compiler = [
-    jar('org.jetbrains.kotlin', 'kotlin-compiler-embeddable', '2.4.0'), stdlib,
-    jar('org.jetbrains.kotlin', 'kotlin-reflect', '2.3.20'),
-    jar('org.jetbrains.kotlin', 'kotlin-script-runtime', '2.4.0'),
+    jar('org.jetbrains.kotlin', 'kotlin-compiler-embeddable', '2.4.20'), stdlib,
+    jar('org.jetbrains.kotlin', 'kotlin-reflect', '2.4.0'),
+    jar('org.jetbrains.kotlin', 'kotlin-script-runtime', '2.4.20'),
     jar('org.jetbrains.kotlinx', 'kotlinx-coroutines-core-jvm', '1.8.0'),
     jar('org.jetbrains', 'annotations', '13.0')
 ];
@@ -35,7 +35,7 @@ const source = 'app/src/main/java/h/Hchat/';
 const tests = 'scripts/tests/message_block/';
 // Compile the actual UI selection helpers without loading the Compose screen.
 // Only file-private visibility changes; the builder/normalizer bodies come from production.
-const ui = fs.readFileSync(path.join(root, source, 'ui/miuix/MiuixSettingsPage.kt'), 'utf8');
+const ui = fs.readFileSync(path.join(root, source, 'ui/miuix/MiuixSharedComponents.kt'), 'utf8');
 function uiSlice(start, end) {
     const from = ui.indexOf(start);
     const to = ui.indexOf(end, from + start.length);
@@ -45,8 +45,8 @@ function uiSlice(start, end) {
 const selection = path.join(output, 'SelectionFunctions.kt');
 fs.writeFileSync(selection, 'package h.Hchat.hooks.items.messageblock\n' +
     'data class ContactOption(val id: String, val label: String)\n' +
-    uiSlice('private fun messageBlockBindingFromContact(', 'private fun normalizedMessageBlockBinding(') +
-    uiSlice('private fun groupMemberEntry(', '\nsuspend fun loadAvatarBitmap('));
+    uiSlice('internal fun messageBlockBindingFromContact(', 'internal fun normalizedMessageBlockBinding(') +
+    uiSlice('internal fun groupMemberEntry(', '\nsuspend fun loadAvatarBitmap('));
 run(['-Xmx256m', '-cp', compiler.join(path.delimiter), 'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler',
     '-no-stdlib', '-no-reflect', '-classpath', [stdlib, json].join(path.delimiter), '-d', artifact, selection,
     ...['hooks/items/messageblock/MessageBlockFeature.kt', 'hooks/items/messageblock/MessageBlockSettings.kt',

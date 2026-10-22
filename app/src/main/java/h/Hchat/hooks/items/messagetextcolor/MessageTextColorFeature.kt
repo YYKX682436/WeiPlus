@@ -75,14 +75,14 @@ private class MessageTextColorRenderer(
     private val neatFieldCache = ConcurrentHashMap<Class<*>, Field>()
     private val neatFieldMissCache = ConcurrentHashMap.newKeySet<Class<*>>()
     private val messageBodyViewId by lazy {
-        context.hostContext().resources.getIdentifier(MESSAGE_BODY_VIEW_RESOURCE, "id", HOST_PACKAGE)
+        context.hostContext().resources.getIdentifier(MESSAGE_BODY_VIEW_RESOURCE, "id", context.hostContext().packageName)
     }
     private val voipTextViewId by lazy {
-        context.hostContext().resources.getIdentifier(VOIP_TEXT_VIEW_RESOURCE, "id", HOST_PACKAGE)
+        context.hostContext().resources.getIdentifier(VOIP_TEXT_VIEW_RESOURCE, "id", context.hostContext().packageName)
     }
     private val chatRecordTextViewIds by lazy {
         CHAT_RECORD_TEXT_VIEW_RESOURCES.mapNotNull { name ->
-            context.hostContext().resources.getIdentifier(name, "id", HOST_PACKAGE)
+            context.hostContext().resources.getIdentifier(name, "id", context.hostContext().packageName)
                 .takeIf { it != 0 }
         }
     }
@@ -1139,7 +1139,6 @@ private class MessageTextColorRenderer(
     private companion object {
         const val TAG = "[Hchat:MessageTextColor]"
         val ITEM_METHOD_NAMES = arrayOf("getItem", "K0")
-        const val HOST_PACKAGE = "com.tencent.mm"
         const val MESSAGE_BODY_VIEW_RESOURCE = "bkl"
         const val VOIP_TEXT_VIEW_RESOURCE = "bs3"
         const val CHAT_RECORD_APP_MSG_TYPE = 19

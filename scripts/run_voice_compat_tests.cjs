@@ -43,6 +43,8 @@ const stubs = {
             ${dexFinder.match(/    public (?:Method|Class<\?>|Constructor<\?>) voice\w+;/g).join('\n')}
             private boolean voiceMessagePathLookupComplete;
             private static final String CACHE_KEY = "cache.key";
+            private static final String CACHE_SNAPSHOT_VERSION_KEY = "cache.snapshot.version";
+            private static final String CACHE_SNAPSHOT_VERSION = "2";
             private final ClassLoader classLoader = getClass().getClassLoader();
             public String runtimeCacheKey = "version-77";
             public Cache cachePrefs = new Cache();
@@ -65,6 +67,7 @@ const stubs = {
                 Cache editor = cachePrefs.edit().putString(CACHE_KEY, runtimeCacheKey);
                 ${fragment('            putMethod(editor, "voiceMessagePathMethod", voiceMessagePathMethod);',
                     '            putMethod(editor, "voiceFinishRecordMethod", voiceFinishRecordMethod);')}
+                editor.putString(CACHE_SNAPSHOT_VERSION_KEY, CACHE_SNAPSHOT_VERSION);
             }
             ${fragment('    private void resetCacheForRuntimeKey()', '    private boolean isSendImageMethod(')}
             ${method('isVoiceFinishRecordMethod')}
@@ -98,6 +101,18 @@ const stubs = {
                     if (method == null) throw new ClassNotFoundException("fixture loading failure");
                     return method;
                 }
+            }
+        }`,
+    'h/Hchat/dexkit/DexCacheIdentity.java': `package h.Hchat.dexkit;
+        import java.util.Arrays;
+        public final class DexCacheIdentity {
+            public static boolean sameRuntime(String cachedKey, String runtimeKey) {
+                if (cachedKey == null || cachedKey.trim().isEmpty() || runtimeKey == null || runtimeKey.trim().isEmpty()) return false;
+                if (cachedKey.equals(runtimeKey)) return true;
+                String[] cached = cachedKey.split("\\\\|");
+                String[] runtime = runtimeKey.split("\\\\|");
+                return cached.length >= 7 && runtime.length >= 7
+                    && Arrays.equals(Arrays.copyOf(cached, 7), Arrays.copyOf(runtime, 7));
             }
         }`,
     'h/Hchat/hooks/api/core/WeChatApis.java': `package h.Hchat.hooks.api.core;

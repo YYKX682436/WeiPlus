@@ -37,4 +37,4 @@
 
 实际安装 APK 的 MCP 复核确认 h0.getView 仍读取 xp0.I 并调用相同 wrapper；RecordMsgDetailUI.W6 仍用 this 创建 x 或 from_scene=3 的 q。真实 DexKit 2.0.1 字节码显示 usingStrings(Collection) 默认 Contains，按相同 Contains 条件复核两条字符串查询均只有一个候选；因此没有把该反馈归因于字符串匹配。3140 的 cd2 完整 XML 已解码，六份 wrapper 布局 dvx/ccz/cd0/cd1/cd2/cd3 的打包 XML SHA-256 均与此前逐一解码验证的 3141 完全一致。classes12.dex 整体哈希不同，因此方法行为仍以本轮针对 3140 的 MCP 结果为准，不按相同类名推断整个 DEX 相同。
 
-该轮没有发现足以证明详情 Hook 失败的证据，没有新增未验证的 Context 或布局兜底。当前设备前台为 Termux，尚不能声称已实测详情页面中的标签显示；主聊天外层转发卡锚点问题由主列表实现另行修复。
+该轮没有发现足以证明详情 Hook 失败的证据，没有新增未验证的 Context 或布局兜底；详情页面中的标签显示仍未完成真机验证。主聊天外层转发卡锚点问题由主列表实现另行修复。

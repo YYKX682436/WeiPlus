@@ -66,7 +66,7 @@ class WeChatUiApi(
         }
     }
 
-    private fun packageName(): String = hostContext?.packageName ?: "com.tencent.mm"
+    private fun packageName(): String = hostContext?.packageName.orEmpty()
 
     private fun log(message: String) {
         logger?.log("[WeChatUiApi] $message")

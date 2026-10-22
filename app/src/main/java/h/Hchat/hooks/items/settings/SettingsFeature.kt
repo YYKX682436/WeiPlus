@@ -22,7 +22,6 @@ class SettingsFeature : Feature {
     @Throws(Throwable::class)
     override fun onInit(context: FeatureContext) {
         context.uiRegistry().registerProvider(SettingsEntryProvider())
-        context.uiRegistry().registerProvider(PluginAgentEntryProvider())
         context.uiRegistry().registerProvider(CrashReportSettingsProvider())
     }
 
@@ -43,7 +42,6 @@ class SettingsFeature : Feature {
             val entrySettings = SettingsEntrySettings(context.hostContext())
             settingsDexFinder.resolveAll(
                 entrySettings.plusMenuEnabled() ||
-                    entrySettings.pluginAgentPlusMenuEnabled() ||
                     QuickMarkReadRuntime.isPlusMenuEnabled(context.hostContext()) ||
                     QuickTerminateRuntime.isEnabled(context.hostContext())
             )
@@ -73,18 +71,4 @@ class SettingsEntryProvider : FeatureSettingsProvider {
     override fun subtitle(): String = "控制加号菜单和长按加号入口"
 
     override fun category(): String = FeatureSettingsProvider.CATEGORY_PRACTICAL
-}
-
-class PluginAgentEntryProvider : FeatureSettingsProvider {
-    override fun featureId(): String = ID
-
-    override fun title(): String = "插件 Agent 入口"
-
-    override fun subtitle(): String = "控制右上角加号菜单中的 Agent 入口"
-
-    override fun category(): String = FeatureSettingsProvider.CATEGORY_PRACTICAL
-
-    companion object {
-        const val ID = "plugin_agent_entry"
-    }
 }

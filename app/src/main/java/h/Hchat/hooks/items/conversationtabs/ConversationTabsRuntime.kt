@@ -194,7 +194,7 @@ internal object ConversationTabsRuntime {
             // content layer. Wait for onResume, when the native bounce hierarchy exists.
             return null
         }
-        val actionBarId = root.resources.getIdentifier(ACTION_BAR_ID_NAME, "id", "com.tencent.mm")
+        val actionBarId = root.resources.getIdentifier(ACTION_BAR_ID_NAME, "id", root.context.packageName)
         if (actionBarId == 0 || fixedParent.findViewWithTag<View>(ROOT_TAG) != null) return null
         val strip = HorizontalScrollView(original.context).apply {
             isHorizontalScrollBarEnabled = false
@@ -244,7 +244,7 @@ internal object ConversationTabsRuntime {
 
     /** The controller's page-local content frame, outside any optional bounce wrapper. */
     private fun findFixedParent(root: View): FrameLayout? {
-        val id = root.resources.getIdentifier(CONTENT_ID_NAME, "id", "com.tencent.mm")
+        val id = root.resources.getIdentifier(CONTENT_ID_NAME, "id", root.context.packageName)
         if (id == 0) return null
         var parent = root.parent
         while (parent is ViewGroup) {

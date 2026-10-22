@@ -14,12 +14,12 @@ function jar(group, name, version) {
     throw new Error(`Missing dependency: ${dir}`);
 }
 
-const stdlib = jar('org.jetbrains.kotlin', 'kotlin-stdlib', '2.4.0');
+const stdlib = jar('org.jetbrains.kotlin', 'kotlin-stdlib', '2.4.20');
 const coroutines = jar('org.jetbrains.kotlinx', 'kotlinx-coroutines-core-jvm', '1.8.0');
 const compiler = [
-    jar('org.jetbrains.kotlin', 'kotlin-compiler-embeddable', '2.4.0'),
+    jar('org.jetbrains.kotlin', 'kotlin-compiler-embeddable', '2.4.20'),
     stdlib,
-    jar('org.jetbrains.kotlin', 'kotlin-reflect', '2.3.20'),
+    jar('org.jetbrains.kotlin', 'kotlin-reflect', '2.4.0'),
     coroutines,
     jar('org.jetbrains', 'annotations', '13.0')
 ];

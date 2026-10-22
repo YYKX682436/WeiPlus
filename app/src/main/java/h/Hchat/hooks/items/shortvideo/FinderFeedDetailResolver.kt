@@ -101,7 +101,6 @@ internal class FinderFeedDetailResolver private constructor(
         private const val DETAIL_TIMEOUT_SECONDS = 20L
         private const val CACHE_TTL_MS = 10 * 60_000L
         private val pending = ConcurrentHashMap<Any, PendingRequest>()
-        private val hookedCallbacks = Collections.newSetFromMap(ConcurrentHashMap<Method, Boolean>())
 
         fun locate(context: FeatureContext): FinderFeedDetailResolver? {
             val hostContext = context.hostContext()
@@ -183,9 +182,8 @@ internal class FinderFeedDetailResolver private constructor(
         }
 
         private fun installCallbackHook(method: Method): Boolean {
-            if (!hookedCallbacks.add(method)) return true
             return runCatching {
-                HookRegistry.get().hook(method, object : XC_MethodHook() {
+                HookRegistry.get().hookOnce("shared:finder_feed_detail:callback:${method.toGenericString()}", method, object : XC_MethodHook() {
                     override fun afterHookedMethod(param: MethodHookParam) {
                         val scene = param.thisObject ?: return
                         val request = pending.remove(scene) ?: return
@@ -211,7 +209,6 @@ internal class FinderFeedDetailResolver private constructor(
                 })
                 true
             }.getOrElse {
-                hookedCallbacks.remove(method)
                 HLog.e("$TAG Hook视频号详情响应失败: ${it.message}", it)
                 false
             }

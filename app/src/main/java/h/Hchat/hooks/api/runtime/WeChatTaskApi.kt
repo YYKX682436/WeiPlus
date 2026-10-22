@@ -1,5 +1,6 @@
 package h.Hchat.hooks.api.runtime
 
+import android.annotation.SuppressLint
 import android.app.AlarmManager
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
@@ -160,6 +161,8 @@ class WeChatTaskApi(
         logger?.log("[WeChatTaskApi] $message")
     }
 
+    // The pre-33 overload has no flags; Android 13+ explicitly keeps exact-task broadcasts private.
+    @SuppressLint("UnspecifiedRegisterReceiverFlag")
     private fun registerExactReceiver(): Boolean {
         val filter = IntentFilter(ACTION_EXACT_TASK).apply {
             addDataScheme(EXACT_TASK_SCHEME)

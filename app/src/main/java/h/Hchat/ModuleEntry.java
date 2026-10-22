@@ -5,6 +5,7 @@ import android.content.Context;
 import android.os.Process;
 
 import h.Hchat.crash.CrashReportRuntime;
+import h.Hchat.WechatPackage;
 import h.Hchat.dexkit.DexFinder;
 import h.Hchat.hooks.api.media.WeChatImageApi;
 import h.Hchat.hooks.core.FeatureRegistry;
@@ -20,10 +21,6 @@ import h.Hchat.hooks.items.miniprogrambaselib.FakeMiniProgramBaseLibFeature;
 import h.Hchat.hooks.items.miniprogramsplashad.SkipGlobalMiniProgramSplashAdsFeature;
 import h.Hchat.hooks.items.miniprogramvideoad.SkipMiniProgramVideoAdsFeature;
 import h.Hchat.hooks.items.floatingshortcut.FloatingShortcutRuntime;
-import h.Hchat.hooks.items.script.ScriptPluginRuntime;
-import h.Hchat.hooks.items.script.agent.CodexWebGuard;
-import h.Hchat.hooks.items.script.agent.ModuleResourceMenuFallback;
-import h.Hchat.hooks.items.script.agent.ScriptPluginAgentLocalReverseTools;
 import h.Hchat.hooks.items.tablet.WeChatTabletFeature;
 import h.Hchat.loader.utils.NativeLibraryLoader;
 import h.Hchat.preferences.ConfigStore;
@@ -49,7 +46,7 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
  *
  * 启动流程：
  * 1. handleLoadPackage → 过滤目标包 + 目标进程
- * 2. 小程序子进程安装必要的缓存 Hook 和显式声明的小程序脚本插件
+ * 2. 小程序子进程安装必要的缓存 Hook 和原生小程序功能 Hook
  * 3. 主进程在 Tinker attach 后优先安装自定义底栏 Hook
  * 4. Application.onCreate 后异步初始化完整模块
  *
@@ -57,7 +54,6 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
  */
 public class ModuleEntry implements IXposedHookLoadPackage {
     private static final String TAG = "[Hchat:Entry]";
-    private static final String WECHAT_PKG = "com.tencent.mm";
     private static final Object DEXKIT_CREATE_LOCK = new Object();
     private static final Map<String, DexKitBridge> DEXKIT_BRIDGES = new ConcurrentHashMap<>();
 
@@ -141,10 +137,10 @@ public class ModuleEntry implements IXposedHookLoadPackage {
 
     /**
      * 判断是否为目标微信包。
-     * 支持 com.tencent.mm 以及以 com.tencent.mm 开头的分身包名。
+     * 只允许官方微信与明确支持的修改版包名。
      */
     private boolean isWeChatPackage(String packageName) {
-        return packageName != null && packageName.startsWith(WECHAT_PKG);
+        return WechatPackage.isTarget(packageName);
     }
 
     /**
@@ -152,14 +148,11 @@ public class ModuleEntry implements IXposedHookLoadPackage {
      * 微信主进程的 processName 等于 packageName。
      */
     private boolean isMainProcess(XC_LoadPackage.LoadPackageParam lpparam) {
-        String process = lpparam.processName;
-        return process == null || process.equals(lpparam.packageName);
+        return WechatPackage.isMainProcess(lpparam.packageName, lpparam.processName);
     }
 
     private boolean isAppBrandProcess(XC_LoadPackage.LoadPackageParam lpparam) {
-        String process = lpparam.processName;
-        String packageName = lpparam.packageName;
-        return process != null && packageName != null && process.startsWith(packageName + ":appbrand");
+        return WechatPackage.isAppBrandProcess(lpparam.packageName, lpparam.processName);
     }
 
     private void installAppBrandProcessHook(XC_LoadPackage.LoadPackageParam lpparam) {
@@ -224,13 +217,6 @@ public class ModuleEntry implements IXposedHookLoadPackage {
         if (FakeLocationFeature.isEnabled(context)
                 && !FakeLocationFeature.installAppBrandProcessHook(context, classLoader)) {
             failed = true;
-        }
-        if (applicationReady) {
-            ScriptPluginRuntime.installAppBrandProcess(
-                    context,
-                    classLoader,
-                    lpparam.processName
-            );
         }
         if (failed && applicationReady) {
             HLog.e(TAG + " 小程序进程Hook安装失败: " + lpparam.processName);
@@ -416,8 +402,6 @@ public class ModuleEntry implements IXposedHookLoadPackage {
             Context moduleContext = createModuleContext(hostContext);
             ConfigStore configStore = new ConfigStore(hostContext);
 
-            ModuleResourceMenuFallback.INSTANCE.install(resolveHostClassLoader(hostContext, lpparam));
-
             DexInstallScheduler.runDexKitTask(() -> {
                 // 3. 初始化 DexKit。优先使用 Tinker 之后的运行时 ClassLoader。
                 String apkPath = lpparam.appInfo.sourceDir;
@@ -431,7 +415,6 @@ public class ModuleEntry implements IXposedHookLoadPackage {
                 // 4. 创建共享 DexKit 服务
                 DexBridgeHolder dexBridgeHolder = new DexBridgeHolder(
                         dexKit, finder, hostClassLoader, apkPath);
-                ScriptPluginAgentLocalReverseTools.install(dexBridgeHolder, hostContext);
 
                 // 5. 创建统一上下文
                 featureContext = new FeatureContext(
@@ -450,9 +433,6 @@ public class ModuleEntry implements IXposedHookLoadPackage {
                 // 6. 注册并安装所有功能模块
                 featureManager = FeatureRegistry.createDefaultManager();
                 featureManager.installAll(featureContext);
-
-                // codex 网页版保活：微信进程重启后把上次开着的服务自动拉回来
-                CodexWebGuard.INSTANCE.restore(hostContext);
 
                 // 7. 防崩兜底：微信 8.0.76 消息描述文本方法对 null 调 isEmpty() 崩溃（收到特殊小程序电商卡片消息触发）
                 installMsgDescTextFallback(finder);

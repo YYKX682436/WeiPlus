@@ -87,9 +87,6 @@ class AutoReplySettings(context: Context?) {
             musicMcpEnabled = getBoolean(KEY_XIAOZHI_MUSIC_MCP, false),
             mcpBridgeEnabled = getBoolean(KEY_XIAOZHI_MCP_BRIDGE_ENABLE, false),
             mcpEndpointUrl = getString(KEY_XIAOZHI_MCP_ENDPOINT_URL, ""),
-            mcpKugouEnabled = getBoolean(KEY_XIAOZHI_MCP_KUGOU_ENABLE, false),
-            mcpKugouPluginId = getString(KEY_XIAOZHI_MCP_KUGOU_PLUGIN_ID, DEFAULT_XIAOZHI_MCP_KUGOU_PLUGIN_ID),
-            mcpKugouFunctionName = getString(KEY_XIAOZHI_MCP_KUGOU_FUNCTION, DEFAULT_XIAOZHI_MCP_KUGOU_FUNCTION),
             mcpReadySeconds = getInt(KEY_XIAOZHI_MCP_READY_SECONDS, DEFAULT_XIAOZHI_MCP_READY_SECONDS),
             mcpIdleSeconds = getInt(KEY_XIAOZHI_MCP_IDLE_SECONDS, DEFAULT_XIAOZHI_MCP_IDLE_SECONDS)
         )
@@ -108,9 +105,6 @@ class AutoReplySettings(context: Context?) {
             ?.putBoolean(KEY_XIAOZHI_MUSIC_MCP, value.musicMcpEnabled)
             ?.putBoolean(KEY_XIAOZHI_MCP_BRIDGE_ENABLE, value.mcpBridgeEnabled)
             ?.putString(KEY_XIAOZHI_MCP_ENDPOINT_URL, value.mcpEndpointUrl.trim())
-            ?.putBoolean(KEY_XIAOZHI_MCP_KUGOU_ENABLE, value.mcpKugouEnabled)
-            ?.putString(KEY_XIAOZHI_MCP_KUGOU_PLUGIN_ID, value.mcpKugouPluginId.trim())
-            ?.putString(KEY_XIAOZHI_MCP_KUGOU_FUNCTION, value.mcpKugouFunctionName.trim().ifBlank { DEFAULT_XIAOZHI_MCP_KUGOU_FUNCTION })
             ?.putInt(KEY_XIAOZHI_MCP_READY_SECONDS, value.mcpReadySeconds.coerceIn(1, 30))
             ?.putInt(KEY_XIAOZHI_MCP_IDLE_SECONDS, value.mcpIdleSeconds.coerceIn(10, 600))
             ?.apply()
@@ -306,9 +300,6 @@ class AutoReplySettings(context: Context?) {
         const val KEY_XIAOZHI_MUSIC_MCP = "xiaozhi_music_mcp"
         const val KEY_XIAOZHI_MCP_BRIDGE_ENABLE = "xiaozhi_mcp_bridge_enable"
         const val KEY_XIAOZHI_MCP_ENDPOINT_URL = "xiaozhi_mcp_endpoint_url"
-        const val KEY_XIAOZHI_MCP_KUGOU_ENABLE = "xiaozhi_mcp_kugou_enable"
-        const val KEY_XIAOZHI_MCP_KUGOU_PLUGIN_ID = "xiaozhi_mcp_kugou_plugin_id"
-        const val KEY_XIAOZHI_MCP_KUGOU_FUNCTION = "xiaozhi_mcp_kugou_function"
         const val KEY_XIAOZHI_MCP_READY_SECONDS = "xiaozhi_mcp_ready_seconds"
         const val KEY_XIAOZHI_MCP_IDLE_SECONDS = "xiaozhi_mcp_idle_seconds"
         const val KEY_ZHILIA_CONFIGS = "zhilia_multi_configs_v1"
@@ -326,8 +317,6 @@ class AutoReplySettings(context: Context?) {
         const val DEFAULT_XIAOZHI_SERVE_URL = "wss://api.tenclass.net/xiaozhi/v1/"
         const val DEFAULT_XIAOZHI_OTA_URL = "https://api.tenclass.net/xiaozhi/ota/"
         const val DEFAULT_XIAOZHI_CONSOLE_URL = "https://xiaozhi.me/console/agents"
-        const val DEFAULT_XIAOZHI_MCP_KUGOU_PLUGIN_ID = "QQ点歌"
-        const val DEFAULT_XIAOZHI_MCP_KUGOU_FUNCTION = "queryKugouMusic"
         const val DEFAULT_XIAOZHI_MCP_READY_SECONDS = 5
         const val DEFAULT_XIAOZHI_MCP_IDLE_SECONDS = 90
         const val DEFAULT_ZHILIA_CONFIG_NAME = "默认配置"
@@ -554,9 +543,6 @@ data class AutoReplyXiaozhiConfig(
     val musicMcpEnabled: Boolean = false,
     val mcpBridgeEnabled: Boolean = false,
     val mcpEndpointUrl: String = "",
-    val mcpKugouEnabled: Boolean = false,
-    val mcpKugouPluginId: String = "",
-    val mcpKugouFunctionName: String = AutoReplySettings.DEFAULT_XIAOZHI_MCP_KUGOU_FUNCTION,
     val mcpReadySeconds: Int = AutoReplySettings.DEFAULT_XIAOZHI_MCP_READY_SECONDS,
     val mcpIdleSeconds: Int = AutoReplySettings.DEFAULT_XIAOZHI_MCP_IDLE_SECONDS
 )

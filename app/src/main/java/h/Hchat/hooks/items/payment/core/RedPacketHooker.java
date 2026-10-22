@@ -32,7 +32,7 @@ import h.Hchat.utils.KavaReflector;
 
 /**
  * RedPacketHooker - 红包抢包核心逻辑
- * 从原始 BeanShell 脚本移植，保留全部功能逻辑
+ * 保持红包原生处理逻辑
  */
 public class RedPacketHooker {
 

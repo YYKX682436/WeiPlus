@@ -1,5 +1,6 @@
 package h.Hchat.hooks.items.payment.notify;
 
+import android.Manifest;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -7,6 +8,7 @@ import android.app.PendingIntent;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.media.Ringtone;
 import android.media.RingtoneManager;
 import android.net.Uri;
@@ -67,6 +69,7 @@ public class RedPacketNotifier {
         sendNotice(title, text, toastText, talker, nativeUrl, idSalt, system, toast, true, true, "");
     }
 
+    @android.annotation.SuppressLint("NotificationPermission")
     public void sendNotice(String title, String text, String toastText, String talker,
                            String nativeUrl, int idSalt, boolean system, boolean toast,
                            boolean sound, boolean vibrate, String soundUri) {
@@ -130,6 +133,9 @@ public class RedPacketNotifier {
                             .loadNotificationBitmap(hostContext, talker);
             if (customAvatar != null) builder.setLargeIcon(customAvatar);
 
+            if (Build.VERSION.SDK_INT >= 33
+                    && hostContext.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                    != PackageManager.PERMISSION_GRANTED) return;
             nm.notify(nextNotifyId(nativeUrl, idSalt), builder.build());
             if (Build.VERSION.SDK_INT >= 26 && sound) {
                 playManualNotificationSound(resolveSoundUri(soundUri));

@@ -14,7 +14,7 @@ import h.Hchat.hooks.api.core.WeChatApis
 import h.Hchat.hooks.api.message.SingleMessageMenuLocator
 import h.Hchat.hooks.core.FeatureContext
 import h.Hchat.hooks.core.HookRegistry
-import h.Hchat.hooks.items.script.ScriptSendButtonHook
+import h.Hchat.hooks.items.sendbutton.NativeSendButtonHook
 import h.Hchat.utils.KavaReflector
 import java.io.File
 import java.lang.reflect.Method
@@ -147,7 +147,7 @@ internal class TextVoiceRuntime(
                     synthesize(text, config, file)
                     if (!active.get()) return@execute
                     if (!sendEnabled()) {
-                        ScriptSendButtonHook.restoreInputTextIfEmpty(talker, text)
+                        NativeSendButtonHook.restoreInputTextIfEmpty(talker, text)
                         return@execute
                     }
                     val sent = WeChatApis.media()?.voices()?.send(talker, file.absolutePath) == true
@@ -155,7 +155,7 @@ internal class TextVoiceRuntime(
                 } catch (throwable: Throwable) {
                     if (active.get()) {
                         logger("文字转语音发送失败", throwable)
-                        ScriptSendButtonHook.restoreInputTextIfEmpty(talker, text)
+                        NativeSendButtonHook.restoreInputTextIfEmpty(talker, text)
                         toast(throwable.userMessage("文字转语音发送失败"))
                     }
                 } finally {
@@ -164,7 +164,7 @@ internal class TextVoiceRuntime(
                 }
             }
         } catch (_: RejectedExecutionException) {
-            ScriptSendButtonHook.restoreInputTextIfEmpty(talker, text)
+            NativeSendButtonHook.restoreInputTextIfEmpty(talker, text)
             toast("待处理语音过多，请稍后重试")
         }
     }

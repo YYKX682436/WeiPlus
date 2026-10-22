@@ -5,6 +5,7 @@ import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
 import h.Hchat.dexkit.DexMethodCache
 import h.Hchat.hooks.core.BaseFeature
+import h.Hchat.hooks.core.Feature
 import h.Hchat.hooks.core.FeatureContext
 import h.Hchat.hooks.core.HookRegistry
 import h.Hchat.preferences.HchatStorage
@@ -19,6 +20,10 @@ class DisableHotUpdateFeature : BaseFeature() {
     override fun featureId(): String = ID
 
     override fun name(): String = "屏蔽热更新"
+
+    override fun installationPolicy(): Feature.InstallationPolicy = Feature.InstallationPolicy.ENABLED_ONLY
+
+    override fun isEnabled(context: FeatureContext): Boolean = isEnabled(context.hostContext())
 
     override fun onFeatureInit(context: FeatureContext) {
         registerSettingsProvider(DisableHotUpdateSettingsProvider())

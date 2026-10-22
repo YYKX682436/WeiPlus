@@ -7,6 +7,7 @@ import android.widget.Button
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
 import h.Hchat.hooks.core.BaseFeature
+import h.Hchat.hooks.core.Feature
 import h.Hchat.hooks.core.FeatureContext
 import h.Hchat.hooks.core.HookRegistry
 import h.Hchat.hooks.api.runtime.WeChatVersionApi
@@ -22,6 +23,10 @@ class WeChatTabletFeature : BaseFeature() {
     override fun featureId(): String = ID
 
     override fun name(): String = "平板模式"
+
+    override fun installationPolicy(): Feature.InstallationPolicy = Feature.InstallationPolicy.ENABLED_ONLY
+
+    override fun isEnabled(context: FeatureContext): Boolean = isEnabled(context.hostContext())
 
     override fun onFeatureInit(context: FeatureContext) {
         registerSettingsProvider(WeChatTabletSettingsProvider())

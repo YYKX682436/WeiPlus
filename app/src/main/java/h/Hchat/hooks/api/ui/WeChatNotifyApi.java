@@ -1,5 +1,6 @@
 package h.Hchat.hooks.api.ui;
 
+import android.Manifest;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -7,6 +8,7 @@ import android.app.PendingIntent;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
@@ -51,6 +53,7 @@ public final class WeChatNotifyApi {
         sendNotice(title, text, toastText, null, null, 0, system, toast);
     }
 
+    @android.annotation.SuppressLint("NotificationPermission")
     public void sendNotice(String title,
                            String text,
                            String toastText,
@@ -92,6 +95,9 @@ public final class WeChatNotifyApi {
                     h.Hchat.hooks.items.customfriendavatar.CustomFriendAvatarStore
                             .loadNotificationBitmap(hostContext, talker);
             if (customAvatar != null) builder.setLargeIcon(customAvatar);
+            if (Build.VERSION.SDK_INT >= 33
+                    && hostContext.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                    != PackageManager.PERMISSION_GRANTED) return;
             nm.notify(nextNotifyId(idKey, idSalt), builder.build());
         } catch (Throwable e) {
             log("通知失败: " + e.getMessage());

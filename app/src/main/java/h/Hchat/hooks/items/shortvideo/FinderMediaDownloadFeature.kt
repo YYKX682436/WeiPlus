@@ -3,6 +3,7 @@ package h.Hchat.hooks.items.shortvideo
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.SharedPreferences
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
@@ -31,6 +32,8 @@ import java.util.concurrent.ConcurrentHashMap
 
 class FinderMediaDownloadFeature : BaseFeature() {
     private var hooker: FinderMediaDownloadHooker? = null
+    private var settingsPrefs: SharedPreferences? = null
+    private var preferenceListener: SharedPreferences.OnSharedPreferenceChangeListener? = null
 
     override fun featureId(): String = ID
 
@@ -40,31 +43,52 @@ class FinderMediaDownloadFeature : BaseFeature() {
         registerSettingsProvider(FinderMediaDownloadSettingsProvider())
     }
 
-    override fun isEnabled(context: FeatureContext): Boolean {
-        val sp = HchatStorage.preferences(context.hostContext(), FinderMediaDownloadSettings.PREFS_NAME)
-        return sp.getBoolean(FinderMediaDownloadSettings.KEY_ENABLE, FinderMediaDownloadSettings.DEFAULT_ENABLE)
-    }
-
     override fun onFeatureInstall(context: FeatureContext) {
-        hooker = FinderMediaDownloadHooker(context, ::logError)
-        scheduleInstall(context)
+        settingsPrefs = HchatStorage.preferences(context.hostContext(), FinderMediaDownloadSettings.PREFS_NAME)
+        hooker = FinderMediaDownloadHooker(context, ::logError) { isEnabled(context) }
+        preferenceListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key != FinderMediaDownloadSettings.KEY_ENABLE) return@OnSharedPreferenceChangeListener
+            if (isEnabled(context)) {
+                scheduleInstall(context)
+            } else {
+                DexInstallScheduler.cancel(ID)
+                DexInstallScheduler.cancel("shared:finder_feed_detail")
+            }
+        }.also { settingsPrefs?.registerOnSharedPreferenceChangeListener(it) }
+        if (isEnabled(context)) scheduleInstall(context)
         subscribe(Events.DexReady::class.java) {
-            scheduleInstall(context)
+            if (isEnabled(context)) scheduleInstall(context)
         }
     }
 
+    override fun onFeatureDestroy(context: FeatureContext) {
+        preferenceListener?.let { settingsPrefs?.unregisterOnSharedPreferenceChangeListener(it) }
+        preferenceListener = null
+        settingsPrefs = null
+        hooker = null
+    }
+
     private fun scheduleInstall(context: FeatureContext) {
+        if (!isEnabled(context)) return
         DexInstallScheduler.schedule(
             "shared:finder_feed_detail",
             "视频号详情解析",
             stage = DexInstallScheduler.Stage.WARMUP
         ) {
-            FinderMediaDownloadSupport.install(context)
+            if (!isEnabled(context)) true else FinderMediaDownloadSupport.install(context)
         }
         DexInstallScheduler.schedule(ID, name()) {
-            hooker?.install() == true
+            if (!isEnabled(context)) true else hooker?.install() == true
         }
     }
+
+    override fun isEnabled(context: FeatureContext): Boolean = runCatching {
+        settingsPrefs?.getBoolean(
+            FinderMediaDownloadSettings.KEY_ENABLE,
+            FinderMediaDownloadSettings.DEFAULT_ENABLE
+        ) ?: HchatStorage.preferences(context.hostContext(), FinderMediaDownloadSettings.PREFS_NAME)
+            .getBoolean(FinderMediaDownloadSettings.KEY_ENABLE, FinderMediaDownloadSettings.DEFAULT_ENABLE)
+    }.getOrDefault(false)
 
     companion object {
         const val ID = "finder_media_download"
@@ -73,16 +97,22 @@ class FinderMediaDownloadFeature : BaseFeature() {
 
 private class FinderMediaDownloadHooker(
     private val context: FeatureContext,
-    private val logger: (String, Throwable?) -> Unit
+    private val logger: (String, Throwable?) -> Unit,
+    private val enabled: () -> Boolean
 ) {
     private val methodPrefs = DexMethodCache.prefs(context.hostContext(), "Hchat_finder_media_download_method_cache")
     private val hookedMethods = Collections.newSetFromMap(ConcurrentHashMap<Method, Boolean>())
 
     fun install(): Boolean {
+        if (!enabled()) return true
+        val createMethods = locateCreateMenuMethods()
+        if (!enabled()) return false
+        val clickMethods = locateClickMethods()
+        if (!enabled()) return false
         var createHooked = 0
         var clickHooked = 0
-        locateCreateMenuMethods().forEach { if (hookCreateMenu(it)) createHooked++ }
-        locateClickMethods().forEach { if (hookClick(it)) clickHooked++ }
+        createMethods.forEach { if (enabled() && hookCreateMenu(it)) createHooked++ }
+        clickMethods.forEach { if (enabled() && hookClick(it)) clickHooked++ }
         if (createHooked <= 0 || clickHooked <= 0) {
             logger("视频号媒体下载Hook未安装", null)
         }
@@ -94,6 +124,7 @@ private class FinderMediaDownloadHooker(
         return runCatching {
             HookRegistry.get().hook(method, object : XC_MethodHook() {
                 override fun beforeHookedMethod(param: MethodHookParam) {
+                    if (!enabled()) return
                     findMenuObject(param.args)?.let { addMenuItems(it) }
                 }
             })
@@ -259,6 +290,7 @@ private class FinderMediaDownloadHooker(
     }
 
     private fun handleMenuClick(param: XC_MethodHook.MethodHookParam) {
+        if (!enabled()) return
         val item = param.args?.firstOrNull { it is MenuItem } as? MenuItem ?: return
         if (item.itemId != MENU_COPY_LINK && item.itemId != MENU_DOWNLOAD) return
         val media = findFinderMedia(param) ?: run {

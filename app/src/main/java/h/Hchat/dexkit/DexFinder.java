@@ -329,7 +329,7 @@ public class DexFinder {
         resolveContactLabelNetworkApi();
         resolveSnsUploadApi();
         resolveChatPageApi();
-        resolveScriptSendHookApi();
+        resolveNativeSendButtonApi();
         resolveWishWxHb();
         resolvePacketCompatClasses();
         resolveProtobufPacketApi();
@@ -3445,9 +3445,12 @@ public class DexFinder {
         }
     }
 
-    public void resolveScriptSendHookApi() {
-        if (ensureSnapshotLoaded()) return;
+    public synchronized void resolveNativeSendButtonApi() {
         try {
+            if (chatFooterSendClickMethod != null) return;
+            // A complete cache can predate a separately resolved native API. Load it,
+            // then resolve the send entry if the cached snapshot does not contain one.
+            ensureSnapshotLoaded();
             if (chatFooterSendClickMethod != null) return;
             List<MethodData> methods = dexKit.findMethod(
                     mkMethodUsingStringsAndName("onClick",
@@ -3476,9 +3479,10 @@ public class DexFinder {
                     } catch (Throwable ignored) {}
                 }
             }
-            logDetail("脚本发送按钮API: click=" + methodName(chatFooterSendClickMethod));
+            if (chatFooterSendClickMethod != null && resolvedAll) saveCache();
+            logDetail("原生发送按钮API: click=" + methodName(chatFooterSendClickMethod));
         } catch (Throwable e) {
-            h.Hchat.utils.HLog.e(TAG + " resolveScriptSendHookApi 失败: " + e.getMessage(), e);
+            h.Hchat.utils.HLog.e(TAG + " resolveNativeSendButtonApi 失败: " + e.getMessage(), e);
         }
     }
 

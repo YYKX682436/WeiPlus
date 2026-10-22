@@ -15,7 +15,7 @@
 
 ## 证据与验证
 
-DexClub 对用户给出的 Hchat-alt-entry-r8-debug-signed.apk 确认：Lh/Hchat/dexkit/DexFinder;->resolveProtobufPacketApi()V 开头无条件调用 findProtobufBaseClass()，与本地旧源码一致。
+DexClub 对用户给出的调试 APK 确认：Lh/Hchat/dexkit/DexFinder;->resolveProtobufPacketApi()V 开头无条件调用 findProtobufBaseClass()，与本地旧源码一致。
 
 - 版本指纹：scripts/tests/startup_version/run.js 的 22 项 JVM 桩测试通过。完整运行时元信息场景中，旧实现调用 getFilesDir 进入热更新路径 5 次，修改后 0 次；测试覆盖各级优先级、缺少 BuildConfig、文件回退、元数据修改后下一次调用立即更新。
 - 原生库去重：scripts/tests/startup/run.js 验证 100 个并发请求只执行一次成功加载动作，库之间及 ClassLoader 之间隔离，返回 false 或抛异常后仍能重试。真实 System.load 和 Android 跨进程文件锁不在该 JVM 测试范围内。
