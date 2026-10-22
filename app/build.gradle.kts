@@ -29,7 +29,7 @@ android {
         create("。。") {
             storeFile = providers.environmentVariable("HCAT_KEYSTORE_PATH").orNull
                 ?.let { file(it) }
-                ?: file("keystore/。。.jks")
+                ?: file("/Users/muchen/Downloads/Android正式签名密钥/MUCHEN.jks")
             storePassword = providers.environmentVariable("HCAT_STORE_PASSWORD").orNull
                 ?: error("缺少 HCAT_STORE_PASSWORD")
             keyAlias = providers.environmentVariable("HCAT_KEY_ALIAS").orNull
