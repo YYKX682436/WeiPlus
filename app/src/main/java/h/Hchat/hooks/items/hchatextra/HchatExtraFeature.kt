@@ -27,6 +27,10 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import de.robv.android.xposed.XC_MethodHook
+import h.Hchat.hooks.core.ChatRowRefresh
+import h.Hchat.R
+import android.os.Handler
+import android.os.Looper
 import h.Hchat.dexkit.DexMethodCache
 import h.Hchat.event.Events
 import h.Hchat.hooks.api.model.WeChatMessage
@@ -208,7 +212,7 @@ private class HchatExtraHooker(
     private val messageNestedFieldCache = ConcurrentHashMap<Class<*>, List<Field>>()
     private val messageDetailsFailureKeys = ConcurrentHashMap.newKeySet<String>()
     private val messageDetailsLabels = Collections.newSetFromMap(WeakHashMap<TextView, Boolean>())
-    private val messageDetailsBindings = WeakHashMap<TextView, MessageDetailsBinding>()
+    private val messageDetailsBindings = MessageDetailsBindingIndex<TextView, MessageDetailsBinding>()
     private val avatarDetailsSpacings = WeakHashMap<RelativeLayout, AvatarDetailsSpacing>()
     private val messageDetailsAttachCallbacks = MessageDetailsAttachQueue()
     private val messageDetailsLayoutCallbacks = MessageDetailsLayoutObserver()
@@ -233,13 +237,16 @@ private class HchatExtraHooker(
         logger = logger
     )
     private val messageDetailsPrefsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-        if (key in MESSAGE_DETAILS_CONFIG_KEYS) {
+        if (key == null || key in MESSAGE_DETAILS_CONFIG_KEYS) {
             messageDetailsConfig = readMessageDetailsConfig()
+            Handler(Looper.getMainLooper()).post {
+                if (!messageDetailsConfig.enabled) clearMessageDetailsRows() else ChatRowRefresh.request()
+            }
             forwardedRecordTypes.refresh()
         }
         when {
-            key in MESSAGE_DETAILS_COLOR_KEYS -> refreshAttachedMessageDetailsLabels()
-            key in MESSAGE_DETAILS_REBIND_KEYS -> refreshAttachedMessageDetailsLayouts()
+            key == null || key in MESSAGE_DETAILS_COLOR_KEYS -> refreshAttachedMessageDetailsLabels()
+            key == null || key in MESSAGE_DETAILS_REBIND_KEYS -> refreshAttachedMessageDetailsLayouts()
         }
     }
     private val hideAvatarPrefsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
@@ -255,6 +262,7 @@ private class HchatExtraHooker(
             refreshAttachedMessageDetailsLayouts()
         }
     }
+    private var pageSubscription: h.Hchat.hooks.api.ui.WeChatChatPageApi.Subscription? = null
     private var chattingDataAdapterClass: Class<*>? = null
     @Volatile private var injectingGroupHistory = false
 
@@ -364,6 +372,8 @@ private class HchatExtraHooker(
     }
 
     fun destroy() {
+        clearMessageDetailsRows()
+        pageSubscription?.unsubscribe()
         forwardedRecordTypes.destroy()
         prefs.unregisterOnSharedPreferenceChangeListener(messageDetailsPrefsListener)
         hideAvatarPrefs.unregisterOnSharedPreferenceChangeListener(hideAvatarPrefsListener)
@@ -536,6 +546,12 @@ private class HchatExtraHooker(
     }
 
     fun installMessageDetails(): Boolean {
+        if (pageSubscription == null) {
+            pageSubscription = WeChatApis.chatPage()?.subscribe { event ->
+                if (event.isExit) clearMessageDetailsRows()
+                else if (event.isEnter && messageDetailsConfig.enabled) ChatRowRefresh.requestAfterTransition()
+            }
+        }
         val itemBind = locateMessageViewBindMethod()
         val adapterBinds = locateChattingAdapterBindMethods()
         val adapterClass = locateChattingDataAdapterClass()
@@ -549,6 +565,7 @@ private class HchatExtraHooker(
                     override fun beforeHookedMethod(param: MethodHookParam) {
                         // The payload method belongs to a shared base adapter. Only chat rows apply.
                         if (bind in adapterBinds && adapterClass?.isInstance(param.thisObject) != true) return
+                        if (!messageDetailsConfig.enabled) return
                         val state = runCatching { captureMessageDetailsBindState(param.args) }
                             .getOrElse {
                                 logger("消息显示时间绑定前状态读取失败", it)
@@ -557,12 +574,15 @@ private class HchatExtraHooker(
                         val stack = messageDetailsBindStates.get()
                             ?: ArrayDeque<MessageDetailsBindState>().also(messageDetailsBindStates::set)
                         stack.addLast(state)
+                        param.setObjectExtra("hchat.details.bind", state)
                     }
 
                     override fun afterHookedMethod(param: MethodHookParam) {
                         if (bind in adapterBinds && adapterClass?.isInstance(param.thisObject) != true) return
+                        val entered = param.getObjectExtra("hchat.details.bind") as? MessageDetailsBindState ?: return
                         val stack = messageDetailsBindStates.get()
-                        val state = stack?.pollLast() ?: MessageDetailsBindState(null)
+                        if (stack?.peekLast() !== entered) return
+                        val state = stack.pollLast()
                         val outer = stack?.lastOrNull { state.root != null && it.root === state.root }
                         if (outer != null && state.message != null) outer.message = state.message
                         if (stack?.isEmpty() == true) messageDetailsBindStates.remove()
@@ -1067,6 +1087,7 @@ private class HchatExtraHooker(
         capturedHolder: Any? = null,
         capturedMessage: Any? = null
     ): Boolean {
+        if (!messageDetailsConfig.enabled) return false
         val holder = messageBindHolder(args) ?: return false
         val holderRoot = findRootView(holder) ?: return false
         if (isScrollingContainer(holderRoot)) return false
@@ -1180,6 +1201,7 @@ private class HchatExtraHooker(
             return true
         }
         val config = messageDetailsConfig
+        if (!config.enabled) return false
         val position = config.position
         val configuredAvatarHidden = configuredAvatarHidden(details.isSelf)
         val hiddenAvatarBelowUsesBottom =
@@ -1368,8 +1390,24 @@ private class HchatExtraHooker(
         details: MessageDetails
     ) {
         synchronized(messageDetailsBindings) {
-            messageDetailsBindings[label] = MessageDetailsBinding(root, nativeTimeLabel, holder, nativeMessage, details)
+            val binding = MessageDetailsBinding(root, nativeTimeLabel, holder, nativeMessage, details)
+            // The row owns its binding. The process-wide index must not own the row graph.
+            label.setTag(R.id.hchat_message_details_binding, binding)
+            messageDetailsBindings[label] = binding
         }
+    }
+
+    private fun clearMessageDetailsRows() {
+        val roots = synchronized(messageDetailsBindTokens) { messageDetailsBindTokens.keys.toList() }
+        roots.forEach(::clearExcludedMessageDetails)
+        val labels = synchronized(messageDetailsLabels) { messageDetailsLabels.toList() }
+        labels.forEach(::removeMessageDetailsLabel)
+        messageDetailsAttachCallbacks.clear()
+        messageDetailsLayoutCallbacks.clear()
+        messageDetailsRetryListeners.clear()
+        messageDetailsPositionListeners.clear()
+        messageDetailsColorListeners.clear()
+        synchronized(messageDetailsBindTokens) { messageDetailsBindTokens.clear() }
     }
 
     private fun refreshAttachedMessageDetailsLabels() {
@@ -1388,7 +1426,7 @@ private class HchatExtraHooker(
 
     private fun refreshAttachedMessageDetailsLayouts() {
         val bindings = synchronized(messageDetailsBindings) {
-            messageDetailsBindings.entries.map { it.key to it.value }
+            messageDetailsBindings.snapshot()
         }
         bindings.forEach { (label, binding) ->
             label.post {
@@ -2165,6 +2203,9 @@ private class HchatExtraHooker(
         messageDetailsPositionListeners.cancel(label)
         messageDetailsColorListeners.cancel(label)
         synchronized(messageDetailsBindings) { messageDetailsBindings.remove(label) }
+        label.setTag(R.id.hchat_message_details_binding, null)
+        label.setOnClickListener(null)
+        label.isClickable = false
         synchronized(messageDetailsLabels) { messageDetailsLabels.remove(label) }
         (label.parent as? ViewGroup)?.removeView(label)
     }

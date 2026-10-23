@@ -27,7 +27,7 @@ internal class QQMusicOrderRuntime(
         WeChatApis.message().changes()?.let { changes ->
             runCatching { changes.install() }
                 .onFailure { logError("QQ点歌数据库监听安装失败", it) }
-            changes.subscribe(::onMessageChanged)?.let(track)
+            changes.subscribe({ it.isInsert() && settings.isEnabled() }, ::onMessageChanged)?.let(track)
         }
         track(NativeSendButtonHook.registerHandler(QQMusicOrderFeature.ID, ::onSendButton))
     }

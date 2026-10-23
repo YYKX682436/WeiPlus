@@ -53,6 +53,12 @@ public final class WeChatAccountApi {
         return wxId;
     }
 
+    /** Uncached login identity for invalidating account-scoped asynchronous work. */
+    public String sessionIdentity() {
+        String value = getLoginWxIdFromPrefs();
+        return !TextUtils.isEmpty(value) ? value : getSelfProfileField(FIELD_WXID);
+    }
+
     public String selfName() {
         return getSelfProfileField(FIELD_NAME);
     }

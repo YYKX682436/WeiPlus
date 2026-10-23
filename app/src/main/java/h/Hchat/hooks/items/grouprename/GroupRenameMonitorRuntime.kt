@@ -1,5 +1,7 @@
 package h.Hchat.hooks.items.grouprename
 
+import h.Hchat.hooks.items.groupmonitor.GroupMonitorSnapshots
+import h.Hchat.hooks.items.groupmonitor.GroupSnapshotState
 import android.content.SharedPreferences
 import h.Hchat.hooks.api.contact.WeChatChatroomChangeApi
 import h.Hchat.hooks.api.core.WeChatApis
@@ -23,130 +25,59 @@ class GroupRenameMonitorRuntime(
     private val prefs: SharedPreferences =
         HchatStorage.preferences(context.hostContext(), GroupRenameMonitorSettings.PREFS_NAME)
     private val realNameTailStore = RealNameTailStore(context.hostContext())
-    private val memberSnapshots = ConcurrentHashMap<String, Set<String>>()
-    private val memberNickSnapshots = ConcurrentHashMap<String, Map<String, String>>()
-    private val memberSnapshotWarmups = ConcurrentHashMap<String, Long>()
+    private val snapshots = GroupMonitorSnapshots.get(context.hostContext())
+    @Volatile private var destroyed = false
+    private val configListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ -> syncDemand(true) }
+    private var accountIdentity = ""
     private val recentInserts = ConcurrentHashMap<String, Long>()
     private val atPattern = Regex("\\[AtWx=([^\\]]+)]")
 
-    fun install(track: (Any?) -> Unit) {
-        val changes = WeChatApis.contact().chatroomChanges() ?: WeChatApis.chatroomChanges()
-        if (changes == null) {
-            logger("群聊变更 API 未就绪", null)
-            return
-        }
-        track(changes.subscribe { change -> handleChatroomChange(change) })
-        preloadSnapshots()
+    fun install() {
+        prefs.registerOnSharedPreferenceChangeListener(configListener)
+        syncDemand()
     }
 
-    fun preloadSnapshots() {
-        runCatching {
-            val chatrooms = WeChatApis.contact().chatrooms() ?: return
-            for (room in chatrooms.getChatrooms()) {
-                val groupId = room.chatroomId.trim()
-                if (groupId.isEmpty()) continue
-                val members = room.memberIds
-                    .asSequence()
-                    .map { it.trim() }
-                    .filter { it.isNotEmpty() }
-                    .toCollection(LinkedHashSet())
-                if (members.isEmpty()) continue
-                memberSnapshots.putIfAbsent(groupId, members)
-                val names = currentGroupNickNames(groupId, members, null)
-                if (names.isNotEmpty()) {
-                    memberNickSnapshots.putIfAbsent(groupId, names)
-                }
-            }
-        }.onFailure {
-            logger("预加载群成员改名快照失败", it)
-        }
+    private fun syncDemand(invalidate: Boolean = false) {
+        if (destroyed) return
+        val notice = prefs.getBoolean(GroupRenameMonitorSettings.KEY_NOTICE_ENABLE, false)
+        val specific = prefs.getString(GroupRenameMonitorSettings.KEY_NOTICE_SCOPE,
+            GroupRenameMonitorSettings.DEFAULT_NOTICE_SCOPE) == GroupRenameMonitorSettings.NOTICE_SCOPE_SPECIFIC
+        val noticeGroups = if (notice && specific) splitIds(prefs.getString(GroupRenameMonitorSettings.KEY_NOTICE_GROUPS, "").orEmpty()) else emptySet()
+        val sendGroups = if (prefs.getBoolean(GroupRenameMonitorSettings.KEY_SEND_ENABLE, false)) {
+            listenGroups().filter { replyTemplateFor(it)?.enabled != false }.toSet()
+        } else emptySet()
+        val scope = GroupSnapshotState.Scope(notice && !specific, noticeGroups + sendGroups)
+        snapshots.configure(OWNER, GroupSnapshotState.Demand(scope, scope), invalidate, ::handleChatroomChange)
+        if (!scope.active) recentInserts.clear()
     }
 
-    private fun handleChatroomChange(change: WeChatChatroomChangeApi.ChatroomChange) {
-        val memberListChanged = change.mayMemberListChanged()
-        val roomDataChanged = change.mayRoomDataChanged()
-        if (!memberListChanged && !roomDataChanged) return
-        val groupId = change.chatroomId().trim()
-        if (groupId.isEmpty()) return
-        val currentMembers = currentMembers(change)
-        if (currentMembers.isEmpty()) return
-        val currentNames = currentGroupNickNames(groupId, currentMembers, change)
-        val previousNames = if (currentNames.isEmpty()) {
-            null
-        } else {
-            memberNickSnapshots.put(groupId, currentNames)
-        }
-        val previousMembers = if (memberListChanged) {
-            memberSnapshots.put(groupId, currentMembers)
-        } else {
-            memberSnapshots[groupId].also { existing ->
-                if (existing == null) memberSnapshots.putIfAbsent(groupId, currentMembers)
-            }
-        }
-        val now = System.currentTimeMillis()
-        val joined = if (previousMembers == null) emptySet() else currentMembers - previousMembers
-        val left = if (previousMembers == null) emptySet() else previousMembers - currentMembers
-        val warmingUp = isSnapshotWarmup(groupId, now)
-        val bulkMemberSync = left.isEmpty() && joined.size >= BULK_SYNC_THRESHOLD
-        val candidates = if (!warmingUp && !bulkMemberSync && previousNames != null && previousMembers != null) {
-            renamedMembers(previousNames, currentNames, previousMembers intersect currentMembers)
-        } else {
-            emptyList()
-        }
-        val renames = candidates.takeUnless { it.size >= BULK_SYNC_THRESHOLD }.orEmpty()
+    fun preloadSnapshots() { syncDemand(); snapshots.preload() }
+
+    fun destroy() {
+        destroyed = true
+        prefs.unregisterOnSharedPreferenceChangeListener(configListener)
+        snapshots.remove(OWNER)
+        recentInserts.clear()
+    }
+
+    private fun handleChatroomChange(
+        groupId: String,
+        previous: GroupSnapshotState.Snapshot?,
+        current: GroupSnapshotState.Snapshot,
+        change: WeChatChatroomChangeApi.ChatroomChange
+    ) {
+        val identity = WeChatApis.contact().account()?.sessionIdentity().orEmpty()
+        if (identity != accountIdentity) { accountIdentity = identity; recentInserts.clear() }
+        if (destroyed || previous == null || System.currentTimeMillis() <= current.warmUntil) return
+        if (previous.names.isEmpty() || current.names.isEmpty()) return
+        val renames = renamedMembers(previous.names, current.names, previous.members intersect current.members)
+            .takeUnless { it.size >= BULK_SYNC_THRESHOLD }.orEmpty()
         for (rename in renames) {
-            if (prefs.getBoolean(
-                    GroupRenameMonitorSettings.KEY_NOTICE_ENABLE,
-                    GroupRenameMonitorSettings.DEFAULT_NOTICE_ENABLE
-                ) && isSystemNoticeGroupEnabled(groupId)
-            ) {
+            if (prefs.getBoolean(GroupRenameMonitorSettings.KEY_NOTICE_ENABLE, false) && isSystemNoticeGroupEnabled(groupId)) {
                 insertRenameMessage(groupId, rename)
             }
             sendRenameNotice(groupId, rename)
         }
-        if (previousMembers == null || (memberListChanged && bulkMemberSync)) {
-            memberSnapshotWarmups[groupId] = now + SNAPSHOT_WARMUP_MS
-        }
-    }
-
-    private fun currentMembers(change: WeChatChatroomChangeApi.ChatroomChange): Set<String> {
-        val ids = change.chatroom?.memberIds
-            ?: WeChatApis.contact().chatrooms()?.getMemberIds(change.chatroomId())
-            ?: emptyList()
-        return ids.asSequence()
-            .map { it.trim() }
-            .filter { it.isNotEmpty() }
-            .toCollection(LinkedHashSet())
-    }
-
-    private fun currentGroupNickNames(
-        groupId: String,
-        members: Set<String>,
-        change: WeChatChatroomChangeApi.ChatroomChange?
-    ): Map<String, String> {
-        val resolved = WeChatApis.contact().contacts()?.getGroupMemberRoomDisplayNames(groupId).orEmpty()
-        val result = LinkedHashMap<String, String>()
-        for (memberId in members) {
-            if (resolved.containsKey(memberId)) {
-                result[memberId] = normalizeGroupNick(resolved[memberId], memberId)
-            }
-        }
-        val chatroom = change?.chatroom
-        if (chatroom != null && chatroom.memberIds.isNotEmpty()) {
-            val rawNames = splitDisplayNames(chatroom.rawDisplayNames, chatroom.memberIds.size)
-            if (rawNames.size == chatroom.memberIds.size) {
-                chatroom.memberIds.forEachIndexed { index, memberId ->
-                    if (memberId in members && !result.containsKey(memberId)) {
-                        result[memberId] = normalizeGroupNick(rawNames[index], memberId)
-                    }
-                }
-            }
-        }
-        return result.takeIf { it.keys.containsAll(members) }.orEmpty()
-    }
-
-    private fun normalizeGroupNick(value: String?, memberId: String): String {
-        return value?.trim().orEmpty().takeUnless { it == memberId }.orEmpty()
     }
 
     private fun renamedMembers(
@@ -159,13 +90,6 @@ class GroupRenameMonitorRuntime(
             val newName = current[memberId]?.trim().orEmpty()
             if (oldName == newName) null else MemberRename(memberId, oldName, newName)
         }
-    }
-
-    private fun isSnapshotWarmup(groupId: String, now: Long): Boolean {
-        val until = memberSnapshotWarmups[groupId] ?: return false
-        if (now <= until) return true
-        memberSnapshotWarmups.remove(groupId, until)
-        return false
     }
 
     private fun insertRenameMessage(groupId: String, rename: MemberRename) {
@@ -224,6 +148,7 @@ class GroupRenameMonitorRuntime(
             )
         ) return
         if (groupId !in listenGroups()) return
+        val lease = snapshots.lease()
         Thread({
             runCatching {
                 val template = replyTemplateFor(groupId)
@@ -233,10 +158,11 @@ class GroupRenameMonitorRuntime(
                     GroupRenameMonitorSettings.DEFAULT_DELAY_SECONDS
                 )).coerceIn(0, 600)
                 sleepQuietly(delaySeconds * 1000L)
+                if (!canSend(groupId, lease)) return@runCatching
                 val variables = replyVariables(groupId, rename)
                 val promptType = template?.promptType ?: promptTypeFor(groupId)
-                val textTask = { sendText(groupId, variables, template) }
-                val cardTask = { sendCard(groupId, variables, template) }
+                val textTask = { sendText(groupId, variables, template, lease) }
+                val cardTask = { sendCard(groupId, variables, template, lease) }
                 val tasks = when (promptType) {
                     GroupRenameMonitorSettings.PROMPT_CARD -> listOf(cardTask)
                     GroupRenameMonitorSettings.PROMPT_BOTH -> {
@@ -249,6 +175,7 @@ class GroupRenameMonitorRuntime(
                     else -> listOf(textTask)
                 }
                 tasks.forEachIndexed { index, task ->
+                    if (!canSend(groupId, lease)) return@runCatching
                     task()
                     if (index < tasks.lastIndex) sleepQuietly(300L)
                 }
@@ -257,6 +184,11 @@ class GroupRenameMonitorRuntime(
             }
         }, "Hchat-GroupRenameMonitor").start()
     }
+
+    private fun canSend(groupId: String, lease: Long): Boolean =
+        !destroyed && snapshots.current(OWNER, groupId, lease) &&
+            prefs.getBoolean(GroupRenameMonitorSettings.KEY_SEND_ENABLE, false) && groupId in listenGroups() &&
+            replyTemplateFor(groupId)?.enabled != false
 
     private fun replyVariables(groupId: String, rename: MemberRename): ReplyVariables {
         val contacts = WeChatApis.contact().contacts()
@@ -280,7 +212,7 @@ class GroupRenameMonitorRuntime(
         )
     }
 
-    private fun sendText(groupId: String, variables: ReplyVariables, template: GroupRenameReplyTemplate?) {
+    private fun sendText(groupId: String, variables: ReplyVariables, template: GroupRenameReplyTemplate?, lease: Long) {
         val source = template?.text
             ?: groupValue(groupId, GroupRenameMonitorSettings.KEY_TEXT, GroupRenameMonitorSettings.DEFAULT_TEXT)
         val text = applyVariables(pickTemplate(source), variables)
@@ -291,17 +223,18 @@ class GroupRenameMonitorRuntime(
             return
         }
         val parsed = parseAtContent(groupId, text)
+        if (!canSend(groupId, lease)) return
         val sent = when {
             parsed == null -> sender.sendText(groupId, text)
             parsed.atList.isEmpty() -> sender.sendText(groupId, parsed.content)
             else -> sender.sendTextWithAtList(groupId, parsed.content, parsed.atList)
         }
-        if (!sent && parsed?.content?.isNotBlank() == true) {
+        if (!sent && parsed?.content?.isNotBlank() == true && canSend(groupId, lease)) {
             sender.sendText(groupId, parsed.content)
         }
     }
 
-    private fun sendCard(groupId: String, variables: ReplyVariables, template: GroupRenameReplyTemplate?) {
+    private fun sendCard(groupId: String, variables: ReplyVariables, template: GroupRenameReplyTemplate?, lease: Long) {
         val titleSource = template?.cardTitle
             ?: groupValue(groupId, GroupRenameMonitorSettings.KEY_CARD_TITLE, GroupRenameMonitorSettings.DEFAULT_CARD_TITLE)
         val descSource = template?.cardDesc
@@ -311,8 +244,9 @@ class GroupRenameMonitorRuntime(
         if (title.isBlank() && desc.isBlank()) return
         val avatarUrl = WeChatApis.contact().contacts()?.getAvatarUrl(variables.userWxid, true).orEmpty()
         val thumb = downloadBytes(avatarUrl)
+        if (!canSend(groupId, lease)) return
         val sent = WeChatApis.media()?.shareWebpage(groupId, title, desc, avatarUrl, thumb, "") == true
-        if (!sent) {
+        if (!sent && canSend(groupId, lease)) {
             (WeChatApis.message().sender() ?: WeChatApis.messages())?.sendText(
                 groupId,
                 listOf(title, desc).filter { it.isNotBlank() }.joinToString("\n")
@@ -442,14 +376,6 @@ class GroupRenameMonitorRuntime(
         return value.split('|', ',').map { it.trim() }.filter { it.isNotEmpty() }.toSet()
     }
 
-    private fun splitDisplayNames(displayNames: String, expectedCount: Int): List<String> {
-        if (displayNames.isBlank()) return emptyList()
-        for (delimiter in listOf("\u0001", "\u0002", "\n", ";")) {
-            val parts = displayNames.split(delimiter)
-            if (parts.size == expectedCount) return parts
-        }
-        return listOf(displayNames)
-    }
 
     private fun cleanupRecentInserts(now: Long) {
         if (recentInserts.size >= 128) {
@@ -508,8 +434,8 @@ class GroupRenameMonitorRuntime(
     )
 
     private companion object {
+        const val OWNER = "rename"
         const val DEDUP_WINDOW_MS = 5000L
-        const val SNAPSHOT_WARMUP_MS = 15_000L
         const val BULK_SYNC_THRESHOLD = 10
     }
 }

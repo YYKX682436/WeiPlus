@@ -20,12 +20,15 @@ class GroupRenameMonitorFeature : BaseFeature() {
         GroupLeaveMonitorHighlighter.installProfileLinkClick(context, ::logError)
         val monitor = GroupRenameMonitorRuntime(context, ::logError)
         runtime = monitor
-        monitor.install { subscription ->
-            trackSubscription(subscription)
-        }
+        monitor.install()
         subscribe(Events.DexReady::class.java) {
             monitor.preloadSnapshots()
         }
+    }
+
+    override fun onFeatureDestroy(context: FeatureContext) {
+        runtime?.destroy()
+        runtime = null
     }
 
     companion object {

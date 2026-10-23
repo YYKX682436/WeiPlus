@@ -53,6 +53,10 @@ public final class WeChatMessageEventApi {
                 && parseApi != null && eventBus != null;
     }
 
+    public boolean isOperational() {
+        return hooked;
+    }
+
     public void installAddMsgHook() {
         if (!isAvailable()) return;
         if (hooked) {

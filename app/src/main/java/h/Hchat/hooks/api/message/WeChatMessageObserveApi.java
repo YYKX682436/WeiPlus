@@ -410,7 +410,7 @@ public final class WeChatMessageObserveApi {
     }
 
     public synchronized void install() {
-        boolean usePbLayer = eventApi != null && eventApi.isAvailable();
+        boolean usePbLayer = eventApi != null && eventApi.isOperational();
         if (usePbLayer && !pbLayerActive) {
             eventApi.subscribeMessage(this::onMessageReceived);
             eventApi.subscribePat(this::onPatDetected);
@@ -418,7 +418,7 @@ public final class WeChatMessageObserveApi {
         }
         if (changeApi != null && changeApi.isAvailable() && !dbLayerActive) {
             databaseIncomingStartedAt = System.currentTimeMillis();
-            changeApi.subscribe(this::onMessageChanged);
+            changeApi.subscribe(this::needsDatabaseMessage, this::onMessageChanged);
             dbLayerActive = true;
         }
         installed = true;
@@ -508,6 +508,15 @@ public final class WeChatMessageObserveApi {
                 event.template,
                 event.createTime,
                 event.svrId));
+    }
+
+    private boolean needsDatabaseMessage(h.Hchat.hooks.api.model.DatabaseChange change) {
+        if (listeners.isEmpty() || change.isDelete()) return false;
+        // Missing direction on UPDATE is unknown, not incoming. Resolve it synchronously.
+        Integer direction = change.values != null && change.values.containsKey("isSend")
+                ? change.values.getAsInteger("isSend") : null;
+        if (direction == null || direction != 0) return true;
+        return !pbLayerActive && change.isInsert();
     }
 
     private void onMessageChanged(WeChatMessageChangeApi.MessageChange change) {

@@ -50,6 +50,8 @@ public class DexFinder {
     private static final String LOCATOR_PACKET_COMPLETE = "locator.packet.complete";
     private static final String LOCATOR_ECS_COMPLETE = "locator.ecs.complete";
     private static final String LOCATOR_MSG_DESC_COMPLETE = "locator.msg.desc.complete";
+    private static final String MSG_DESC_LOCATOR_VERSION_KEY = "locator.msg.desc.version";
+    private static final String MSG_DESC_LOCATOR_VERSION = "2";
     private static final String RED_PACKET_UNION_LOCATOR_VERSION_KEY = "redpacket.union.locator.version";
     private static final String RED_PACKET_UNION_LOCATOR_VERSION = "1";
     private static final String NETWORK_QUEUE_LOCATOR_VERSION_KEY = "network.queue.locator.version";
@@ -59,6 +61,7 @@ public class DexFinder {
     private final ClassLoader classLoader;
     private final SharedPreferences cachePrefs;
     private final SharedPreferences contactCachePrefs;
+    private final SharedPreferences msgDescCachePrefs;
     private final DexFinderCacheStore cacheStore;
     private final DexFinderCacheStore.Preferences cachePreferenceView;
     private final DexFinderCacheStore.Preferences contactCachePreferenceView;
@@ -279,6 +282,9 @@ public class DexFinder {
                 : null;
         this.contactCachePrefs = hostContext != null
                 ? HchatStorage.preferences(hostContext, CONTACT_CACHE_PREFS)
+                : null;
+        this.msgDescCachePrefs = hostContext != null
+                ? HchatStorage.preferences(hostContext, "Hchat_msg_desc_method_cache")
                 : null;
         this.cachePreferenceView = cachePrefs != null ? new SharedPreferencesView(cachePrefs) : null;
         this.contactCachePreferenceView = contactCachePrefs != null
@@ -1293,16 +1299,37 @@ public class DexFinder {
     }
 
     public synchronized void resolveMsgDescTextApi() {
-        if (ensureSnapshotLoaded() && msgDescLocatorResolved) return;
+        ensureSnapshotLoaded();
         try {
+            msgDescTextMethods.removeIf(method -> !isMsgDescTextMethod(method));
+            if (msgDescTextMethods.isEmpty()) msgDescLocatorResolved = false;
+            if (!msgDescLocatorResolved && msgDescCachePrefs != null) {
+                for (Method method : DexMethodCache.INSTANCE.loadList(msgDescCachePrefs, runtimeCacheKey,
+                        classLoader, "summary_v" + MSG_DESC_LOCATOR_VERSION)) {
+                    if (isMsgDescTextMethod(method) && !msgDescTextMethods.contains(method)) {
+                        msgDescTextMethods.add(method);
+                    }
+                }
+                msgDescLocatorResolved = !msgDescTextMethods.isEmpty();
+            }
             if (msgDescLocatorResolved) return;
             if (!msgDescTextMethods.isEmpty()) {
                 msgDescLocatorResolved = true;
                 saveCache();
                 return;
             }
-            // 跨版本通用：微信消息描述文本方法名稳定为 "l"（各版本 xN0.q/r.l），用 "string" 字符串缩小范围后按签名过滤
-            List<MethodData> methods = dexKit.findMethod(mkMethodUsingStringsAndName("l", "string"));
+            // 8.0.76 pt0.r.l: AppMessage resource lookup followed by nullable String.isEmpty().
+            // Match behavior and owner as well as signature; "string" alone is far too broad.
+            MethodMatcher matcher = new MethodMatcher();
+            matcher.name("l");
+            matcher.returnType(String.class);
+            matcher.paramTypes(android.content.Context.class, boolean.class);
+            matcher.usingEqStrings("string");
+            matcher.declaredClass(new ClassMatcher().usingEqStrings("MicroMsg.AppMessage"));
+            matcher.invokeMethods(new org.luckypray.dexkit.query.matchers.MethodsMatcher()
+                    .add(new MethodMatcher().declaredClass("java.lang.String").name("isEmpty").paramTypes())
+                    .add(new MethodMatcher().declaredClass("android.content.res.Resources").name("getIdentifier")));
+            List<MethodData> methods = dexKit.findMethod(new FindMethod().matcher(matcher));
             for (MethodData methodData : methods) {
                 try {
                     Method method = methodData.getMethodInstance(classLoader);
@@ -1312,6 +1339,10 @@ public class DexFinder {
                 } catch (Throwable ignored) {}
             }
             if (!msgDescTextMethods.isEmpty()) {
+                // The complete global snapshot may be unsavable because an unrelated locator failed.
+                // Reuse the established small method cache instead of re-scanning on every launch.
+                if (msgDescCachePrefs != null) DexMethodCache.INSTANCE.saveList(msgDescCachePrefs,
+                        runtimeCacheKey, "summary_v" + MSG_DESC_LOCATOR_VERSION, msgDescTextMethods);
                 logDetail("消息描述文本兜底方法: " + msgDescTextMethods.size() + " 个");
             }
             msgDescLocatorResolved = true;
@@ -1323,6 +1354,10 @@ public class DexFinder {
 
     private boolean isMsgDescTextMethod(Method method) {
         if (method == null) return false;
+        if (!"l".equals(method.getName()) || java.lang.reflect.Modifier.isStatic(method.getModifiers())
+                || java.lang.reflect.Modifier.isAbstract(method.getModifiers())
+                || method.isBridge() || method.isSynthetic()
+                || method.getDeclaringClass().isInterface()) return false;
         if (method.getReturnType() != String.class) return false;
         Class<?>[] params = method.getParameterTypes();
         return params.length == 2 && params[0] == android.content.Context.class && params[1] == boolean.class;
@@ -3546,6 +3581,9 @@ public class DexFinder {
             ecsGiftServiceClass = loadClass("ecsGiftServiceClass");
             ecsGiftMsgClass = loadClass("ecsGiftMsgClass");
             msgDescTextMethods = loadMethodList("msgDescTextMethods");
+            if (!MSG_DESC_LOCATOR_VERSION.equals(cachePrefs.getString(MSG_DESC_LOCATOR_VERSION_KEY, ""))) {
+                msgDescTextMethods.clear();
+            }
             wishLocatorResolved = cachePrefs.getBoolean(LOCATOR_WISH_COMPLETE, false);
             packetCompatLocatorResolved = cachePrefs.getBoolean(LOCATOR_PACKET_COMPLETE, false);
             ecsGiftLocatorResolved = cachePrefs.getBoolean(LOCATOR_ECS_COMPLETE, false);
@@ -4998,6 +5036,7 @@ public class DexFinder {
             editor.putBoolean(LOCATOR_PACKET_COMPLETE, packetCompatLocatorResolved);
             editor.putBoolean(LOCATOR_ECS_COMPLETE, ecsGiftLocatorResolved);
             editor.putBoolean(LOCATOR_MSG_DESC_COMPLETE, msgDescLocatorResolved);
+            editor.putString(MSG_DESC_LOCATOR_VERSION_KEY, MSG_DESC_LOCATOR_VERSION);
             editor.apply();
         } catch (Throwable e) {
             h.Hchat.utils.HLog.e(TAG + " 保存缓存失败: " + e.getMessage(), e);

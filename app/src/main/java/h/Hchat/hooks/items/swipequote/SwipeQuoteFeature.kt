@@ -19,6 +19,8 @@ import android.widget.TextView
 import android.widget.EditText
 import android.widget.Toast
 import de.robv.android.xposed.XC_MethodHook
+import android.content.SharedPreferences
+import h.Hchat.hooks.core.ChatRowRefresh
 import h.Hchat.dexkit.DexMethodCache
 import h.Hchat.event.Events
 import h.Hchat.hooks.api.core.WeChatApis
@@ -63,6 +65,11 @@ class SwipeQuoteFeature : BaseFeature() {
         }
     }
 
+    override fun onFeatureDestroy(context: FeatureContext) {
+        adapter?.destroy()
+        adapter = null
+    }
+
     private fun logFeatureError(message: String, throwable: Throwable?) {
         logError(message, throwable)
     }
@@ -99,6 +106,38 @@ private class SwipeQuoteAdapter(
     private val repeatVoiceExecutor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "Hchat-SwipeRepeatVoice").apply { isDaemon = true }
     }
+    private val prefs = HchatStorage.preferences(context.hostContext(), SwipeQuoteSettings.PREFS_NAME)
+    @Volatile private var quoteEnabled = prefs.getBoolean(SwipeQuoteSettings.KEY_ENABLE, SwipeQuoteSettings.DEFAULT_ENABLE)
+    @Volatile private var repeatEnabled = prefs.getBoolean(SwipeQuoteSettings.KEY_REPEAT_ENABLE, SwipeQuoteSettings.DEFAULT_REPEAT_ENABLE)
+    @Volatile private var repeatMenuEnabled = prefs.getBoolean(SwipeQuoteSettings.KEY_REPEAT_MENU_ENABLE, SwipeQuoteSettings.DEFAULT_REPEAT_MENU_ENABLE)
+    private val configListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
+        quoteEnabled = prefs.getBoolean(SwipeQuoteSettings.KEY_ENABLE, SwipeQuoteSettings.DEFAULT_ENABLE)
+        repeatEnabled = prefs.getBoolean(SwipeQuoteSettings.KEY_REPEAT_ENABLE, SwipeQuoteSettings.DEFAULT_REPEAT_ENABLE)
+        repeatMenuEnabled = prefs.getBoolean(SwipeQuoteSettings.KEY_REPEAT_MENU_ENABLE, SwipeQuoteSettings.DEFAULT_REPEAT_MENU_ENABLE)
+        mainHandler.post {
+            if (!isEnabled()) clearRows() else ChatRowRefresh.request()
+            if (!repeatMenuEnabled) clearRepeatMenuTargets()
+        }
+    }
+    init { prefs.registerOnSharedPreferenceChangeListener(configListener) }
+
+    private fun clearRows() {
+        synchronized(rootTargets) { rootTargets.keys.toList() }.forEach(::clearSwipeVisual)
+        synchronized(recyclerStates) { recyclerStates.values.toList() }.forEach { clearSwipeVisual(it.visualRow) }
+        rootTargets.clear()
+        recyclerStates.clear()
+    }
+
+    fun destroy() {
+        quoteEnabled = false
+        repeatEnabled = false
+        prefs.unregisterOnSharedPreferenceChangeListener(configListener)
+        clearRows()
+        clearRepeatMenuTargets()
+        repeatVoiceExecutor.shutdownNow()
+        lastFooterRef.clear()
+    }
+
     @Volatile private var dexQuoteMethod: Method? = null
     @Volatile private var lastFooterRef = WeakReference<Any>(null)
     private val rootTargets = Collections.synchronizedMap(WeakHashMap<View, QuoteTarget>())
@@ -497,18 +536,20 @@ private class SwipeQuoteAdapter(
     }
 
     private fun bindMessageRoot(param: XC_MethodHook.MethodHookParam) {
+        if (!isEnabled() || param.hasThrowable()) return
         val args = param.args ?: return
         if (args.size < 2) return
         val holder = args[0] ?: return
         val position = args[1] as? Int ?: return
+        val root = findRootView(holder) ?: return
+        rootTargets.remove(root)
+        clearSwipeVisual(root)
         val item = adapterItem(param.thisObject ?: return, position) ?: return
         val msg = resolveNativeMessage(item) ?: return
         val msgId = messageId(msg)
         if (msgId <= 0L) return
         val talker = WeChatApis.chatPage()?.currentTalker().orEmpty()
         if (talker.isEmpty()) return
-        val root = findRootView(holder) ?: return
-        clearSwipeVisual(root)
         rootTargets[root] = QuoteTarget(talker, msgId, msg)
     }
 
@@ -1530,23 +1571,9 @@ private class SwipeQuoteAdapter(
         return isQuoteEnabled() || isRepeatEnabled()
     }
 
-    private fun isQuoteEnabled(): Boolean {
-        val sp = HchatStorage.preferences(context.hostContext(), SwipeQuoteSettings.PREFS_NAME)
-        return sp.getBoolean(SwipeQuoteSettings.KEY_ENABLE, SwipeQuoteSettings.DEFAULT_ENABLE)
-    }
-
-    private fun isRepeatEnabled(): Boolean {
-        val sp = HchatStorage.preferences(context.hostContext(), SwipeQuoteSettings.PREFS_NAME)
-        return sp.getBoolean(SwipeQuoteSettings.KEY_REPEAT_ENABLE, SwipeQuoteSettings.DEFAULT_REPEAT_ENABLE)
-    }
-
-    private fun isRepeatMenuEnabled(): Boolean {
-        val sp = HchatStorage.preferences(context.hostContext(), SwipeQuoteSettings.PREFS_NAME)
-        return sp.getBoolean(
-            SwipeQuoteSettings.KEY_REPEAT_MENU_ENABLE,
-            SwipeQuoteSettings.DEFAULT_REPEAT_MENU_ENABLE
-        )
-    }
+    private fun isQuoteEnabled(): Boolean = quoteEnabled
+    private fun isRepeatEnabled(): Boolean = repeatEnabled
+    private fun isRepeatMenuEnabled(): Boolean = repeatMenuEnabled
 
     private fun dp(value: Float): Float {
         return value * context.hostContext().resources.displayMetrics.density

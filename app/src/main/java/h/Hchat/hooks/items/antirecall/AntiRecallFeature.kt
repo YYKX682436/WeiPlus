@@ -1,5 +1,7 @@
 package h.Hchat.hooks.items.antirecall
 
+import android.content.SharedPreferences
+import h.Hchat.hooks.items.automessageforward.AutoMessageForwardSettings
 import android.content.ContentValues
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
@@ -44,7 +46,7 @@ class AntiRecallFeature : BaseFeature() {
 
     override fun onFeatureInstall(context: FeatureContext) {
         methodCachePrefs = DexMethodCache.prefs(context.hostContext(), "Hchat_anti_recall_method_cache")
-        installMessageCache()
+        installMessageCache(context)
         installSelfRecallUpdateHook(context)
         scheduleDexHooks(context)
         subscribe(Events.DexReady::class.java) {
@@ -70,6 +72,7 @@ class AntiRecallFeature : BaseFeature() {
                 try {
                     HookRegistry.get().hook(method, object : XC_MethodHook() {
                         override fun beforeHookedMethod(param: MethodHookParam) {
+                            if (!cacheNeeded) return
                             val args = param.args ?: return
                             val talker = args.getOrNull(0) as? String ?: ""
                             val svrId = (args.getOrNull(1) as? Number)?.toLong() ?: 0L
@@ -173,13 +176,52 @@ class AntiRecallFeature : BaseFeature() {
         return true
     }
 
-    private fun installMessageCache() {
+    @Volatile private var cacheNeeded = false
+    private var cachePrefs: SharedPreferences? = null
+    private var forwardPrefs: SharedPreferences? = null
+    private var cacheListener: SharedPreferences.OnSharedPreferenceChangeListener? = null
+
+    private fun installMessageCache(context: FeatureContext) {
+        val host = context.hostContext()
+        cachePrefs = HchatStorage.preferences(host, AntiRecallSettings.PREFS_NAME)
+        forwardPrefs = HchatStorage.preferences(host, AutoMessageForwardSettings.PREFS_NAME)
+        val refresh = {
+            val forwarding = AutoMessageForwardSettings.isEnabled(host)
+            cacheNeeded = RecallCachePolicy.needed(isAntiRecallEnabled(context), forwarding,
+                forwarding && AutoMessageForwardSettings.rules(host).any { it.enabled && it.followSourceRecall })
+            if (!cacheNeeded) messageCache.clear()
+            if (!isAntiRecallEnabled(context)) {
+                rawMessageRows.clear()
+                selfRecallMsgIds.clear()
+                handledRecalls.clear()
+            }
+        }
+        cacheListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ -> refresh() }
+        cachePrefs?.registerOnSharedPreferenceChangeListener(cacheListener)
+        forwardPrefs?.registerOnSharedPreferenceChangeListener(cacheListener)
+        refresh()
         trackSubscription(WeChatApis.messageEvents()?.subscribeMessage { event ->
-            rememberMessage(event)
+            if (cacheNeeded) rememberMessage(event)
         })
-        trackSubscription(WeChatApis.messageChanges()?.subscribe { change ->
-            rememberMessage(change?.message)
-        })
+        trackSubscription(WeChatApis.messageChanges()?.subscribe({ change ->
+            // PB carries incoming payloads; DB remains the outgoing/update and PB fallback channel.
+            RecallCachePolicy.needsDatabase(cacheNeeded, WeChatApis.messageEvents()?.isOperational == true,
+                change.values?.getAsInteger("isSend"), change.isUpdate(), change.isDelete())
+        }) { change -> if (cacheNeeded) rememberMessage(change?.message) })
+    }
+
+    override fun onFeatureDestroy(context: FeatureContext) {
+        cacheNeeded = false
+        cacheListener?.let {
+            cachePrefs?.unregisterOnSharedPreferenceChangeListener(it)
+            forwardPrefs?.unregisterOnSharedPreferenceChangeListener(it)
+        }
+        cacheListener = null
+        messageCache.clear()
+        rawMessageRows.clear()
+        selfRecallMsgIds.clear()
+        handledRecalls.clear()
+        publishedRecallEvents.clear()
     }
 
     private fun rememberMessage(event: Events.MessageReceived?) {
@@ -201,7 +243,9 @@ class AntiRecallFeature : BaseFeature() {
 
     private fun rememberMessage(message: WeChatMessage?) {
         if (message == null || message.talker.isBlank() || message.msgSvrId <= 0L || message.isRecalled()) return
+        if (!cacheNeeded) return
         messageCache[cacheKey(message.talker, message.msgSvrId)] = message
+        if (!cacheNeeded) messageCache.clear()
         if (messageCache.size > MAX_CACHED_MESSAGES) {
             messageCache.keys.take((messageCache.size - MAX_CACHED_MESSAGES).coerceAtLeast(0)).forEach { messageCache.remove(it) }
         }

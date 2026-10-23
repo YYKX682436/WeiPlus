@@ -19,12 +19,15 @@ class GroupLeaveMonitorFeature : BaseFeature() {
         GroupLeaveMonitorHighlighter.install(context, ::logError)
         val runtime = GroupLeaveMonitorRuntime(context, ::logError)
         monitor = runtime
-        runtime.install { subscription ->
-            trackSubscription(subscription)
-        }
+        runtime.install()
         subscribe(Events.DexReady::class.java) {
             runtime.preloadSnapshots()
         }
+    }
+
+    override fun onFeatureDestroy(context: FeatureContext) {
+        monitor?.destroy()
+        monitor = null
     }
 
     companion object {

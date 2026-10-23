@@ -1,4 +1,5 @@
 <resources>
+    <item name="hchat_message_details_binding" type="id" />
     <item name="hchat_message_text_color_applied" type="id" />
     <item name="hchat_message_text_color_original" type="id" />
     <item name="hchat_message_text_color_value" type="id" />

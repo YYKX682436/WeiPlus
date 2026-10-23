@@ -141,16 +141,16 @@ object OutgoingMessageStatsRepository {
             refreshAsync()
             return
         }
-        executor.execute { applyMessageChange(msgId) }
+        executor.execute { applyMessageChange(msgId, change.table) }
     }
 
-    private fun applyMessageChange(msgId: Long) {
+    private fun applyMessageChange(msgId: Long, table: String?) {
         val today = InputHintSettings.dayKey(System.currentTimeMillis())
         if (cachedDay != today) {
             refreshAsync()
             return
         }
-        val message = WeChatApis.message().store()?.getMessageById(msgId)
+        val message = WeChatApis.message().store()?.getMessageById(table, msgId)
         if (message == null) {
             refreshAsync()
             return
@@ -205,17 +205,8 @@ object OutgoingMessageStatsRepository {
         return lower == "message" || lower.startsWith("message_") || lower.endsWith("_message")
     }
 
-    private fun resolveMsgId(change: DatabaseChange): Long {
-        for (key in listOf("msgId", "msgid", "_id", "rowid")) {
-            val value = runCatching { change.values?.getAsLong(key) ?: 0L }.getOrDefault(0L)
-            if (value > 0L) return value
-        }
-        if (change.isInsert() && change.result > 0L) return change.result
-        if (!change.whereClause.orEmpty().contains("msgid", ignoreCase = true)) return 0L
-        return change.whereArgs.orEmpty()
-            .firstNotNullOfOrNull { value -> value.toLongOrNull()?.takeIf { it > 0L } }
-            ?: 0L
-    }
+    private fun resolveMsgId(change: DatabaseChange): Long =
+        h.Hchat.hooks.api.message.WeChatMessageChangeApi.resolveMsgId(change)
 
     private fun contentValueInt(change: DatabaseChange, key: String): Int? = runCatching {
         if (change.values?.containsKey(key) == true) change.values?.getAsInteger(key) else null

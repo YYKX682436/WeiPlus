@@ -445,7 +445,7 @@ public class ModuleEntry implements IXposedHookLoadPackage {
     /**
      * 防崩兜底：微信 8.0.76 的 pt0.r.l(Context, boolean) 存在未初始化局部变量，
      * 收到特殊小程序电商卡片消息（type 44 + ecsInfo）时 String.isEmpty() 对 null 调用导致崩溃。
-     * 这里 hook 该方法，手动调用原方法并捕获异常，崩溃时兜底返回空串。
+     * 原调用链正常执行一次，仅在 after 中兜底已确认的 String.isEmpty() 空指针。
      */
     private void installMsgDescTextFallback(DexFinder finder) {
         try {
@@ -461,12 +461,8 @@ public class ModuleEntry implements IXposedHookLoadPackage {
                             m.getDeclaringClass(), m.getName(), Context.class, boolean.class,
                             new XC_MethodHook() {
                                 @Override
-                                protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                                    try {
-                                        // param.method 是 Member，需转 Method 再手动调用原方法，捕获微信内部 NPE 兜底
-                                        Method original = (Method) param.method;
-                                        param.setResult(original.invoke(param.thisObject, param.args));
-                                    } catch (Throwable t) {
+                                protected void afterHookedMethod(MethodHookParam param) {
+                                    if (h.Hchat.hooks.core.MsgDescFallback.isTargetFailure(m, param.getThrowable())) {
                                         param.setResult("");
                                     }
                                 }

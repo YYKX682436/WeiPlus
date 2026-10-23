@@ -1,0 +1,686 @@
+{
+  "schema": 2,
+  "date": "2026-10-24",
+  "baselineCommit": "5d6af5e8a96cca296a56fa644c414abaf9a1ca39",
+  "apkSha256": "04a26023364fd6347f366a153a6f7440c705f3b00677defd397e0510805a5620",
+  "hostPackage": "com.tencent.mm",
+  "weChatVersion": "8.0.76",
+  "androidSdk": 35,
+  "protocol": {
+    "startupWaitSeconds": 45,
+    "homeSelectionWaitSeconds": 2,
+    "scrollPairs": 10,
+    "swipeDurationMs": 400,
+    "chatEnterExitCycles": 15,
+    "postCyclesWaitSeconds": 10,
+    "explicitGc": false,
+    "profilingAgentDuringMeasurements": false,
+    "foregroundCheckedDuringFinalRun": true
+  },
+  "notes": [
+    "baseline is exploratory: it omitted the extra 2-second home selection wait; baseline2 is the exact protocol comparator.",
+    "All sampled development variants are retained separately. Only final uses the delivered APK SHA; development variants must not be pooled as final samples.",
+    "Views are total dumpsys counts, not retained message-details objects.",
+    "External incoming traffic and WeChat/system background work were not isolated.",
+    "Final PSS and frame measurements share one PID. P95 and P99 are higher than baseline2; no stable memory/jank benefit is established."
+  ],
+  "comparison": {
+    "baseline": {
+      "name": "baseline2",
+      "memory": {
+        "stable": {
+          "totalPssKiB": 687575,
+          "totalRssKiB": 1105104,
+          "swapPssKiB": 411,
+          "javaHeapPssKiB": 100296,
+          "nativeHeapPssKiB": 135544,
+          "views": 1902,
+          "viewRoots": 1,
+          "activities": 1
+        },
+        "scroll": {
+          "totalPssKiB": 706820,
+          "totalRssKiB": 1125288,
+          "swapPssKiB": 340,
+          "javaHeapPssKiB": 85428,
+          "nativeHeapPssKiB": 149180,
+          "views": 3741,
+          "viewRoots": 1,
+          "activities": 1
+        },
+        "cycles": {
+          "totalPssKiB": 756593,
+          "totalRssKiB": 1175328,
+          "swapPssKiB": 340,
+          "javaHeapPssKiB": 117188,
+          "nativeHeapPssKiB": 161788,
+          "views": 3740,
+          "viewRoots": 1,
+          "activities": 1
+        }
+      },
+      "scrollFrames": {
+        "frames": 1689,
+        "jankyFrames": 37,
+        "jankyPercent": 2.19,
+        "p50Ms": 7,
+        "p90Ms": 8,
+        "p95Ms": 9,
+        "p99Ms": 24
+      },
+      "samePidAcrossStages": true
+    },
+    "final": {
+      "name": "final",
+      "memory": {
+        "stable": {
+          "totalPssKiB": 688288,
+          "totalRssKiB": 1132732,
+          "swapPssKiB": 16,
+          "javaHeapPssKiB": 130860,
+          "nativeHeapPssKiB": 134052,
+          "views": 1902,
+          "viewRoots": 1,
+          "activities": 1
+        },
+        "scroll": {
+          "totalPssKiB": 665443,
+          "totalRssKiB": 1110868,
+          "swapPssKiB": 16,
+          "javaHeapPssKiB": 77108,
+          "nativeHeapPssKiB": 150020,
+          "views": 3755,
+          "viewRoots": 1,
+          "activities": 1
+        },
+        "cycles": {
+          "totalPssKiB": 717912,
+          "totalRssKiB": 1163604,
+          "swapPssKiB": 16,
+          "javaHeapPssKiB": 112956,
+          "nativeHeapPssKiB": 162820,
+          "views": 3754,
+          "viewRoots": 1,
+          "activities": 1
+        }
+      },
+      "scrollFrames": {
+        "frames": 1676,
+        "jankyFrames": 28,
+        "jankyPercent": 1.67,
+        "p50Ms": 5,
+        "p90Ms": 8,
+        "p95Ms": 10,
+        "p99Ms": 27
+      },
+      "samePidAcrossStages": true
+    }
+  },
+  "developmentSamples": [
+    {
+      "name": "baseline",
+      "memory": {
+        "stable": {
+          "totalPssKiB": 689349,
+          "totalRssKiB": 1097728,
+          "swapPssKiB": 456,
+          "javaHeapPssKiB": 108968,
+          "nativeHeapPssKiB": 152124,
+          "views": 1902,
+          "viewRoots": 1,
+          "activities": 1
+        },
+        "scroll": {
+          "totalPssKiB": 680796,
+          "totalRssKiB": 1090920,
+          "swapPssKiB": 377,
+          "javaHeapPssKiB": 83376,
+          "nativeHeapPssKiB": 149444,
+          "views": 3781,
+          "viewRoots": 1,
+          "activities": 1
+        },
+        "cycles": {
+          "totalPssKiB": 750900,
+          "totalRssKiB": 1161300,
+          "swapPssKiB": 377,
+          "javaHeapPssKiB": 132936,
+          "nativeHeapPssKiB": 161964,
+          "views": 3780,
+          "viewRoots": 1,
+          "activities": 1
+        }
+      },
+      "scrollFrames": {
+        "frames": 1651,
+        "jankyFrames": 35,
+        "jankyPercent": 2.12,
+        "p50Ms": 6,
+        "p90Ms": 8,
+        "p95Ms": 9,
+        "p99Ms": 29
+      },
+      "samePidAcrossStages": true
+    },
+    {
+      "name": "after1",
+      "memory": {
+        "stable": {
+          "totalPssKiB": 781444,
+          "totalRssKiB": 1203808,
+          "swapPssKiB": 420,
+          "javaHeapPssKiB": 195932,
+          "nativeHeapPssKiB": 138272,
+          "views": 1908,
+          "viewRoots": 2,
+          "activities": 2
+        },
+        "scroll": {
+          "totalPssKiB": 743984,
+          "totalRssKiB": 1167340,
+          "swapPssKiB": 348,
+          "javaHeapPssKiB": 124712,
+          "nativeHeapPssKiB": 152556,
+          "views": 3781,
+          "viewRoots": 1,
+          "activities": 1
+        },
+        "cycles": {
+          "totalPssKiB": 735288,
+          "totalRssKiB": 1159220,
+          "swapPssKiB": 348,
+          "javaHeapPssKiB": 100964,
+          "nativeHeapPssKiB": 161780,
+          "views": 3780,
+          "viewRoots": 1,
+          "activities": 1
+        }
+      },
+      "scrollFrames": {
+        "frames": 1656,
+        "jankyFrames": 21,
+        "jankyPercent": 1.27,
+        "p50Ms": 6,
+        "p90Ms": 8,
+        "p95Ms": 9,
+        "p99Ms": 23
+      },
+      "samePidAcrossStages": true
+    },
+    {
+      "name": "after2",
+      "memory": {
+        "stable": {
+          "totalPssKiB": 661556,
+          "totalRssKiB": 1083696,
+          "swapPssKiB": 433,
+          "javaHeapPssKiB": 82872,
+          "nativeHeapPssKiB": 131964,
+          "views": 1902,
+          "viewRoots": 1,
+          "activities": 1
+        },
+        "scroll": {
+          "totalPssKiB": 696195,
+          "totalRssKiB": 1119544,
+          "swapPssKiB": 356,
+          "javaHeapPssKiB": 82680,
+          "nativeHeapPssKiB": 147380,
+          "views": 3781,
+          "viewRoots": 1,
+          "activities": 1
+        },
+        "cycles": {
+          "totalPssKiB": 749964,
+          "totalRssKiB": 1173636,
+          "swapPssKiB": 356,
+          "javaHeapPssKiB": 118020,
+          "nativeHeapPssKiB": 159224,
+          "views": 3780,
+          "viewRoots": 1,
+          "activities": 1
+        }
+      },
+      "scrollFrames": {
+        "frames": 1683,
+        "jankyFrames": 26,
+        "jankyPercent": 1.54,
+        "p50Ms": 5,
+        "p90Ms": 8,
+        "p95Ms": 9,
+        "p99Ms": 26
+      },
+      "samePidAcrossStages": true
+    },
+    {
+      "name": "delivery1",
+      "memory": {
+        "stable": {
+          "totalPssKiB": 773778,
+          "totalRssKiB": 1256044,
+          "swapPssKiB": 214,
+          "javaHeapPssKiB": 92716,
+          "nativeHeapPssKiB": 145776,
+          "views": 1902,
+          "viewRoots": 1,
+          "activities": 1
+        },
+        "scroll": {
+          "totalPssKiB": 791347,
+          "totalRssKiB": 1272932,
+          "swapPssKiB": 207,
+          "javaHeapPssKiB": 73968,
+          "nativeHeapPssKiB": 161960,
+          "views": 3766,
+          "viewRoots": 1,
+          "activities": 1
+        },
+        "cycles": {
+          "totalPssKiB": 838330,
+          "totalRssKiB": 1320172,
+          "swapPssKiB": 207,
+          "javaHeapPssKiB": 105176,
+          "nativeHeapPssKiB": 173372,
+          "views": 3765,
+          "viewRoots": 1,
+          "activities": 1
+        }
+      },
+      "scrollFrames": {
+        "frames": 1656,
+        "jankyFrames": 25,
+        "jankyPercent": 1.51,
+        "p50Ms": 5,
+        "p90Ms": 8,
+        "p95Ms": 9,
+        "p99Ms": 24
+      },
+      "samePidAcrossStages": true
+    },
+    {
+      "name": "delivery2",
+      "memory": {
+        "stable": {
+          "totalPssKiB": 725070,
+          "totalRssKiB": 1187496,
+          "swapPssKiB": 235,
+          "javaHeapPssKiB": 79056,
+          "nativeHeapPssKiB": 133472,
+          "views": 1902,
+          "viewRoots": 1,
+          "activities": 1
+        },
+        "scroll": {
+          "totalPssKiB": 764777,
+          "totalRssKiB": 1228888,
+          "swapPssKiB": 228,
+          "javaHeapPssKiB": 72232,
+          "nativeHeapPssKiB": 158248,
+          "views": 3741,
+          "viewRoots": 1,
+          "activities": 1
+        },
+        "cycles": {
+          "totalPssKiB": 819171,
+          "totalRssKiB": 1283672,
+          "swapPssKiB": 228,
+          "javaHeapPssKiB": 106132,
+          "nativeHeapPssKiB": 170780,
+          "views": 3740,
+          "viewRoots": 1,
+          "activities": 1
+        }
+      },
+      "scrollFrames": {
+        "frames": 1651,
+        "jankyFrames": 20,
+        "jankyPercent": 1.21,
+        "p50Ms": 5,
+        "p90Ms": 8,
+        "p95Ms": 9,
+        "p99Ms": 22
+      },
+      "samePidAcrossStages": true
+    },
+    {
+      "name": "accepted1",
+      "memory": {
+        "stable": {
+          "totalPssKiB": 763913,
+          "totalRssKiB": 1230592,
+          "swapPssKiB": 237,
+          "javaHeapPssKiB": 87428,
+          "nativeHeapPssKiB": 153048,
+          "views": 3202,
+          "viewRoots": 1,
+          "activities": 1
+        },
+        "scroll": {
+          "totalPssKiB": 763441,
+          "totalRssKiB": 1230924,
+          "swapPssKiB": 230,
+          "javaHeapPssKiB": 72960,
+          "nativeHeapPssKiB": 156432,
+          "views": 3761,
+          "viewRoots": 1,
+          "activities": 1
+        },
+        "cycles": {
+          "totalPssKiB": 805226,
+          "totalRssKiB": 1272900,
+          "swapPssKiB": 230,
+          "javaHeapPssKiB": 97848,
+          "nativeHeapPssKiB": 167416,
+          "views": 3760,
+          "viewRoots": 1,
+          "activities": 1
+        }
+      },
+      "scrollFrames": {
+        "frames": 1678,
+        "jankyFrames": 18,
+        "jankyPercent": 1.07,
+        "p50Ms": 6,
+        "p90Ms": 8,
+        "p95Ms": 9,
+        "p99Ms": 19
+      },
+      "samePidAcrossStages": true
+    },
+    {
+      "name": "accepted2",
+      "memory": {
+        "stable": {
+          "totalPssKiB": 709256,
+          "totalRssKiB": 1178788,
+          "swapPssKiB": 238,
+          "javaHeapPssKiB": 77476,
+          "nativeHeapPssKiB": 129184,
+          "views": 1902,
+          "viewRoots": 1,
+          "activities": 1
+        },
+        "scroll": {
+          "totalPssKiB": 746937,
+          "totalRssKiB": 1217900,
+          "swapPssKiB": 231,
+          "javaHeapPssKiB": 72604,
+          "nativeHeapPssKiB": 148596,
+          "views": 3755,
+          "viewRoots": 1,
+          "activities": 1
+        },
+        "cycles": {
+          "totalPssKiB": 793113,
+          "totalRssKiB": 1264284,
+          "swapPssKiB": 231,
+          "javaHeapPssKiB": 99720,
+          "nativeHeapPssKiB": 160784,
+          "views": 3754,
+          "viewRoots": 1,
+          "activities": 1
+        }
+      },
+      "scrollFrames": {
+        "frames": 1640,
+        "jankyFrames": 30,
+        "jankyPercent": 1.83,
+        "p50Ms": 5,
+        "p90Ms": 8,
+        "p95Ms": 9,
+        "p99Ms": 21
+      },
+      "samePidAcrossStages": true
+    },
+    {
+      "name": "accepted3",
+      "memory": {
+        "stable": {
+          "totalPssKiB": 944518,
+          "totalRssKiB": 1463472,
+          "swapPssKiB": 218,
+          "javaHeapPssKiB": 141316,
+          "nativeHeapPssKiB": 188320,
+          "views": 3465,
+          "viewRoots": 1,
+          "activities": 1
+        },
+        "scroll": {
+          "totalPssKiB": 957837,
+          "totalRssKiB": 1485580,
+          "swapPssKiB": 211,
+          "javaHeapPssKiB": 137016,
+          "nativeHeapPssKiB": 198208,
+          "views": 3611,
+          "viewRoots": 1,
+          "activities": 1
+        },
+        "cycles": {
+          "totalPssKiB": 922846,
+          "totalRssKiB": 1451224,
+          "swapPssKiB": 205,
+          "javaHeapPssKiB": 104988,
+          "nativeHeapPssKiB": 183840,
+          "views": 3912,
+          "viewRoots": 1,
+          "activities": 1
+        }
+      },
+      "scrollFrames": {
+        "frames": 1668,
+        "jankyFrames": 24,
+        "jankyPercent": 1.44,
+        "p50Ms": 5,
+        "p90Ms": 7,
+        "p95Ms": 9,
+        "p99Ms": 17
+      },
+      "samePidAcrossStages": true
+    },
+    {
+      "name": "cached1",
+      "memory": {
+        "stable": {
+          "totalPssKiB": 740235,
+          "totalRssKiB": 1206308,
+          "swapPssKiB": 234,
+          "javaHeapPssKiB": 81032,
+          "nativeHeapPssKiB": 148396,
+          "views": 1902,
+          "viewRoots": 1,
+          "activities": 1
+        },
+        "scroll": {
+          "totalPssKiB": 779710,
+          "totalRssKiB": 1247020,
+          "swapPssKiB": 227,
+          "javaHeapPssKiB": 76604,
+          "nativeHeapPssKiB": 170704,
+          "views": 3781,
+          "viewRoots": 1,
+          "activities": 1
+        },
+        "cycles": {
+          "totalPssKiB": 840544,
+          "totalRssKiB": 1308376,
+          "swapPssKiB": 227,
+          "javaHeapPssKiB": 119280,
+          "nativeHeapPssKiB": 182496,
+          "views": 3782,
+          "viewRoots": 1,
+          "activities": 1
+        }
+      },
+      "scrollFrames": {
+        "frames": 1647,
+        "jankyFrames": 25,
+        "jankyPercent": 1.52,
+        "p50Ms": 7,
+        "p90Ms": 8,
+        "p95Ms": 9,
+        "p99Ms": 23
+      },
+      "samePidAcrossStages": true
+    },
+    {
+      "name": "cached2",
+      "memory": {
+        "stable": {
+          "totalPssKiB": 762568,
+          "totalRssKiB": 1227248,
+          "swapPssKiB": 237,
+          "javaHeapPssKiB": 118088,
+          "nativeHeapPssKiB": 132008,
+          "views": 1902,
+          "viewRoots": 1,
+          "activities": 1
+        },
+        "scroll": {
+          "totalPssKiB": 767106,
+          "totalRssKiB": 1233192,
+          "swapPssKiB": 230,
+          "javaHeapPssKiB": 81308,
+          "nativeHeapPssKiB": 151008,
+          "views": 3781,
+          "viewRoots": 1,
+          "activities": 1
+        },
+        "cycles": {
+          "totalPssKiB": 825937,
+          "totalRssKiB": 1292584,
+          "swapPssKiB": 226,
+          "javaHeapPssKiB": 122016,
+          "nativeHeapPssKiB": 164660,
+          "views": 3780,
+          "viewRoots": 1,
+          "activities": 1
+        }
+      },
+      "scrollFrames": {
+        "frames": 1694,
+        "jankyFrames": 24,
+        "jankyPercent": 1.42,
+        "p50Ms": 6,
+        "p90Ms": 8,
+        "p95Ms": 9,
+        "p99Ms": 23
+      },
+      "samePidAcrossStages": true
+    },
+    {
+      "name": "shipping",
+      "memory": {
+        "stable": {
+          "totalPssKiB": 739606,
+          "totalRssKiB": 1198060,
+          "swapPssKiB": 234,
+          "javaHeapPssKiB": 95372,
+          "nativeHeapPssKiB": 136740,
+          "views": 1902,
+          "viewRoots": 1,
+          "activities": 1
+        },
+        "scroll": {
+          "totalPssKiB": 756749,
+          "totalRssKiB": 1216708,
+          "swapPssKiB": 227,
+          "javaHeapPssKiB": 72156,
+          "nativeHeapPssKiB": 153996,
+          "views": 3781,
+          "viewRoots": 1,
+          "activities": 1
+        },
+        "cycles": {
+          "totalPssKiB": 829969,
+          "totalRssKiB": 1290300,
+          "swapPssKiB": 227,
+          "javaHeapPssKiB": 124636,
+          "nativeHeapPssKiB": 166840,
+          "views": 3780,
+          "viewRoots": 1,
+          "activities": 1
+        }
+      },
+      "scrollFrames": {
+        "frames": 1655,
+        "jankyFrames": 16,
+        "jankyPercent": 0.97,
+        "p50Ms": 5,
+        "p90Ms": 7,
+        "p95Ms": 9,
+        "p99Ms": 20
+      },
+      "samePidAcrossStages": true
+    },
+    {
+      "name": "delivered",
+      "memory": {
+        "stable": {
+          "totalPssKiB": 741859,
+          "totalRssKiB": 1212028,
+          "swapPssKiB": 235,
+          "javaHeapPssKiB": 99548,
+          "nativeHeapPssKiB": 133604,
+          "views": 1902,
+          "viewRoots": 1,
+          "activities": 1
+        },
+        "scroll": {
+          "totalPssKiB": 755086,
+          "totalRssKiB": 1226300,
+          "swapPssKiB": 228,
+          "javaHeapPssKiB": 74812,
+          "nativeHeapPssKiB": 149388,
+          "views": 3741,
+          "viewRoots": 1,
+          "activities": 1
+        },
+        "cycles": {
+          "totalPssKiB": 819499,
+          "totalRssKiB": 1291076,
+          "swapPssKiB": 228,
+          "javaHeapPssKiB": 119020,
+          "nativeHeapPssKiB": 162820,
+          "views": 3740,
+          "viewRoots": 1,
+          "activities": 1
+        }
+      },
+      "scrollFrames": {
+        "frames": 1661,
+        "jankyFrames": 24,
+        "jankyPercent": 1.44,
+        "p50Ms": 6,
+        "p90Ms": 8,
+        "p95Ms": 9,
+        "p99Ms": 25
+      },
+      "samePidAcrossStages": true
+    }
+  ],
+  "summaryCacheReusedAcrossStarts": true,
+  "nativeValidation": {
+    "normalSummary": "[normal]",
+    "targetNpeFallback": "",
+    "unrelatedExceptionPreserved": true,
+    "detailsLabelsOnOffReenabled": [
+      6,
+      0,
+      7
+    ],
+    "swipeTargetsOnOffReenabled": [
+      6,
+      0,
+      7
+    ],
+    "noMessagesSent": true,
+    "groupSnapshotsWhenDisabled": 0,
+    "groupSubscriptionWhenDisabled": false,
+    "retainedDetailsHeapCount": "NOT_VERIFIED",
+    "detailsAfterTemporaryBackground": 7,
+    "detailsAfterPageExit": 0,
+    "detailsAfterReentry": 6,
+    "swipeTargetsAfterReentry": 7,
+    "countIncludesPrefetchedAndOffscreenRows": true
+  }
+}

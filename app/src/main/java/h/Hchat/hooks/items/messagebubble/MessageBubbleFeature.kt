@@ -11,6 +11,10 @@ import android.view.ViewGroup
 import android.widget.TextView
 import de.robv.android.xposed.XC_MethodHook
 import h.Hchat.R
+import android.content.SharedPreferences
+import android.os.Handler
+import android.os.Looper
+import h.Hchat.hooks.core.ChatRowRefresh
 import h.Hchat.dexkit.DexMethodCache
 import h.Hchat.hooks.api.model.WeChatMessage
 import h.Hchat.hooks.api.model.WeChatMessageTypes
@@ -26,7 +30,6 @@ import org.luckypray.dexkit.query.FindMethod
 import org.luckypray.dexkit.query.matchers.MethodMatcher
 import java.lang.reflect.Field
 import java.lang.reflect.Method
-import java.util.ArrayDeque
 import java.util.Collections
 import java.util.WeakHashMap
 import java.util.concurrent.ConcurrentHashMap
@@ -47,6 +50,11 @@ class MessageBubbleFeature : BaseFeature() {
         DexInstallScheduler.schedule(ID, name()) {
             renderer?.install() == true
         }
+    }
+
+    override fun onFeatureDestroy(context: FeatureContext) {
+        renderer?.destroy()
+        renderer = null
     }
 
     companion object {
@@ -70,7 +78,22 @@ private class MessageBubbleRenderer(
     private val holderWithoutMainContainerMethod = ConcurrentHashMap.newKeySet<Class<*>>()
     private val messageNestedFieldCache = ConcurrentHashMap<Class<*>, List<Field>>()
     private val nativeMessageClassCache = ConcurrentHashMap<Class<*>, Boolean>()
-    private val bindStates = ThreadLocal<ArrayDeque<BindState>>()
+    private val boundRoots = Collections.newSetFromMap(WeakHashMap<View, Boolean>())
+    @Volatile private var enabled = prefs.getBoolean(MessageBubbleSettings.KEY_ENABLE, MessageBubbleSettings.DEFAULT_ENABLE)
+    private val configListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
+        enabled = prefs.getBoolean(MessageBubbleSettings.KEY_ENABLE, MessageBubbleSettings.DEFAULT_ENABLE)
+        Handler(Looper.getMainLooper()).post {
+            if (!enabled) boundRoots.toList().forEach(::restoreBoundBubble)
+            else ChatRowRefresh.request()
+        }
+    }
+    init { prefs.registerOnSharedPreferenceChangeListener(configListener) }
+
+    fun destroy() {
+        enabled = false
+        prefs.unregisterOnSharedPreferenceChangeListener(configListener)
+        boundRoots.toList().forEach(::restoreBoundBubble)
+    }
     private val bubbleViewIds by lazy {
         BUBBLE_VIEW_RESOURCES.associateWith { name ->
             context.hostContext().resources.getIdentifier(name, "id", context.hostContext().packageName)
@@ -99,16 +122,15 @@ private class MessageBubbleRenderer(
         return runCatching {
             HookRegistry.get().hook(method, object : XC_MethodHook() {
                 override fun beforeHookedMethod(param: MethodHookParam) {
+                    if (!enabled) return
                     val state = captureBindState(param.args)
                     state.root?.let(::restoreBoundBubble)
-                    val stack = bindStates.get() ?: ArrayDeque<BindState>().also(bindStates::set)
-                    stack.addLast(state)
+                    param.setObjectExtra("hchat.bubble.bind", state)
                 }
 
                 override fun afterHookedMethod(param: MethodHookParam) {
-                    val stack = bindStates.get()
-                    val state = stack?.pollLast() ?: return
-                    if (stack.isEmpty()) bindStates.remove()
+                    val state = param.getObjectExtra("hchat.bubble.bind") as? BindState ?: return
+                    if (!enabled || param.hasThrowable()) return
                     val boundHolder = state.root?.tag?.takeIf(::isNativeMessageHolder)
                         ?: state.nativeHolder
                     applyBubble(param.args, state.copy(nativeHolder = boundHolder))
@@ -135,9 +157,11 @@ private class MessageBubbleRenderer(
             is Collection<*> -> bound.filterIsInstance<View>().forEach(::restoreOriginal)
         }
         root.setTag(R.id.hchat_message_bubble_target, null)
+        boundRoots.remove(root)
     }
 
     private fun applyBubble(args: Array<Any?>?, state: BindState) {
+        if (!enabled) return
         val root = state.root ?: return
         val message = resolveNativeMessageFromArgs(args)
         val messageType = message?.let {
@@ -171,7 +195,8 @@ private class MessageBubbleRenderer(
             messageContent
         )
         if (targets.isEmpty()) return
-        if (!prefs.getBoolean(MessageBubbleSettings.KEY_ENABLE, MessageBubbleSettings.DEFAULT_ENABLE)) return
+        if (!enabled) return
+        boundRoots.add(root)
 
         val messageOutgoing = message?.let {
             parseInt(readMessageValue(it, "getIsSend", "field_isSend", "isSend"))?.let { value -> value != 0 }

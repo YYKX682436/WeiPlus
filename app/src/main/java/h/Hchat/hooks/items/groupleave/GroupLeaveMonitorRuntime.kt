@@ -1,5 +1,7 @@
 package h.Hchat.hooks.items.groupleave
 
+import h.Hchat.hooks.items.groupmonitor.GroupMonitorSnapshots
+import h.Hchat.hooks.items.groupmonitor.GroupSnapshotState
 import android.content.SharedPreferences
 import android.os.Handler
 import android.os.Looper
@@ -25,154 +27,122 @@ class GroupLeaveMonitorRuntime(
     private val prefs: SharedPreferences =
         HchatStorage.preferences(context.hostContext(), GroupLeaveMonitorSettings.PREFS_NAME)
     private val realNameTailStore = RealNameTailStore(context.hostContext())
-    private val memberSnapshots = ConcurrentHashMap<String, Set<String>>()
-    private val memberSnapshotWarmups = ConcurrentHashMap<String, Long>()
-    private val memberNameCache = ConcurrentHashMap<String, String>()
+    private val snapshots = GroupMonitorSnapshots.get(context.hostContext())
+    private var observation: WeChatMessageObserveApi.Subscription? = null
+    @Volatile private var destroyed = false
+    @Volatile private var memberScope = GroupSnapshotState.Scope()
+    private val configListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        if (key == null || !key.startsWith(GroupLeaveMonitorSettings.KEY_INVITE_COUNT_PREFIX)) syncDemand(true)
+    }
     private val observedMemberNames = ConcurrentHashMap<String, ObservedMemberName>()
     private val recentInserts = ConcurrentHashMap<String, Long>()
     private val pendingInviteDetails = ConcurrentHashMap<String, PendingInviteDetail>()
+    private var accountLease = ""
     private val inviteCountLock = Any()
     private val atPattern = Regex("\\[AtWx=([^\\]]+)]")
 
-    fun install(track: (Any?) -> Unit) {
-        val changeApi = WeChatApis.contact().chatroomChanges() ?: WeChatApis.chatroomChanges()
-        if (changeApi != null) {
-            track(changeApi.subscribe { change ->
-                handleChatroomChange(change)
-            })
-        } else {
-            logger("群聊变更 API 未就绪", null)
-        }
-        val observeApi = runCatching { WeChatApis.messageObserve() }.getOrNull()
-        if (observeApi != null && observeApi.isAvailable()) {
-            runCatching { observeApi.install() }
-                .onFailure { logger("邀请详情消息监听安装失败", it) }
-            track(observeApi.subscribe { message ->
-                handleObservedMessage(message)
-            })
-        }
-        preloadSnapshots()
+    fun install() {
+        prefs.registerOnSharedPreferenceChangeListener(configListener)
+        syncDemand()
     }
 
-    fun preloadSnapshots() {
-        runCatching {
-            val chatrooms = WeChatApis.contact().chatrooms() ?: return
-            for (room in chatrooms.getChatrooms()) {
-                val groupId = room.chatroomId.trim()
-                if (groupId.isEmpty()) continue
-                val members = room.memberIds
-                    .asSequence()
-                    .map { it.trim() }
-                    .filter { it.isNotEmpty() }
-                    .toCollection(LinkedHashSet())
-                if (members.isEmpty()) continue
-                memberSnapshots.putIfAbsent(groupId, members)
-                rememberCurrentGroupNickNames(groupId, members)
+    private fun syncDemand(invalidate: Boolean = false) {
+        if (destroyed) return
+        val notice = isEnabled() || isInviteDetailEnabled()
+        val specific = prefs.getString(GroupLeaveMonitorSettings.KEY_NOTICE_SCOPE,
+            GroupLeaveMonitorSettings.DEFAULT_NOTICE_SCOPE) == GroupLeaveMonitorSettings.NOTICE_SCOPE_SPECIFIC
+        val noticeGroups = if (notice && specific) splitList(prefs.getString(GroupLeaveMonitorSettings.KEY_NOTICE_GROUPS, "").orEmpty()).toSet() else emptySet()
+        val replyGroups = if (prefs.getBoolean(GroupLeaveMonitorSettings.KEY_REPLY_ENABLE, false)) {
+            listenGroups().filter { group -> replyEnabled("join", group) || replyEnabled("left", group) }.toSet()
+        } else emptySet()
+        val members = GroupSnapshotState.Scope(notice && !specific, noticeGroups + replyGroups)
+        val names = GroupSnapshotState.Scope(isEnabled() && !specific,
+            (if (isEnabled()) noticeGroups else emptySet()) + replyGroups.filter { replyEnabled("left", it) })
+        memberScope = members
+        snapshots.configure(OWNER, GroupSnapshotState.Demand(members, names), invalidate, ::handleChatroomChange)
+        // These caches contain pending events, never full group membership/name baselines.
+        pendingInviteDetails.clear()
+        observedMemberNames.keys.removeIf { !members.contains(it.substringBefore('|')) }
+        if (!isInviteDetailEnabled()) pendingInviteDetails.clear()
+        if (members.active && observation == null) {
+            WeChatApis.messageObserve()?.let { api ->
+                api.install()
+                observation = api.subscribe { message ->
+                    if (!destroyed && memberScope.contains(message.getTalker())) handleObservedMessage(message)
+                }
             }
-        }.onFailure {
-            logger("预加载群成员快照失败", it)
+        } else if (!members.active) {
+            observation?.unsubscribe()
+            observation = null
+            observedMemberNames.clear()
+            recentInserts.clear()
         }
     }
 
-    private fun handleChatroomChange(change: WeChatChatroomChangeApi.ChatroomChange) {
-        val now = System.currentTimeMillis()
-        val memberListChanged = change.mayMemberListChanged()
-        val roomDataChanged = change.mayRoomDataChanged()
-        if (!memberListChanged && !roomDataChanged) return
-        val groupId = change.chatroomId().trim()
-        if (groupId.isEmpty()) return
-        if (roomDataChanged) {
-            if (isMemberSnapshotWarmup(groupId, now)) {
-                clearPendingInviteDetails(groupId)
-            } else {
-                flushPendingInviteDetails(groupId)
-            }
+    fun preloadSnapshots() { syncDemand(); snapshots.preload() }
+
+    fun destroy() {
+        destroyed = true
+        prefs.unregisterOnSharedPreferenceChangeListener(configListener)
+        observation?.unsubscribe()
+        observation = null
+        snapshots.remove(OWNER)
+        pendingInviteDetails.clear()
+        observedMemberNames.clear()
+        recentInserts.clear()
+    }
+
+    private fun handleChatroomChange(
+        groupId: String,
+        previous: GroupSnapshotState.Snapshot?,
+        current: GroupSnapshotState.Snapshot,
+        change: WeChatChatroomChangeApi.ChatroomChange
+    ) {
+        if (destroyed) return
+        checkAccount()
+        val warming = previous == null || System.currentTimeMillis() <= current.warmUntil
+        if (isInviteDetailEnabled() && isSystemNoticeGroupEnabled(groupId) && change.mayRoomDataChanged()) {
+            if (warming) clearPendingInviteDetails(groupId) else flushPendingInviteDetails(groupId)
         }
-        if (!memberListChanged) return
-        rememberDisplayNames(groupId, change)
-        val current = currentMembers(change)
-        if (current.isEmpty()) return
-        rememberCurrentGroupNickNames(groupId, current)
-        val previous = memberSnapshots.put(groupId, current)
-        if (previous == null) {
-            startMemberSnapshotWarmup(groupId, now)
-            return
-        }
-        val joinedMembers = current - previous
-        val leftMembers = previous - current
-        if (joinedMembers.isEmpty() && leftMembers.isEmpty()) return
-        if (isMemberSnapshotWarmup(groupId, now) || isBulkMemberSync(joinedMembers, leftMembers)) {
-            startMemberSnapshotWarmup(groupId, now)
-            clearPendingInviteDetails(groupId)
-            return
-        }
+        if (previous == null || warming || !change.mayMemberListChanged()) return
+        val joinedMembers = current.members - previous.members
+        val leftMembers = previous.members - current.members
         for (memberId in leftMembers) {
-            if (isEnabled() && isSystemNoticeGroupEnabled(groupId)) {
-                insertLeaveMessage(groupId, memberId)
-            }
+            if (isEnabled() && isSystemNoticeGroupEnabled(groupId)) insertLeaveMessage(groupId, memberId)
             handleMemberReply("left", groupId, memberId)
         }
         for (memberId in joinedMembers) {
-            if (!handleInviteDetailFromRoomData(groupId, memberId)) {
-                rememberPendingInviteDetail(groupId, memberId)
-            }
+            if (isInviteDetailEnabled() && isSystemNoticeGroupEnabled(groupId) &&
+                !handleInviteDetailFromRoomData(groupId, memberId)) rememberPendingInviteDetail(groupId, memberId)
             handleMemberReply("join", groupId, memberId)
         }
     }
 
-    private fun startMemberSnapshotWarmup(groupId: String, now: Long) {
-        memberSnapshotWarmups[groupId] = now + NEW_GROUP_SNAPSHOT_WARMUP_MS
-        clearPendingInviteDetails(groupId)
-    }
-
-    private fun isMemberSnapshotWarmup(groupId: String, now: Long): Boolean {
-        val until = memberSnapshotWarmups[groupId] ?: return false
-        if (now <= until) return true
-        memberSnapshotWarmups.remove(groupId, until)
-        return false
-    }
-
-    private fun isBulkMemberSync(joinedMembers: Set<String>, leftMembers: Set<String>): Boolean {
-        return leftMembers.isEmpty() && joinedMembers.size >= BULK_MEMBER_SYNC_THRESHOLD
-    }
-
-    private fun currentMembers(change: WeChatChatroomChangeApi.ChatroomChange): Set<String> {
-        val ids = change.chatroom?.memberIds
-            ?: WeChatApis.contact().chatrooms()?.getMemberIds(change.chatroomId())
-            ?: emptyList()
-        return ids.asSequence()
-            .map { it.trim() }
-            .filter { it.isNotEmpty() }
-            .toCollection(LinkedHashSet())
-    }
-
-    private fun rememberDisplayNames(groupId: String, change: WeChatChatroomChangeApi.ChatroomChange) {
-        val chatroom = change.chatroom ?: return
-        val members = chatroom.memberIds
-        val names = splitDisplayNames(chatroom.rawDisplayNames, members.size)
-        if (members.isEmpty() || names.size != members.size) return
-        members.forEachIndexed { index, wxid ->
-            val name = names.getOrNull(index)?.trim().orEmpty()
-            if (wxid.isNotBlank() && name.isNotBlank() && name != wxid) {
-                memberNameCache[cacheKey(groupId, wxid)] = name
-            }
+    private fun checkAccount() {
+        val current = WeChatApis.contact().account()?.sessionIdentity().orEmpty()
+        if (current != accountLease) {
+            accountLease = current
+            pendingInviteDetails.clear()
+            observedMemberNames.clear()
+            recentInserts.clear()
         }
     }
 
-    private fun rememberCurrentGroupNickNames(groupId: String, members: Set<String>) {
-        val names = WeChatApis.contact().contacts()?.getGroupMemberRoomDisplayNames(groupId).orEmpty()
-        for (memberId in members) {
-            val name = names[memberId]?.trim().orEmpty()
-            if (name.isNotEmpty() && name != memberId) {
-                memberNameCache[cacheKey(groupId, memberId)] = name
-            }
-        }
+    private fun replyEnabled(type: String, groupId: String): Boolean {
+        if (!prefs.getBoolean(GroupLeaveMonitorSettings.KEY_REPLY_ENABLE, GroupLeaveMonitorSettings.DEFAULT_REPLY_ENABLE) ||
+            groupId !in listenGroups()) return false
+        val template = replyTemplateFor(groupId)
+        if (template != null) return template.enabled && if (type == "join") template.joinEnabled else template.leftEnabled
+        return if (type == "join") prefs.getBoolean(GroupLeaveMonitorSettings.KEY_JOIN_REPLY_ENABLE, GroupLeaveMonitorSettings.DEFAULT_JOIN_REPLY_ENABLE) &&
+            !isGroupDisabled(GroupLeaveMonitorSettings.KEY_JOIN_DISABLED_GROUPS, groupId)
+        else prefs.getBoolean(GroupLeaveMonitorSettings.KEY_LEFT_REPLY_ENABLE, GroupLeaveMonitorSettings.DEFAULT_LEFT_REPLY_ENABLE) &&
+            !isGroupDisabled(GroupLeaveMonitorSettings.KEY_LEFT_DISABLED_GROUPS, groupId)
     }
 
     private fun memberDisplay(groupId: String, memberId: String): MemberDisplay {
         val contacts = WeChatApis.contact().contacts()
         val observedName = observedMemberName(groupId, memberId)
-        val groupNick = memberNameCache[cacheKey(groupId, memberId)]
+        val groupNick = snapshots.memberName(groupId, memberId)
             ?.takeIf { it.isNotBlank() && it != memberId }
             ?: contacts?.getGroupMemberRoomDisplayName(groupId, memberId)
                 ?.takeIf { it.isNotBlank() && it != memberId }
@@ -215,6 +185,7 @@ class GroupLeaveMonitorRuntime(
     }
 
     private fun handleObservedMessage(message: WeChatMessageObserveApi.ObservedMessage) {
+        checkAccount()
         if (!message.isSystem() || !message.isGroupChat()) return
         val groupId = message.getTalker().trim().ifBlank { message.talker.trim() }
         if (groupId.isEmpty()) return
@@ -391,7 +362,6 @@ class GroupLeaveMonitorRuntime(
             val key = cacheKey(groupId, member.wxid)
             val now = System.currentTimeMillis()
             cleanupObservedMemberNames(now)
-            memberNameCache[key] = name
             observedMemberNames[key] = ObservedMemberName(name, now + OBSERVED_MEMBER_NAME_TTL_MS)
         }
     }
@@ -567,6 +537,7 @@ class GroupLeaveMonitorRuntime(
             }
         }
 
+        val lease = snapshots.lease()
         Thread({
             runCatching {
                 val delaySeconds = prefs.getInt(
@@ -574,6 +545,7 @@ class GroupLeaveMonitorRuntime(
                     GroupLeaveMonitorSettings.DEFAULT_DELAY_SECONDS
                 ).coerceIn(0, 600)
                 sleepQuietly(delaySeconds * 1000L)
+                if (!snapshots.current(OWNER, groupId, lease) || !replyEnabled(type, groupId)) return@runCatching
                 val display = resolveReplyMemberDisplay(type, groupId, memberId)
                 val variables = ReplyVariables(
                     userWxid = memberId,
@@ -585,7 +557,7 @@ class GroupLeaveMonitorRuntime(
                     groupName = groupDisplayName(groupId),
                     time = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
                 )
-                executeReplyChain(type, groupId, variables, template)
+                executeReplyChain(type, groupId, variables, template, lease)
             }.onFailure {
                 logger("进退群自动回复异常: $groupId/$memberId/$type", it)
             }
@@ -612,12 +584,13 @@ class GroupLeaveMonitorRuntime(
         type: String,
         groupId: String,
         variables: ReplyVariables,
-        template: GroupLeaveReplyTemplate?
+        template: GroupLeaveReplyTemplate?,
+        lease: Long
     ) {
         val promptType = promptTypeFor(groupId, template)
         val mediaOrder = mediaOrderFor(groupId, template)
-        val mediaTasks = mediaTasks(type, groupId, mediaOrder, template)
-        val promptTasks = promptTasks(type, groupId, variables, promptType, template)
+        val mediaTasks = mediaTasks(type, groupId, mediaOrder, template, lease)
+        val promptTasks = promptTasks(type, groupId, variables, promptType, template, lease)
         val tasks = when (mediaOrder) {
             GroupLeaveMonitorSettings.MEDIA_BEFORE -> mediaTasks + promptTasks
             GroupLeaveMonitorSettings.MEDIA_AFTER -> promptTasks + mediaTasks
@@ -625,6 +598,7 @@ class GroupLeaveMonitorRuntime(
         }
         for (task in tasks) {
             sleepQuietly(task.delayMs)
+            if (!snapshots.current(OWNER, groupId, lease) || !replyEnabled(type, groupId)) return
             runCatching { task.action() }
                 .onFailure { logger("进退群自动回复发送失败: $groupId/${task.type}", it) }
             sleepQuietly(300L)
@@ -636,7 +610,8 @@ class GroupLeaveMonitorRuntime(
         groupId: String,
         variables: ReplyVariables,
         promptType: String,
-        template: GroupLeaveReplyTemplate?
+        template: GroupLeaveReplyTemplate?,
+        lease: Long
     ): List<ReplyTask> {
         val delay = delayMsFor(
             groupId,
@@ -646,18 +621,18 @@ class GroupLeaveMonitorRuntime(
         )
         return when (promptType) {
             GroupLeaveMonitorSettings.PROMPT_CARD -> listOf(ReplyTask("card", delay) {
-                sendCard(type, groupId, variables, template)
+                sendCard(type, groupId, variables, template, lease)
             })
             GroupLeaveMonitorSettings.PROMPT_BOTH -> {
-                val textTask = ReplyTask("text", delay) { sendText(type, groupId, variables, template) }
-                val cardTask = ReplyTask("card", 120L) { sendCard(type, groupId, variables, template) }
+                val textTask = ReplyTask("text", delay) { sendText(type, groupId, variables, template, lease) }
+                val cardTask = ReplyTask("card", 120L) { sendCard(type, groupId, variables, template, lease) }
                 if (bothOrderFor(groupId, template) == GroupLeaveMonitorSettings.BOTH_CARD_FIRST) {
                     listOf(cardTask, textTask)
                 } else {
                     listOf(textTask, cardTask)
                 }
             }
-            else -> listOf(ReplyTask("text", delay) { sendText(type, groupId, variables, template) })
+            else -> listOf(ReplyTask("text", delay) { sendText(type, groupId, variables, template, lease) })
         }
     }
 
@@ -665,23 +640,27 @@ class GroupLeaveMonitorRuntime(
         type: String,
         groupId: String,
         mediaOrder: String,
-        template: GroupLeaveReplyTemplate?
+        template: GroupLeaveReplyTemplate?,
+        lease: Long
     ): List<ReplyTask> {
         if (mediaOrder == GroupLeaveMonitorSettings.MEDIA_NONE) return emptyList()
+        fun valid() = snapshots.current(OWNER, groupId, lease) && replyEnabled(type, groupId)
         val sequence = mediaSequenceFor(groupId, template)
         val tasks = mapOf(
             "image" to pathsReplyTask(
                 "image",
                 mediaPaths(groupId, type, GroupLeaveMonitorSettings.KEY_JOIN_IMAGE_PATHS, GroupLeaveMonitorSettings.KEY_LEFT_IMAGE_PATHS, template),
                 delayMsFor(groupId, GroupLeaveMonitorSettings.KEY_IMAGE_DELAY_MS, GroupLeaveMonitorSettings.DEFAULT_MEDIA_DELAY_MS, template)
-            ) { path -> WeChatApis.media()?.sendImage(groupId, path) == true },
+            ) { path -> valid() && WeChatApis.media()?.sendImage(groupId, path) == true },
             "voice" to pathsReplyTask(
                 "voice",
                 mediaPaths(groupId, type, GroupLeaveMonitorSettings.KEY_JOIN_VOICE_PATHS, GroupLeaveMonitorSettings.KEY_LEFT_VOICE_PATHS, template),
                 delayMsFor(groupId, GroupLeaveMonitorSettings.KEY_VOICE_DELAY_MS, GroupLeaveMonitorSettings.DEFAULT_MEDIA_DELAY_MS, template)
             ) { path ->
                 Handler(Looper.getMainLooper()).post {
-                    runCatching { WeChatApis.media()?.sendVoice(groupId, path) }
+                    if (snapshots.current(OWNER, groupId, lease) && replyEnabled(type, groupId)) {
+                        runCatching { WeChatApis.media()?.sendVoice(groupId, path) }
+                    }
                 }
                 true
             },
@@ -689,22 +668,22 @@ class GroupLeaveMonitorRuntime(
                 "emoji",
                 mediaPaths(groupId, type, GroupLeaveMonitorSettings.KEY_JOIN_EMOJI_PATHS, GroupLeaveMonitorSettings.KEY_LEFT_EMOJI_PATHS, template),
                 delayMsFor(groupId, GroupLeaveMonitorSettings.KEY_EMOJI_DELAY_MS, GroupLeaveMonitorSettings.DEFAULT_MEDIA_DELAY_MS, template)
-            ) { path -> WeChatApis.media()?.sendEmoji(groupId, path) == true },
+            ) { path -> valid() && WeChatApis.media()?.sendEmoji(groupId, path) == true },
             "video" to pathsReplyTask(
                 "video",
                 mediaPaths(groupId, type, GroupLeaveMonitorSettings.KEY_JOIN_VIDEO_PATHS, GroupLeaveMonitorSettings.KEY_LEFT_VIDEO_PATHS, template),
                 delayMsFor(groupId, GroupLeaveMonitorSettings.KEY_VIDEO_DELAY_MS, GroupLeaveMonitorSettings.DEFAULT_MEDIA_DELAY_MS, template)
-            ) { path -> WeChatApis.media()?.videos()?.send(groupId, path) == true },
+            ) { path -> valid() && WeChatApis.media()?.videos()?.send(groupId, path) == true },
             "file" to pathsReplyTask(
                 "file",
                 mediaPaths(groupId, type, GroupLeaveMonitorSettings.KEY_JOIN_FILE_PATHS, GroupLeaveMonitorSettings.KEY_LEFT_FILE_PATHS, template),
                 delayMsFor(groupId, GroupLeaveMonitorSettings.KEY_FILE_DELAY_MS, GroupLeaveMonitorSettings.DEFAULT_MEDIA_DELAY_MS, template)
-            ) { path -> WeChatApis.media()?.shareFile(groupId, java.io.File(path).name, path, "") == true },
+            ) { path -> valid() && WeChatApis.media()?.shareFile(groupId, java.io.File(path).name, path, "") == true },
             "favorite" to pathsReplyTask(
                 "favorite",
                 mediaPaths(groupId, type, GroupLeaveMonitorSettings.KEY_JOIN_FAVORITE_PATHS, GroupLeaveMonitorSettings.KEY_LEFT_FAVORITE_PATHS, template),
                 delayMsFor(groupId, GroupLeaveMonitorSettings.KEY_FAVORITE_DELAY_MS, GroupLeaveMonitorSettings.DEFAULT_MEDIA_DELAY_MS, template)
-            ) { localId -> WeChatApis.media()?.favorites()?.send(groupId, localId) == true }
+            ) { localId -> valid() && WeChatApis.media()?.favorites()?.send(groupId, localId) == true }
         )
         return sequence.split(',')
             .map { it.trim().lowercase(Locale.US) }
@@ -730,7 +709,8 @@ class GroupLeaveMonitorRuntime(
         type: String,
         groupId: String,
         variables: ReplyVariables,
-        template: GroupLeaveReplyTemplate?
+        template: GroupLeaveReplyTemplate?,
+        lease: Long
     ) {
         val key = if (type == "join") GroupLeaveMonitorSettings.KEY_JOIN_TEXT else GroupLeaveMonitorSettings.KEY_LEFT_TEXT
         val defaultValue = if (type == "join") GroupLeaveMonitorSettings.DEFAULT_JOIN_TEXT else GroupLeaveMonitorSettings.DEFAULT_LEFT_TEXT
@@ -744,6 +724,7 @@ class GroupLeaveMonitorRuntime(
             return
         }
         val parsed = parseAtContent(groupId, text)
+        if (!snapshots.current(OWNER, groupId, lease) || !replyEnabled(type, groupId)) return
         if (parsed == null) {
             sender.sendText(groupId, text)
             return
@@ -753,7 +734,7 @@ class GroupLeaveMonitorRuntime(
         } else {
             sender.sendTextWithAtList(groupId, parsed.content, parsed.atList)
         }
-        if (!sent && parsed.content.isNotBlank()) {
+        if (!sent && parsed.content.isNotBlank() && snapshots.current(OWNER, groupId, lease) && replyEnabled(type, groupId)) {
             sender.sendText(groupId, parsed.content)
         }
     }
@@ -762,7 +743,8 @@ class GroupLeaveMonitorRuntime(
         type: String,
         groupId: String,
         variables: ReplyVariables,
-        template: GroupLeaveReplyTemplate?
+        template: GroupLeaveReplyTemplate?,
+        lease: Long
     ) {
         val titleKey = if (type == "join") GroupLeaveMonitorSettings.KEY_JOIN_CARD_TITLE else GroupLeaveMonitorSettings.KEY_LEFT_CARD_TITLE
         val descKey = if (type == "join") GroupLeaveMonitorSettings.KEY_JOIN_CARD_DESC else GroupLeaveMonitorSettings.KEY_LEFT_CARD_DESC
@@ -773,8 +755,9 @@ class GroupLeaveMonitorRuntime(
         if (title.isBlank() && desc.isBlank()) return
         val avatarUrl = WeChatApis.contact().contacts()?.getAvatarUrl(variables.userWxid, true).orEmpty()
         val thumb = downloadBytes(avatarUrl)
+        if (!snapshots.current(OWNER, groupId, lease) || !replyEnabled(type, groupId)) return
         val ok = WeChatApis.media()?.shareWebpage(groupId, title, desc, avatarUrl, thumb, "") == true
-        if (!ok && (title.isNotBlank() || desc.isNotBlank())) {
+        if (!ok && (title.isNotBlank() || desc.isNotBlank()) && snapshots.current(OWNER, groupId, lease) && replyEnabled(type, groupId)) {
             WeChatApis.messages()?.sendText(groupId, listOf(title, desc).filter { it.isNotBlank() }.joinToString("\n"))
         }
     }
@@ -1192,7 +1175,8 @@ class GroupLeaveMonitorRuntime(
     }
 
     private fun inviteCountKey(groupId: String, inviterId: String): String {
-        return GroupLeaveMonitorSettings.KEY_INVITE_COUNT_PREFIX + groupId + "|" + inviterId
+        return GroupLeaveMonitorSettings.KEY_INVITE_COUNT_PREFIX +
+            WeChatApis.contact().account()?.sessionIdentity().orEmpty() + "|" + groupId + "|" + inviterId
     }
 
     private fun sleepQuietly(ms: Long) {
@@ -1232,15 +1216,6 @@ class GroupLeaveMonitorRuntime(
 
     private fun pendingInviteKey(groupId: String, inviteeId: String): String = "$groupId|$inviteeId"
 
-    private fun splitDisplayNames(displayNames: String, expectedCount: Int): List<String> {
-        if (displayNames.isBlank()) return emptyList()
-        val delimiters = listOf("\u0001", "\u0002", "\n", ";")
-        for (delimiter in delimiters) {
-            val parts = displayNames.split(delimiter)
-            if (expectedCount <= 0 || parts.size == expectedCount) return parts
-        }
-        return listOf(displayNames)
-    }
 
     private fun escapeXml(value: String): String {
         return value
@@ -1317,9 +1292,8 @@ class GroupLeaveMonitorRuntime(
     }
 
     private companion object {
+        const val OWNER = "leave"
         const val DEDUP_WINDOW_MS = 5000L
-        const val NEW_GROUP_SNAPSHOT_WARMUP_MS = 15 * 1000L
-        const val BULK_MEMBER_SYNC_THRESHOLD = 10
         const val PENDING_INVITE_WINDOW_MS = 120000L
         const val OBSERVED_MEMBER_NAME_TTL_MS = 120000L
         const val JOIN_NAME_RESOLVE_TIMEOUT_MS = 2000L

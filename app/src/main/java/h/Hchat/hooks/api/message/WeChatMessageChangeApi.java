@@ -14,12 +14,28 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * message 表变更监听 API。
  */
 public final class WeChatMessageChangeApi {
+    private static final String[] CORE_FIELDS = {"isSend", "type", "talker", "content", "createTime", "msgSvrId"};
+    private static final java.util.regex.Pattern MSG_ID_EQUALS = java.util.regex.Pattern.compile(
+            "(?i)(?<![a-z0-9_])(?:\"msgid\"|`msgid`|\\[msgid\\]|msgid)\\s*=\\s*(\\?|[0-9]+)(?=\\s|\\)|$)");
     public interface Logger {
         void log(String message);
     }
 
     public interface Listener {
         void onMessageChanged(MessageChange change);
+    }
+
+    public interface Requirement {
+        boolean needsMessage(DatabaseChange change);
+    }
+
+    private static final class Consumer {
+        final Requirement requirement;
+        final Listener listener;
+        Consumer(Requirement requirement, Listener listener) {
+            this.requirement = requirement;
+            this.listener = listener;
+        }
     }
 
     public static final class MessageChange {
@@ -49,17 +65,17 @@ public final class WeChatMessageChangeApi {
     }
 
     public final class Subscription {
-        private final Listener listener;
+        private final Consumer consumer;
         private volatile boolean active = true;
 
-        private Subscription(Listener listener) {
-            this.listener = listener;
+        private Subscription(Consumer consumer) {
+            this.consumer = consumer;
         }
 
         public void unsubscribe() {
             if (!active) return;
             active = false;
-            listeners.remove(listener);
+            listeners.remove(consumer);
         }
 
         public boolean isActive() {
@@ -71,7 +87,7 @@ public final class WeChatMessageChangeApi {
     private final WeChatMessageStoreApi messageStoreApi;
     private final WeChatAccountApi accountApi;
     private final Logger logger;
-    private final CopyOnWriteArrayList<Listener> listeners = new CopyOnWriteArrayList<>();
+    private final CopyOnWriteArrayList<Consumer> listeners = new CopyOnWriteArrayList<>();
     private volatile boolean installed;
 
     public WeChatMessageChangeApi(WeChatDatabaseListenerApi databaseListenerApi,
@@ -99,13 +115,19 @@ public final class WeChatMessageChangeApi {
     }
 
     public Subscription subscribe(Listener listener) {
-        if (listener == null) return null;
-        listeners.addIfAbsent(listener);
-        return new Subscription(listener);
+        return subscribe(change -> true, listener);
+    }
+
+    /** Select interest from the immutable mutation before any row lookup/parsing. */
+    public Subscription subscribe(Requirement requirement, Listener listener) {
+        if (requirement == null || listener == null) return null;
+        Consumer consumer = new Consumer(requirement, listener);
+        listeners.add(consumer);
+        return new Subscription(consumer);
     }
 
     public void unsubscribe(Listener listener) {
-        if (listener != null) listeners.remove(listener);
+        listeners.removeIf(consumer -> consumer.listener == listener);
     }
 
     public synchronized void install() {
@@ -126,15 +148,20 @@ public final class WeChatMessageChangeApi {
     }
 
     private void onDatabaseChanged(DatabaseChange change) {
-        if (change == null || !isMessageTable(change.table)) return;
+        if (change == null || listeners.isEmpty() || !isMessageTable(change.table)) return;
+        java.util.ArrayList<Consumer> interested = new java.util.ArrayList<>();
+        for (Consumer consumer : listeners) {
+            try {
+                if (consumer.requirement.needsMessage(change)) interested.add(consumer);
+            } catch (Throwable e) { log("消息需求回调失败: " + e.getMessage()); }
+        }
+        if (interested.isEmpty()) return;
+        // Resolve on the mutation thread once, before a later write can change the row version.
         WeChatMessage message = resolveMessage(change);
         MessageChange event = new MessageChange(change, message);
-        for (Listener listener : listeners) {
-            try {
-                listener.onMessageChanged(event);
-            } catch (Throwable e) {
-                log("消息变更回调失败: " + e.getMessage());
-            }
+        for (Consumer consumer : interested) {
+            try { consumer.listener.onMessageChanged(event); }
+            catch (Throwable e) { log("消息变更回调失败: " + e.getMessage()); }
         }
     }
 
@@ -148,11 +175,13 @@ public final class WeChatMessageChangeApi {
 
     private WeChatMessage resolveMessage(DatabaseChange change) {
         long msgId = resolveMsgId(change);
-        if (msgId > 0 && messageStoreApi != null) {
-            WeChatMessage stored = messageStoreApi.getMessageById(msgId);
+        if (change.isDelete()) return null;
+        boolean complete = change.isInsert() && hasCoreFields(change.values);
+        if (!complete && msgId > 0 && messageStoreApi != null) {
+            WeChatMessage stored = messageStoreApi.getMessageById(change.table, msgId);
             if (stored != null) return stored;
         }
-        if (change.values == null) return null;
+        if (!complete) return null;
         return new WeChatMessage(
                 msgId,
                 longValue(change.values, "msgSvrId"),
@@ -170,11 +199,19 @@ public final class WeChatMessageChangeApi {
                 selfWxId());
     }
 
+    private static boolean hasCoreFields(ContentValues values) {
+        if (values == null) return false;
+        for (String key : CORE_FIELDS) {
+            if (!values.containsKey(key) || values.get(key) == null) return false;
+        }
+        return true;
+    }
+
     private String selfWxId() {
         return accountApi != null ? accountApi.selfWxId() : "";
     }
 
-    private long resolveMsgId(DatabaseChange change) {
+    public static long resolveMsgId(DatabaseChange change) {
         if (change == null) return 0L;
         long msgId = longValue(change.values, "msgId");
         if (msgId > 0) return msgId;
@@ -188,18 +225,23 @@ public final class WeChatMessageChangeApi {
         return msgIdFromWhere(change.whereClause, change.whereArgs);
     }
 
-    private long msgIdFromWhere(String whereClause, String[] whereArgs) {
-        if (TextUtils.isEmpty(whereClause) || whereArgs == null || whereArgs.length == 0) return 0L;
-        String where = whereClause.toLowerCase(java.util.Locale.US);
-        if (!where.contains("msgid")) return 0L;
-        for (String arg : whereArgs) {
-            if (TextUtils.isEmpty(arg)) continue;
-            try {
-                long value = Long.parseLong(arg);
-                if (value > 0) return value;
-            } catch (Throwable ignored) {}
+    private static long msgIdFromWhere(String whereClause, String[] whereArgs) {
+        if (TextUtils.isEmpty(whereClause)) return 0L;
+        java.util.regex.Matcher match = MSG_ID_EQUALS.matcher(whereClause);
+        if (!match.find()) return 0L;
+        int start = match.start();
+        String value = match.group(1);
+        if (match.find()) return 0L; // A multi-row mutation cannot be represented as one complete message.
+        if (!"?".equals(value)) {
+            try { return Long.parseLong(value); }
+            catch (NumberFormatException ignored) { return 0L; }
         }
-        return 0L;
+        if (whereArgs == null) return 0L;
+        int index = 0;
+        for (int i = 0; i < start; i++) if (whereClause.charAt(i) == '?') index++;
+        if (index >= whereArgs.length) return 0L;
+        try { return Math.max(0L, Long.parseLong(whereArgs[index])); }
+        catch (NumberFormatException ignored) { return 0L; }
     }
 
     private static String str(ContentValues values, String key) {
