@@ -11,7 +11,6 @@ interface FeatureSettingsProvider {
 
     companion object {
         const val CATEGORY_PRACTICAL = "practical"
-        const val CATEGORY_ENTERTAINMENT = "entertainment"
         const val CATEGORY_ENHANCE = "enhance"
     }
 }

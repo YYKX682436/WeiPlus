@@ -4,7 +4,6 @@ import android.app.Application;
 import android.content.Context;
 import android.os.Process;
 
-import h.Hchat.crash.CrashReportRuntime;
 import h.Hchat.WechatPackage;
 import h.Hchat.dexkit.DexFinder;
 import h.Hchat.hooks.api.media.WeChatImageApi;
@@ -106,16 +105,9 @@ public class ModuleEntry implements IXposedHookLoadPackage {
                 new Class<?>[0],
                 new XC_MethodHook() {
                     @Override
-                    protected void beforeHookedMethod(MethodHookParam param) {
-                        Application app = (Application) param.thisObject;
-                        CrashReportRuntime.prepare(app);
-                    }
-
-                    @Override
                     protected void afterHookedMethod(MethodHookParam param) {
                         Application app = (Application) param.thisObject;
                         FirstUseAgreementRuntime.install(app);
-                        CrashReportRuntime.install(app, ModuleEntry.this.getClass().getClassLoader());
                         // 标签栏先捕获首页根视图，不能等待后台 DexKit 初始化后再挂载。
                         try {
                             ConversationTabsFeature.installEarly(resolveHostClassLoader(app, lpparam));

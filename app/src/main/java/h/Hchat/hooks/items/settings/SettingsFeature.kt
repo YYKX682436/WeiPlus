@@ -1,6 +1,5 @@
 package h.Hchat.hooks.items.settings
 
-import h.Hchat.crash.CrashReportSettingsProvider
 import h.Hchat.dexkit.SettingsDexFinder
 import h.Hchat.hooks.api.ui.SettingsInjector
 import h.Hchat.hooks.core.DexInstallScheduler
@@ -22,7 +21,6 @@ class SettingsFeature : Feature {
     @Throws(Throwable::class)
     override fun onInit(context: FeatureContext) {
         context.uiRegistry().registerProvider(SettingsEntryProvider())
-        context.uiRegistry().registerProvider(CrashReportSettingsProvider())
     }
 
     @Throws(Throwable::class)

@@ -32,8 +32,6 @@ public class NativeLibraryLoader {
     private static final String DEXKIT_LIB = "dexkit";
     private static final String SILK_CODEC_SO = "libsilk_codec.so";
     private static final String SILK_CODEC_LIB = "silk_codec";
-    private static final String CRASH_GUARD_SO = "libhchat_crash.so";
-    private static final String CRASH_GUARD_LIB = "hchat_crash";
 
     public void loadDexKit(Context ctx, ClassLoader moduleClassLoader) {
         loadLibrary(ctx, moduleClassLoader, DEXKIT_SO, DEXKIT_LIB, false);
@@ -41,10 +39,6 @@ public class NativeLibraryLoader {
 
     public boolean loadSilkCodec(Context ctx, ClassLoader moduleClassLoader) {
         return loadLibrary(ctx, moduleClassLoader, SILK_CODEC_SO, SILK_CODEC_LIB, true);
-    }
-
-    public boolean loadCrashGuard(Context ctx, ClassLoader moduleClassLoader) {
-        return loadLibrary(ctx, moduleClassLoader, CRASH_GUARD_SO, CRASH_GUARD_LIB, true);
     }
 
     /**

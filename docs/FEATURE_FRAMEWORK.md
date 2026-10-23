@@ -26,8 +26,6 @@
 
 模块自身的失败、异常、未找到、未命中和不可用情况统一使用 `h.Hchat.utils.HLog.e(...)`。普通运行状态不输出到 LSPosed；用户明确开启的调试日志按对应功能设置记录。
 
-`捕获异常日志` 位于 `娱乐 > 调试`，默认关闭。开启后，模块在用户同意协议后于微信主进程启动期安装异常记录器；运行中开启也会立即补装。Java 捕获器在 `Application.onCreate` 原方法执行前安装，未捕获异常会写入完整线程堆栈；Native 捕获器覆盖 `SIGSEGV`、`SIGABRT`、`SIGBUS`、`SIGILL`、`SIGFPE`、`SIGSYS`，以信号现场信息保存信号、线程、故障地址、关键寄存器、所属 so 与偏移、可执行内存映射，并在 ARM64 上保存最多 32 层经映射校验的 frame-pointer 回溯。记录完成后继续转交微信原处理器，不能阻断系统 tombstone。Android 11 及以上同时读取 `ApplicationExitInfo`：Native 异常补充退出 PID/UID、内存和系统 tombstone；系统明确记录为 `REASON_ANR` 时单独生成 ANR 报告并附系统 trace，不用固定时长的主线程看门狗推断 ANR。记录保存在宿主私有目录 `Hchat/crash/`，稳定 Activity 显示后可查看和复制。关闭开关会立即取消待展示弹窗并清理尚未归档记录，`last_crash.log` 继续保留。
-
 ## 分层规则
 
 - `hooks/api/**`: 只放公共微信 API，不放功能私有业务逻辑。
@@ -217,13 +215,12 @@ class ExampleSettingsProvider : SimpleFeatureSettingsProvider(
 )
 ```
 
-Provider 分类决定主页面所在页签：
+Provider 分类决定主功能目录分区：
 
 - `FeatureSettingsProvider.CATEGORY_PRACTICAL`: 实用
-- `FeatureSettingsProvider.CATEGORY_ENTERTAINMENT`: 娱乐
 - `FeatureSettingsProvider.CATEGORY_ENHANCE`: 插件
 
-`SimpleFeatureSettingsProvider(featureId, title, subtitle)` 默认放到 `插件`。需要放到 `实用` 或 `娱乐` 时，使用四参数构造。主页面先按分类进入页签，页签内可在 `MiuixSettingsPage.kt` 里按功能 ID 做固定分组和排序。
+`SimpleFeatureSettingsProvider(featureId, title, subtitle)` 默认放到 `插件`。需要放到 `实用` 时使用四参数构造。设置首页是单页目录：实用 provider 按固定功能分组，插件 provider 统一进入 `增强` 分组；具体功能仍通过 provider 注册和功能 ID 分发。
 
 然后在 `ui/miuix/MiuixSettingsPage.kt` 添加实际页面：
 
@@ -250,7 +247,7 @@ private fun FeatureSettingsPage(
 - 功能设置不要使用 `AlertDialog`、`Dialog`、模块 `Activity` 或功能私有设置 View。
 - 不要在 `FeatureSettingsProvider` 上重新引入 `showDetail(Context)`。
 - `FeatureSettingsProvider` 只暴露 `featureId`、`title` 和 `subtitle`，不要把图标/颜色字段加回来。
-- 功能所在主页签由 `FeatureSettingsProvider.category()` 控制。
+- 功能归类由各 `FeatureSettingsProvider.category()` 直接定义，设置功能统一显示在单页目录中。
 - `SettingsUI.show(context)` 保持模块设置入口并调用 `MiuixSettingsPage.show(context)`。启动入口包括微信设置项、按设置启用的 LauncherUI 右上角加号菜单、长按加号入口和微信进程内悬浮快捷菜单；这些入口复用已有注入链路。
 - 新版微信的模块设置项保持在 `SettingAdditionHeaderSearch` 与 `SettingGroupPersonalInfo` 之间。微信按 `SettingLocation.frontItem -> 当前项` 构造单链；WeKit 会在 `SettingGroupPersonalInfo` 的位置方法上用 `beforeHook` 直接返回其代理项，默认优先级下可能让后注册模块的 `afterHook` 根本不进入回调队列。Hchat 对该位置方法使用最高优先级 Hook，先进入回调队列并在最后执行 `afterHook`：读取 WeKit 或其它入口已经返回的 `frontItem` 作为 Hchat 前置项，再把 `SettingGroupPersonalInfo` 接到 Hchat 后面，保持原位置且不覆盖微信原生设置。
 - 右上角加号菜单入口必须通过结构校验动态定位 `MicroMsg.PlusSubMenuHelper`。不要写死 `of/rg` 这类特定版本混淆类、`lf/og` 这类 wrapper 类或 `mf/pg` 这类 item 类。
@@ -280,18 +277,14 @@ private fun FeatureSettingsPage(
 - 涉及好友、群聊、公众号、标签好友或群成员名单的设置必须使用现有选择器，不要额外暴露 wxid、群号或成员 ID 手动填写框。
 - 涉及文件、媒体或路径选择的设置必须使用 Android 系统文件管理器或系统选择器，不要要求用户手动输入绝对路径作为唯一入口。
 - 联系人和选项的选中标记保持小尺寸并放在右侧。
-- 主功能行保持普通设置行样式，不显示 provider 图标。图标只保留给底部导航。
+- 主功能行保持普通设置行样式，不显示 provider 图标。
 - 联系人头像由 `AvatarMemoryCache` 做进程内缓存，只在微信进程重启后重新加载。
 - 开关使用 Miuix 默认主题色，不要写死红色开关。
-- `PageScaffold` 统一处理系统导航栏避让：三键/虚拟按键模式下，底部导航、底部操作栏和内容底部 padding 要整体避开虚拟按键，并保留一层间距；如果内嵌微信 decor 后 `WindowInsets.navigationBars` 取不到高度，要用系统 `navigation_bar_height` 兜底。全面屏手势模式保持原贴底观感。
+- `PageScaffold` 统一处理系统导航栏避让：三键/虚拟按键模式下，底部操作栏和内容底部 padding 要整体避开虚拟按键，并保留一层间距；如果内嵌微信 decor 后 `WindowInsets.navigationBars` 取不到高度，要用系统 `navigation_bar_height` 兜底。全面屏手势模式保持原贴底观感。
 - 多级设置页不要用早退直接替换 Composable。普通选择器、模板/名单管理、标签成员和群成员这类子页面切换统一走 `SettingsRouteTransition`，按页面深度做横向进出动画。
 - 通知会话规则和屏蔽名单列表顶部提供 `公众号`、`群聊`、`好友`、`全部` 四个分类 Tab，顺序固定为公众号、群聊、好友、全部；红包适用聊天和收款适用聊天不显示公众号，只提供群聊、好友、全部；自动回复规则不显示分类 Tab。上述五类规则或会话列表以及改名、进退群监听群管理页都支持批量删除，分类页的全选只作用于当前分类和搜索结果，其余页面只作用于当前搜索结果，删除前统一二次确认。
-- 主设置页使用本地 KSU 风格 `FloatingBottomBar`，三个页签为实用、娱乐、设置。实用和娱乐页签首页展示大分组入口，点击后进入二级菜单；页签顶部的全局搜索可按功能名、描述和分组搜索模块功能，搜索页顶部固定输入框和取消按钮，并保存真实搜索记录。从功能详情返回时先回到所属分组页或搜索页，再返回页签首页。
-- 主页签归类当前固定为：
-  - `实用`: 返回 `CATEGORY_PRACTICAL` 的 provider；返回 `CATEGORY_ENHANCE` 的 provider 显示在页内 `增强` 分组。
-  - `娱乐`: 返回 `CATEGORY_ENTERTAINMENT` 的 provider。
-  - `设置`: 全局 UI 设置和关于信息。
-- 实用页签按聊天、语音、红包转账、增强、群组、朋友圈、美化、界面和杂项组织原生功能；娱乐页签按群聊、状态、聊天和抓包组织对应功能。功能目录与设置 provider 应保持一致。
+- 主设置页使用单一 `LazyColumn` 功能目录，保留全局搜索、固定分组入口、搜索历史和详情页返回行为。首页标题为 `Hchat`；右上角 Miuix 竖向三点菜单只有配置导入和导出，复用 `ConfigImportExportBridge` 与 `HchatConfigBackup`。
+- `CATEGORY_PRACTICAL` 的 provider 按聊天、语音、红包转账、增强、群组、朋友圈、美化、界面和杂项分组；`CATEGORY_ENHANCE` 的 provider 进入 `增强` 分组。原娱乐功能归并到 `群组`（实名尾巴、群昵称自定义颜色、群成员头衔）、`聊天`（修改聊天记录）和 `杂项`（状态词长度、点歌）。`SettingsFeature` 仍作为微信内模块设置入口保留，不作为首页 Tab。
 - “快捷设置群聊标签”默认关闭。开启后，微信首页和聊天分组二级页的真实群聊长按菜单都会显示“群聊标签”，可多选已有模块群聊标签、移出全部标签，或新建标签并立即加入当前群聊；修改后会触发聊天分组同步，使按群聊标签配置的自动归拢及时更新。普通联系人、虚拟分组会话和其它非群聊条目不显示该菜单。
 - `文字转语音播报` 位于 `增强` 分组，处理允许名单内收到的普通文字消息，并可单独开启默认关闭的 `播放语音消息`；允许名单支持好友和群聊且为空时不播报。文字消息可选择跟随系统默认或指定任一已安装的 TTS 引擎；引擎目录按实际声明 `android.intent.action.TTS_SERVICE` 的可用服务枚举，不强制厂商引擎提供额外元数据。跟随系统默认时，空包名初始化失败会依次尝试当前 Android 用户内可见的系统默认包名和其它已安装引擎，回退只在当前进程临时生效并在设置页显示实际引擎，不改写用户配置；手动指定引擎时不会静默切换。每次初始化都有超时保护，切换候选前会关闭旧实例并忽略迟到回调；微信分身所在 Android 用户看不到任何 TTS 服务时停止无效重试并记录明确原因，模块不能绕过 Android 跨用户权限绑定主用户的 TTS 服务。设置页通过所选引擎的 Android `Voice` API 读取播报角色，优先展示声明支持中文的角色，没有中文元数据时展示该引擎全部角色，并按稳定的 `Voice.name` 保存选择。角色影响所有 TTS 播报，切换引擎时会恢复为该引擎默认角色，旧角色不再提供时明确标为不可用且不会擅自改选。切换引擎时销毁旧实例并使用所选包名重新初始化，保留当前待播报文字，已卸载的历史选择在设置页明确标为不可用。微信 `8.0.49`、`8.0.58`、`8.0.66`、`8.0.68`、`8.0.72`、`8.0.74`、`8.0.76` 的清单均声明了 `android.intent.action.TTS_SERVICE` 包可见性查询。语音消息不交给 TTS：收到 PB 消息后按 `talker + msgSvrId` 异步等待消息入库和本地语音文件落地，重试期间会周期性按本地消息 ID、会话内 `msgSvrId` 和必要时的全局 `msgSvrId` 刷新已落库消息，逐个验证去重后的候选文件名与实际路径，避免 PB 临时文件名阻止后续落库结果；确认文件存在后再通过微信原生 `SceneVoicePlayer` 播放 Silk/AMR 原语音；等待最多 60 秒，功能、语音开关、允许名单或免打扰状态失效时立即取消。原生播放器在七个版本中均以稳定日志和实例 `(String,boolean,boolean,int)->boolean` 播放签名定位，暂停、继续和停止入口一并缓存，不固定混淆类名。文字和原语音进入同一串行队列，不会同时发声；原生完成或错误回调缺失时按语音时长加宽限超时跳过，避免阻塞后续任务。`自定义播报内容` 沿用旧 `播报发送人` 配置键，使用单一模板和中文可点击变量，支持微信昵称、备注、群内昵称、群聊名称、会话名称、播报来源、消息正文、消息类型、语音时长、消息时间和发送者 ID；微信昵称读取原始 `nickname`，不使用会拼接备注的完整显示名。默认模板为 `{播报来源}{消息正文}`，播报来源在私聊生成“昵称发了一条消息说”，在群聊生成“群聊名称里的群内昵称说”；语音消息的正文变量为空，模板前导语与原语音连续入队，用户可用消息类型或语音时长变量自行补充。消息时间按独立格式设置渲染，格式无效时不保存并回退默认格式。默认开启的 `免打扰不播报` 同时读取私聊和群聊的微信原生会话免打扰状态；独立的定时免打扰支持跨午夜。音键控制仅在存在播报任务时接管按键：播放中按音量减暂停，暂停后再按音量减跳过当前消息，按音量加从暂停位置继续，空闲时保留微信原有音量行为；原语音使用微信播放器自身的暂停、继续和停止。微信前台通过按键分发 Hook 处理，切到后台后在播报和暂停期间通过临时 `MediaSession` 接收音量调节，并以系统媒体音量变化监听兼容不分发远程音量事件的系统；队列结束或功能关闭时立即释放会话和监听。功能关闭或模块销毁时停止 TTS 与原生语音并清空队列。
 - 自定义播报模板的“发送者昵称”按钮插入 `{发送者昵称}`，并兼容手动填写的 `{微信昵称}`；两者都只读取原始微信昵称。模板还提供发送者微信号和会话 ID 变量，备注、群内昵称、群聊名称始终独立渲染。
@@ -300,14 +293,10 @@ private fun FeatureSettingsPage(
 - 点击视频号菜单时只从当前回调参数、点击监听对象的直属字段和一层 holder 字段提取媒体，不做无界对象图扫描，避免误复制或下载相邻视频。当前 `FinderItem` 的普通媒体 JSON 缺少 `media_cdn_info.pcdn_url` 时，会按相同下标读取 `getMediaExtList()` 并合并扩展媒体里的 PCDN 直链；扩展数据仍无直链时继续使用现有密链、密钥和详情补全流程。
 - 视频号视频下载会从媒体 `spec` 中优先选择 `codingFormat=h265` 的规格，并把对应 `fileFormat` 作为 `X-snsvideoflag` 请求参数写入原始 CDN 密链后下载解密，避免 PCDN 或默认空规格返回 H.266/VVC 视频。没有 H.265 规格或原始密链不可用时保留原下载流程；规格字段已横向确认微信 `8.0.49`、`8.0.58`、`8.0.66`、`8.0.68`、`8.0.72`、`8.0.74`、`8.0.76`。
 - 视频号聊天分享 XML 先隔离完整 `finderFeed` 节，再用 PullParser `nextText()` 直接读取 `mediaList/media` 叶子字段。`Xml.newPullParser()` 返回系统解析器，R8 不能改写 `org.xmlpull.v1` 公共接口名称；发布规则保留该接口 ABI。解析异常按 10 秒限频记录原始 Throwable、输入长度和内容哈希，不能再静默转换成 `null`；媒体入口、补齐成功、普通未命中和回调检测的临时诊断日志不保留。
-- 娱乐页签内二级 `群聊` 分组包含实名尾巴、群昵称自定义颜色和群成员头衔；`状态` 分组包含解除状态词长度限制；`聊天` 分组包含修改聊天记录；`抓包` 分组包含 Protobuf 抓包/发包。
-- `设置` 页签把全局 UI 选项存到 `Hchat_miuix_ui`：`floating_nav` 和 `glass_nav`。
+- 配置备份只导出当前允许名单中的有效配置。旧备份里的已删除功能配置和旧底栏开关会被忽略，不得重新启用已删除功能。
 - 模块自己的设置使用 `HchatStorage.preferences(context, name)`。日常读写由 FastKV 处理，路径在微信私有 `Hchat/` 目录，不在 Android `shared_prefs/`。
 - FastKV 可能为同一个配置名创建 `.kva/.kvb` 文件。`HchatStorage` 不再迁移旧存储数据。功能代码不要直接实例化 FastKV。
-- `glass_nav` 使用 compose-miuix-ui 的 `miuix-blur`（`rememberLayerBackdrop` / `layerBackdrop` / `drawBackdrop`），并配合本地 `lens(...)` / `vibrancy(...)` 辅助实现底栏液态玻璃效果。
-- `glass_nav` 只能在 Android 13 及以上启用；低版本没有 `android.graphics.RuntimeShader`，设置页必须禁用该开关并回退普通底栏。
-- 重要：backdrop 只能从页面内容层记录。底栏必须作为独立 overlay 画在 `layerBackdrop(...)` 容器外，否则 blur 目标可能记录自身并在微信宿主进程触发 native `libhwui` 崩溃。
-- 底栏是从 KernelSU 的 KSU 风格液态底栏复制/适配而来，不是 Miuix `NavigationBar`。相关文件：
+- 微信首页自定义底栏是独立功能，与模块设置首页无关；其 Miuix 玻璃组件仍由该微信功能复用。相关文件：
   - `ui/miuix/FloatingBottomBar.kt`
   - `ui/miuix/LiquidGlass.kt`
   - `ui/miuix/animation/DampedDragAnimation.kt`
@@ -315,10 +304,9 @@ private fun FeatureSettingsPage(
   - `ui/miuix/animation/DragGestureInspector.kt`
   - `ui/miuix/liquid/CombinedBackdrop.kt`
   - `ui/miuix/liquid/InnerShadow.kt`
-- 不要把底栏替换成简单的 `textureBlur` 背景或手写白色半透明胶囊。KSU 风格行为依赖三层：普通内容、由 `tabsBackdrop` 捕获的隐藏主色 tint 内容、以及移动选中液态胶囊绘制的 `combinedBackdrop`。
+- 该微信功能的底栏使用 KSU 风格多层 backdrop：普通内容、由 `tabsBackdrop` 捕获的隐藏主色 tint 内容，以及移动选中液态胶囊绘制的 `combinedBackdrop`。
 - 可见底栏图标/文字保持 `onSurface`。主色/蓝色选中效果来自液态胶囊下方移动的隐藏 tint 内容层。如果单独按 `selectedIndex` 给可见 item 着色，慢速拖动时会因为颜色只在选择完成后变化而显得不对。
-- 点击项必须调用 `FloatingBottomBar` 内容作用域提供的选择回调，并且只更新外部 `selectedTab`；外部选中索引是离散切换驱动胶囊位置的唯一入口，离散位置弹簧沿用 KSU 的 `press -> move -> release` 反馈；拖动中的连续位置与最终吸附也必须通过同一个互斥动画通道同步，不能让点击回调和外部同步同时启动位置动画，也不能用待确认标记跳过外部同步。用于 `tabsBackdrop` 的透明主色内容层只参与绘制，不能重复注册点击事件。不要绕过组件直接更新页签，也不要只把页签状态保存在底栏内部。
-- 开启 `floating_nav` 时，底栏使用 intrinsic width 并居中悬浮。关闭时底栏必须 `fillMaxWidth()`，让三个 item 分散到整个底部。
+- 微信底栏点击项使用 `FloatingBottomBar` 内容作用域提供的选择回调并更新外部 `selectedTab`；拖动中的连续位置与最终吸附通过同一互斥动画通道同步。用于 `tabsBackdrop` 的透明主色内容层只参与绘制，不能重复注册点击事件。
 - 除非有明确测量原因，否则保持 KSU blur 强度：外层/tint backdrop 使用 `blur(4.dp.toPx(), 4.dp.toPx())`；选中胶囊使用 `lens(...)`，不要叠加强模糊。更大的 blur 会冲淡图标和文字。
 - 底栏图标是本地 `ImageVector` 定义，路径数据来自 AndroidX Material Rounded。微信内嵌 UI 不要使用 `vectorResource(R.drawable...)`；模块 drawable 资源可能按微信资源表解析并触发 `Resources$NotFoundException`。
 
@@ -327,7 +315,7 @@ private fun FeatureSettingsPage(
 1. 用 `registerSettingsProvider(...)` 注册元数据 provider。
 2. 在 `FeatureSettingsPage(...)` 添加分支。
 3. 使用 `PageScaffold`、`SettingsCard`、`SwitchRow`、`PopupChoiceRow`、`ActionRow`、`InputRow`、`NumberInputRow`、`ContactPickerPage` 和 `OptionPickerPage` 构建页面。
-   `PageScaffold` 负责 Miuix 顶栏、内嵌 backdrop 和底栏管线。
+   `PageScaffold` 负责 Miuix 顶栏、内嵌 backdrop、系统导航栏安全区域和可选底部操作栏。
 4. 在任何 `picker` / `optionPicker` 分支前保存页面滚动状态：
 
 ```kotlin
@@ -409,8 +397,8 @@ Release 打包会排除协程调试探针和常见依赖元数据，例如 `META
 - Compose plugin: 1.12.0
 - Miuix UI: `top.yukonga.miuix.kmp:miuix-ui` 0.9.4 对应本地 `miuix-ui-android`、`miuix-core-android`、`miuix-preference-android`、`miuix-icons-android`、`miuix-squircle-android` AAR
 - Miuix Nav: 0.9.4 本地 `miuix-nav-android` AAR；设置首页、搜索、分组、功能详情和插件页使用 `NavDisplay` 与内存型 `NavBackStack`，获得统一前进/返回转场、Entry 生命周期和预测返回，页面内部选择器仍使用现有嵌套返回注册表
-- Miuix 0.9.4 交互组件：设置主页使用 `HorizontalPager`、`pagerGestureOverride` 和 `springAnimateToPage`；聊天分组编辑页使用可点击 `BreadcrumbBar`。
-- Miuix blur/shader: 0.9.4 本地 AAR，用于 KSU 风格悬浮底栏玻璃效果；Android 13+ 的底栏外壳和交互镜像层使用 `progressiveTextureBlurEffect`，低版本继续走无模糊回退
+- Miuix 0.9.4 交互组件：设置首页使用单一 `LazyColumn` 和 `WindowDropdownMenu`；聊天分组编辑页使用可点击 `BreadcrumbBar`。
+- Miuix blur/shader: 0.9.4 本地 AAR，由独立的微信首页自定义底栏功能使用；Android 13+ 使用玻璃效果，低版本继续走无模糊回退。
 - Miuix 0.9.4 的居中弹窗使用 `WindowDialog` 的 `largeScreen`、`maxWidth` 和 `cornerRadius`；下拉菜单迁移到 `WindowDropdownMenu` / `DropdownEntry` / `DropdownItem`
 - 底栏图标：本地 `ImageVector` 路径数据来自 AndroidX Material Rounded。不要为了单个图标引入完整 `material-icons-extended` 依赖。
 
@@ -486,7 +474,7 @@ sFastMyWxid
 
 ## 群昵称自定义颜色
 
-- `群昵称自定义颜色`位于娱乐页签的`群聊`分组，使用独立总开关、颜色和字重配置，不与实名尾字颜色互相覆盖。
+- `群昵称自定义颜色`位于功能目录的`群组`分组，使用独立总开关、颜色和字重配置，不与实名尾字颜色互相覆盖。
 - 颜色配置复用实名尾字的拾色器和格式，支持 `#RRGGBB`、`#AARRGGBB` 与起止色渐变；留空时保持微信原昵称颜色。字重范围为 `100..900`，按 100 进位规整。
 - 昵称颜色、群成员头衔和实名尾字共用 `ChatNameDecorationLayout` 状态与同一个群昵称绑定 Hook。颜色只应用到基础群昵称文本，不能覆盖头衔或尾字 span，也不能再新增聊天 Adapter bind Hook。
 - 群昵称绑定入口已横向确认微信 `8.0.49`、`8.0.58`、`8.0.66`、`8.0.68`、`8.0.72`、`8.0.74`、`8.0.76`；`8.0.76` 对应 `a0.o(g0, fd5.d, e9, String)`，仍直接读取 holder 的 `userTV`。
@@ -606,13 +594,9 @@ hooks/items/example/notify/    # Toast、系统通知、模板变量
 
 设置 UI 不放在功能包里。新增功能的设置页面统一写到 `ui/miuix/MiuixSettingsPage.kt`，并从 `FeatureSettingsPage(...)` 按 `featureId()` 分发。
 
-主设置页已经内置 KSU 风格 Miuix 液态玻璃底部导航：实用、娱乐、插件、设置。不要为单个功能再做独立底部导航；功能详情页需要底部操作时使用统一的 `BottomActionBar`。
+模块设置首页使用单页功能目录和分组详情；右上角菜单提供配置导入、导出。微信设置入口仍打开同一个 `MiuixSettingsPage`。
 
-当前页签归类：
-
-- `实用`: 红包、转账等日常工具，当前放 `AutoRedPacketFeature` 和 `AutoTransferFeature`。
-- `娱乐`: 消息/玩法类功能，当前暂无默认功能。
-- `设置`: 全局 UI 设置和关于信息。
+`FloatingBottomBar` 是微信首页自定义底栏功能复用的独立组件，不属于模块设置首页导航。保留该功能及其 Miuix 玻璃、交互辅助组件。
 
 支付相关功能不要在业务包里重复找微信混淆类。普通转账领取/退回使用 `WeChatApis.payment().transfers()`，消息识别和规则判断可以放在功能包内。
 
@@ -676,11 +660,10 @@ class ExampleSettingsProvider : SimpleFeatureSettingsProvider(
 
 分类规则：
 
-- `FeatureSettingsProvider.CATEGORY_PRACTICAL`: 放到 `实用`
-- `FeatureSettingsProvider.CATEGORY_ENTERTAINMENT`: 放到 `娱乐`
-- `FeatureSettingsProvider.CATEGORY_ENHANCE`: 放到 `插件`
+- `FeatureSettingsProvider.CATEGORY_PRACTICAL`: 放到实用功能目录，并由固定功能分组归类
+- `FeatureSettingsProvider.CATEGORY_ENHANCE`: 放到 `增强` 分组
 
-三参数 `SimpleFeatureSettingsProvider(featureId, title, subtitle)` 默认放到 `插件`。不要在 `MiuixSettingsPage` 主页面里按功能 ID 写分组判断。
+三参数 `SimpleFeatureSettingsProvider(featureId, title, subtitle)` 默认放到 `增强`。实用类别的已有功能由功能目录固定分组；Provider 的分类仍需与功能注册信息一致。
 
 ### Miuix Settings Page
 
@@ -798,19 +781,19 @@ private fun ExampleMiuixPage(
 
 UI 规则：
 
-- 使用 `PageScaffold` + Compose `LazyColumn` + Miuix `SettingsCard` / rows。`PageScaffold` 负责 Miuix top app bar、backdrop 和 bottom bar。
+- 使用 `PageScaffold` + Compose `LazyColumn` + Miuix `SettingsCard` / rows。`PageScaffold` 负责 Miuix 顶栏与系统安全区域。
 - 需要二级选择的配置用 `OptionRow`，不要点击一行就循环切换值。
 - 好友/群聊选择用 `ContactPickerPage`，它已经处理头像、头像进程内缓存、右侧选中框和完整列表点击。
 - 会跳转或选择的行使用现有 `ActionRow` / `OptionRow` / `ContactRow`，不要直接写普通 `Modifier.clickable`。
 - 所有页面都要给 `LazyColumn` 传 `rememberLazyListState()`，返回二级菜单时才能保持滚动位置。
 - `LazyColumn` 要加 `.nestedScroll(scrollBehavior.nestedScrollConnection)`，保证 Miuix 顶栏滚动行为一致。
-- 主设置页的 设置 tab 已有 `悬浮底栏` 和 `液态玻璃` 开关，值存在 `Hchat_miuix_ui`。不要在功能页重复做这些全局 UI 设置。
+- 模块设置首页是单页功能目录，不再提供悬浮底栏或液态玻璃设置项；这两个旧键会在打开设置页时移除，并从配置备份导入导出名单中排除。
 - 新增功能配置统一使用 `HchatStorage.preferences(context, name)` 或 `ConfigStore`，文件位于微信私有目录 `Hchat/`，日常读写由 FastKV 负责。不要直接 `context.getSharedPreferences(...)` 或自行实例化 FastKV 写模块配置。
-- 主底栏实现位于 `ui/miuix/FloatingBottomBar.kt` 及其 `animation/`、`liquid/` 辅助文件。它使用 KSU 风格的多层 backdrop：普通内容层、隐藏主色 tint 层、移动选中液态胶囊。新增功能页不要改这套底栏状态或颜色机制。
+- 微信首页自定义底栏实现位于 `ui/miuix/FloatingBottomBar.kt` 及其 `animation/`、`liquid/` 辅助文件。它使用 KSU 风格多层 backdrop；新增功能页不要改这套微信底栏状态或颜色机制。
 - 底栏图标是本地 `ImageVector`，路径来自 AndroidX Material Rounded。不要在微信内嵌 Compose UI 中使用 `vectorResource(R.drawable...)`。
-- 主功能列表不显示 Provider 图标，保持普通设置列表样式。图标只保留在底部导航。
+- 主功能列表不显示 Provider 图标，保持普通设置列表样式。
 - 液态玻璃使用 compose-miuix-ui 的 `miuix-blur`。不要在功能页单独创建 blur/backdrop；统一复用 `PageScaffold` 的结构。
-- 液态玻璃只支持 Android 13 及以上；低版本必须回退普通底栏，不能构造 `RuntimeShader` 相关效果。
+- 微信首页自定义底栏的液态玻璃只支持 Android 13 及以上；低版本必须回退普通底栏，不能构造 `RuntimeShader` 相关效果。
 - `layerBackdrop(...)` 只能包住页面内容层，底栏必须作为 overlay 放在内容层外。底栏玻璃由 `FloatingBottomBar` 内部的 `drawBackdrop(...)` / `lens(...)` 处理。不要把底栏放进被记录的 backdrop 层里。
 - 不要新增 Dialog，不要启动模块 Activity，不要加右上角关闭按钮。
 

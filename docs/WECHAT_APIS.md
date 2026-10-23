@@ -41,12 +41,10 @@ WeChatApis.payment()
 - 新增功能设置页要接入 `MiuixSettingsPage.FeatureSettingsPage(...)` 的 `featureId()` 分支。
 - 页面内二级选择统一用 `OptionPickerPage` / `ContactPickerPage`，不要在功能页里手写新选择弹窗；群成员这类共享联系人选择器无法覆盖的场景才使用专用选择页。
 - 设置 UI 里需要联系人数据时优先复用 `ContactPickerPage`，不要每个功能重复查好友、群聊、公众号和头像。
-- 主设置页底部导航统一由 `MiuixSettingsPage.kt` 管理，四个 tab 是 实用、娱乐、插件、设置，右侧最后一个 tab 固定为 设置。
-- 当前主设置页分为 `实用`、`娱乐`、`插件`、`设置`；实用和娱乐页签首页展示可点击的大分组入口，进入分组二级菜单后再展示功能项。实用页分组顺序固定为 `聊天`、`红包转账`、`增强`、`群组`、`朋友圈`、`美化`、`界面`、`杂项`。
-- 全局 UI 开关 `悬浮底栏` / `液态玻璃` 存在 `Hchat_miuix_ui`，功能代码不要重复定义。
-- `液态玻璃` 依赖 Android 13 的 `RuntimeShader`。Android 13 以下自动回退普通底栏，并在设置页禁用该开关。
-- 液态玻璃使用 compose-miuix-ui `miuix-blur`，只在统一底栏里接入。`layerBackdrop(...)` 只能记录页面内容层，底栏作为 overlay 调用 KSU 风格 `drawBackdrop(...)` / `lens(...)` / `vibrancy(...)`，避免把底栏录进自己的 backdrop。
-- 底栏慢滑时的主色跟随依赖隐藏的 primary-tinted content layer。不要在 visible icon/text 层按 selected item 直接切主色，否则会变成滑完才变色。
+- 模块设置首页由 `MiuixSettingsPage.kt` 管理，为单一 `LazyColumn` 功能目录；分组详情和功能页面继续使用原有导航栈。首页右上角菜单只提供配置导入、导出。
+- 原实用功能与增强功能在同一目录内按分组展示；娱乐功能已归并到群组、聊天、杂项。`SettingsFeature` 仍是微信内模块设置入口。
+- `FloatingBottomBar` 的液态玻璃能力供独立的微信首页自定义底栏功能复用，不属于模块设置导航。`layerBackdrop(...)` 只能记录内容层，底栏 overlay 调用 KSU 风格 `drawBackdrop(...)` / `lens(...)` / `vibrancy(...)`，避免把底栏录进自己的 backdrop。
+- 微信底栏慢滑时的主色跟随依赖隐藏的 primary-tinted content layer。不要在 visible icon/text 层按 selected item 直接切主色，否则会变成滑完才变色。
 
 ## 源码分组
 

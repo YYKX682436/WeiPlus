@@ -47,7 +47,7 @@ public class DexFinder {
     private static final String LOCATOR_PACKET_COMPLETE = "locator.packet.complete";
     private static final String LOCATOR_ECS_COMPLETE = "locator.ecs.complete";
     private static final String LOCATOR_MSG_DESC_COMPLETE = "locator.msg.desc.complete";
-    private static final String LOCATOR_PROTOBUF_COMPLETE = "locator.protobuf.complete";
+    private static final String LOCATOR_CONTACT_PROTOBUF_SENDER_COMPLETE = "locator.contact.protobuf.sender.complete";
     private static final String RED_PACKET_UNION_LOCATOR_VERSION_KEY = "redpacket.union.locator.version";
     private static final String RED_PACKET_UNION_LOCATOR_VERSION = "1";
     private static final String NETWORK_QUEUE_LOCATOR_VERSION_KEY = "network.queue.locator.version";
@@ -88,12 +88,8 @@ public class DexFinder {
     public Class<?> protobufConfigBuilderClass;
     public Class<?> protobufReqRespClass;
     public Class<?> protobufCallbackClass;
-    public Class<?> protobufNewSendMsgReqClass;
-    public Class<?> protobufOplogReqClass;
-    public Class<?> protobufOnGYNetEndClass;
     public Class<?> protobufNetSceneBaseClass;
     public Method protobufStaticDispatchMethod;
-    public List<Method> protobufSceneEndMethods = new ArrayList<>();
     // 祝福语
     public Class<?> wishWxHbClass;
     public Constructor<?> wishWxHbCtor;
@@ -263,7 +259,7 @@ public class DexFinder {
     private boolean packetCompatLocatorResolved;
     private boolean ecsGiftLocatorResolved;
     private boolean msgDescLocatorResolved;
-    private boolean protobufLocatorResolved;
+    private boolean contactProtobufSenderResolved;
 
     public DexFinder(DexKitBridge dexKit, ClassLoader classLoader) {
         this(dexKit, classLoader, null);
@@ -332,7 +328,6 @@ public class DexFinder {
         resolveNativeSendButtonApi();
         resolveWishWxHb();
         resolvePacketCompatClasses();
-        resolveProtobufPacketApi();
         resolveEcsGiftApi();
         logMissingCritical();
         saveCache();
@@ -3535,12 +3530,8 @@ public class DexFinder {
             protobufConfigBuilderClass = loadClass("protobufConfigBuilderClass");
             protobufReqRespClass = loadClass("protobufReqRespClass");
             protobufCallbackClass = loadClass("protobufCallbackClass");
-            protobufNewSendMsgReqClass = loadClass("protobufNewSendMsgReqClass");
-            protobufOplogReqClass = loadClass("protobufOplogReqClass");
-            protobufOnGYNetEndClass = loadClass("protobufOnGYNetEndClass");
             protobufNetSceneBaseClass = loadClass("protobufNetSceneBaseClass");
             protobufStaticDispatchMethod = loadMethod("protobufStaticDispatchMethod");
-            protobufSceneEndMethods = loadMethodList("protobufSceneEndMethods");
             wishWxHbClass = loadClass("wishWxHbClass");
             ecsGiftTaskClass = loadClass("ecsGiftTaskClass");
             ecsGiftServiceClass = loadClass("ecsGiftServiceClass");
@@ -3550,7 +3541,7 @@ public class DexFinder {
             packetCompatLocatorResolved = cachePrefs.getBoolean(LOCATOR_PACKET_COMPLETE, false);
             ecsGiftLocatorResolved = cachePrefs.getBoolean(LOCATOR_ECS_COMPLETE, false);
             msgDescLocatorResolved = cachePrefs.getBoolean(LOCATOR_MSG_DESC_COMPLETE, false);
-            protobufLocatorResolved = cachePrefs.getBoolean(LOCATOR_PROTOBUF_COMPLETE, false);
+            contactProtobufSenderResolved = cachePrefs.getBoolean(LOCATOR_CONTACT_PROTOBUF_SENDER_COMPLETE, false);
             sendTextMsgClass = loadClass("sendTextMsgClass");
             serviceGetterMethod = loadMethod("serviceGetterMethod");
             getContactAddMethods = loadMethodList("getContactAddMethods");
@@ -4775,12 +4766,8 @@ public class DexFinder {
             putClass(editor, "protobufConfigBuilderClass", protobufConfigBuilderClass);
             putClass(editor, "protobufReqRespClass", protobufReqRespClass);
             putClass(editor, "protobufCallbackClass", protobufCallbackClass);
-            putClass(editor, "protobufNewSendMsgReqClass", protobufNewSendMsgReqClass);
-            putClass(editor, "protobufOplogReqClass", protobufOplogReqClass);
-            putClass(editor, "protobufOnGYNetEndClass", protobufOnGYNetEndClass);
             putClass(editor, "protobufNetSceneBaseClass", protobufNetSceneBaseClass);
             putMethod(editor, "protobufStaticDispatchMethod", protobufStaticDispatchMethod);
-            putMethodList(editor, "protobufSceneEndMethods", protobufSceneEndMethods);
             putClass(editor, "wishWxHbClass", wishWxHbClass);
             putClass(editor, "ecsGiftTaskClass", ecsGiftTaskClass);
             putClass(editor, "ecsGiftServiceClass", ecsGiftServiceClass);
@@ -4907,7 +4894,12 @@ public class DexFinder {
             editor.putBoolean(LOCATOR_PACKET_COMPLETE, packetCompatLocatorResolved);
             editor.putBoolean(LOCATOR_ECS_COMPLETE, ecsGiftLocatorResolved);
             editor.putBoolean(LOCATOR_MSG_DESC_COMPLETE, msgDescLocatorResolved);
-            editor.putBoolean(LOCATOR_PROTOBUF_COMPLETE, protobufLocatorResolved);
+            editor.remove("protobufNewSendMsgReqClass");
+            editor.remove("protobufOplogReqClass");
+            editor.remove("protobufOnGYNetEndClass");
+            editor.remove("protobufSceneEndMethods");
+            editor.remove("locator.protobuf.complete");
+            editor.putBoolean(LOCATOR_CONTACT_PROTOBUF_SENDER_COMPLETE, contactProtobufSenderResolved);
             boolean snapshotReady = !cacheDescriptorInvalid;
             editor.putString(CACHE_SNAPSHOT_VERSION_KEY,
                     snapshotReady ? CACHE_SNAPSHOT_VERSION : "");
@@ -5449,7 +5441,7 @@ public class DexFinder {
         }
     }
 
-    // ============ Protobuf 通用抓包/发包 ============
+    // ============ 联系人业务 Protobuf 发送器 ============
     // ============ ECS 礼物静默处理 ============
     private void resolveEcsGiftApi() {
         if (ecsGiftLocatorResolved) return;
@@ -5485,18 +5477,19 @@ public class DexFinder {
         }
     }
 
-    private void resolveProtobufPacketApi() {
-        if (protobufLocatorResolved) return;
+    public synchronized boolean resolveContactProtobufSenderApi() {
+        ensureSnapshotLoaded();
+        if (hasContactProtobufSenderApi()) return true;
+        if (contactProtobufSenderResolved) return false;
+        contactProtobufSenderResolved = true;
         try {
             if (protobufBaseClass == null) protobufBaseClass = findProtobufBaseClass();
             Class<?> protoBase = protobufBaseClass;
             if (protoBase == null) {
-                protobufLocatorResolved = true;
-                return;
+                saveCache();
+                return false;
             }
             if (protobufRawReqClass == null) protobufRawReqClass = findRawReqClass();
-            if (protobufNewSendMsgReqClass == null) protobufNewSendMsgReqClass = findNewSendMsgReqClass(protoBase);
-            if (protobufOplogReqClass == null) protobufOplogReqClass = findOplogReqClass(protoBase);
             if (protobufGenericRespClass == null) protobufGenericRespClass = findGenericRespClass();
             if (protobufConfigBuilderClass == null) protobufConfigBuilderClass = findConfigBuilderClass(protoBase);
             if (protobufNetSceneBaseClass == null) protobufNetSceneBaseClass = findProtobufNetSceneBaseClass();
@@ -5505,27 +5498,24 @@ public class DexFinder {
                 protobufStaticDispatchMethod = null;
             }
             if (protobufReqRespClass == null || protobufCallbackClass == null) resolveProtobufCallbackApi();
-            if (protobufOnGYNetEndClass == null) protobufOnGYNetEndClass = findOnGYNetEndClass();
             if (protobufReqRespClass == null) protobufReqRespClass = findReqRespClassFromConfigBuilder();
             resolveProtobufDispatchApi();
-            if (protobufSceneEndMethods == null || protobufSceneEndMethods.isEmpty()) {
-                protobufSceneEndMethods = findProtobufSceneEndMethods();
-            }
-            logDetail("Protobuf包API: raw=" + className(protobufRawReqClass)
-                    + " sendMsg=" + className(protobufNewSendMsgReqClass)
-                    + " oplog=" + className(protobufOplogReqClass)
-                    + " resp=" + className(protobufGenericRespClass)
-                    + " builder=" + className(protobufConfigBuilderClass)
-                    + " reqResp=" + className(protobufReqRespClass)
-                    + " cb=" + className(protobufCallbackClass)
-                    + " gy=" + className(protobufOnGYNetEndClass)
-                    + " scene=" + className(protobufNetSceneBaseClass)
-                    + " dispatch=" + methodName(protobufStaticDispatchMethod)
-                    + " sceneEnd=" + (protobufSceneEndMethods == null ? 0 : protobufSceneEndMethods.size()));
-            protobufLocatorResolved = true;
+            saveCache();
         } catch (Throwable e) {
-            h.Hchat.utils.HLog.e(TAG + " resolveProtobufPacketApi 失败: " + e.getMessage(), e);
+            h.Hchat.utils.HLog.e(TAG + " 联系人 Protobuf 发送器定位失败: " + e.getMessage(), e);
         }
+        return hasContactProtobufSenderApi();
+    }
+
+    private boolean hasContactProtobufSenderApi() {
+        return protobufRawReqClass != null
+                && protobufGenericRespClass != null
+                && protobufConfigBuilderClass != null
+                && protobufReqRespClass != null
+                && protobufCallbackClass != null
+                && protobufCallbackClass.isInterface()
+                && protobufNetSceneBaseClass != null
+                && protobufStaticDispatchMethod != null;
     }
 
     private Class<?> findProtobufBaseClass() {
@@ -5569,86 +5559,7 @@ public class DexFinder {
         return null;
     }
 
-    private Class<?> findOplogReqClass(Class<?> protoBase) {
-        if (protoBase == null) return null;
-        try {
-            FindClass fc = new FindClass();
-            ClassMatcher cm = new ClassMatcher();
-            cm.superClass(protoBase.getName());
-            cm.usingStrings("/cgi-bin/micromsg-bin/oplog");
-            cm.fieldCount(1);
-            cm.addMethod(new MethodMatcher().name("op").paramTypes("int", "java.lang.Object[]"));
-            fc.matcher(cm);
-            for (ClassData cd : dexKit.findClass(fc)) {
-                try {
-                    Class<?> cl = KavaReflector.loadClass(cd.getName(), classLoader);
-                    if (cl != null && protoBase.isAssignableFrom(cl)) return cl;
-                } catch (Throwable ignored) {}
-            }
-        } catch (Throwable ignored) {}
-        try {
-            FindClass fc = new FindClass();
-            ClassMatcher cm = new ClassMatcher();
-            MethodsMatcher methods = new MethodsMatcher();
-            methods.add(new MethodMatcher().name("getFuncId").returnType(int.class).usingNumbers(681));
-            methods.add(new MethodMatcher().name("toProtoBuf").returnType(byte[].class));
-            cm.methods(methods);
-            fc.matcher(cm);
-            for (ClassData cd : dexKit.findClass(fc)) {
-                try {
-                    Class<?> wrapper = KavaReflector.loadClass(cd.getName(), classLoader);
-                    for (java.lang.reflect.Field field : KavaReflector.declaredFields(wrapper)) {
-                        Class<?> type = field.getType();
-                        if (type != null
-                                && type != int.class
-                                && type != Integer.class
-                                && protoBase.isAssignableFrom(type)) {
-                            return type;
-                        }
-                    }
-                } catch (Throwable ignored) {}
-            }
-        } catch (Throwable ignored) {}
-        return null;
-    }
 
-    private Class<?> findNewSendMsgReqClass(Class<?> protoBase) {
-        Class<?> wrapperBase = protobufRawReqClass != null ? protobufRawReqClass.getSuperclass() : null;
-        if (wrapperBase == null) return null;
-        try {
-            FindClass fc = new FindClass();
-            ClassMatcher cm = new ClassMatcher();
-            cm.superClass(wrapperBase.getName());
-            cm.fieldCount(2);
-            cm.addFieldForType(int.class);
-            cm.addFieldForType(java.util.LinkedList.class);
-            fc.matcher(cm);
-            for (ClassData cd : dexKit.findClass(fc)) {
-                try {
-                    Class<?> cl = KavaReflector.loadClass(cd.getName(), classLoader);
-                    if (cl != null && hasParseFromMethod(cl)) return cl;
-                } catch (Throwable ignored) {}
-            }
-        } catch (Throwable ignored) {}
-        try {
-            FindClass fc = mkClassUsingStrings("/cgi-bin/micromsg-bin/newsendmsg");
-            for (ClassData cd : dexKit.findClass(fc)) {
-                try {
-                    Class<?> cl = KavaReflector.loadClass(cd.getName(), classLoader);
-                    if (cl != null
-                            && protoBase.isAssignableFrom(cl)
-                            && hasParseFromMethod(cl)) {
-                        return cl;
-                    }
-                } catch (Throwable ignored) {}
-            }
-        } catch (Throwable ignored) {}
-        return null;
-    }
-
-    private boolean hasParseFromMethod(Class<?> cl) {
-        return KavaReflector.findMethodRecursive(cl, "parseFrom", byte[].class) != null;
-    }
 
     public Class<?> findNativeNetSceneClass(String uri, int cgiId) {
         if (uri == null || uri.length() == 0 || cgiId <= 0) return null;
@@ -5866,75 +5777,8 @@ public class DexFinder {
                 && params[4] == protobufNetSceneBaseClass;
     }
 
-    private Class<?> findOnGYNetEndClass() {
-        try {
-            FindMethod fm = new FindMethod();
-            MethodMatcher mm = new MethodMatcher();
-            mm.name("onGYNetEnd");
-            mm.paramCount(6);
-            fm.matcher(mm);
-            for (MethodData md : dexKit.findMethod(fm)) {
-                try {
-                    Method method = md.getMethodInstance(classLoader);
-                    if (isOnGYNetEndMethod(method)) {
-                        return method.getDeclaringClass();
-                    }
-                } catch (Throwable ignored) {}
-            }
-        } catch (Throwable ignored) {}
-        return null;
-    }
 
-    private boolean isOnGYNetEndMethod(Method method) {
-        if (method == null || !"onGYNetEnd".equals(method.getName())) return false;
-        Class<?> owner = method.getDeclaringClass();
-        Class<?>[] params = method.getParameterTypes();
-        return owner != null
-                && owner.isInterface()
-                && params != null
-                && params.length == 6
-                && params[0] == int.class
-                && params[1] == int.class
-                && params[2] == int.class
-                && params[3] == String.class;
-    }
 
-    private List<Method> findProtobufSceneEndMethods() {
-        List<Method> result = new ArrayList<>();
-        if (protobufNetSceneBaseClass == null) return result;
-        try {
-            FindMethod fm = new FindMethod();
-            MethodMatcher mm = new MethodMatcher();
-            mm.name("onSceneEnd");
-            mm.paramCount(4);
-            fm.matcher(mm);
-            for (MethodData md : dexKit.findMethod(fm)) {
-                try {
-                    Method method = md.getMethodInstance(classLoader);
-                    if (isProtobufSceneEndMethod(method) && !result.contains(method)) {
-                        result.add(KavaReflector.accessible(method));
-                    }
-                } catch (Throwable ignored) {}
-            }
-        } catch (Throwable ignored) {}
-        return result;
-    }
-
-    private boolean isProtobufSceneEndMethod(Method method) {
-        if (method == null || !"onSceneEnd".equals(method.getName())) return false;
-        Class<?> owner = method.getDeclaringClass();
-        Class<?>[] params = method.getParameterTypes();
-        return owner != null
-                && !owner.isInterface()
-                && method.getReturnType() == void.class
-                && params != null
-                && params.length == 4
-                && params[0] == int.class
-                && params[1] == int.class
-                && params[2] == String.class
-                && protobufNetSceneBaseClass != null
-                && protobufNetSceneBaseClass.isAssignableFrom(params[3]);
-    }
 
     private void resolveProtobufDispatchApi() {
         try {

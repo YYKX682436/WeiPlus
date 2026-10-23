@@ -65,7 +65,6 @@ import h.Hchat.hooks.items.payment.gift.AutoGiftFeature
 import h.Hchat.hooks.items.payment.transfer.AutoTransferFeature
 import h.Hchat.hooks.items.patblock.PatBlockFeature
 import h.Hchat.hooks.items.profileid.ProfileIdFeature
-import h.Hchat.hooks.items.protobuf.ProtobufPacketFeature
 import h.Hchat.hooks.items.quoteclear.QuoteDeleteClearFeature
 import h.Hchat.hooks.items.quickcontactedit.QuickContactEditFeature
 import h.Hchat.hooks.items.quickmoments.QuickMomentsFeature
@@ -182,7 +181,6 @@ object FeatureRegistry {
             .register(MessageForwardFeature())
             .register(ScheduledTaskFeature())
             .register(FakeScanCameraFeature())
-            .register(ProtobufPacketFeature())
             .register(StatusTextLimitFeature())
             .register(FinderMediaDownloadFeature())
             .register(HchatExtraFeature())

@@ -5,14 +5,11 @@ import android.content.ContentValues;
 
 import h.Hchat.dexkit.DexFinder;
 import h.Hchat.hooks.api.media.WeChatInternalServices;
-import h.Hchat.hooks.items.protobuf.ProtobufPacketRuntime;
 import h.Hchat.hooks.api.net.WeChatNetworkDispatcher;
 import h.Hchat.utils.KavaReflector;
 import h.Hchat.hooks.api.model.ContactLabelBean;
 import h.Hchat.hooks.api.model.WeChatContact;
 import h.Hchat.hooks.api.runtime.WeChatDatabaseApi;
-
-import org.json.JSONObject;
 
 import java.nio.ByteBuffer;
 import java.lang.reflect.Field;
@@ -1076,48 +1073,31 @@ public final class WeChatContactApi {
     }
 
     private boolean sendModifyContactLabelList(String username, String labelIdsValue) {
-        if (sendModifyContactLabelListByPb(username, labelIdsValue)) {
-            return true;
-        }
         Constructor<?> ctor = dexFinder != null ? dexFinder.modifyContactLabelListCtor : null;
-        if (ctor == null || networkDispatcher == null || dexFinder == null) {
-            log("修改好友标签失败: 网络API未就绪");
-            return false;
-        }
-        installNetworkHook();
-        try {
-            Object item = buildModifyContactLabelItem(ctor, username, labelIdsValue);
-            if (item == null) {
-                log("修改好友标签失败: 构造请求项为空");
-                return false;
+        if (ctor != null && networkDispatcher != null && dexFinder != null) {
+            installNetworkHook();
+            try {
+                Object item = buildModifyContactLabelItem(ctor, username, labelIdsValue);
+                if (item != null) {
+                    LinkedList<Object> list = new LinkedList<>();
+                    list.add(item);
+                    Object scene = KavaReflector.newInstance(ctor, list);
+                    if (networkDispatcher.send(scene)) return true;
+                    log("修改好友标签原生请求发送失败，尝试联系人请求通道: username=" + username);
+                } else {
+                    log("修改好友标签原生请求项为空，尝试联系人请求通道");
+                }
+            } catch (Throwable e) {
+                log("修改好友标签原生请求异常，尝试联系人请求通道: " + e.getMessage());
             }
-            LinkedList<Object> list = new LinkedList<>();
-            list.add(item);
-            Object scene = KavaReflector.newInstance(ctor, list);
-            boolean result = networkDispatcher.send(scene);
-            if (!result) log("修改好友标签发包失败: username=" + username);
-            return result;
-        } catch (Throwable e) {
-            log("修改好友标签发包异常: " + e.getMessage());
-            return false;
         }
+        return sendModifyContactLabelListByPb(username, labelIdsValue);
     }
 
     private boolean sendModifyContactLabelListByPb(String username, String labelIdsValue) {
         if (TextUtils.isEmpty(username)) return false;
         try {
-            JSONObject item = new JSONObject();
-            item.put("1", username);
-            item.put("2", labelIdsValue == null ? "" : labelIdsValue);
-            JSONObject payload = new JSONObject();
-            payload.put("2", 1);
-            payload.put("3", item);
-            return ProtobufPacketRuntime.send(
-                    "/cgi-bin/micromsg-bin/modifycontactlabellist",
-                    638,
-                    payload.toString(),
-                    null
-            );
+            return ContactProtobufSender.modifyContactLabelList(dexFinder, username, labelIdsValue);
         } catch (Throwable e) {
             log("修改好友标签PB发包异常: " + e.getMessage());
             return false;
@@ -1127,16 +1107,7 @@ public final class WeChatContactApi {
     private boolean sendSetContactPropertyRemark(String username, String remarkName, String roomName) {
         if (TextUtils.isEmpty(username)) return false;
         try {
-            JSONObject payload = new JSONObject();
-            payload.put("2", username);
-            payload.put("3", new JSONObject().put("1", remarkName == null ? "" : remarkName));
-            if (!TextUtils.isEmpty(roomName)) payload.put("4", roomName);
-            return ProtobufPacketRuntime.send(
-                    "/cgi-bin/micromsg-bin/setcontactproperty",
-                    10022,
-                    payload.toString(),
-                    null
-            );
+            return ContactProtobufSender.setContactRemark(dexFinder, username, remarkName, roomName);
         } catch (Throwable e) {
             log("修改好友备注PB发包异常: " + e.getMessage());
             return false;

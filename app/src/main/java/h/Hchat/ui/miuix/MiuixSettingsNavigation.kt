@@ -1,10 +1,10 @@
 package h.Hchat.ui.miuix
 
+import android.app.Activity
 import android.content.Context
 import android.content.SharedPreferences
 import android.provider.Settings
 import android.webkit.WebView
-import h.Hchat.crash.CrashReportSettingsProvider
 import h.Hchat.hooks.items.floatingshortcut.FloatingShortcutFeature
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.ExperimentalAnimationApi
@@ -22,8 +22,6 @@ import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -32,7 +30,6 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
-import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -46,7 +43,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -54,7 +50,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.nestedscroll.nestedScroll
@@ -135,7 +130,6 @@ import h.Hchat.hooks.items.payment.gift.GiftSettings
 import h.Hchat.hooks.items.payment.transfer.AutoTransferFeature
 import h.Hchat.hooks.items.patblock.PatBlockFeature
 import h.Hchat.hooks.items.profileid.ProfileIdFeature
-import h.Hchat.hooks.items.protobuf.ProtobufPacketFeature
 import h.Hchat.hooks.items.quoteclear.QuoteDeleteClearFeature
 import h.Hchat.hooks.items.quickcontactedit.QuickContactEditFeature
 import h.Hchat.hooks.items.quickmoments.QuickMomentsFeature
@@ -163,14 +157,14 @@ import h.Hchat.hooks.items.voicepreview.VoicePreviewFeature
 import h.Hchat.preferences.HchatStorage
 import h.Hchat.ui.FeatureSettingsProvider
 import org.json.JSONArray
+import top.yukonga.miuix.kmp.basic.DropdownEntry
+import top.yukonga.miuix.kmp.basic.DropdownItem
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
 import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.nav.core.NavKey
-import top.yukonga.miuix.kmp.utils.springAnimateToPage
-import top.yukonga.miuix.kmp.blur.Backdrop
+import top.yukonga.miuix.kmp.menu.WindowIconDropdownMenu
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.LinkedHashSet
@@ -182,155 +176,71 @@ internal fun MainSettingsPage(
     context: Context,
     providers: List<FeatureSettingsProvider>,
     listState: LazyListState,
-    selectedTab: MainTab,
     configVersion: Int,
-    onSelectedTab: (MainTab) -> Unit,
     onOpenSearch: () -> Unit,
     onOpenProvider: (FeatureSettingsProvider) -> Unit,
     onOpenGroup: (FeatureGroupEntry) -> Unit,
     onConfigImported: () -> Unit
 ) {
-    val uiPrefs = remember(configVersion) { HchatStorage.preferences(context, UI_PREFS_NAME) }
-    val glassSupported = remember { isLiquidGlassSupported() }
-    var floatingNav by remember(configVersion) { mutableStateOf(uiPrefs.getBoolean(KEY_FLOATING_NAV, true)) }
-    var glassNav by remember(configVersion) { mutableStateOf(glassSupported && uiPrefs.getBoolean(KEY_GLASS_NAV, true)) }
-    val entertainmentListState = rememberLazyListState()
-    val settingsListState = rememberLazyListState()
     val practicalProviders = providers.filter { it.category() == FeatureSettingsProvider.CATEGORY_PRACTICAL }
-    val entertainmentProviders = providers.filter { it.category() == FeatureSettingsProvider.CATEGORY_ENTERTAINMENT }
     val enhanceProviders = providers.filter { it.category() == FeatureSettingsProvider.CATEGORY_ENHANCE }
-    val practicalGroups = remember(practicalProviders, enhanceProviders) {
-        practicalFeatureGroups(practicalProviders, enhanceProviders)
-    }
-    val entertainmentGroups = remember(entertainmentProviders) {
-        entertainmentFeatureGroups(entertainmentProviders)
+    val groups = remember(practicalProviders, enhanceProviders) {
+        featureGroups(practicalProviders, enhanceProviders)
     }
     val scrollBehavior = MiuixScrollBehavior()
-    val scope = rememberCoroutineScope()
-    val tabs = MainTab.entries
-    val pagerState = rememberPagerState(
-        initialPage = selectedTab.ordinal,
-        pageCount = { tabs.size }
-    )
-    LaunchedEffect(pagerState.currentPage) {
-        tabs.getOrNull(pagerState.currentPage)?.let(onSelectedTab)
-    }
-    val activeTab = tabs.getOrElse(pagerState.currentPage) { MainTab.PRACTICAL }
     PageScaffold(
         title = "Hchat",
         largeTitle = "Hchat",
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            MainNavigationBar(
-                selectedTab = activeTab,
-                floating = floatingNav,
-                glass = glassSupported && glassNav,
-                backdrop = it,
-                onSelected = { tab ->
-                    scope.launch { pagerState.springAnimateToPage(tab.ordinal) }
-                }
-            )
+        topBarActions = {
+            val activity = context as? Activity
+            WindowIconDropdownMenu(
+                entry = DropdownEntry(
+                    items = listOf(
+                        DropdownItem(
+                            text = "导出配置",
+                            onClick = { activity?.let(ConfigImportExportBridge::launchExport) }
+                        ),
+                        DropdownItem(
+                            text = "导入配置",
+                            onClick = {
+                                activity?.let { host ->
+                                    ConfigImportExportBridge.launchImport(host, onConfigImported)
+                                }
+                            }
+                        )
+                    ),
+                    enabled = activity != null
+                ),
+                collapseOnSelection = true
+            ) {
+                Image(
+                    imageVector = NavIcons.More,
+                    contentDescription = "更多",
+                    colorFilter = ColorFilter.tint(MiuixTheme.colorScheme.onSurface),
+                    modifier = Modifier.size(24.dp)
+                )
+            }
         }
     ) { padding ->
-        HorizontalPager(
-            state = pagerState,
-            modifier = Modifier
-                .fillMaxSize(),
-            key = { tabs[it] }
-        ) { page ->
-            val tab = tabs[page]
-            val activeListState = when (tab) {
-                MainTab.PRACTICAL -> listState
-                MainTab.ENTERTAINMENT -> entertainmentListState
-                MainTab.SETTINGS -> settingsListState
-            }
+        key(configVersion) {
             LazyColumn(
                 modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
-                state = activeListState,
+                state = listState,
                 contentPadding = PaddingValues(
                     top = padding.calculateTopPadding() + 8.dp,
-                    bottom = padding.calculateBottomPadding() + 78.dp
+                    bottom = padding.calculateBottomPadding() + 16.dp
                 )
             ) {
-                item {
-                    SettingsSearchEntry(onClick = onOpenSearch)
-                }
-                when (tab) {
-                    MainTab.PRACTICAL -> {
-                        featureGroupMenu(
-                            title = "实用功能",
-                            groups = practicalGroups,
-                            onOpenGroup = onOpenGroup
-                        )
-                        if (practicalProviders.isEmpty() && enhanceProviders.isEmpty()) {
-                            item { SmallTitle(text = "实用功能") }
-                            item { FeatureListCard(emptyList(), "暂无实用功能", onOpenProvider) }
-                        }
-                    }
-                    MainTab.ENTERTAINMENT -> {
-                        featureGroupMenu(
-                            title = "娱乐功能",
-                            groups = entertainmentGroups,
-                            onOpenGroup = onOpenGroup
-                        )
-                        if (entertainmentProviders.isEmpty()) {
-                            item { SmallTitle(text = "娱乐功能") }
-                            item { FeatureListCard(emptyList(), "暂无娱乐功能", onOpenProvider) }
-                        }
-                    }
-                    MainTab.SETTINGS -> {
-                        item { SmallTitle(text = "设置") }
-                        item {
-                            SettingsCard {
-                                SwitchRow(
-                                    checked = floatingNav,
-                                    title = "悬浮底栏",
-                                    summary = "使用悬浮样式的底部导航栏",
-                                    onCheckedChange = {
-                                        floatingNav = it
-                                        uiPrefs.edit().putBoolean(KEY_FLOATING_NAV, it).apply()
-                                    }
-                                )
-                                InsetDivider()
-                                SwitchRow(
-                                    checked = glassSupported && glassNav,
-                                    title = "液态玻璃",
-                                    summary = if (glassSupported) {
-                                        "启用悬浮底栏的液态玻璃效果"
-                                    } else {
-                                        "Android 13 以下不支持液态玻璃效果"
-                                    },
-                                    enabled = glassSupported,
-                                    onCheckedChange = {
-                                        if (!glassSupported) return@SwitchRow
-                                        glassNav = it
-                                        uiPrefs.edit().putBoolean(KEY_GLASS_NAV, it).apply()
-                                    }
-                                )
-                            }
-                        }
-                        item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "关于") }
-                        item { AboutCard(context) }
-                        item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "配置") }
-                        item {
-                            ConfigBackupCard(
-                                context = context,
-                                onImported = onConfigImported
-                            )
-                        }
-                        item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "群组") }
-                        item { GroupLinksCard(context) }
-                        item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "致谢") }
-                        item { ThanksCard(context) }
-                        item {
-                            Text(
-                                modifier = Modifier.fillMaxWidth().padding(top = 18.dp),
-                                text = "Hchat",
-                                color = MiuixTheme.colorScheme.onBackgroundVariant,
-                                textAlign = TextAlign.Center
-                            )
-                        }
-                    }
+                item { SettingsSearchEntry(onClick = onOpenSearch) }
+                featureGroupMenu(
+                    title = "功能",
+                    groups = groups,
+                    onOpenGroup = onOpenGroup
+                )
+                if (groups.isEmpty()) {
+                    item { SmallTitle(text = "功能") }
+                    item { FeatureListCard(emptyList(), "暂无功能", onOpenProvider) }
                 }
             }
         }
@@ -343,7 +253,7 @@ private fun List<FeatureSettingsProvider>.filterByIds(vararg ids: String): List<
         .sortedBy { order.indexOf(it.featureId()) }
 }
 
-private fun practicalFeatureGroups(
+private fun featureGroups(
     practicalProviders: List<FeatureSettingsProvider>,
     enhanceProviders: List<FeatureSettingsProvider>
 ): List<FeatureGroupEntry> {
@@ -367,7 +277,8 @@ private fun practicalFeatureGroups(
                 SwipeQuoteFeature.ID,
                 EmojiSaveFeature.ID,
                 CallMediaLimitFeature.ID,
-                CallRingtoneBlockFeature.ID
+                CallRingtoneBlockFeature.ID,
+                EditMessageFeature.ID
             )
         ),
         FeatureGroupEntry(
@@ -397,7 +308,10 @@ private fun practicalFeatureGroups(
                 GroupChatLabelFeature.ID,
                 AtAllNotificationBlockFeature.ID,
                 GroupLeaveMonitorFeature.ID,
-                GroupRenameMonitorFeature.ID
+                GroupRenameMonitorFeature.ID,
+                RealNameTailFeature.ID,
+                GroupNicknameColorSettings.FEATURE_ID,
+                MemberTitleFeature.ID
             )
         ),
         FeatureGroupEntry(
@@ -462,43 +376,10 @@ private fun practicalFeatureGroups(
                 GameEmojiFeature.ID,
                 FakeScanCameraFeature.ID,
                 FinderMediaDownloadFeature.ID,
-                SkipWebRiskSettingsProvider.FEATURE_ID
+                SkipWebRiskSettingsProvider.FEATURE_ID,
+                StatusTextLimitFeature.ID,
+                QQMusicOrderFeature.ID
             )
-        )
-    ).filter { it.providers.isNotEmpty() }
-}
-
-private fun entertainmentFeatureGroups(
-    entertainmentProviders: List<FeatureSettingsProvider>
-): List<FeatureGroupEntry> {
-    return listOf(
-        FeatureGroupEntry(
-            title = "点歌",
-            providers = entertainmentProviders.filterByIds(QQMusicOrderFeature.ID)
-        ),
-        FeatureGroupEntry(
-            title = "群聊",
-            providers = entertainmentProviders.filterByIds(
-                RealNameTailFeature.ID,
-                GroupNicknameColorSettings.FEATURE_ID,
-                MemberTitleFeature.ID
-            )
-        ),
-        FeatureGroupEntry(
-            title = "状态",
-            providers = entertainmentProviders.filterByIds(StatusTextLimitFeature.ID)
-        ),
-        FeatureGroupEntry(
-            title = "聊天",
-            providers = entertainmentProviders.filterByIds(EditMessageFeature.ID)
-        ),
-        FeatureGroupEntry(
-            title = "抓包",
-            providers = entertainmentProviders.filterByIds(ProtobufPacketFeature.ID)
-        ),
-        FeatureGroupEntry(
-            title = "调试",
-            providers = entertainmentProviders.filterByIds(CrashReportSettingsProvider.ID)
         )
     ).filter { it.providers.isNotEmpty() }
 }
@@ -526,11 +407,9 @@ internal fun SettingsSearchPage(
     val uiPrefs = remember { HchatStorage.preferences(context, UI_PREFS_NAME) }
     var searchHistory by remember { mutableStateOf(readSearchHistory(uiPrefs)) }
     val practicalProviders = providers.filter { it.category() == FeatureSettingsProvider.CATEGORY_PRACTICAL }
-    val entertainmentProviders = providers.filter { it.category() == FeatureSettingsProvider.CATEGORY_ENTERTAINMENT }
     val enhanceProviders = providers.filter { it.category() == FeatureSettingsProvider.CATEGORY_ENHANCE }
-    val groups = remember(practicalProviders, enhanceProviders, entertainmentProviders) {
-        practicalFeatureGroups(practicalProviders, enhanceProviders) +
-            entertainmentFeatureGroups(entertainmentProviders)
+    val groups = remember(practicalProviders, enhanceProviders) {
+        featureGroups(practicalProviders, enhanceProviders)
     }
     val featureResults = remember(query, groups, providers) {
         filterFeatureSearchResults(query, groups, providers)
@@ -831,18 +710,6 @@ internal fun FeatureGroupSettingsPage(
     }
 }
 
-internal enum class MainTab {
-    PRACTICAL,
-    ENTERTAINMENT,
-    SETTINGS
-}
-
-private data class MainNavItem(
-    val tab: MainTab,
-    val label: String,
-    val icon: ImageVector
-)
-
 internal data class FeatureGroupEntry(
     val title: String,
     val providers: List<FeatureSettingsProvider>
@@ -1100,8 +967,6 @@ private fun featureSubSearchTerms(featureId: String): List<String> {
         FakeScanCameraFeature.ID -> listOf("伪造扫码相机", "扫码相机", "扫一扫", "相册扫码", "扫码入口")
         SkipWebRiskSettingsProvider.FEATURE_ID -> listOf("跳过网页风险", "网页风险", "WebView", "风险拦截")
         EditMessageFeature.ID -> listOf("修改聊天记录", "编辑消息", "改消息", "消息XML", "发送XML")
-        ProtobufPacketFeature.ID -> listOf("Protobuf抓包", "Protobuf发包", "抓包", "发包", "pb", "网络包", "重放")
-        CrashReportSettingsProvider.ID -> listOf("捕获异常日志", "异常日志", "闪退日志", "Java异常", "Native异常", "ANR", "调试")
         StatusTextLimitFeature.ID -> listOf("解除状态词长度限制", "状态词", "微信状态", "状态长度", "字数限制")
         RealNameTailFeature.ID -> listOf("实名尾巴", "群聊尾巴", "实名后缀", "尾巴格式", "群成员实名")
         GroupNicknameColorSettings.FEATURE_ID -> listOf("群昵称自定义颜色", "群昵称颜色", "群内昵称颜色", "昵称渐变", "昵称粗细", "颜色取色器")
@@ -1564,64 +1429,6 @@ internal fun <T> SettingsRouteTransition(
 }
 
 @Composable
-private fun MainNavigationBar(
-    selectedTab: MainTab,
-    floating: Boolean,
-    glass: Boolean,
-    backdrop: Backdrop,
-    onSelected: (MainTab) -> Unit
-) {
-    val items = remember {
-        listOf(
-            MainNavItem(MainTab.PRACTICAL, "实用", NavIcons.Practical),
-            MainNavItem(MainTab.ENTERTAINMENT, "娱乐", NavIcons.Entertainment),
-            MainNavItem(MainTab.SETTINGS, "设置", NavIcons.Settings)
-        )
-    }
-    val selectedIndex = items.indexOfFirst { it.tab == selectedTab }.coerceAtLeast(0)
-    val contentColor = MiuixTheme.colorScheme.onSurface
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(bottom = if (floating) 12.dp else 4.dp),
-        contentAlignment = Alignment.BottomCenter
-    ) {
-        FloatingBottomBar(
-            selectedIndex = selectedIndex,
-            onSelected = { index -> onSelected(items[index].tab) },
-            backdrop = backdrop,
-            tabsCount = items.size,
-            isBlurEnabled = glass,
-            floating = floating
-        ) { selectTab ->
-            items.forEachIndexed { index, item ->
-                val selected = index == selectedIndex
-                FloatingBottomBarItem(
-                    onClick = { selectTab(index) },
-                    modifier = Modifier.defaultMinSize(minWidth = 76.dp)
-                ) {
-                    Box(contentAlignment = Alignment.TopEnd) {
-                        Image(
-                            imageVector = item.icon,
-                            contentDescription = item.label,
-                            colorFilter = ColorFilter.tint(contentColor),
-                            modifier = Modifier.size(26.dp)
-                        )
-                    }
-                    Text(
-                        text = item.label,
-                        color = contentColor,
-                        fontSize = 11.sp,
-                        lineHeight = 14.sp,
-                        fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
 private fun GiftMiuixPage(
     context: Context,
     provider: FeatureSettingsProvider,
@@ -1829,8 +1636,6 @@ internal fun FeatureSettingsPage(
         ScheduledTaskFeature.ID -> ScheduledTaskMiuixPage(context, provider, onBack)
         FakeScanCameraFeature.ID -> FakeScanCameraMiuixPage(context, provider, onBack)
         FinderMediaDownloadFeature.ID -> FinderMediaDownloadMiuixPage(context, provider, onBack)
-        ProtobufPacketFeature.ID -> ProtobufPacketMiuixPage(context, provider, onBack)
-        CrashReportSettingsProvider.ID -> CrashReportMiuixPage(context, provider, onBack)
         StatusTextLimitFeature.ID -> StatusTextLimitMiuixPage(context, provider, onBack)
         WeChatTabletFeature.ID -> WeChatTabletMiuixPage(context, provider, onBack)
         else -> UnsupportedFeaturePage(provider, onBack)

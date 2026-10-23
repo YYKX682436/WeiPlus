@@ -8,7 +8,6 @@ import android.net.Uri
 import android.content.SharedPreferences
 import android.graphics.Color as AndroidColor
 import android.media.RingtoneManager
-import android.os.Build
 import android.os.Bundle
 import android.os.Parcelable
 import android.provider.Settings
@@ -103,7 +102,6 @@ import h.Hchat.hooks.items.payment.core.RedPacketSettings
 import h.Hchat.hooks.items.payment.fakebalance.FakeWalletBalanceSettings
 import h.Hchat.hooks.items.payment.transfer.AutoTransferSettings
 import h.Hchat.hooks.items.profileid.ProfileIdSettings
-import h.Hchat.hooks.items.protobuf.ProtobufPacketSettings
 import h.Hchat.hooks.items.quoteclear.QuoteDeleteClearSettings
 import h.Hchat.hooks.items.quickcontactedit.QuickContactEditSettings
 import h.Hchat.hooks.items.quickread.QuickMarkReadSettings
@@ -141,8 +139,6 @@ import java.util.LinkedHashSet
 import java.util.Locale
 
 internal const val UI_PREFS_NAME = "Hchat_miuix_ui"
-internal const val KEY_FLOATING_NAV = "floating_nav"
-internal const val KEY_GLASS_NAV = "glass_nav"
 internal const val KEY_SEARCH_HISTORY = "search_history"
 internal const val SEARCH_HISTORY_LIMIT = 16
 private const val PRESS_RELEASE_DELAY_MS = 110L
@@ -162,7 +158,6 @@ internal val NAVIGATION_BUTTON_MIN_INSET = 24.dp
 internal val NAVIGATION_BUTTON_EXTRA_GAP = 8.dp
 internal const val REDPACKET_AT_SENDER_VARIABLE = "{@发红包的人}"
 
-internal fun isLiquidGlassSupported(): Boolean = Build.VERSION.SDK_INT >= 33
 internal val REDPACKET_AT_SENDER_VARIABLES = listOf(
     REDPACKET_AT_SENDER_VARIABLE,
     "{@sender}",
@@ -397,10 +392,6 @@ internal object NavIcons {
         name = "Rounded.Extension",
         path = "M20.5,11H19V7c0,-1.1 -0.9,-2 -2,-2h-4V3.5C13,2.12 11.88,1 10.5,1S8,2.12 8,3.5V5H4c-1.1,0 -1.99,0.9 -1.99,2v3.8H3.5c1.49,0 2.7,1.21 2.7,2.7s-1.21,2.7 -2.7,2.7H2V20c0,1.1 0.9,2 2,2h3.8v-1.5c0,-1.49 1.21,-2.7 2.7,-2.7s2.7,1.21 2.7,2.7V22H17c1.1,0 2,-0.9 2,-2v-4h1.5c1.38,0 2.5,-1.12 2.5,-2.5S21.88,11 20.5,11z"
     )
-    val Settings: ImageVector = navIcon(
-        name = "Rounded.Settings",
-        path = "M19.5,12c0,-0.23 -0.01,-0.45 -0.03,-0.68l1.86,-1.41c0.4,-0.3 0.51,-0.86 0.26,-1.3l-1.87,-3.23c-0.25,-0.44 -0.79,-0.62 -1.25,-0.42l-2.15,0.91c-0.37,-0.26 -0.76,-0.49 -1.17,-0.68l-0.29,-2.31C14.8,2.38 14.37,2 13.87,2h-3.73C9.63,2 9.2,2.38 9.14,2.88L8.85,5.19c-0.41,0.19 -0.8,0.42 -1.17,0.68L5.53,4.96c-0.46,-0.2 -1,-0.02 -1.25,0.42L2.41,8.62c-0.25,0.44 -0.14,0.99 0.26,1.3l1.86,1.41C4.51,11.55 4.5,11.77 4.5,12s0.01,0.45 0.03,0.68l-1.86,1.41c-0.4,0.3 -0.51,0.86 -0.26,1.3l1.87,3.23c0.25,0.44 0.79,0.62 1.25,0.42l2.15,-0.91c0.37,0.26 0.76,0.49 1.17,0.68l0.29,2.31c0.06,0.5 0.49,0.88 0.99,0.88h3.73c0.5,0 0.93,-0.38 0.99,-0.88l0.29,-2.31c0.41,-0.19 0.8,-0.42 1.17,-0.68l2.15,0.91c0.46,0.2 1,0.02 1.25,-0.42l1.87,-3.23c0.25,-0.44 0.14,-0.99 -0.26,-1.3l-1.86,-1.41C19.49,12.45 19.5,12.23 19.5,12z M12.04,15.5c-1.93,0 -3.5,-1.57 -3.5,-3.5s1.57,-3.5 3.5,-3.5s3.5,1.57 3.5,3.5S13.97,15.5 12.04,15.5z"
-    )
     val More: ImageVector = navIcon(
         name = "Rounded.MoreVert",
         path = "M12,8c1.1,0 2,-0.9 2,-2s-0.9,-2 -2,-2 -2,0.9 -2,2 0.9,2 2,2z M12,10c-1.1,0 -2,0.9 -2,2s0.9,2 2,2 2,-0.9 2,-2 -0.9,-2 -2,-2z M12,16c-1.1,0 -2,0.9 -2,2s0.9,2 2,2 2,-0.9 2,-2 -0.9,-2 -2,-2z"
@@ -598,6 +589,7 @@ object MiuixSettingsPage {
     private fun show(context: Context, initialPage: DetailPage?) {
         val activity = context as? Activity ?: return
         val decor = activity.window?.decorView as? ViewGroup ?: return
+        HchatConfigBackup.removeDeprecatedPreferenceKeys(activity)
         removeExistingPage(decor)
 
         val hostTag = SettingsPageHostTag()
@@ -728,7 +720,6 @@ object MiuixSettingsPage {
 
         owner.install(page)
         owner.attach()
-        val selectedTab = mutableStateOf(MainTab.PRACTICAL)
         val termsAccepted = mutableStateOf(TermsGate.isAccepted(activity))
         val composeView = try {
             ComposeView(activity).apply {
@@ -773,9 +764,7 @@ object MiuixSettingsPage {
                                     context = activity,
                                     providers = UIRegistry.get().getAllProviders(),
                                     listState = mainListState,
-                                    selectedTab = selectedTab.value,
                                     configVersion = configVersion.value,
-                                    onSelectedTab = { selectedTab.value = it },
                                     onOpenSearch = { openDetail(DetailPage.Search) },
                                     onOpenProvider = { openDetail(DetailPage.Feature(it)) },
                                     onOpenGroup = { openDetail(DetailPage.FeatureGroup(it)) },
@@ -1716,6 +1705,9 @@ private object HchatConfigBackup {
     private const val TYPE_STRING_SET = "string_set"
     private const val KEY_TYPE = "type"
     private const val KEY_VALUE = "value"
+    private val deprecatedPreferenceKeys = mapOf(
+        UI_PREFS_NAME to setOf("floating_nav", "glass_nav")
+    )
 
     private val prefsNames = listOf(
         UI_PREFS_NAME,
@@ -1774,7 +1766,6 @@ private object HchatConfigBackup {
         FakeScanCameraSettings.PREFS_NAME,
         RedPacketSettings.PREFS_NAME,
         AntiRecallSettings.PREFS_NAME,
-        ProtobufPacketSettings.PREFS_NAME,
         WeChatTabletSettings.PREFS_NAME,
         AutoTransferSettings.PREFS_NAME,
         FakeWalletBalanceSettings.PREFS_NAME,
@@ -1782,6 +1773,12 @@ private object HchatConfigBackup {
         RealNameTailSettings.PREFS_NAME,
         GroupNicknameColorSettings.PREFS_NAME
     ).distinct()
+
+    fun removeDeprecatedPreferenceKeys(context: Context) {
+        val editor = HchatStorage.preferences(context, UI_PREFS_NAME).edit()
+        deprecatedPreferenceKeys[UI_PREFS_NAME].orEmpty().forEach(editor::remove)
+        editor.apply()
+    }
 
     fun exportToUri(context: Context, uri: Uri): Int {
         return runCatching {
@@ -1791,6 +1788,7 @@ private object HchatConfigBackup {
                 val sp = HchatStorage.preferences(context, name)
                 val entries = JSONObject()
                 sp.all.forEach { (key, value) ->
+                    if (key in deprecatedPreferenceKeys[name].orEmpty()) return@forEach
                     encodePreferenceValue(value)?.let { encoded ->
                         entries.put(key, encoded)
                         itemCount++
@@ -1830,6 +1828,7 @@ private object HchatConfigBackup {
                 val keys = entries.keys()
                 while (keys.hasNext()) {
                     val key = keys.next()
+                    if (key in deprecatedPreferenceKeys[name].orEmpty()) continue
                     val encoded = entries.optJSONObject(key) ?: continue
                     if (decodePreferenceValue(editor, key, encoded)) {
                         itemCount++

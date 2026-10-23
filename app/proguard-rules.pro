@@ -7,7 +7,6 @@
 # Android Xml API 返回系统 XmlPullParser 实现，接口 ABI 不能重命名或收窄
 -keep class org.xmlpull.v1.** { *; }
 
--keep class h.Hchat.hooks.items.protobuf.ProtobufPacketRuntime$Packet { *; }
 -keep class h.Hchat.hooks.api.model.ContactLabelBean { *; }
 -keep class h.Hchat.hooks.api.model.WeChatContact { *; }
 -keep class h.Hchat.hooks.api.model.WeChatChatroom { *; }
@@ -35,8 +34,6 @@
 # Xposed
 -keep class de.robv.android.xposed.** { *; }
 -keep class h.Hchat.ModuleEntry { *; }
--keep class h.Hchat.crash.NativeCrashBridge { *; }
--keep class h.Hchat.crash.CrashExitInfoApi30 { *; }
 
 # 反射注入 native 库搜索路径用到的加载器
 -keep class h.Hchat.loader.utils.NativeLibraryLoader { *; }
