@@ -2845,7 +2845,7 @@ internal fun FakeMiniProgramBaseLibMiuixPage(
                     SwitchRow(
                         checked = enabled,
                         title = "兼容低版本小程序",
-                        summary = "伪装启动基础库版本并阻止官方升级页",
+                        summary = "主进程即时生效；小程序进程需重启微信后生效",
                         onCheckedChange = {
                             enabled = it
                             sp.edit().putBoolean(FakeMiniProgramBaseLibSettings.KEY_ENABLE, it).apply()
@@ -2898,7 +2898,7 @@ internal fun SkipMiniProgramVideoAdsMiuixPage(
                     SwitchRow(
                         checked = enabled,
                         title = "跳过小程序视频广告",
-                        summary = "自动跳过小程序视频广告",
+                        summary = "修改后重启微信，使小程序进程重新加载设置",
                         onCheckedChange = {
                             enabled = it
                             sp.edit().putBoolean(
@@ -3018,7 +3018,7 @@ internal fun FakeLocationMiuixPage(
                     SwitchRow(
                         checked = enabled,
                         title = "启用虚拟定位",
-                        summary = "同时覆盖微信和小程序获取的位置",
+                        summary = "微信主进程即时生效；小程序进程需重启微信后生效",
                         onCheckedChange = {
                             enabled = it
                             sp.edit().putBoolean(FakeLocationSettings.KEY_ENABLE, it).apply()

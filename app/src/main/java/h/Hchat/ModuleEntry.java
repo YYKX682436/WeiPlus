@@ -24,10 +24,10 @@ import h.Hchat.hooks.items.floatingshortcut.FloatingShortcutRuntime;
 import h.Hchat.hooks.items.tablet.WeChatTabletFeature;
 import h.Hchat.loader.utils.NativeLibraryLoader;
 import h.Hchat.preferences.ConfigStore;
-import h.Hchat.preferences.TermsGate;
 import h.Hchat.dexkit.DexBridgeHolder;
 import h.Hchat.event.EventBus;
 import h.Hchat.ui.UIRegistry;
+import h.Hchat.ui.miuix.FirstUseAgreementRuntime;
 import h.Hchat.utils.HLog;
 
 import org.luckypray.dexkit.DexKitBridge;
@@ -96,41 +96,43 @@ public class ModuleEntry implements IXposedHookLoadPackage {
         installCustomBottomBarEarlyHook(lpparam);
 
         // 4. Hook Application.onCreate，等 Application 完全初始化后再启动模块
-        HookRegistry.get().add(XposedHelpers.findAndHookMethod(
+        hookEntryOnce(
+                "application-on-create",
+                lpparam,
                 Application.class,
+                null,
+                null,
                 "onCreate",
+                new Class<?>[0],
                 new XC_MethodHook() {
                     @Override
                     protected void beforeHookedMethod(MethodHookParam param) {
                         Application app = (Application) param.thisObject;
-                        if (TermsGate.INSTANCE.isAccepted(app)) {
-                            CrashReportRuntime.prepare(app);
-                        }
+                        CrashReportRuntime.prepare(app);
                     }
 
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) {
                         Application app = (Application) param.thisObject;
-                        if (TermsGate.INSTANCE.isAccepted(app)) {
-                            CrashReportRuntime.install(app, ModuleEntry.this.getClass().getClassLoader());
-                            // 标签栏先捕获首页根视图，不能等待后台 DexKit 初始化后再挂载。
-                            try {
-                                ConversationTabsFeature.installEarly(resolveHostClassLoader(app, lpparam));
-                            } catch (Throwable e) {
-                                HLog.e(TAG + " 标签分组早期安装失败", e);
-                            }
-                            // 悬浮入口不依赖 DexKit，先注册生命周期，避免错过首个 Activity。
-                            try {
-                                FloatingShortcutRuntime.INSTANCE.install(app);
-                            } catch (Throwable e) {
-                                HLog.e(TAG + " 悬浮快捷菜单早期安装失败", e);
-                            }
+                        FirstUseAgreementRuntime.install(app);
+                        CrashReportRuntime.install(app, ModuleEntry.this.getClass().getClassLoader());
+                        // 标签栏先捕获首页根视图，不能等待后台 DexKit 初始化后再挂载。
+                        try {
+                            ConversationTabsFeature.installEarly(resolveHostClassLoader(app, lpparam));
+                        } catch (Throwable e) {
+                            HLog.e(TAG + " 标签分组早期安装失败", e);
+                        }
+                        // 悬浮入口不依赖 DexKit，先注册生命周期，避免错过首个 Activity。
+                        try {
+                            FloatingShortcutRuntime.INSTANCE.install(app);
+                        } catch (Throwable e) {
+                            HLog.e(TAG + " 悬浮快捷菜单早期安装失败", e);
                         }
                         installCustomBottomBarEarly(app, resolveHostClassLoader(app, lpparam));
                         new Thread(() -> initModule(app, lpparam), "Hchat-Init").start();
                     }
                 }
-        ));
+        );
     }
 
     // ============ 包名与进程判断 ============
@@ -157,13 +159,14 @@ public class ModuleEntry implements IXposedHookLoadPackage {
 
     private void installAppBrandProcessHook(XC_LoadPackage.LoadPackageParam lpparam) {
         try {
-            HookRegistry.get().add(XposedHelpers.findAndHookMethod(
-                    "com.tencent.tinker.loader.app.TinkerApplication",
+            hookEntryOnce(
+                    "appbrand-tinker-attach",
+                    lpparam,
+                    null,
                     lpparam.classLoader,
+                    "com.tencent.tinker.loader.app.TinkerApplication",
                     "onBaseContextAttached",
-                    Context.class,
-                    long.class,
-                    long.class,
+                    new Class<?>[]{Context.class, long.class, long.class},
                     new XC_MethodHook() {
                         @Override
                         protected void afterHookedMethod(MethodHookParam param) {
@@ -175,14 +178,19 @@ public class ModuleEntry implements IXposedHookLoadPackage {
                             installAppBrandProcessHook(context, loader, lpparam, false);
                         }
                     }
-            ));
+            );
         } catch (Throwable e) {
             HLog.e(TAG + " 小程序进程早期入口安装失败: " + e.getMessage(), e);
         }
         try {
-            HookRegistry.get().add(XposedHelpers.findAndHookMethod(
+            hookEntryOnce(
+                    "appbrand-application-on-create",
+                    lpparam,
                     Application.class,
+                    null,
+                    null,
                     "onCreate",
+                    new Class<?>[0],
                     new XC_MethodHook() {
                         @Override
                         protected void afterHookedMethod(MethodHookParam param) {
@@ -191,7 +199,7 @@ public class ModuleEntry implements IXposedHookLoadPackage {
                             installAppBrandProcessHook(app, loader, lpparam, true);
                         }
                     }
-            ));
+            );
         } catch (Throwable e) {
             HLog.e(TAG + " 小程序进程兜底入口安装失败: " + e.getMessage(), e);
         }
@@ -201,7 +209,6 @@ public class ModuleEntry implements IXposedHookLoadPackage {
                                             ClassLoader classLoader,
                                             XC_LoadPackage.LoadPackageParam lpparam,
                                             boolean applicationReady) {
-        if (!TermsGate.INSTANCE.isAccepted(context)) return;
         boolean failed = false;
         if (FakeMiniProgramBaseLibFeature.isEnabled(context)
                 && !FakeMiniProgramBaseLibFeature.installAppBrandProcessHook(context, classLoader)) {
@@ -227,13 +234,14 @@ public class ModuleEntry implements IXposedHookLoadPackage {
 
     private void installHotUpdateEarlyHook(XC_LoadPackage.LoadPackageParam lpparam) {
         try {
-            HookRegistry.get().add(XposedHelpers.findAndHookMethod(
-                    "com.tencent.tinker.loader.app.TinkerApplication",
+            hookEntryOnce(
+                    "hot-update-tinker-attach",
+                    lpparam,
+                    null,
                     lpparam.classLoader,
+                    "com.tencent.tinker.loader.app.TinkerApplication",
                     "onBaseContextAttached",
-                    Context.class,
-                    long.class,
-                    long.class,
+                    new Class<?>[]{Context.class, long.class, long.class},
                     new XC_MethodHook() {
                         @Override
                         protected void beforeHookedMethod(MethodHookParam param) {
@@ -245,7 +253,7 @@ public class ModuleEntry implements IXposedHookLoadPackage {
                             installHotUpdateForAttach(lpparam, param, "after");
                         }
                     }
-            ));
+            );
         } catch (Throwable e) {
             HLog.e(TAG + " 热更新早期入口安装失败: " + e.getMessage(), e);
         }
@@ -256,7 +264,6 @@ public class ModuleEntry implements IXposedHookLoadPackage {
                                            String stage) {
         try {
             Context context = (Context) param.args[0];
-            if (!TermsGate.INSTANCE.isAccepted(context)) return;
             if (!DisableHotUpdateFeature.isEnabled(context)) return;
             if ("before".equals(stage)) {
                 DisableHotUpdateFeature.installEarly(context, lpparam.classLoader);
@@ -287,13 +294,14 @@ public class ModuleEntry implements IXposedHookLoadPackage {
 
     private void installTabletEarlyHook(XC_LoadPackage.LoadPackageParam lpparam) {
         try {
-            HookRegistry.get().add(XposedHelpers.findAndHookMethod(
-                    "com.tencent.tinker.loader.app.TinkerApplication",
+            hookEntryOnce(
+                    "tablet-tinker-attach",
+                    lpparam,
+                    null,
                     lpparam.classLoader,
+                    "com.tencent.tinker.loader.app.TinkerApplication",
                     "onBaseContextAttached",
-                    Context.class,
-                    long.class,
-                    long.class,
+                    new Class<?>[]{Context.class, long.class, long.class},
                     new XC_MethodHook() {
                         @Override
                         protected void beforeHookedMethod(MethodHookParam param) {
@@ -305,7 +313,7 @@ public class ModuleEntry implements IXposedHookLoadPackage {
                             installTabletHookForAttach(lpparam, param, "after");
                         }
                     }
-            ));
+            );
         } catch (Throwable e) {
             HLog.e(TAG + " 平板模式早期入口安装失败: " + e.getMessage(), e);
         }
@@ -313,13 +321,14 @@ public class ModuleEntry implements IXposedHookLoadPackage {
 
     private void installCustomBottomBarEarlyHook(XC_LoadPackage.LoadPackageParam lpparam) {
         try {
-            HookRegistry.get().add(XposedHelpers.findAndHookMethod(
-                    "com.tencent.tinker.loader.app.TinkerApplication",
+            hookEntryOnce(
+                    "custom-bottom-bar-tinker-attach",
+                    lpparam,
+                    null,
                     lpparam.classLoader,
+                    "com.tencent.tinker.loader.app.TinkerApplication",
                     "onBaseContextAttached",
-                    Context.class,
-                    long.class,
-                    long.class,
+                    new Class<?>[]{Context.class, long.class, long.class},
                     new XC_MethodHook() {
                         @Override
                         protected void afterHookedMethod(MethodHookParam param) {
@@ -331,7 +340,7 @@ public class ModuleEntry implements IXposedHookLoadPackage {
                             installCustomBottomBarEarly(context, classLoader);
                         }
                     }
-            ));
+            );
         } catch (Throwable e) {
             HLog.e(TAG + " 自定义底栏早期入口安装失败: " + e.getMessage(), e);
         }
@@ -339,7 +348,6 @@ public class ModuleEntry implements IXposedHookLoadPackage {
 
     private void installCustomBottomBarEarly(Context context, ClassLoader classLoader) {
         try {
-            if (!TermsGate.INSTANCE.isAccepted(context)) return;
             CustomBottomBarFeature.installEarly(context, classLoader);
         } catch (Throwable e) {
             HLog.e(TAG + " 自定义底栏早期Hook失败: " + e.getMessage(), e);
@@ -351,7 +359,6 @@ public class ModuleEntry implements IXposedHookLoadPackage {
                                             String stage) {
         try {
             Context context = (Context) param.args[0];
-            if (!TermsGate.INSTANCE.isAccepted(context)) return;
             if (!WeChatTabletFeature.isEnabled(context)) return;
             ClassLoader resolvedClassLoader = resolveTinkerClassLoader(param.thisObject);
             if (resolvedClassLoader == null) {
@@ -496,6 +503,37 @@ public class ModuleEntry implements IXposedHookLoadPackage {
         } catch (Throwable e) {
             return null;
         }
+    }
+
+    private void hookEntryOnce(String hookName,
+                               XC_LoadPackage.LoadPackageParam lpparam,
+                               Class<?> targetClass,
+                               ClassLoader classLoader,
+                               String targetClassName,
+                               String methodName,
+                               Class<?>[] parameterTypes,
+                               XC_MethodHook callback) throws Throwable {
+        Class<?> clazz = targetClass != null ? targetClass : classLoader.loadClass(targetClassName);
+        Method method = findMethodInHierarchy(clazz, methodName, parameterTypes);
+        method.setAccessible(true);
+
+        String key = "entry:" + hookName + ":" + lpparam.processName;
+        if (classLoader != null) {
+            key += ":" + Integer.toHexString(System.identityHashCode(classLoader));
+        }
+        HookRegistry.get().hookOnce(key, method, callback);
+    }
+
+    private Method findMethodInHierarchy(Class<?> clazz,
+                                         String methodName,
+                                         Class<?>[] parameterTypes) throws NoSuchMethodException {
+        for (Class<?> current = clazz; current != null; current = current.getSuperclass()) {
+            try {
+                return current.getDeclaredMethod(methodName, parameterTypes);
+            } catch (NoSuchMethodException ignored) {
+            }
+        }
+        throw new NoSuchMethodException(clazz.getName() + "." + methodName);
     }
 
     private ClassLoader resolveHostClassLoader(Context hostContext,

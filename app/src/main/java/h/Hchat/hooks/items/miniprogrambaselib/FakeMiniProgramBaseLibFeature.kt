@@ -15,6 +15,7 @@ import org.luckypray.dexkit.query.FindMethod
 import org.luckypray.dexkit.query.matchers.MethodMatcher
 import java.lang.reflect.Constructor
 import java.lang.reflect.Method
+import java.util.HashSet
 
 class FakeMiniProgramBaseLibFeature : BaseFeature() {
     private var runtime: MiniProgramCompatibilityRuntime? = null
@@ -44,7 +45,7 @@ class FakeMiniProgramBaseLibFeature : BaseFeature() {
         internal const val CACHE_PREFS_NAME =
             "Hchat_fake_mini_program_host_version_member_cache"
         internal const val CACHE_PRIVATE_OPEN_URL_METHOD = "private_open_url_method"
-        @Volatile private var appBrandProcessHookInstalled = false
+        private val appBrandProcessHookedLoaders = HashSet<String>()
 
         @JvmStatic
         fun isEnabled(context: Context?): Boolean {
@@ -59,7 +60,8 @@ class FakeMiniProgramBaseLibFeature : BaseFeature() {
         @JvmStatic
         @Synchronized
         fun installAppBrandProcessHook(context: Context, classLoader: ClassLoader): Boolean {
-            if (appBrandProcessHookInstalled) return true
+            val loaderKey = "${classLoader.javaClass.name}@${System.identityHashCode(classLoader)}"
+            if (loaderKey in appBrandProcessHookedLoaders) return true
             val prefs = DexMethodCache.prefs(context, CACHE_PREFS_NAME)
             val runtimeKey = DexMethodCache.runtimeKey(context, classLoader)
             val privateOpenUrlMethod = DexMethodCache.loadCrossProcess(
@@ -71,7 +73,7 @@ class FakeMiniProgramBaseLibFeature : BaseFeature() {
 
             return runCatching {
                 hookPrivateOpenUrlMethod(privateOpenUrlMethod, context)
-                appBrandProcessHookInstalled = true
+                appBrandProcessHookedLoaders.add(loaderKey)
                 true
             }.getOrElse {
                 HLog.e("$TAG 小程序进程升级跳转Hook安装失败: ${it.message}", it)

@@ -75,7 +75,7 @@ internal fun WeChatTabletMiuixPage(
                         sp,
                         WeChatTabletSettings.KEY_ENABLE,
                         "平板模式",
-                        "开启平板模式，退出微信登陆生效",
+                        "启动时安装设备识别 Hook；开启后需重启微信并重新登录",
                         WeChatTabletSettings.DEFAULT_ENABLE
                     )
                 }

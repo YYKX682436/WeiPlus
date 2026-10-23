@@ -1,9 +1,7 @@
 package h.Hchat.hooks.core
 
 import h.Hchat.event.Events
-import h.Hchat.hooks.items.settings.SettingsFeature
 import h.Hchat.hooks.items.conversationgroup.ConversationGroupHomeProjection
-import h.Hchat.preferences.TermsGate
 import h.Hchat.utils.HLog
 import java.util.Collections
 
@@ -38,14 +36,10 @@ class FeatureManager {
             ++lifecycleGeneration
         }
         val installationGeneration = HookRegistry.get().installationGeneration()
-        val termsAccepted = TermsGate.isAccepted(context.configStore())
         val initializedFeatures = ArrayList<Feature>()
         for (feature in features()) {
             if (!isLifecycleCurrent(lifecycleToken)) return
             val displayName = safeName(feature)
-            if (!termsAccepted && feature.featureId() != SettingsFeature.ID) {
-                continue
-            }
             try {
                 feature.onInit(context)
                 initializedFeatures.add(feature)

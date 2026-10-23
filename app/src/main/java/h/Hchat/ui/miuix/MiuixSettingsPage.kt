@@ -587,6 +587,13 @@ object MiuixSettingsPage {
         return true
     }
 
+    @JvmStatic
+    fun isShowing(context: Context): Boolean {
+        val activity = context as? Activity ?: return false
+        val decor = activity.window?.decorView as? ViewGroup ?: return false
+        return findExistingPage(decor) != null
+    }
+
     @OptIn(ExperimentalAnimationApi::class)
     private fun show(context: Context, initialPage: DetailPage?) {
         val activity = context as? Activity ?: return
@@ -740,10 +747,14 @@ object MiuixSettingsPage {
                         if (!termsAccepted.value) {
                             FirstUseAgreementDialog(
                                 context = activity,
-                                onCancel = { closePage() },
+                                onCancel = {
+                                    closePage()
+                                    activity.finishAffinity()
+                                },
                                 onAccepted = {
                                     termsAccepted.value = true
-                                    Toast.makeText(activity, "已同意协议，重启微信后完整启用模块功能", Toast.LENGTH_LONG).show()
+                                    FirstUseAgreementRuntime.onAgreementAccepted(activity)
+                                    closePage()
                                 }
                             )
                         }
@@ -1939,7 +1950,7 @@ internal fun rememberPressFeedbackColor(pressed: Boolean): Color {
 }
 
 @Composable
-private fun HchatMiuixTheme(context: Context, content: @Composable () -> Unit) {
+internal fun HchatMiuixTheme(context: Context, content: @Composable () -> Unit) {
     val colors = if (isDarkMode(context)) {
         darkColorScheme()
     } else {
