@@ -6,6 +6,7 @@ import android.content.ContentValues;
 import h.Hchat.dexkit.DexFinder;
 import h.Hchat.hooks.api.media.WeChatInternalServices;
 import h.Hchat.hooks.api.net.WeChatNetworkDispatcher;
+import h.Hchat.hooks.core.HookRegistry;
 import h.Hchat.utils.KavaReflector;
 import h.Hchat.hooks.api.model.ContactLabelBean;
 import h.Hchat.hooks.api.model.WeChatContact;
@@ -28,6 +29,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicReference;
+
+import de.robv.android.xposed.XC_MethodHook;
 
 /**
  * 微信联系人/群聊 API。
@@ -80,7 +84,6 @@ public final class WeChatContactApi {
     private volatile Class<?> modifyContactLabelItemClass;
     private volatile Object nativeContactStorage;
     private volatile Method nativeContactGetterMethod;
-    private volatile Method nativeContactUpdateMethod;
 
     public WeChatContactApi(WeChatDatabaseApi databaseApi, Logger logger) {
         this(databaseApi, null, null, logger);
@@ -700,12 +703,10 @@ public final class WeChatContactApi {
     public boolean modifyContactRemark(String username, String remarkName) {
         if (TextUtils.isEmpty(username)) return false;
         String cleanRemark = remarkName == null ? "" : remarkName.trim();
-        boolean synced = sendSetContactPropertyRemark(username, cleanRemark, "");
-        if (!synced) {
-            synced = modifyContactRemarkByNativeStorage(username, cleanRemark);
-        }
-        if (!synced) {
-            log("修改好友备注失败: 同步接口不可用 username=" + username);
+        ContactRequestDispatch.Result result = sendSetContactPropertyRemark(username, cleanRemark, "");
+        if (result == null || !result.serverAccepted()) {
+            log("修改好友备注失败: 服务端未确认 username=" + username
+                    + " outcome=" + (result != null ? result.outcome : "unavailable"));
             return false;
         }
         ContentValues values = new ContentValues();
@@ -718,58 +719,30 @@ public final class WeChatContactApi {
         return true;
     }
 
-    private boolean modifyContactRemarkByNativeStorage(String username, String remarkName) {
-        if (TextUtils.isEmpty(username)) return false;
-        try {
-            NativeContactHandle handle = nativeContactHandle(username);
-            if (handle == null || handle.contact == null || handle.storage == null) {
-                return false;
-            }
-            if (!writeNativeContactRemark(handle.contact, remarkName)) {
-                log("修改好友备注失败: 未找到原生备注字段 username=" + username
-                        + " contact=" + handle.contact.getClass().getName());
-                return false;
-            }
-            Method cached = nativeContactUpdateMethod;
-            if (invokeNativeContactUpdate(cached, handle.storage, username, handle.contact)) {
-                return true;
-            }
-            Method update = findNativeContactUpdateMethod(handle.storage.getClass(), handle.contact.getClass());
-            if (update != null && invokeNativeContactUpdate(update, handle.storage, username, handle.contact)) {
-                nativeContactUpdateMethod = update;
-                return true;
-            }
-        } catch (Throwable e) {
-            log("修改好友备注原生存储异常: " + e.getMessage());
-        }
-        return false;
-    }
-
     /**
      * 返回微信联系人存储中的原生 Contact 对象，供其它内部 API 调用微信原生业务入口。
      */
     public Object getNativeContactObject(String username) {
         if (TextUtils.isEmpty(username)) return null;
-        NativeContactHandle handle = nativeContactHandle(username.trim());
-        return handle != null ? handle.contact : null;
+        return findNativeContact(username.trim());
     }
 
-    private NativeContactHandle nativeContactHandle(String username) {
+    private Object findNativeContact(String username) {
         Object storage = nativeContactStorage;
         Method getter = nativeContactGetterMethod;
         Object contact = invokeNativeContactGetter(storage, getter, username);
-        if (contact != null) return new NativeContactHandle(storage, contact);
+        if (contact != null) return contact;
 
-        NativeContactHandle serviceHandle = nativeContactHandleFromService(username);
-        if (serviceHandle != null) return serviceHandle;
+        Object serviceContact = nativeContactFromService(username);
+        if (serviceContact != null) return serviceContact;
 
         Object coreStorage = databaseApi != null ? databaseApi.getCoreStorage() : null;
         if (coreStorage == null) return null;
         Set<Object> visited = Collections.newSetFromMap(new IdentityHashMap<>());
-        return findNativeContactHandleRecursive(coreStorage, username, visited);
+        return findNativeContactRecursive(coreStorage, username, visited);
     }
 
-    private NativeContactHandle nativeContactHandleFromService(String username) {
+    private Object nativeContactFromService(String username) {
         if (dexFinder == null) return null;
         Method storageGetter = dexFinder.contactStorageGetterMethod;
         Method contactGetter = dexFinder.contactStorageQueryMethod;
@@ -784,13 +757,13 @@ public final class WeChatContactApi {
             if (contact == null) return null;
             nativeContactStorage = storage;
             nativeContactGetterMethod = contactGetter;
-            return new NativeContactHandle(storage, contact);
+            return contact;
         } catch (Throwable ignored) {
             return null;
         }
     }
 
-    private NativeContactHandle findNativeContactHandleRecursive(Object candidate, String username, Set<Object> visited) {
+    private Object findNativeContactRecursive(Object candidate, String username, Set<Object> visited) {
         if (candidate == null || visited.contains(candidate)) return null;
         visited.add(candidate);
         Method getter = findNativeContactGetterMethod(candidate, username);
@@ -798,17 +771,17 @@ public final class WeChatContactApi {
         if (contact != null) {
             nativeContactStorage = candidate;
             nativeContactGetterMethod = getter;
-            return new NativeContactHandle(candidate, contact);
+            return contact;
         }
-        NativeContactHandle accessorHandle = findNativeContactHandleFromAccessors(candidate, username, visited);
-        if (accessorHandle != null) return accessorHandle;
+        Object accessorContact = findNativeContactFromAccessors(candidate, username, visited);
+        if (accessorContact != null) return accessorContact;
         for (Field field : KavaReflector.declaredFields(candidate.getClass())) {
             try {
                 if (KavaReflector.isStatic(field)) continue;
                 Class<?> type = field.getType();
                 if (type == null || type.isPrimitive() || type == String.class) continue;
                 Object value = KavaReflector.readField(field, candidate);
-                NativeContactHandle nested = findNativeContactHandleRecursive(value, username, visited);
+                Object nested = findNativeContactRecursive(value, username, visited);
                 if (nested != null) return nested;
             } catch (Throwable ignored) {
             }
@@ -816,14 +789,14 @@ public final class WeChatContactApi {
         return null;
     }
 
-    private NativeContactHandle findNativeContactHandleFromAccessors(Object candidate, String username, Set<Object> visited) {
+    private Object findNativeContactFromAccessors(Object candidate, String username, Set<Object> visited) {
         Class<?> cur = candidate.getClass();
         while (cur != null && cur != Object.class) {
             for (Method method : KavaReflector.declaredMethods(cur)) {
                 if (!isContactStorageAccessor(method)) continue;
                 try {
                     Object value = KavaReflector.invoke(method, candidate);
-                    NativeContactHandle nested = findNativeContactHandleRecursive(value, username, visited);
+                    Object nested = findNativeContactRecursive(value, username, visited);
                     if (nested != null) return nested;
                 } catch (Throwable ignored) {
                 }
@@ -890,69 +863,6 @@ public final class WeChatContactApi {
             return true;
         }
         return false;
-    }
-
-    private boolean writeNativeContactRemark(Object contact, String remarkName) {
-        if (contact == null) return false;
-        if (KavaReflector.writeField(contact, "field_conRemark", remarkName)) return true;
-        if (KavaReflector.writeField(contact, "conRemark", remarkName)) return true;
-        return false;
-    }
-
-    private Method findNativeContactUpdateMethod(Class<?> storageClass, Class<?> contactClass) {
-        if (storageClass == null || contactClass == null) return null;
-        Method oneArg = findCompatibleNamedMethod(storageClass, "l0", contactClass);
-        if (oneArg != null) return oneArg;
-        for (String name : new String[]{"p0", "o0"}) {
-            Method twoArg = findCompatibleNamedMethod(storageClass, name, String.class, contactClass);
-            if (twoArg != null) return twoArg;
-        }
-        return null;
-    }
-
-    private Method findCompatibleNamedMethod(Class<?> storageClass, String name, Class<?>... args) {
-        for (Method method : KavaReflector.declaredMethods(storageClass)) {
-            if (!name.equals(method.getName())) continue;
-            Class<?>[] params = method.getParameterTypes();
-            if (params == null || params.length != args.length) continue;
-            boolean matched = true;
-            for (int i = 0; i < params.length; i++) {
-                if (!params[i].isAssignableFrom(args[i])) {
-                    matched = false;
-                    break;
-                }
-            }
-            if (matched) return method;
-        }
-        return null;
-    }
-
-    private boolean invokeNativeContactUpdate(Method method, Object storage, String username, Object contact) {
-        if (method == null || storage == null || contact == null) return false;
-        try {
-            Class<?>[] params = method.getParameterTypes();
-            Object result;
-            if (params.length == 1) {
-                result = KavaReflector.invoke(method, storage, contact);
-            } else if (params.length == 2 && params[0] == String.class) {
-                result = KavaReflector.invoke(method, storage, username, contact);
-            } else {
-                return false;
-            }
-            return !(result instanceof Boolean) || (Boolean) result;
-        } catch (Throwable ignored) {
-            return false;
-        }
-    }
-
-    private static final class NativeContactHandle {
-        final Object storage;
-        final Object contact;
-
-        NativeContactHandle(Object storage, Object contact) {
-            this.storage = storage;
-            this.contact = contact;
-        }
     }
 
     private List<WeChatContact> queryContacts(String sql, String[] args) {
@@ -1082,36 +992,108 @@ public final class WeChatContactApi {
                     LinkedList<Object> list = new LinkedList<>();
                     list.add(item);
                     Object scene = KavaReflector.newInstance(ctor, list);
-                    if (networkDispatcher.send(scene)) return true;
-                    log("修改好友标签原生请求发送失败，尝试联系人请求通道: username=" + username);
+                    ContactRequestDispatch.Result nativeResult = sendNativeContactScene(scene);
+                    if (nativeResult.serverAccepted()) return true;
+                    if (nativeResult.outcome != ContactRequestDispatch.Outcome.NOT_SUBMITTED) {
+                        log("修改好友标签原生请求未获服务端确认: username=" + username
+                                + " outcome=" + nativeResult.outcome);
+                        return false;
+                    }
+                    log("修改好友标签原生请求未提交，尝试联系人请求通道: username=" + username);
                 } else {
                     log("修改好友标签原生请求项为空，尝试联系人请求通道");
                 }
             } catch (Throwable e) {
-                log("修改好友标签原生请求异常，尝试联系人请求通道: " + e.getMessage());
+                log("修改好友标签原生请求异常: " + e.getMessage());
+                return false;
             }
         }
-        return sendModifyContactLabelListByPb(username, labelIdsValue);
+        return sendModifyContactLabelListByPb(username, labelIdsValue).serverAccepted();
     }
 
-    private boolean sendModifyContactLabelListByPb(String username, String labelIdsValue) {
-        if (TextUtils.isEmpty(username)) return false;
+    private ContactRequestDispatch.Result sendModifyContactLabelListByPb(String username, String labelIdsValue) {
+        if (TextUtils.isEmpty(username)) return ContactRequestDispatch.dispatchFailed();
         try {
             return ContactProtobufSender.modifyContactLabelList(dexFinder, username, labelIdsValue);
         } catch (Throwable e) {
             log("修改好友标签PB发包异常: " + e.getMessage());
-            return false;
+            return ContactRequestDispatch.dispatchFailed();
         }
     }
 
-    private boolean sendSetContactPropertyRemark(String username, String remarkName, String roomName) {
-        if (TextUtils.isEmpty(username)) return false;
+    private ContactRequestDispatch.Result sendSetContactPropertyRemark(
+            String username, String remarkName, String roomName) {
+        if (TextUtils.isEmpty(username)) return ContactRequestDispatch.dispatchFailed();
         try {
             return ContactProtobufSender.setContactRemark(dexFinder, username, remarkName, roomName);
         } catch (Throwable e) {
             log("修改好友备注PB发包异常: " + e.getMessage());
-            return false;
+            return ContactRequestDispatch.dispatchFailed();
         }
+    }
+
+    private ContactRequestDispatch.Result sendNativeContactScene(Object scene) {
+        if (scene == null || networkDispatcher == null) return ContactRequestDispatch.notSubmitted();
+        Method callbackMethod = findContactSceneCallbackMethod(scene.getClass());
+        if (callbackMethod == null) {
+            log("联系人原生场景没有可观察的服务端回调");
+            return ContactRequestDispatch.notSubmitted();
+        }
+        AtomicReference<ContactRequestDispatch.Callback> nativeCallback = new AtomicReference<>();
+
+        final XC_MethodHook.Unhook unhook;
+        try {
+            unhook = HookRegistry.get().hook(callbackMethod, new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    if (param.thisObject != scene || param.args == null || param.args.length < 2
+                            || !(param.args[0] instanceof Number)
+                            || !(param.args[1] instanceof Number)) {
+                        return;
+                    }
+                    ContactRequestDispatch.Callback callback = nativeCallback.get();
+                    if (callback != null) {
+                        callback.onResponse(((Number) param.args[0]).intValue(),
+                                ((Number) param.args[1]).intValue());
+                    }
+                }
+            });
+        } catch (Throwable e) {
+            log("联系人原生场景回调Hook失败: " + e.getMessage());
+            return ContactRequestDispatch.notSubmitted();
+        }
+
+        try {
+            return ContactRequestDispatch.submitAndAwait(callback -> {
+                nativeCallback.set(callback);
+                return networkDispatcher.send(scene) ? scene : null;
+            });
+        } finally {
+            nativeCallback.set(null);
+            HookRegistry.get().unhook(unhook);
+        }
+    }
+
+    private Method findContactSceneCallbackMethod(Class<?> sceneClass) {
+        Class<?> sceneType = sceneClass;
+        while (sceneType != null && sceneType != Object.class) {
+            for (Method method : KavaReflector.declaredMethods(sceneType)) {
+                Class<?>[] params = method.getParameterTypes();
+                if (!"callback".equals(method.getName())
+                        || method.getReturnType() != int.class
+                        || params.length != 5
+                        || params[0] != int.class
+                        || params[1] != int.class
+                        || params[2] != String.class
+                        || params[3].isPrimitive()
+                        || !params[4].isAssignableFrom(sceneClass)) {
+                    continue;
+                }
+                return KavaReflector.accessible(method);
+            }
+            sceneType = sceneType.getSuperclass();
+        }
+        return null;
     }
 
     private Object buildModifyContactLabelItem(Constructor<?> sceneCtor, String username, String labelIdsValue) {

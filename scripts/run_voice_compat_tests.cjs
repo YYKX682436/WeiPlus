@@ -43,8 +43,16 @@ const stubs = {
             ${dexFinder.match(/    public (?:Method|Class<\?>|Constructor<\?>) voice\w+;/g).join('\n')}
             private boolean voiceMessagePathLookupComplete;
             private static final String CACHE_KEY = "cache.key";
+            private static final String CACHE_COMPLETE = "cache.complete";
             private static final String CACHE_SNAPSHOT_VERSION_KEY = "cache.snapshot.version";
-            private static final String CACHE_SNAPSHOT_VERSION = "2";
+            private static final String CACHE_SNAPSHOT_VERSION = "3";
+            private boolean cacheDescriptorInvalid;
+            private final CacheStore cacheStore = new CacheStore();
+            private static final class CacheStore {
+                boolean canLoadGlobal(boolean runtimeMatches, String savedVersion, String expectedVersion, boolean complete) {
+                    return runtimeMatches && complete && expectedVersion.equals(savedVersion);
+                }
+            }
             private final ClassLoader classLoader = getClass().getClassLoader();
             public String runtimeCacheKey = "version-77";
             public Cache cachePrefs = new Cache();
@@ -68,6 +76,7 @@ const stubs = {
                 ${fragment('            putMethod(editor, "voiceMessagePathMethod", voiceMessagePathMethod);',
                     '            putMethod(editor, "voiceFinishRecordMethod", voiceFinishRecordMethod);')}
                 editor.putString(CACHE_SNAPSHOT_VERSION_KEY, CACHE_SNAPSHOT_VERSION);
+                editor.putBoolean(CACHE_COMPLETE, true);
             }
             ${fragment('    private void resetCacheForRuntimeKey()', '    private boolean isSendImageMethod(')}
             ${method('isVoiceFinishRecordMethod')}

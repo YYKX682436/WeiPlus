@@ -24,6 +24,7 @@ import org.luckypray.dexkit.result.UsingFieldData;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -39,15 +40,16 @@ public class DexFinder {
 
     private static final String TAG = "[Hchat:DexFinder]";
     private static final String CACHE_PREFS = "Hchat_dex_cache";
+    private static final String CONTACT_CACHE_PREFS = "Hchat_contact_sender_cache";
     private static final String CACHE_COMPLETE = "cache.complete";
     private static final String CACHE_KEY = "cache.key";
     private static final String CACHE_SNAPSHOT_VERSION_KEY = "cache.snapshot.version";
-    private static final String CACHE_SNAPSHOT_VERSION = "2";
+    private static final String CACHE_SNAPSHOT_VERSION = "3";
+    private static final String CONTACT_CACHE_VERSION = "1";
     private static final String LOCATOR_WISH_COMPLETE = "locator.wish.complete";
     private static final String LOCATOR_PACKET_COMPLETE = "locator.packet.complete";
     private static final String LOCATOR_ECS_COMPLETE = "locator.ecs.complete";
     private static final String LOCATOR_MSG_DESC_COMPLETE = "locator.msg.desc.complete";
-    private static final String LOCATOR_CONTACT_PROTOBUF_SENDER_COMPLETE = "locator.contact.protobuf.sender.complete";
     private static final String RED_PACKET_UNION_LOCATOR_VERSION_KEY = "redpacket.union.locator.version";
     private static final String RED_PACKET_UNION_LOCATOR_VERSION = "1";
     private static final String NETWORK_QUEUE_LOCATOR_VERSION_KEY = "network.queue.locator.version";
@@ -56,7 +58,12 @@ public class DexFinder {
     private final DexKitBridge dexKit;
     private final ClassLoader classLoader;
     private final SharedPreferences cachePrefs;
+    private final SharedPreferences contactCachePrefs;
+    private final DexFinderCacheStore cacheStore;
+    private final DexFinderCacheStore.Preferences cachePreferenceView;
+    private final DexFinderCacheStore.Preferences contactCachePreferenceView;
     private final String runtimeCacheKey;
+    private final RetryableLocatorState contactSenderLocatorState = new RetryableLocatorState();
     private boolean resolvedAll;
     private boolean cacheLoadAttempted;
     private boolean cacheDescriptorInvalid;
@@ -259,7 +266,6 @@ public class DexFinder {
     private boolean packetCompatLocatorResolved;
     private boolean ecsGiftLocatorResolved;
     private boolean msgDescLocatorResolved;
-    private boolean contactProtobufSenderResolved;
 
     public DexFinder(DexKitBridge dexKit, ClassLoader classLoader) {
         this(dexKit, classLoader, null);
@@ -271,6 +277,13 @@ public class DexFinder {
         this.cachePrefs = hostContext != null
                 ? HchatStorage.preferences(hostContext, CACHE_PREFS)
                 : null;
+        this.contactCachePrefs = hostContext != null
+                ? HchatStorage.preferences(hostContext, CONTACT_CACHE_PREFS)
+                : null;
+        this.cachePreferenceView = cachePrefs != null ? new SharedPreferencesView(cachePrefs) : null;
+        this.contactCachePreferenceView = contactCachePrefs != null
+                ? new SharedPreferencesView(contactCachePrefs) : null;
+        this.cacheStore = new DexFinderCacheStore(cachePreferenceView, contactCachePreferenceView);
         this.runtimeCacheKey = buildRuntimeCacheKey(hostContext, classLoader);
     }
 
@@ -287,7 +300,6 @@ public class DexFinder {
             logDetail("命中缓存: " + shortKey(runtimeCacheKey));
             return;
         }
-        cacheDescriptorInvalid = false;
         resolveAddMsgClasses();
         resolveReceiveLuckyMoney();
         resolveOpenLuckyMoney();
@@ -330,8 +342,8 @@ public class DexFinder {
         resolvePacketCompatClasses();
         resolveEcsGiftApi();
         logMissingCritical();
-        saveCache();
         resolvedAll = true;
+        saveCache();
         logDetail("解析完成并缓存: " + shortKey(runtimeCacheKey));
     }
 
@@ -1280,7 +1292,7 @@ public class DexFinder {
         }
     }
 
-    public void resolveMsgDescTextApi() {
+    public synchronized void resolveMsgDescTextApi() {
         if (ensureSnapshotLoaded() && msgDescLocatorResolved) return;
         try {
             if (msgDescLocatorResolved) return;
@@ -3488,18 +3500,23 @@ public class DexFinder {
         return loadCache();
     }
 
-    private boolean loadCache() {
+    private synchronized boolean loadCache() {
         cacheLoadAttempted = true;
         if (cachePrefs == null || runtimeCacheKey.length() == 0) return false;
         try {
             String savedKey = cachePrefs.getString(CACHE_KEY, "");
-            if (!runtimeCacheKey.equals(savedKey)
-                    && !DexCacheIdentity.sameRuntime(runtimeCacheKey, savedKey)) {
+            boolean runtimeMatches = runtimeCacheKey.equals(savedKey)
+                    || DexCacheIdentity.sameRuntime(runtimeCacheKey, savedKey);
+            if (!runtimeMatches) {
                 resetCacheForRuntimeKey();
                 return false;
             }
-            if (!CACHE_SNAPSHOT_VERSION.equals(
-                    cachePrefs.getString(CACHE_SNAPSHOT_VERSION_KEY, ""))) return false;
+            if (!cacheStore.canLoadGlobal(
+                    runtimeMatches,
+                    cachePrefs.getString(CACHE_SNAPSHOT_VERSION_KEY, ""),
+                    CACHE_SNAPSHOT_VERSION,
+                    cachePrefs.getBoolean(CACHE_COMPLETE, false))) return false;
+            cacheDescriptorInvalid = false;
 
             addMsgClasses = loadClassList("addMsgClasses");
             receiveLuckyMoneyClass = loadClass("receiveLuckyMoneyClass");
@@ -3524,14 +3541,6 @@ public class DexFinder {
             packetBaseClasses = loadClassList("packetBaseClasses");
             packetQueueClasses = loadClassList("packetQueueClasses");
             fakePacketClasses = loadClassList("fakePacketClasses");
-            protobufBaseClass = loadClass("protobufBaseClass");
-            protobufRawReqClass = loadClass("protobufRawReqClass");
-            protobufGenericRespClass = loadClass("protobufGenericRespClass");
-            protobufConfigBuilderClass = loadClass("protobufConfigBuilderClass");
-            protobufReqRespClass = loadClass("protobufReqRespClass");
-            protobufCallbackClass = loadClass("protobufCallbackClass");
-            protobufNetSceneBaseClass = loadClass("protobufNetSceneBaseClass");
-            protobufStaticDispatchMethod = loadMethod("protobufStaticDispatchMethod");
             wishWxHbClass = loadClass("wishWxHbClass");
             ecsGiftTaskClass = loadClass("ecsGiftTaskClass");
             ecsGiftServiceClass = loadClass("ecsGiftServiceClass");
@@ -3541,7 +3550,6 @@ public class DexFinder {
             packetCompatLocatorResolved = cachePrefs.getBoolean(LOCATOR_PACKET_COMPLETE, false);
             ecsGiftLocatorResolved = cachePrefs.getBoolean(LOCATOR_ECS_COMPLETE, false);
             msgDescLocatorResolved = cachePrefs.getBoolean(LOCATOR_MSG_DESC_COMPLETE, false);
-            contactProtobufSenderResolved = cachePrefs.getBoolean(LOCATOR_CONTACT_PROTOBUF_SENDER_COMPLETE, false);
             sendTextMsgClass = loadClass("sendTextMsgClass");
             serviceGetterMethod = loadMethod("serviceGetterMethod");
             getContactAddMethods = loadMethodList("getContactAddMethods");
@@ -3696,10 +3704,111 @@ public class DexFinder {
             chatPageFragmentEnterMethod = loadMethod("chatPageFragmentEnterMethod");
             chatPageFragmentExitMethod = loadMethod("chatPageFragmentExitMethod");
             chatFooterSendClickMethod = loadMethod("chatFooterSendClickMethod");
-            return !cacheDescriptorInvalid;
+            if (cacheDescriptorInvalid) {
+                resetLoadedCacheDescriptors();
+                return false;
+            }
+            return true;
         } catch (Throwable e) {
             logDetail("读取缓存失败，重新解析: " + e.getMessage());
+            resetLoadedCacheDescriptors();
             return false;
+        }
+    }
+
+    private void resetLoadedCacheDescriptors() {
+        boolean resetFailed = false;
+        for (Field field : DexFinder.class.getDeclaredFields()) {
+            int modifiers = field.getModifiers();
+            if (Modifier.isStatic(modifiers) || Modifier.isFinal(modifiers)) continue;
+            String name = field.getName();
+            if ("dexKit".equals(name) || "classLoader".equals(name)
+                    || "cachePrefs".equals(name) || "contactCachePrefs".equals(name)
+                    || "cacheStore".equals(name) || "cachePreferenceView".equals(name)
+                    || "contactCachePreferenceView".equals(name) || "runtimeCacheKey".equals(name)
+                    || "cacheLoadAttempted".equals(name)) continue;
+            try {
+                field.setAccessible(true);
+                if (List.class.isAssignableFrom(field.getType())) {
+                    field.set(this, new ArrayList<>());
+                } else if (field.getType() == boolean.class) {
+                    field.setBoolean(this, false);
+                } else if (field.getType() == byte.class) {
+                    field.setByte(this, (byte) 0);
+                } else if (field.getType() == short.class) {
+                    field.setShort(this, (short) 0);
+                } else if (field.getType() == int.class) {
+                    field.setInt(this, 0);
+                } else if (field.getType() == long.class) {
+                    field.setLong(this, 0L);
+                } else if (field.getType() == float.class) {
+                    field.setFloat(this, 0f);
+                } else if (field.getType() == double.class) {
+                    field.setDouble(this, 0d);
+                } else if (field.getType() == char.class) {
+                    field.setChar(this, '\0');
+                } else {
+                    field.set(this, null);
+                }
+            } catch (Throwable ignored) {
+                resetFailed = true;
+            }
+        }
+        cacheDescriptorInvalid = resetFailed;
+        resolvedAll = false;
+    }
+
+    private static final class SharedPreferencesView implements DexFinderCacheStore.Preferences {
+        private final SharedPreferences preferences;
+
+        SharedPreferencesView(SharedPreferences preferences) {
+            this.preferences = preferences;
+        }
+
+        @Override
+        public String getString(String key, String fallback) {
+            return preferences.getString(key, fallback);
+        }
+
+        @Override
+        public boolean getBoolean(String key, boolean fallback) {
+            return preferences.getBoolean(key, fallback);
+        }
+
+        @Override
+        public DexFinderCacheStore.Editor edit() {
+            return new SharedPreferencesEditorView(preferences.edit());
+        }
+    }
+
+    private static final class SharedPreferencesEditorView implements DexFinderCacheStore.Editor {
+        private final SharedPreferences.Editor editor;
+
+        SharedPreferencesEditorView(SharedPreferences.Editor editor) {
+            this.editor = editor;
+        }
+
+        @Override
+        public DexFinderCacheStore.Editor clear() {
+            editor.clear();
+            return this;
+        }
+
+        @Override
+        public DexFinderCacheStore.Editor putString(String key, String value) {
+            editor.putString(key, value);
+            return this;
+        }
+
+        @Override
+        public DexFinderCacheStore.Editor putBoolean(String key, boolean value) {
+            editor.putBoolean(key, value);
+            return this;
+        }
+
+        @Override
+        public void apply() {
+            editor.apply();
         }
     }
 
@@ -4737,10 +4846,13 @@ public class DexFinder {
         return groupSolitairePluginClass != null && groupSolitaireSendMethod != null;
     }
 
-    private void saveCache() {
-        if (cachePrefs == null || runtimeCacheKey.length() == 0) return;
+    private synchronized void saveCache() {
+        if (runtimeCacheKey.length() == 0
+                || !cacheStore.canSaveGlobal(resolvedAll, !cacheDescriptorInvalid)) return;
         try {
-            SharedPreferences.Editor editor = cachePrefs.edit().clear();
+            DexFinderCacheStore.Editor editor = cacheStore.beginGlobalSnapshot(
+                    resolvedAll, !cacheDescriptorInvalid, runtimeCacheKey, CACHE_SNAPSHOT_VERSION);
+            if (editor == null) return;
             editor.putString(CACHE_KEY, runtimeCacheKey);
             if (receiveUnionLocatorResolved && openUnionLocatorResolved) {
                 editor.putString(RED_PACKET_UNION_LOCATOR_VERSION_KEY,
@@ -4760,14 +4872,6 @@ public class DexFinder {
             editor.putString("packetBaseClasses", joinClassNames(packetBaseClasses));
             editor.putString("packetQueueClasses", joinClassNames(packetQueueClasses));
             editor.putString("fakePacketClasses", joinClassNames(fakePacketClasses));
-            putClass(editor, "protobufBaseClass", protobufBaseClass);
-            putClass(editor, "protobufRawReqClass", protobufRawReqClass);
-            putClass(editor, "protobufGenericRespClass", protobufGenericRespClass);
-            putClass(editor, "protobufConfigBuilderClass", protobufConfigBuilderClass);
-            putClass(editor, "protobufReqRespClass", protobufReqRespClass);
-            putClass(editor, "protobufCallbackClass", protobufCallbackClass);
-            putClass(editor, "protobufNetSceneBaseClass", protobufNetSceneBaseClass);
-            putMethod(editor, "protobufStaticDispatchMethod", protobufStaticDispatchMethod);
             putClass(editor, "wishWxHbClass", wishWxHbClass);
             putClass(editor, "ecsGiftTaskClass", ecsGiftTaskClass);
             putClass(editor, "ecsGiftServiceClass", ecsGiftServiceClass);
@@ -4894,16 +4998,6 @@ public class DexFinder {
             editor.putBoolean(LOCATOR_PACKET_COMPLETE, packetCompatLocatorResolved);
             editor.putBoolean(LOCATOR_ECS_COMPLETE, ecsGiftLocatorResolved);
             editor.putBoolean(LOCATOR_MSG_DESC_COMPLETE, msgDescLocatorResolved);
-            editor.remove("protobufNewSendMsgReqClass");
-            editor.remove("protobufOplogReqClass");
-            editor.remove("protobufOnGYNetEndClass");
-            editor.remove("protobufSceneEndMethods");
-            editor.remove("locator.protobuf.complete");
-            editor.putBoolean(LOCATOR_CONTACT_PROTOBUF_SENDER_COMPLETE, contactProtobufSenderResolved);
-            boolean snapshotReady = !cacheDescriptorInvalid;
-            editor.putString(CACHE_SNAPSHOT_VERSION_KEY,
-                    snapshotReady ? CACHE_SNAPSHOT_VERSION : "");
-            editor.putBoolean(CACHE_COMPLETE, snapshotReady);
             editor.apply();
         } catch (Throwable e) {
             h.Hchat.utils.HLog.e(TAG + " 保存缓存失败: " + e.getMessage(), e);
@@ -4935,7 +5029,7 @@ public class DexFinder {
                 try {
                     Class<?> clazz = KavaReflector.loadClass(name, classLoader);
                     if (clazz == null) cacheDescriptorInvalid = true;
-                    if (!result.contains(clazz)) result.add(clazz);
+                    if (clazz != null && !result.contains(clazz)) result.add(clazz);
                 } catch (Throwable ignored) { cacheDescriptorInvalid = true; }
             }
         } catch (Throwable ignored) { cacheDescriptorInvalid = true; }
@@ -4976,7 +5070,7 @@ public class DexFinder {
                 Method method = loadMethodSpec(spec.trim());
                 if (method != null && !result.contains(method)) result.add(method);
             }
-        } catch (Throwable ignored) {}
+        } catch (Throwable ignored) { cacheDescriptorInvalid = true; }
         return result;
     }
 
@@ -4994,8 +5088,11 @@ public class DexFinder {
             String name = spec.substring(hash + 1, left);
             String paramsText = spec.substring(left + 1, right);
             Class<?>[] params = parseParamTypes(paramsText);
-            return KavaReflector.findDeclaredMethod(owner, name, params);
+            Method method = KavaReflector.findDeclaredMethod(owner, name, params);
+            if (method == null) cacheDescriptorInvalid = true;
+            return method;
         } catch (Throwable ignored) {
+            cacheDescriptorInvalid = true;
             return null;
         }
     }
@@ -5023,15 +5120,15 @@ public class DexFinder {
         return KavaReflector.loadClass(name, classLoader);
     }
 
-    private void putClass(SharedPreferences.Editor editor, String key, Class<?> clazz) {
+    private void putClass(DexFinderCacheStore.Editor editor, String key, Class<?> clazz) {
         editor.putString(key, clazz != null ? clazz.getName() : "");
     }
 
-    private void putMethod(SharedPreferences.Editor editor, String key, Method method) {
+    private void putMethod(DexFinderCacheStore.Editor editor, String key, Method method) {
         editor.putString(key, method != null ? methodSpec(method) : "");
     }
 
-    private void putMethodList(SharedPreferences.Editor editor, String key, List<Method> methods) {
+    private void putMethodList(DexFinderCacheStore.Editor editor, String key, List<Method> methods) {
         StringBuilder sb = new StringBuilder();
         if (methods != null) {
             for (Method method : methods) {
@@ -5478,15 +5575,27 @@ public class DexFinder {
     }
 
     public synchronized boolean resolveContactProtobufSenderApi() {
-        ensureSnapshotLoaded();
-        if (hasContactProtobufSenderApi()) return true;
-        if (contactProtobufSenderResolved) return false;
-        contactProtobufSenderResolved = true;
+        if (hasContactProtobufSenderApi()) {
+            if (contactSenderLocatorState.beginAttempt()) contactSenderLocatorState.finishAttempt(true);
+            return true;
+        }
+        if (contactSenderLocatorState.isResolved() || !contactSenderLocatorState.beginAttempt()) return false;
+        boolean complete = false;
         try {
+            ensureSnapshotLoaded();
+            if (hasContactProtobufSenderApi()) {
+                complete = true;
+                return true;
+            }
+            if (loadContactProtobufCache()) {
+                complete = true;
+                return true;
+            }
+            resetContactProtobufSenderFields();
             if (protobufBaseClass == null) protobufBaseClass = findProtobufBaseClass();
             Class<?> protoBase = protobufBaseClass;
             if (protoBase == null) {
-                saveCache();
+                clearContactProtobufCacheQuietly();
                 return false;
             }
             if (protobufRawReqClass == null) protobufRawReqClass = findRawReqClass();
@@ -5500,22 +5609,164 @@ public class DexFinder {
             if (protobufReqRespClass == null || protobufCallbackClass == null) resolveProtobufCallbackApi();
             if (protobufReqRespClass == null) protobufReqRespClass = findReqRespClassFromConfigBuilder();
             resolveProtobufDispatchApi();
-            saveCache();
+            complete = hasContactProtobufSenderApi();
+            if (complete) {
+                saveContactProtobufCache();
+            } else {
+                resetContactProtobufSenderFields();
+                clearContactProtobufCacheQuietly();
+            }
+            return complete;
         } catch (Throwable e) {
+            resetContactProtobufSenderFields();
+            clearContactProtobufCacheQuietly();
             h.Hchat.utils.HLog.e(TAG + " 联系人 Protobuf 发送器定位失败: " + e.getMessage(), e);
+            return false;
+        } finally {
+            contactSenderLocatorState.finishAttempt(complete);
         }
-        return hasContactProtobufSenderApi();
     }
 
     private boolean hasContactProtobufSenderApi() {
-        return protobufRawReqClass != null
-                && protobufGenericRespClass != null
-                && protobufConfigBuilderClass != null
-                && protobufReqRespClass != null
-                && protobufCallbackClass != null
-                && protobufCallbackClass.isInterface()
-                && protobufNetSceneBaseClass != null
-                && protobufStaticDispatchMethod != null;
+        return isContactProtobufSenderApi(
+                protobufBaseClass,
+                protobufRawReqClass,
+                protobufGenericRespClass,
+                protobufConfigBuilderClass,
+                protobufReqRespClass,
+                protobufCallbackClass,
+                protobufNetSceneBaseClass,
+                protobufStaticDispatchMethod);
+    }
+
+    private boolean isContactProtobufSenderApi(
+            Class<?> baseClass,
+            Class<?> rawReqClass,
+            Class<?> genericRespClass,
+            Class<?> configBuilderClass,
+            Class<?> reqRespClass,
+            Class<?> callbackClass,
+            Class<?> sceneBaseClass,
+            Method dispatchMethod) {
+        if (baseClass == null || rawReqClass == null
+                || KavaReflector.findConstructor(rawReqClass, byte[].class) == null
+                || genericRespClass == null
+                || KavaReflector.findConstructor(genericRespClass) == null
+                || configBuilderClass == null
+                || KavaReflector.findConstructor(configBuilderClass) == null
+                || reqRespClass == null
+                || callbackClass == null
+                || !callbackClass.isInterface()
+                || sceneBaseClass == null
+                || dispatchMethod == null) return false;
+        Class<?>[] params = dispatchMethod.getParameterTypes();
+        return KavaReflector.isStatic(dispatchMethod)
+                && params.length == 3
+                && params[0] == reqRespClass
+                && params[1] == callbackClass
+                && params[2] == boolean.class
+                && dispatchMethod.getReturnType() == sceneBaseClass;
+    }
+
+    private boolean loadContactProtobufCache() {
+        if (contactCachePreferenceView == null || runtimeCacheKey.length() == 0) return false;
+        String savedKey = contactCachePreferenceView.getString(DexFinderCacheStore.CONTACT_KEY_KEY, "");
+        boolean runtimeMatches = runtimeCacheKey.equals(savedKey)
+                || DexCacheIdentity.sameRuntime(runtimeCacheKey, savedKey);
+        if (!runtimeMatches) {
+            cacheStore.clearContactSnapshot();
+            return false;
+        }
+        if (!cacheStore.canLoadContact(
+                runtimeMatches,
+                contactCachePreferenceView.getString(DexFinderCacheStore.CONTACT_VERSION_KEY, ""),
+                CONTACT_CACHE_VERSION,
+                contactCachePreferenceView.getBoolean(DexFinderCacheStore.CONTACT_COMPLETE_KEY, false))) {
+            cacheStore.clearContactSnapshot();
+            return false;
+        }
+
+        Class<?> baseClass = loadContactClass("protobufBaseClass");
+        Class<?> rawReqClass = loadContactClass("protobufRawReqClass");
+        Class<?> genericRespClass = loadContactClass("protobufGenericRespClass");
+        Class<?> configBuilderClass = loadContactClass("protobufConfigBuilderClass");
+        Class<?> reqRespClass = loadContactClass("protobufReqRespClass");
+        Class<?> callbackClass = loadContactClass("protobufCallbackClass");
+        Class<?> sceneBaseClass = loadContactClass("protobufNetSceneBaseClass");
+        Method dispatchMethod = loadContactMethod("protobufStaticDispatchMethod");
+        if (!isContactProtobufSenderApi(baseClass, rawReqClass, genericRespClass,
+                configBuilderClass, reqRespClass, callbackClass, sceneBaseClass, dispatchMethod)) {
+            cacheStore.clearContactSnapshot();
+            return false;
+        }
+        protobufBaseClass = baseClass;
+        protobufRawReqClass = rawReqClass;
+        protobufGenericRespClass = genericRespClass;
+        protobufConfigBuilderClass = configBuilderClass;
+        protobufReqRespClass = reqRespClass;
+        protobufCallbackClass = callbackClass;
+        protobufNetSceneBaseClass = sceneBaseClass;
+        protobufStaticDispatchMethod = dispatchMethod;
+        return true;
+    }
+
+    private Class<?> loadContactClass(String key) {
+        try {
+            String name = contactCachePreferenceView.getString(key, "");
+            return name.isEmpty() ? null : KavaReflector.loadClass(name, classLoader);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private Method loadContactMethod(String key) {
+        try {
+            String spec = contactCachePreferenceView.getString(key, "");
+            if (spec == null || spec.isEmpty()) return null;
+            int hash = spec.indexOf('#');
+            int left = spec.indexOf('(', hash + 1);
+            int right = spec.indexOf(')', left + 1);
+            if (hash <= 0 || left <= hash || right < left) return null;
+            Class<?> owner = KavaReflector.loadClass(spec.substring(0, hash), classLoader);
+            Class<?>[] params = parseParamTypes(spec.substring(left + 1, right));
+            return KavaReflector.findDeclaredMethod(owner, spec.substring(hash + 1, left), params);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private void saveContactProtobufCache() {
+        if (!cacheStore.canSaveContact(hasContactProtobufSenderApi())) return;
+        DexFinderCacheStore.Editor editor = cacheStore.beginContactSnapshot(
+                true, runtimeCacheKey, CONTACT_CACHE_VERSION);
+        if (editor == null) return;
+        putClass(editor, "protobufBaseClass", protobufBaseClass);
+        putClass(editor, "protobufRawReqClass", protobufRawReqClass);
+        putClass(editor, "protobufGenericRespClass", protobufGenericRespClass);
+        putClass(editor, "protobufConfigBuilderClass", protobufConfigBuilderClass);
+        putClass(editor, "protobufReqRespClass", protobufReqRespClass);
+        putClass(editor, "protobufCallbackClass", protobufCallbackClass);
+        putClass(editor, "protobufNetSceneBaseClass", protobufNetSceneBaseClass);
+        putMethod(editor, "protobufStaticDispatchMethod", protobufStaticDispatchMethod);
+        editor.apply();
+    }
+
+    private void resetContactProtobufSenderFields() {
+        protobufBaseClass = null;
+        protobufRawReqClass = null;
+        protobufGenericRespClass = null;
+        protobufConfigBuilderClass = null;
+        protobufReqRespClass = null;
+        protobufCallbackClass = null;
+        protobufNetSceneBaseClass = null;
+        protobufStaticDispatchMethod = null;
+    }
+
+    private void clearContactProtobufCacheQuietly() {
+        try {
+            cacheStore.clearContactSnapshot();
+        } catch (Throwable ignored) {
+        }
     }
 
     private Class<?> findProtobufBaseClass() {

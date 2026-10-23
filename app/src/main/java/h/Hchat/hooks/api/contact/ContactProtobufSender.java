@@ -18,7 +18,8 @@ final class ContactProtobufSender {
 
     private ContactProtobufSender() {}
 
-    static boolean modifyContactLabelList(DexFinder dexFinder, String username, String labelIds) throws Exception {
+    static ContactRequestDispatch.Result modifyContactLabelList(
+            DexFinder dexFinder, String username, String labelIds) throws Exception {
         JSONObject item = new JSONObject();
         item.put("1", username);
         item.put("2", labelIds == null ? "" : labelIds);
@@ -28,7 +29,8 @@ final class ContactProtobufSender {
         return send(dexFinder, MODIFY_LABEL_URI, MODIFY_LABEL_CGI, request);
     }
 
-    static boolean setContactRemark(DexFinder dexFinder, String username, String remark, String roomName)
+    static ContactRequestDispatch.Result setContactRemark(
+            DexFinder dexFinder, String username, String remark, String roomName)
             throws Exception {
         JSONObject request = new JSONObject();
         request.put("2", username);
@@ -37,8 +39,11 @@ final class ContactProtobufSender {
         return send(dexFinder, SET_CONTACT_PROPERTY_URI, SET_CONTACT_PROPERTY_CGI, request);
     }
 
-    private static boolean send(DexFinder dexFinder, String uri, int cgiId, JSONObject payload) throws Exception {
-        if (dexFinder == null || !dexFinder.resolveContactProtobufSenderApi()) return false;
+    private static ContactRequestDispatch.Result send(
+            DexFinder dexFinder, String uri, int cgiId, JSONObject payload) throws Exception {
+        if (dexFinder == null || !dexFinder.resolveContactProtobufSenderApi()) {
+            return ContactRequestDispatch.dispatchFailed();
+        }
         byte[] body = ContactProtobufCodec.encode(payload);
         Object request = KavaReflector.newInstance(
                 KavaReflector.findConstructor(dexFinder.protobufRawReqClass, byte[].class), body);
@@ -46,7 +51,9 @@ final class ContactProtobufSender {
                 KavaReflector.findConstructor(dexFinder.protobufGenericRespClass));
         Object builder = KavaReflector.newInstance(
                 KavaReflector.findConstructor(dexFinder.protobufConfigBuilderClass));
-        if (request == null || response == null || builder == null) return false;
+        if (request == null || response == null || builder == null) {
+            return ContactRequestDispatch.dispatchFailed();
+        }
 
         writeField(builder, "a", request);
         writeField(builder, "b", response);
@@ -58,22 +65,29 @@ final class ContactProtobufSender {
         writeField(builder, "n", body);
 
         Object requestResponse = buildRequestResponse(dexFinder, builder);
-        if (requestResponse == null) return false;
+        if (requestResponse == null) return ContactRequestDispatch.dispatchFailed();
         Class<?> callbackType = dexFinder.protobufCallbackClass;
-        Object callback = Proxy.newProxyInstance(
-                callbackType.getClassLoader(),
-                new Class<?>[]{callbackType},
-                (proxy, method, args) -> {
-                    if ("hashCode".equals(method.getName())) return System.identityHashCode(proxy);
-                    if ("equals".equals(method.getName())) {
-                        return proxy == (args != null && args.length > 0 ? args[0] : null);
-                    }
-                    if ("toString".equals(method.getName())) return "HchatContactProtobufCallback";
-                    return defaultValue(method.getReturnType());
-                });
-        KavaReflector.invokeOrThrow(
-                dexFinder.protobufStaticDispatchMethod, null, requestResponse, callback, false);
-        return true;
+        return ContactRequestDispatch.submitAndAwait(completion -> {
+            Object callback = Proxy.newProxyInstance(
+                    callbackType.getClassLoader(),
+                    new Class<?>[]{callbackType},
+                    (proxy, method, args) -> {
+                        if ("hashCode".equals(method.getName())) return System.identityHashCode(proxy);
+                        if ("equals".equals(method.getName())) {
+                            return proxy == (args != null && args.length > 0 ? args[0] : null);
+                        }
+                        if ("toString".equals(method.getName())) return "HchatContactProtobufCallback";
+                        if ("callback".equals(method.getName())
+                                && args != null && args.length == 5
+                                && args[0] instanceof Number && args[1] instanceof Number) {
+                            completion.onResponse(
+                                    ((Number) args[0]).intValue(), ((Number) args[1]).intValue());
+                        }
+                        return defaultValue(method.getReturnType());
+                    });
+            return KavaReflector.invokeOrThrow(
+                    dexFinder.protobufStaticDispatchMethod, null, requestResponse, callback, false);
+        });
     }
 
     private static Object buildRequestResponse(DexFinder dexFinder, Object builder) {
