@@ -113,8 +113,13 @@ internal class GroupMonitorSnapshots private constructor(private val context: Co
             val groups = synchronized(this) {
                 checkAccount()
                 if (plan.token != state.generation) return
-                if (plan.groups == null) allGroups = discovered.keys + state.snapshots.keys
-                plan.groups ?: allGroups.orEmpty()
+                if (plan.groups == null) {
+                    // getChatrooms() returns an empty list both when the host database is not
+                    // ready and when there are no groups. Keep the inventory unconfirmed so a
+                    // later explicit install/DexReady/preload can retry, but do not self-retry.
+                    allGroups = (discovered.keys + state.snapshots.keys).takeIf { discovered.isNotEmpty() }
+                }
+                plan.groups ?: allGroups ?: state.snapshots.keys
             }
             for (group in groups) {
                 try {

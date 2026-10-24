@@ -73,6 +73,25 @@ fun main(args:Array<String>){
   r.preload();idle(r);check(r.memberName("h","C")=="Gamma" && api.rooms.allQueries.get()==1 && api.rooms.queried.toList()==listOf("h"))
   println("PASS: incomplete all-groups inventory retries only the failed group without another full enumeration")
  }
+ "empty-directory"->{
+  val all=GroupSnapshotState.Scope(all=true);var renameDetected=false;api.rooms.directoryUnavailable=true
+  r.configure("rename",GroupSnapshotState.Demand(all,all)){_,old,next,_->
+   if(old!=null) renameDetected=RenameHarness().compare(old.names,next.names,next.members).any{it.memberId=="A"&&it.oldName=="Before"&&it.newName=="After"}
+  };idle(r)
+  check(api.rooms.allQueries.get()==1)
+  Thread.sleep(100);check(api.rooms.allQueries.get()==1){"Empty directory caused an automatic retry loop"}
+  api.rooms.directoryUnavailable=false;api.people.results["g"]=mapOf("A" to "Before","B" to "Beta")
+  r.preload();idle(r)
+  check(api.rooms.allQueries.get()==2){"Unconfirmed empty directory was permanently cached"}
+  check(r.memberName("g","A")=="Before"){"Recovered directory did not establish nickname baseline"}
+  api.people.results["g"]=mapOf("A" to "After","B" to "Beta")
+  api.changes.emit(api.rooms.room)
+  check(renameDetected){"First real rename after recovery did not use the recovered baseline"}
+  val count=api.rooms.allQueries.get();r.preload();Thread.sleep(100)
+  check(api.rooms.allQueries.get()==count){"Confirmed nonempty directory was redundantly enumerated"}
+  r.remove("rename")
+  println("PASS: API empty directory stays retryable only at an explicit entry, recovers nickname baseline, detects its first real rename, and caches recovered inventory")
+ }
  "fault"->{
   var dispatched:GroupSnapshotState.Snapshot?=null
   r.configure("broken",scope){_,_,n,_->dispatched=n;throw IllegalStateException("Injected consumer failure")}

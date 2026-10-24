@@ -22,13 +22,14 @@ class Account { val reads = AtomicInteger(); @Volatile var identity = "account-a
 class Rooms {
     val allQueries = AtomicInteger()
     val singleQueries = AtomicInteger()
+    @Volatile var directoryUnavailable = false
     @Volatile var entered: CountDownLatch? = null
     @Volatile var blocked: CountDownLatch? = null
     @Volatile var room = WeChatChatroom("g", listOf("a"))
     val extra = java.util.concurrent.ConcurrentHashMap<String, WeChatChatroom>()
     val failed = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     val queried = java.util.concurrent.CopyOnWriteArrayList<String>()
-    fun getChatrooms(): List<WeChatChatroom> { allQueries.incrementAndGet(); return listOf(read()) + extra.values }
+    fun getChatrooms(): List<WeChatChatroom> { allQueries.incrementAndGet(); if (directoryUnavailable) return emptyList(); return listOf(read()) + extra.values }
     fun getChatroom(id: String): WeChatChatroom? { singleQueries.incrementAndGet();queried.add(id);if(id in failed) error("Injected room read failure");return if (id == room.chatroomId) read() else extra[id] }
     fun getMemberIds(id: String) = getChatroom(id)?.memberIds
     private fun read(): WeChatChatroom { val result = room; entered?.countDown(); blocked?.await(); return result }

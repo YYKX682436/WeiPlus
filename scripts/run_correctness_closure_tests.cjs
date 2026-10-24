@@ -43,7 +43,7 @@ const javac=spawnSync('javac',['-d',tmp,raw],{encoding:'utf8'});if(javac.status!
 let failed=0;
 const rawResult=spawnSync('java',['-cp',tmp,'RawNamesRegression'],{encoding:'utf8'});process.stdout.write(rawResult.stdout||'');if(rawResult.status!==0){failed++;process.stderr.write('FAIL raw nickname semantics\n'+rawResult.stderr);}
 
-for(const [cp,main,cases] of [[bcp,'BubbleClosureKt',['queue','worker','rapid','worker-rapid','equal-text','text-owner','page']],[gcp,'h.Hchat.hooks.items.groupmonitor.ClosureRegressionKt',['partial','unknown','retry','mixed','recovery','groups','all-groups','fault','live','close','shrink','account']]]){
+for(const [cp,main,cases] of [[bcp,'BubbleClosureKt',['queue','worker','rapid','worker-rapid','equal-text','text-owner','page']],[gcp,'h.Hchat.hooks.items.groupmonitor.ClosureRegressionKt',['partial','unknown','retry','mixed','recovery','groups','all-groups','empty-directory','fault','live','close','shrink','account']]]){
  for(const name of cases){const r=spawnSync('java',['-cp',cp,main,name],{cwd:root,encoding:'utf8',timeout:15000});process.stdout.write(r.stdout||'');if(r.status!==0){failed++;process.stderr.write('FAIL '+main+' '+name+'\n'+r.stderr);}}
 }
 process.exitCode=failed?1:0;
