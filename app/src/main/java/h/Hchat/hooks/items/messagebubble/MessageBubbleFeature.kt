@@ -14,6 +14,9 @@ import h.Hchat.R
 import android.content.SharedPreferences
 import android.os.Handler
 import android.os.Looper
+import h.Hchat.hooks.api.core.WeChatApis
+import h.Hchat.hooks.api.ui.WeChatChatPageApi
+import h.Hchat.hooks.api.ui.WeChatLifecycleApi
 import h.Hchat.hooks.core.ChatRowRefresh
 import h.Hchat.dexkit.DexMethodCache
 import h.Hchat.hooks.api.model.WeChatMessage
@@ -79,20 +82,48 @@ private class MessageBubbleRenderer(
     private val messageNestedFieldCache = ConcurrentHashMap<Class<*>, List<Field>>()
     private val nativeMessageClassCache = ConcurrentHashMap<Class<*>, Boolean>()
     private val boundRoots = Collections.newSetFromMap(WeakHashMap<View, Boolean>())
+    private val mainHandler = Handler(Looper.getMainLooper())
     @Volatile private var enabled = prefs.getBoolean(MessageBubbleSettings.KEY_ENABLE, MessageBubbleSettings.DEFAULT_ENABLE)
-    private val configListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
-        enabled = prefs.getBoolean(MessageBubbleSettings.KEY_ENABLE, MessageBubbleSettings.DEFAULT_ENABLE)
-        Handler(Looper.getMainLooper()).post {
-            if (!enabled) boundRoots.toList().forEach(::restoreBoundBubble)
-            else ChatRowRefresh.request()
+    @Volatile private var destroyed = false
+    private var pageSubscription: WeChatChatPageApi.Subscription? = null
+    private var lifecycleSubscription: WeChatLifecycleApi.Subscription? = null
+    private fun watchPageTransitions() {
+        if (pageSubscription == null) pageSubscription = WeChatApis.chatPage()?.subscribe { event ->
+            if (!destroyed && enabled && event.isEnter) ChatRowRefresh.requestAfterTransition()
+        }
+        if (lifecycleSubscription == null) lifecycleSubscription = WeChatApis.lifecycle()?.subscribe { event ->
+            if (!destroyed && enabled && event.isResume) ChatRowRefresh.requestAfterTransition()
         }
     }
-    init { prefs.registerOnSharedPreferenceChangeListener(configListener) }
+    private fun onMain(action: () -> Unit) {
+        if (Looper.myLooper() == Looper.getMainLooper()) action() else mainHandler.post { action() }
+    }
+    private val configListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
+        onMain {
+            if (!destroyed) {
+                // Restore before publishing disabled. A queued native bind must never be followed
+                // by a cleanup carrying its predecessor's OriginalState. Read the latest config
+                // here so a worker-thread close/reopen cannot leave an obsolete cleanup behind.
+                val next = prefs.getBoolean(MessageBubbleSettings.KEY_ENABLE, MessageBubbleSettings.DEFAULT_ENABLE)
+                if (!next) boundRoots.toList().forEach(::restoreBoundBubble)
+                enabled = next
+                if (next) ChatRowRefresh.request()
+            }
+        }
+    }
+    init { prefs.registerOnSharedPreferenceChangeListener(configListener); watchPageTransitions() }
 
     fun destroy() {
-        enabled = false
+        destroyed = true
+        pageSubscription?.unsubscribe()
+        lifecycleSubscription?.unsubscribe()
+        pageSubscription = null
+        lifecycleSubscription = null
         prefs.unregisterOnSharedPreferenceChangeListener(configListener)
-        boundRoots.toList().forEach(::restoreBoundBubble)
+        onMain {
+            boundRoots.toList().forEach(::restoreBoundBubble)
+            enabled = false
+        }
     }
     private val bubbleViewIds by lazy {
         BUBBLE_VIEW_RESOURCES.associateWith { name ->
@@ -103,6 +134,7 @@ private class MessageBubbleRenderer(
 
     @Synchronized
     fun install(): Boolean {
+        watchPageTransitions()
         if (adapterBindInstalled) return true
         if (prefs.getBoolean(MessageBubbleSettings.KEY_ENABLE, MessageBubbleSettings.DEFAULT_ENABLE)) {
             val useDarkAssets = isDarkMode(context.hostContext()) && prefs.getBoolean(

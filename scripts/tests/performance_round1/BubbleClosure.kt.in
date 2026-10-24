@@ -1,0 +1,95 @@
+import java.util.Collections
+import java.util.WeakHashMap
+class Looper { companion object { val main=Looper(); var onMain=true; fun getMainLooper()=main; fun myLooper()=if(onMain) main else null } }
+class Handler(looper: Looper) {
+    fun post(action: () -> Unit) { tasks.add(action) }
+    companion object { val tasks=ArrayDeque<() -> Unit>(); fun drain() { while(tasks.isNotEmpty()) tasks.removeFirst()() } }
+}
+interface SharedPreferences { fun interface OnSharedPreferenceChangeListener { fun changed(p: SharedPreferences, key: String?) } }
+class Prefs: SharedPreferences {
+    var enabled=true; var listener: SharedPreferences.OnSharedPreferenceChangeListener?=null
+    fun getBoolean(key: String, default: Boolean)=enabled
+    fun registerOnSharedPreferenceChangeListener(l: SharedPreferences.OnSharedPreferenceChangeListener) {listener=l}
+    fun unregisterOnSharedPreferenceChangeListener(l: SharedPreferences.OnSharedPreferenceChangeListener) {listener=null}
+    fun change(value: Boolean) {enabled=value;listener!!.changed(this,"enable")}
+}
+object MessageBubbleSettings {const val KEY_ENABLE="enable";const val DEFAULT_ENABLE=false}
+object ChatRowRefresh {var delayed=0;fun request() {};fun requestAfterTransition(){delayed++}}
+class PageEvent(val isEnter:Boolean=false,val isResume:Boolean=false)
+class WeChatChatPageApi {
+ val listeners=ArrayList<(PageEvent)->Unit>()
+ inner class Subscription(val action:(PageEvent)->Unit){fun unsubscribe(){listeners.remove(action)}}
+ fun subscribe(action:(PageEvent)->Unit):Subscription{listeners.add(action);return Subscription(action)}
+ fun emit(event:PageEvent){listeners.toList().forEach{it(event)}}
+}
+class WeChatLifecycleApi {
+ val listeners=ArrayList<(PageEvent)->Unit>()
+ inner class Subscription(val action:(PageEvent)->Unit){fun unsubscribe(){listeners.remove(action)}}
+ fun subscribe(action:(PageEvent)->Unit):Subscription{listeners.add(action);return Subscription(action)}
+ fun emit(event:PageEvent){listeners.toList().forEach{it(event)}}
+}
+object WeChatApis {val pages=WeChatChatPageApi();val life=WeChatLifecycleApi();fun chatPage()=pages;fun lifecycle()=life}
+object R {object id {const val hchat_message_bubble_target=1;const val hchat_message_bubble_original=2;const val hchat_message_text_color_applied=3}}
+class Drawable(val name: String) { fun getPadding(rect: Rect): Boolean {rect.left=25;rect.right=26;return true} }
+class Rect {var left=0;var right=0}
+class ColorStateList(val defaultColor: Int)
+open class View {
+    var background: Drawable?=null;var tag: Any?=null; val context=Any();var id=9
+    var paddingLeft=0;var paddingTop=0;var paddingRight=0;var paddingBottom=0
+    val tags=HashMap<Int,Any?>();fun getTag(key:Int)=tags[key];fun setTag(key:Int,v:Any?){tags[key]=v}
+    fun setPadding(l:Int,t:Int,r:Int,b:Int){paddingLeft=l;paddingTop=t;paddingRight=r;paddingBottom=b}
+    fun invalidate() {}
+}
+class TextView:View() {
+    var textColors=ColorStateList(101);var linkTextColors=ColorStateList(102)
+    val currentTextColor get()=textColors.defaultColor
+    fun setTextColor(color: ColorStateList) {textColors=color};fun setTextColor(color:Int){textColors=ColorStateList(color)}
+    fun setLinkTextColor(color:ColorStateList){linkTextColors=color};fun setLinkTextColor(color:Int){linkTextColors=ColorStateList(color)}
+}
+class MessageBubbleSlot
+object MessageBubbleStore {fun recommendedTextColor(c:Any,s:MessageBubbleSlot)=999}
+object KavaReflector {fun invokeMethod(o:Any,m:String,arg:Int) {error("Unexpected neat text")}}
+open class XC_MethodHook {
+    class MethodHookParam(val args:Array<Any?>) {private val extras=HashMap<String,Any?>();fun setObjectExtra(k:String,v:Any?){extras[k]=v};fun getObjectExtra(k:String)=extras[k];fun hasThrowable()=false}
+    protected open fun beforeHookedMethod(p:MethodHookParam){};protected open fun afterHookedMethod(p:MethodHookParam){}
+    fun before(p:MethodHookParam)=beforeHookedMethod(p);fun after(p:MethodHookParam)=afterHookedMethod(p)
+}
+private class BubbleHarness {
+    val prefs=Prefs()
+    @CONFIG@
+    @DATA@
+    private val TEXT_BUBBLE_VIEW_RESOURCE="text"
+    private val bubbleViewIds=mapOf(TEXT_BUBBLE_VIEW_RESOURCE to 9)
+    private data class BindState(val root:View?,val nativeHolder:Any?)
+    var scans=0
+    private fun findRootView(value:Any):View? {scans++;return value as? View}
+    private fun isNativeMessageHolder(v:Any)=true
+    private fun isMessageNeatTextView(v:View)=false
+    private fun collectTextTargets(v:View)=listOf(TextTarget(v,v as TextView))
+    private fun createTextColorState(t:TextTarget,color:Int)=TextColorState(t,t.textView.textColors,t.textView.linkTextColors,true,true,color)
+    private fun applyBubble(args:Array<Any?>?,state:BindState){val root=state.root?:return;applyDrawable(root,Drawable("custom"),MessageBubbleSlot(),true,emptyList());boundRoots.add(root);root.setTag(R.id.hchat_message_bubble_target,listOf(root))}
+    @CAPTURE@
+    @RESTORE_BOUND@
+    @RESTORE_ORIGINAL@
+    @RESTORE_TEXT@
+    @APPLY_TEXT@
+    @SET_TEXT@
+    @APPLY_DRAWABLE@
+    val hook=object:XC_MethodHook() @HOOK@
+    fun bind(row:TextView,native:()->Unit) {val p=XC_MethodHook.MethodHookParam(arrayOf(row));hook.before(p);native();hook.after(p)}
+}
+fun main(args:Array<String>) {
+    val h=BubbleHarness();val row=TextView();val A=Drawable("A");val B=Drawable("B");val C=Drawable("C")
+    fun native(bg:Drawable,pad:Int,text:Int) {row.background=bg;row.setPadding(pad,pad+1,pad+2,pad+3);row.setTextColor(text);row.setLinkTextColor(text+1)}
+    fun assertNative(bg:Drawable,pad:Int,text:Int){check(row.background===bg){"background ${row.background?.name}, expected ${bg.name}"};check(listOf(row.paddingLeft,row.paddingTop,row.paddingRight,row.paddingBottom)==listOf(pad,pad+1,pad+2,pad+3));check(row.currentTextColor==text && row.linkTextColors.defaultColor==text+1);check(row.getTag(2)==null && row.getTag(1)==null)}
+    h.bind(row){native(A,3,101)};check(row.background?.name=="custom" && row.currentTextColor==999)
+    when(args[0]) {
+        "queue" -> {Handler(Looper.main).post{h.prefs.change(false)};Handler(Looper.main).post{h.bind(row){native(B,12,271)}};Handler.drain();assertNative(B,12,271);val scans=h.scans;repeat(500){h.bind(row){}};check(h.scans==scans);println("PASS: real listener/Hook/restore preserve new native B padding and text across close-before-queued-bind; stable off does no scans")}
+        "equal-text" -> {Handler(Looper.main).post{h.prefs.change(false)};Handler(Looper.main).post{h.bind(row){native(B,12,999)}};Handler.drain();assertNative(B,12,999);println("PASS: new native text/link colors equal to the old contrast color are not mistaken for old custom text state")}
+        "text-owner" -> {row.setTextColor(771);row.setLinkTextColor(772);row.setTag(R.id.hchat_message_text_color_applied,true);h.prefs.change(false);Handler.drain();check(row.background===A && row.paddingLeft==3 && row.currentTextColor==771 && row.linkTextColors.defaultColor==772);println("PASS: close restores native styling while preserving independently owned text/link colors")}
+        "worker-rapid" -> {Looper.onMain=false;h.prefs.change(false);h.prefs.change(true);Looper.onMain=true;Handler(Looper.main).post{h.bind(row){native(C,20,301)}};Handler.drain();check(row.background?.name=="custom");h.prefs.change(false);Handler.drain();assertNative(C,20,301);println("PASS: queued worker close/reopen reads current config and cannot clear newer custom styling")}
+        "page" -> {val scans=h.scans;WeChatApis.pages.emit(PageEvent(isEnter=true));WeChatApis.life.emit(PageEvent(isResume=true));check(ChatRowRefresh.delayed==2){"Enabled cached rows are not refreshed after page/activity transitions"};val old=WeChatApis.life.listeners.toList();h.prefs.change(false);WeChatApis.pages.emit(PageEvent(isEnter=true));WeChatApis.life.emit(PageEvent(isResume=true));check(ChatRowRefresh.delayed==2&&h.scans==scans);h.destroy();check(WeChatApis.pages.listeners.isEmpty()&&WeChatApis.life.listeners.isEmpty());old.forEach{it(PageEvent(isResume=true))};check(ChatRowRefresh.delayed==2);println("PASS: real page/resume subscriptions refresh enabled cached rows, skip closed state, and unsubscribe/ignore stale dispatch on destroy")}
+        "worker" -> {Handler(Looper.main).post{h.bind(row){native(B,12,271)}};Looper.onMain=false;h.prefs.change(false);Looper.onMain=true;Handler.drain();assertNative(B,12,271);println("PASS: worker config transition preserves native bind already ahead of it on the main queue")}
+        "rapid" -> {Handler(Looper.main).post{h.prefs.change(false)};Handler(Looper.main).post{h.bind(row){native(B,12,271)}};Handler(Looper.main).post{h.prefs.change(true);h.bind(row){native(C,20,301)}};Handler.drain();check(row.background?.name=="custom" && row.currentTextColor==999);h.prefs.change(false);Handler.drain();assertNative(C,20,301);println("PASS: quick close/reopen cannot restore an obsolete background/padding/text state over new custom or native rows")}
+    }
+}

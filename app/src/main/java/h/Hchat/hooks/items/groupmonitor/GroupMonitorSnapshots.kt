@@ -15,14 +15,15 @@ internal class GroupMonitorSnapshots private constructor(private val context: Co
     private var subscriptionToken: Any? = null
     private val executor = Executors.newSingleThreadScheduledExecutor { Thread(it, "Hchat-GroupBaseline").apply { isDaemon = true } }
     private var preloadQueued = false
-    private var completedGeneration: Long? = null
+    // Cache only the discovered IDs; snapshots themselves own per-group data readiness.
+    private var allGroups: Set<String>? = null
     private val recentNames = LinkedHashMap<String, String>()
 
     private fun identity(): String = context.packageName + ":" +
         WeChatApis.contact().account()?.sessionIdentity().orEmpty()
 
     private fun checkAccount() {
-        if (state.account(identity())) recentNames.clear()
+        if (state.account(identity())) { recentNames.clear(); allGroups = null }
     }
 
     @Synchronized
@@ -33,11 +34,10 @@ internal class GroupMonitorSnapshots private constructor(private val context: Co
         val before = state.generation
         state.update(owner, demand)
         if (invalidate && state.generation == before) {
-            val complete = completedGeneration == before
             state.invalidate()
-            if (complete) completedGeneration = state.generation
         }
-        recentNames.keys.removeAll { !state.needs(it.substringBefore('|')) }
+        recentNames.keys.removeAll { !state.needsNames(it.substringBefore('|')) }
+        if (!state.all()) allGroups = null
         syncSubscription()
         preload()
     }
@@ -48,6 +48,7 @@ internal class GroupMonitorSnapshots private constructor(private val context: Co
             subscription?.unsubscribe()
             subscription = null
             recentNames.clear()
+            allGroups = null
         } else if (subscription == null) {
             val token = Any()
             subscriptionToken = token
@@ -65,7 +66,8 @@ internal class GroupMonitorSnapshots private constructor(private val context: Co
     fun remove(owner: String) {
         callbacks.remove(owner)
         state.remove(owner)
-        recentNames.keys.removeAll { !state.needs(it.substringBefore('|')) }
+        if (!state.all()) allGroups = null
+        recentNames.keys.removeAll { !state.needsNames(it.substringBefore('|')) }
         syncSubscription()
     }
 
@@ -87,7 +89,9 @@ internal class GroupMonitorSnapshots private constructor(private val context: Co
     fun preload() {
         if (!state.active()) return
         checkAccount()
-        if (!state.active() || preloadQueued || completedGeneration == state.generation) return
+        if (!state.active() || preloadQueued) return
+        val groups = if (state.all()) allGroups else state.groups()
+        if (groups != null && groups.all(state::complete)) return
         preloadQueued = true
         // Both features install in the same turn. Collect their union before querying once.
         executor.schedule({ loadBaseline() }, 20L, TimeUnit.MILLISECONDS)
@@ -98,49 +102,61 @@ internal class GroupMonitorSnapshots private constructor(private val context: Co
             if (!state.active()) { preloadQueued = false; return }
             checkAccount()
             if (!state.active()) { preloadQueued = false; return }
-            BaselinePlan(state.generation, state.revision, state.all(), state.groups())
+            BaselinePlan(state.generation, state.revision,
+                (if (state.all()) allGroups else state.groups())?.filterNot(state::complete)?.toSet())
         }
-        var success = false
         try {
             val rooms = WeChatApis.contact().chatrooms() ?: return
-            val sources = if (plan.all) rooms.getChatrooms() else plan.groups.mapNotNull { rooms.getChatroom(it) }
-            for (room in sources) {
-                val group = room.chatroomId.trim()
-                val namesNeeded = synchronized(this) {
-                    checkAccount()
-                    if (plan.token != state.generation) return
-                    if (!state.needs(group)) return@synchronized null
-                    val old = state.snapshots[group]
-                    if (old != null && (!state.needsNames(group) || old.names.isNotEmpty())) {
-                        state.baseline(plan.token, group, old, plan.revision)
-                        success = true
-                        null
-                    } else state.needsNames(group)
-                } ?: continue
-                val snapshot = read(room, group, namesNeeded)
-                if (snapshot.members.isEmpty()) continue
-                synchronized(this) {
-                    checkAccount()
-                    state.baseline(plan.token, group, snapshot, plan.revision)
+            // Only the first all-groups load enumerates. Subsequent explicit entries retry missing
+            // groups/data, without polling or reloading already complete membership/nickname maps.
+            val discovered = if (plan.groups == null) rooms.getChatrooms().associateBy { it.chatroomId.trim() } else emptyMap()
+            val groups = synchronized(this) {
+                checkAccount()
+                if (plan.token != state.generation) return
+                if (plan.groups == null) allGroups = discovered.keys + state.snapshots.keys
+                plan.groups ?: allGroups.orEmpty()
+            }
+            for (group in groups) {
+                try {
+                    val demand = synchronized(this) {
+                        checkAccount()
+                        if (plan.token != state.generation) return
+                        if (!state.needs(group) || state.complete(group)) null
+                        else state.snapshots[group]?.members to state.needsNames(group)
+                    } ?: continue
+                    val knownMembers = demand.first
+                    // A nickname-only supplement uses the established members. The contact API
+                    // supplies nickname/raw room data in one query; no membership lookup is needed.
+                    val room = if (knownMembers != null) null else discovered[group] ?: rooms.getChatroom(group)
+                    if (room == null && knownMembers == null) continue
+                    val snapshot = read(room, group, demand.second, knownMembers)
+                    if (snapshot.members.isEmpty()) continue
+                    synchronized(this) {
+                        checkAccount()
+                        if (state.baseline(plan.token, group, snapshot, plan.revision)) {
+                            state.snapshots[group]?.names?.keys?.forEach { recentNames.remove("$group|$it") }
+                        }
+                    }
+                } catch (failure: Exception) {
+                    h.Hchat.utils.HLog.e("[Hchat:GroupBaseline] 群资料预载失败: $group", failure)
                 }
-                success = true
             }
         } catch (failure: Exception) {
             h.Hchat.utils.HLog.e("[Hchat:GroupBaseline] 预载失败", failure)
         } finally {
             synchronized(this) {
                 preloadQueued = false
-                if (success && plan.token == state.generation) completedGeneration = plan.token
-                // Configuration may have invalidated the query while it was outside the lock.
+                // At most one new coalesced pass for a configuration/account transition. Missing
+                // host data waits for the next explicit install/DexReady/preload, with no retry loop.
                 if (plan.token != state.generation) preload()
             }
         }
     }
 
-    private data class BaselinePlan(val token: Long, val revision: Long, val all: Boolean, val groups: Set<String>)
+    private data class BaselinePlan(val token: Long, val revision: Long, val groups: Set<String>?)
 
-    private fun read(room: WeChatChatroom?, group: String, needsNames: Boolean): GroupSnapshotState.Snapshot {
-        val members = (room?.memberIds ?: WeChatApis.contact().chatrooms()?.getMemberIds(group).orEmpty())
+    private fun read(room: WeChatChatroom?, group: String, needsNames: Boolean, knownMembers: Set<String>? = null): GroupSnapshotState.Snapshot {
+        val members = (knownMembers ?: room?.memberIds ?: WeChatApis.contact().chatrooms()?.getMemberIds(group).orEmpty())
             .map { it.trim() }.filter { it.isNotEmpty() }.toSet()
         if (members.isEmpty()) return GroupSnapshotState.Snapshot(emptySet(), emptyMap())
         val names = if (needsNames) {
@@ -160,7 +176,7 @@ internal class GroupMonitorSnapshots private constructor(private val context: Co
             }
             resolved
         } else emptyMap()
-        return GroupSnapshotState.Snapshot(members, names.takeIf { it.keys.containsAll(members) }.orEmpty())
+        return GroupSnapshotState.Snapshot(members, names)
     }
 
     @Synchronized
@@ -168,7 +184,7 @@ internal class GroupMonitorSnapshots private constructor(private val context: Co
         val group = change.chatroomId().trim()
         if (!state.needs(group) || (!change.mayMemberListChanged() && !change.mayRoomDataChanged())) return
         val accountChanged = state.account(identity())
-        if (accountChanged) { recentNames.clear(); preload() }
+        if (accountChanged) { recentNames.clear(); allGroups = null; preload() }
         val token = state.generation
         val old = state.snapshots[group]
         var next = read(change.chatroom, group, state.needsNames(group))
@@ -179,12 +195,22 @@ internal class GroupMonitorSnapshots private constructor(private val context: Co
         val now = System.currentTimeMillis()
         val bulk = old != null && (old.members - next.members).isEmpty() && (next.members - old.members).size >= 10
         next = next.copy(warmUntil = if (old == null || bulk) now + 15_000L else old.warmUntil)
-        old?.names?.filterKeys { it !in next.members }?.forEach { (member, name) -> recentNames["$group|$member"] = name }
+        // Keep a last reliable display value only where the new query is unknown or the member
+        // has left. A reliable empty value is not unknown and invalidates an old fallback.
+        old?.names?.filter { (member, name) -> name.isNotBlank() && !next.names.containsKey(member) }
+            ?.forEach { (member, name) -> recentNames["$group|$member"] = name }
+        next.names.keys.forEach { member -> recentNames.remove("$group|$member") }
+        if (state.all()) allGroups = allGroups?.plus(group)
         while (recentNames.size > 256) recentNames.remove(recentNames.keys.first())
         val previous = callbacks.keys.associateWith { owner -> state.previous(owner, group) }
         state.commit(group, next)
         callbacks.toMap().forEach { (owner, callback) ->
-            if (state.wants(owner, group)) callback(group, previous[owner], next, change)
+            if (state.wants(owner, group)) {
+                try { callback(group, previous[owner], next, change) }
+                catch (failure: Throwable) {
+                    h.Hchat.utils.HLog.e("[Hchat:GroupMonitor] 消费者失败: $owner", failure)
+                }
+            }
         }
     }
 

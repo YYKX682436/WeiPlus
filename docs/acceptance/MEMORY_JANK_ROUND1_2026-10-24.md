@@ -1,5 +1,7 @@
 # WeiPlus 第一轮内存与卡顿优化验收
 
+> 状态说明：用户尚未确认第一轮整体验收。本文件保留 937a61a 轮次的历史证据；后续限定范围的修复见 [正确性收口报告](CORRECTNESS_CLOSURE_2026-10-24.md)。下方性能数据属于该轮次旧 APK，不代表后续包的实测收益。
+
 审查/修改前基线：`5d6af5e8a96cca296a56fa644c414abaf9a1ca39`。开始时 main、origin/main 与基线一致，工作区干净。本轮没有回退历史提交。
 
 ## 实现
@@ -26,7 +28,7 @@
 
 `5de821feb8cf9dc1be4f1a656664f5d4d88755465d390b0a32a4050d0922a3fd`
 
-最终 APK：`dist/Hchat-release-signed.apk`，4,323,788 bytes，SHA-256：`04a26023364fd6347f366a153a6f7440c705f3b00677defd397e0510805a5620`。
+该轮次 APK（历史哈希；dist 交付路径随后续构建更新）：`dist/Hchat-release-signed.apk`，4,323,788 bytes，SHA-256：`04a26023364fd6347f366a153a6f7440c705f3b00677defd397e0510805a5620`。
 
 设备：小米 22081212C，Android 15 / SDK 35，KernelSU Root；微信 `com.tencent.mm` 8.0.76（3140）。设备原安装模块已是相同正式证书，使用 `adb install -r` 保留数据更新。没有卸载微信、清除微信数据或改动 LSPosed scope。
 

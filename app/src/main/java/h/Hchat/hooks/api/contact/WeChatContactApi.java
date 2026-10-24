@@ -245,10 +245,8 @@ public final class WeChatContactApi {
                 String member = members[i];
                 String name = names[i] != null ? names[i].trim() : "";
                 if (!TextUtils.isEmpty(member)
-                        && !result.containsKey(member)
-                        && !TextUtils.isEmpty(name)
-                        && !member.equals(name)) {
-                    result.put(member, name);
+                        && !result.containsKey(member)) {
+                    result.put(member, member.equals(name) ? "" : name);
                 }
             }
         } catch (Throwable e) {
@@ -269,8 +267,8 @@ public final class WeChatContactApi {
                 if (fieldNumber == 1 && wireType == 2) {
                     byte[] memberBytes = reader.readBytes();
                     RoomDataMember member = parseRoomDataMember(memberBytes);
-                    if (!TextUtils.isEmpty(member.username)) {
-                        String displayName = member.displayName != null ? member.displayName : "";
+                    if (!TextUtils.isEmpty(member.username) && member.displayName != null) {
+                        String displayName = member.displayName;
                         result.put(member.username, member.username.equals(displayName) ? "" : displayName);
                     }
                 } else {
@@ -1574,7 +1572,7 @@ public final class WeChatContactApi {
 
     private static final class RoomDataMember {
         String username = "";
-        String displayName = "";
+        String displayName; // null: field absent; "": explicitly present with no room nickname.
     }
 
     private static final class LvContactProfile {

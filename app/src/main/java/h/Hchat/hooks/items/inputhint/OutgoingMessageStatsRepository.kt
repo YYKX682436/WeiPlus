@@ -141,7 +141,8 @@ object OutgoingMessageStatsRepository {
             refreshAsync()
             return
         }
-        executor.execute { applyMessageChange(msgId, change.table) }
+        val table = change.table
+        executor.execute { applyMessageChange(msgId, table) }
     }
 
     private fun applyMessageChange(msgId: Long, table: String?) {

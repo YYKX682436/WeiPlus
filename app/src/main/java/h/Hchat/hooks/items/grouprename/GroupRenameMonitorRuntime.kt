@@ -86,8 +86,8 @@ class GroupRenameMonitorRuntime(
         stableMembers: Set<String>
     ): List<MemberRename> {
         return stableMembers.mapNotNull { memberId ->
-            val oldName = previous[memberId]?.trim().orEmpty()
-            val newName = current[memberId]?.trim().orEmpty()
+            val oldName = previous[memberId]?.trim() ?: return@mapNotNull null
+            val newName = current[memberId]?.trim() ?: return@mapNotNull null
             if (oldName == newName) null else MemberRename(memberId, oldName, newName)
         }
     }

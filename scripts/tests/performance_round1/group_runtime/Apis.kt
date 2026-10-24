@@ -25,8 +25,11 @@ class Rooms {
     @Volatile var entered: CountDownLatch? = null
     @Volatile var blocked: CountDownLatch? = null
     @Volatile var room = WeChatChatroom("g", listOf("a"))
-    fun getChatrooms(): List<WeChatChatroom> { allQueries.incrementAndGet(); return listOf(read()) }
-    fun getChatroom(id: String): WeChatChatroom? { singleQueries.incrementAndGet(); return if (id == room.chatroomId) read() else null }
+    val extra = java.util.concurrent.ConcurrentHashMap<String, WeChatChatroom>()
+    val failed = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    val queried = java.util.concurrent.CopyOnWriteArrayList<String>()
+    fun getChatrooms(): List<WeChatChatroom> { allQueries.incrementAndGet(); return listOf(read()) + extra.values }
+    fun getChatroom(id: String): WeChatChatroom? { singleQueries.incrementAndGet();queried.add(id);if(id in failed) error("Injected room read failure");return if (id == room.chatroomId) read() else extra[id] }
     fun getMemberIds(id: String) = getChatroom(id)?.memberIds
     private fun read(): WeChatChatroom { val result = room; entered?.countDown(); blocked?.await(); return result }
 }
@@ -35,7 +38,8 @@ class People {
     @Volatile var entered: CountDownLatch? = null
     @Volatile var blocked: CountDownLatch? = null
     val queries = AtomicInteger()
+    val results = java.util.concurrent.ConcurrentHashMap<String, Map<String,String>>()
     fun getGroupMemberRoomDisplayNames(group: String): Map<String, String> {
-        queries.incrementAndGet(); entered?.countDown(); blocked?.await(); if (missingNames) return emptyMap(); return WeChatApis.api.rooms.room.memberIds.associateWith { "name-$it" }
+        queries.incrementAndGet(); val result=results[group] ?: if(missingNames) emptyMap() else (if(group==WeChatApis.api.rooms.room.chatroomId) WeChatApis.api.rooms.room else WeChatApis.api.rooms.extra[group])?.memberIds.orEmpty().associateWith { "name-$it" }; val signal=entered;val wait=blocked;signal?.countDown();wait?.await();return result
     }
 }

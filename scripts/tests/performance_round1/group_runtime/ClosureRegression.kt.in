@@ -1,0 +1,107 @@
+package h.Hchat.hooks.items.groupmonitor
+import android.content.Context
+import h.Hchat.hooks.api.core.WeChatApis
+import h.Hchat.hooks.api.model.WeChatChatroom
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+private fun await(condition:()->Boolean){val end=System.nanoTime()+TimeUnit.SECONDS.toNanos(4);while(!condition()){check(System.nanoTime()<end){"Timed out"};Thread.sleep(5)}}
+private fun idle(r:GroupMonitorSnapshots){val f=r.javaClass.getDeclaredField("preloadQueued");f.isAccessible=true;await{ synchronized(r){f.get(r)==false} }}
+fun main(args:Array<String>){
+ val api=WeChatApis.api;val r=GroupMonitorSnapshots.get(Context("com.tencent.mm"))
+ val g=GroupSnapshotState.Scope(groups=setOf("g"));val scope=GroupSnapshotState.Demand(g,g)
+ api.rooms.room=WeChatChatroom("g",listOf("A","B"));api.people.results["g"]=mapOf("A" to "Alpha")
+ when(args[0]){
+ "partial"->{
+  var display="";var reply=""
+  r.configure("leave",scope){_,old,next,_->if(old!=null&&"A" in old.members&&"A" !in next.members){display=r.memberName("g","A").orEmpty();reply=r.memberName("g","A").orEmpty()}}
+  idle(r);check(r.memberName("g","A")=="Alpha"){"Known A nickname was discarded because B is unknown"}
+  api.people.results["g"]=emptyMap();api.changes.emit(WeChatChatroom("g",listOf("B")))
+  check(display=="Alpha"&&reply=="Alpha");r.remove("leave");check(r.memberName("g","A")==null)
+  println("PASS: partial reliable A nickname survives A leaving with B unknown, for both display/reply lookups, and is released on disable")
+ }
+ "retry"->{
+  val all=GroupSnapshotState.Scope(all=true);var previous:GroupSnapshotState.Snapshot?=null;var next:GroupSnapshotState.Snapshot?=null
+  api.people.results["g"]=emptyMap()
+  r.configure("rename",GroupSnapshotState.Demand(all,all)){_,p,n,_->previous=p;next=n};idle(r)
+  check(api.people.queries.get()==1);api.people.results["g"]=mapOf("A" to "Alpha","B" to "")
+  r.preload();r.preload();idle(r)
+  check(r.memberName("g","A")=="Alpha"){"Completed generation prevented nickname retry"}
+  check(api.rooms.allQueries.get()==1 && api.rooms.singleQueries.get()==0){"Nickname supplement re-read membership"}
+  val queries=api.people.queries.get();r.preload();Thread.sleep(50);check(api.people.queries.get()==queries)
+  api.people.results["g"]=mapOf("A" to "New Alpha","B" to "");api.changes.emit(api.rooms.room)
+  check(RenameHarness().compare(previous!!.names,next!!.names,next!!.members).single().newName=="New Alpha")
+  println("PASS: completed member baseline retries only missing names, explicit empty is ready, real later rename is detected, and complete preload is a no-op")
+ }
+ "unknown"->{
+  val compare=RenameHarness();check(compare.compare(mapOf("A" to "Alpha"),emptyMap(),setOf("A")).isEmpty())
+  check(compare.compare(emptyMap(),mapOf("A" to "Alpha"),setOf("A")).isEmpty())
+  check(compare.compare(mapOf("A" to "Alpha"),mapOf("A" to ""),setOf("A")).single().newName=="")
+  var previous:GroupSnapshotState.Snapshot?=null
+  r.configure("rename",scope){_,old,_,_->previous=old};idle(r)
+  api.people.results["g"]=mapOf("A" to "Alpha","B" to "Beta");api.changes.emit(api.rooms.room)
+  check(compare.compare(previous!!.names,api.people.results["g"]!!,setOf("A","B")).isEmpty())
+  println("PASS: production rename comparison distinguishes missing from explicit empty and first name acquisition establishes a baseline")
+ }
+ "mixed"->{
+  var previous:GroupSnapshotState.Snapshot?=null;var next:GroupSnapshotState.Snapshot?=null
+  r.configure("rename",scope){_,p,n,_->previous=p;next=n};idle(r)
+  api.people.results["g"]=mapOf("A" to "Changed Alpha","B" to "Beta");r.preload();idle(r)
+  check(r.memberName("g","A")=="Alpha" && r.memberName("g","B")=="Beta")
+  api.changes.emit(api.rooms.room);val changes=RenameHarness().compare(previous!!.names,next!!.names,next!!.members)
+  check(changes.size==1 && changes.single().memberId=="A")
+  println("PASS: supplement fills only B's unknown baseline, preserves A's monitored value, and does not mask A's next real change")
+ }
+ "recovery"->{
+  val changes=ArrayList<MemberRename>();r.configure("rename",scope){_,p,n,_->if(p!=null)changes.addAll(RenameHarness().compare(p.names,n.names,n.members))};idle(r)
+  api.people.results["g"]=emptyMap();api.changes.emit(api.rooms.room);check(r.memberName("g","A")=="Alpha")
+  api.people.results["g"]=mapOf("A" to "Recovered Alpha");api.changes.emit(api.rooms.room);check(changes.isEmpty())
+  api.people.results["g"]=mapOf("A" to "Real New Alpha");api.changes.emit(api.rooms.room);check(changes.single().oldName=="Recovered Alpha")
+  println("PASS: unknown reads retain display names but name recovery establishes a fresh comparison baseline without historical rename")
+ }
+ "groups"->{
+  api.rooms.extra["h"]=WeChatChatroom("h",listOf("C"));api.rooms.failed.add("h");api.people.results["g"]=mapOf("A" to "Alpha","B" to "")
+  val both=GroupSnapshotState.Scope(groups=setOf("g","h"));r.configure("rename",GroupSnapshotState.Demand(both,both)){_,_,_,_->};idle(r)
+  check(r.memberName("g","A")=="Alpha");api.rooms.failed.clear();api.people.results["h"]=mapOf("C" to "Gamma")
+  api.rooms.queried.clear();r.preload();idle(r);check(r.memberName("h","C")=="Gamma"){"One group's success permanently hid failed group"}
+  check(api.rooms.queried.toList()==listOf("h"));val n=api.people.queries.get();r.preload();Thread.sleep(50);check(api.people.queries.get()==n)
+  println("PASS: failed group is retried independently without re-reading ready groups or spinning retries")
+ }
+ "all-groups"->{
+  api.rooms.extra["h"]=WeChatChatroom("h",emptyList());api.people.results["g"]=mapOf("A" to "Alpha","B" to "")
+  val all=GroupSnapshotState.Scope(all=true);r.configure("rename",GroupSnapshotState.Demand(all,all)){_,_,_,_->};idle(r)
+  api.rooms.extra["h"]=WeChatChatroom("h",listOf("C"));api.people.results["h"]=mapOf("C" to "Gamma")
+  r.preload();idle(r);check(r.memberName("h","C")=="Gamma" && api.rooms.allQueries.get()==1 && api.rooms.queried.toList()==listOf("h"))
+  println("PASS: incomplete all-groups inventory retries only the failed group without another full enumeration")
+ }
+ "fault"->{
+  var dispatched:GroupSnapshotState.Snapshot?=null
+  r.configure("broken",scope){_,_,n,_->dispatched=n;throw IllegalStateException("Injected consumer failure")}
+  var received=0;r.configure("healthy",scope){_,_,n,_->check(n===dispatched);received++};idle(r)
+  runCatching{api.changes.emit(api.rooms.room)}
+  check(received==1){"Broken consumer prevented healthy consumer receiving the same event"}
+  println("PASS: consumer failure is isolated and the other consumer receives the same event")
+ }
+ else->{
+  r.configure("rename",scope){_,_,_,_->};idle(r)
+  api.people.results["g"]=mapOf("A" to "Stale Alpha","B" to "Stale Beta")
+  val entered=CountDownLatch(1);val release=CountDownLatch(1);api.people.entered=entered;api.people.blocked=release
+  r.preload();check(entered.await(2,TimeUnit.SECONDS)){"Missing names were never retried"}
+  api.people.entered=null;api.people.blocked=null
+  when(args[0]){
+   "live"->{api.people.results["g"]=mapOf("A" to "Live Alpha","B" to "Live Beta");api.changes.emit(api.rooms.room)}
+   "close"->r.remove("rename")
+   "shrink"->{val h=GroupSnapshotState.Scope(groups=setOf("h"));r.configure("rename",GroupSnapshotState.Demand(h,h)){_,_,_,_->}}
+   "account"->{api.people.results["g"]=emptyMap();api.self.identity="new-account"}
+  }
+  release.countDown();idle(r)
+  check(r.memberName("g","A")==(if(args[0]=="live") "Live Alpha" else null)){"Stale supplement revived or overwrote a baseline"}
+  r.remove("rename");println("PASS: blocked nickname supplement rejects stale ${args[0]} result")
+ }
+ }
+ val failures=h.Hchat.utils.HLog.failures
+ when(args[0]){
+  "groups"->check(failures.size==1 && failures.single().message=="Injected room read failure")
+  "fault"->check(failures.size==1 && failures.single().message=="Injected consumer failure")
+  else->check(failures.isEmpty()){ "Unexpected production runtime error: $failures" }
+ }
+}

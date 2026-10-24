@@ -37,7 +37,7 @@ fun main() {
     api.changes.emit(WeChatChatroom("g", listOf("a", "b"), "A\u0001B"))
     check(runtime.memberName("g", "a")=="A" && runtime.memberName("g", "b")=="B")
     api.changes.emit(WeChatChatroom("g", listOf("a"), ""))
-    check(runtime.memberName("g", "a")==null)
+    check(runtime.memberName("g", "a")=="A")
     api.people.missingNames=false
     api.changes.emit(api.rooms.room)
     println("PASS: partial nickname queries preserve the room-record display-name fallback")

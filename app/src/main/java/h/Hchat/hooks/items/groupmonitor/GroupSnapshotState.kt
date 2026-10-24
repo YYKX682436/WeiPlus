@@ -45,6 +45,10 @@ internal class GroupSnapshotState {
         snapshots.replaceAll { group, snapshot ->
             if (needsNames(group)) snapshot else snapshot.copy(names = emptyMap())
         }
+        // A continuously maintained shared baseline is current for a newly enabled consumer.
+        consumers[owner]?.let { consumer ->
+            consumer.ready.addAll(snapshots.keys.filter { consumer.demand.members.contains(it) })
+        }
     }
 
     fun remove(owner: String) {
@@ -58,6 +62,10 @@ internal class GroupSnapshotState {
 
     fun needs(group: String) = consumers.values.any { it.demand.members.contains(group) }
     fun needsNames(group: String) = consumers.values.any { it.demand.names.contains(group) }
+    fun complete(group: String): Boolean {
+        val snapshot = snapshots[group] ?: return false
+        return snapshot.members.isNotEmpty() && (!needsNames(group) || snapshot.names.keys.containsAll(snapshot.members))
+    }
     fun active() = consumers.values.any { it.demand.members.active }
     fun all() = consumers.values.any { it.demand.members.all }
     fun groups() = consumers.values.flatMap { it.demand.members.groups }.toSet()
@@ -74,8 +82,9 @@ internal class GroupSnapshotState {
         if (token != generation || !needs(group) || (revisions[group] ?: 0L) > readRevision) return false
         val existing = snapshots[group]
         if (existing == null) snapshots[group] = snapshot
-        else if (existing.names.isEmpty() && snapshot.names.isNotEmpty()) {
-            snapshots[group] = existing.copy(names = snapshot.names.filterKeys { it in existing.members })
+        else if (snapshot.names.isNotEmpty()) {
+            // Supplement only unknown values. Never replace a value maintained by live events.
+            snapshots[group] = existing.copy(names = snapshot.names.filterKeys { it in existing.members } + existing.names)
         }
         consumers.values.filter { it.demand.members.contains(group) }.forEach { it.ready.add(group) }
         return true
