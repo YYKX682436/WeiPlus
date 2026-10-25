@@ -111,6 +111,11 @@ public final class XposedRuntime {
         }
     }
 
+    /** True only while this managed callback can still participate in framework calls. */
+    public static boolean isHookActive(HookHandle handle) {
+        return handle instanceof ManagedHook && ((ManagedHook) handle).isActive();
+    }
+
     private static final class BatchGate {
         volatile boolean active;
         BatchGate(boolean active) { this.active = active; }
@@ -139,6 +144,10 @@ public final class XposedRuntime {
 
         public Executable getExecutable() { return executable; }
         public String getId() { return delegate.getId(); }
+
+        synchronized boolean isActive() {
+            return !removed && callback != null && gate.active;
+        }
 
         public synchronized void unhook() {
             // Invalidate first, even when the framework refuses to remove its callback. Dropping the

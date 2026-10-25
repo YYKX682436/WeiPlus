@@ -82,7 +82,11 @@ class HookRegistry private constructor() {
                     "Hook key '$key' is still owned by an earlier generation"
                 }
                 check(existing.member == method) { "Hook key '$key' is already assigned to ${existing.member}" }
-                return@synchronized existing.unhook
+                if (XposedRuntime.isHookActive(existing.unhook)) return@synchronized existing.unhook
+                // Keep the old handle in unhooks / XposedRuntime's failed-removal set for explicit
+                // cleanup, but stop treating its inert or physically removed callback as installed.
+                // Identity-check the map entry so stale cleanup cannot erase a later replacement.
+                if (keyedHooks[key] === existing) keyedHooks.remove(key)
             }
             val unhook = XposedRuntime.hook(method, priority, callback)
             unhooks.add(unhook)

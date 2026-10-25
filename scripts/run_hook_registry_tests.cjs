@@ -30,6 +30,10 @@ const groups = [
     'app/src/main/java/h/Hchat/hooks/core/HookRegistry.kt',
     'scripts/tests/hook_registry/HookRegistryRegression.kt'
   ]],
+  ['hook_once_liveness', 'HookOnceLivenessRegressionKt', [
+    'app/src/main/java/h/Hchat/hooks/core/HookRegistry.kt',
+    'scripts/tests/hook_registry/HookOnceLivenessRegression.kt'
+  ]],
   ['send_dispatch', 'h.Hchat.hooks.items.sendbutton.NativeSendButtonHandlersRegressionKt', [
     'app/src/main/java/h/Hchat/hooks/items/sendbutton/NativeSendButtonHandlers.kt',
     'scripts/tests/native_regressions/NativeSendButtonHandlersRegression.kt'
