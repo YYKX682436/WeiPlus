@@ -1,10 +1,14 @@
 package h.Hchat.hooks.items.hchatextra
 
 import android.content.Context
+import android.graphics.Rect
 import android.view.View
 import android.view.ViewGroup
 import android.view.View.MeasureSpec
+import android.widget.LinearLayout
+import android.widget.FrameLayout
 import android.widget.RelativeLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import h.Hchat.R
 import org.junit.Assert.assertEquals
@@ -237,6 +241,177 @@ class MessageDetailsR1RegressionTest {
     }
 
     @Test
+    fun `R2 appended row and label growth can clip the latest time in a real scroll viewport`() {
+        val context = RuntimeEnvironment.getApplication()
+        val scroll = ScrollView(context)
+        val messages = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+        scroll.addView(messages, ViewGroup.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ))
+        repeat(5) {
+            messages.addView(RelativeLayout(context).apply {
+                addView(View(context), RelativeLayout.LayoutParams(48, 48).apply {
+                    addRule(RelativeLayout.ALIGN_PARENT_TOP)
+                })
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+
+        measureAndLayout(scroll, width = 240, height = 200)
+        scroll.scrollTo(0, messages.measuredHeight)
+        assertFalse("the host has positioned the current last row at the viewport bottom", scroll.canScrollVertically(1))
+
+        val row = RelativeLayout(context)
+        val avatar = View(context)
+        row.addView(avatar, RelativeLayout.LayoutParams(48, 48).apply {
+            addRule(RelativeLayout.ALIGN_PARENT_TOP)
+            leftMargin = 70
+        })
+        messages.addView(row, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ))
+        measureAndLayout(scroll, width = 240, height = 200)
+        assertTrue("the new native row arrives after the host's earlier bottom positioning",
+            scroll.canScrollVertically(1))
+
+        val label = label(context)
+        val placement = MessageDetailsAvatarLayout.placement(
+            parentWidth = row.measuredWidth,
+            paddingLeft = row.paddingLeft,
+            paddingTop = row.paddingTop,
+            paddingRight = row.paddingRight,
+            anchorLeft = avatar.left,
+            anchorRight = avatar.right,
+            anchorTop = avatar.top,
+            anchorBottom = avatar.bottom,
+            labelWidth = label.measuredWidth,
+            labelHeight = label.measuredHeight,
+            gap = 0,
+            requestedAbove = false,
+            previouslyOwnedOffset = 0
+        )
+
+        // This is the R2 sequence: the host has followed the old content end,
+        // then a new row and its correctly measured native child extend the scroll range.
+        MessageDetailsAvatarViewLayout.attach(row, label, MessageDetailsAvatarViewLayout.layoutParams(placement))
+        measureAndLayout(scroll, width = 240, height = 200)
+
+        assertTrue("the label remains a real child inside the measured row", label.parent === row)
+        assertTrue("the label bottom is included in the row's measured height", label.bottom <= row.measuredHeight)
+        assertEquals("the R2 stale tail offset hides the measured timestamp from the real viewport", 0,
+            visibleHeightWithin(scroll, label))
+        assertTrue("R2 red test starts with a clipped time and stale bottom offset",
+            MessageDetailsFollowLatestScroll.correctTailOverflow(
+                scroll, row, label, followingLatest = false, isLatestRow = true
+            ) == 0 && scroll.canScrollVertically(1))
+
+        val correctedBy = MessageDetailsFollowLatestScroll.correctTailOverflow(
+            scroll, row, label, followingLatest = true, isLatestRow = true
+        )
+        measureAndLayout(scroll, width = 240, height = 200)
+        assertTrue("a following user receives a measured overflow correction", correctedBy > 0)
+        assertEquals("the corrected latest time is fully visible", label.height,
+            visibleHeightWithin(scroll, label))
+        assertFalse("the latest row now reaches the viewport end", scroll.canScrollVertically(1))
+
+        scroll.scrollTo(0, 0)
+        val historyScrollY = scroll.scrollY
+        assertEquals("a user reading history is never pulled to the tail", 0,
+            MessageDetailsFollowLatestScroll.correctTailOverflow(
+                scroll, row, label, followingLatest = false, isLatestRow = true
+            ))
+        assertEquals(historyScrollY, scroll.scrollY)
+
+        measureAndLayout(scroll, width = 240, height = 150)
+        val viewportCorrection = MessageDetailsFollowLatestScroll.correctTailOverflow(
+            scroll, row, label, followingLatest = true, isLatestRow = true
+        )
+        measureAndLayout(scroll, width = 240, height = 150)
+        assertTrue("a changed viewport receives only the new clipped distance", viewportCorrection > 0)
+        assertTrue("time remains visible after a keyboard-like viewport resize",
+            visibleHeightWithin(scroll, label) == label.height)
+    }
+
+    @Test
+    fun `tail follow state leaves history and returns only when the actual list end is reached`() {
+        val state = MessageDetailsFollowLatestState(initiallyFollowingLatest = true)
+        state.onScrolled(verticalDelta = -12, atLatestEdge = false)
+        assertFalse("scrolling upward into history cancels automatic following", state.isFollowingLatest())
+
+        state.onPositionRequested(targetsLatestRow = true)
+        assertFalse("an adapter request cannot undo the user's history-reading state", state.isFollowingLatest())
+
+        state.onScrolled(verticalDelta = 18, atLatestEdge = false)
+        assertFalse("partial movement toward the newest row does not claim the tail", state.isFollowingLatest())
+
+        state.onScrolled(verticalDelta = 5, atLatestEdge = true)
+        assertTrue("reaching the real list edge resumes tail following", state.isFollowingLatest())
+
+        state.onScrolled(verticalDelta = -1, atLatestEdge = false)
+        assertFalse("a later history scroll cancels following again", state.isFollowingLatest())
+    }
+
+    @Test
+    fun `touch drag into history disables correction until the list reaches its actual end`() {
+        val state = MessageDetailsFollowLatestState(initiallyFollowingLatest = true)
+        state.onUserTouch(
+            fingerDeltaY = 30f,
+            touchSlop = 12,
+            canScrollTowardHistory = true,
+            atLatestEdge = false
+        )
+        assertFalse("a downward drag beyond touch slop marks history-reading intent", state.isFollowingLatest())
+
+        state.onPositionRequested(targetsLatestRow = true)
+        assertFalse("a native position request cannot override the physical history gesture", state.isFollowingLatest())
+
+        state.onUserTouch(
+            fingerDeltaY = -36f,
+            touchSlop = 12,
+            canScrollTowardHistory = true,
+            atLatestEdge = false
+        )
+        assertFalse("a partial swipe toward recent messages does not re-enable following", state.isFollowingLatest())
+
+        state.onUserTouch(
+            fingerDeltaY = -48f,
+            touchSlop = 12,
+            canScrollTowardHistory = true,
+            atLatestEdge = true
+        )
+        assertTrue("touch-driven movement resumes following only at the actual list end", state.isFollowingLatest())
+    }
+
+    @Test
+    fun `tail row detection ignores attached structural footer but rejects a newer message row`() {
+        data class AttachedItem(val adapterPosition: Int, val messageRow: Boolean)
+        val container = FrameLayout(RuntimeEnvironment.getApplication())
+        fun add(position: Int, messageRow: Boolean): View = View(container.context).apply {
+            tag = AttachedItem(position, messageRow)
+            container.addView(this, FrameLayout.LayoutParams(20, 20))
+        }
+        val candidate = add(position = 7, messageRow = true)
+        add(position = 8, messageRow = false) // A list footer follows the newest message.
+        val childPosition: (View) -> Int? = { (it.tag as? AttachedItem)?.adapterPosition }
+        val isMessageRow: (View) -> Boolean = { (it.tag as? AttachedItem)?.messageRow == true }
+
+        assertFalse(
+            "a structural footer after the newest message does not hide the tail row",
+            MessageDetailsFollowLatestScroll.hasNewerAttachedMessage(container, 7, childPosition, isMessageRow)
+        )
+        val newerMessage = add(position = 9, messageRow = true)
+        assertTrue(
+            "an actually newer attached message prevents correcting the older row",
+            MessageDetailsFollowLatestScroll.hasNewerAttachedMessage(container, 7, childPosition, isMessageRow)
+        )
+        container.removeView(newerMessage)
+        assertFalse(
+            "the candidate becomes the newest message once later message content is gone",
+            MessageDetailsFollowLatestScroll.hasNewerAttachedMessage(container, 7, childPosition, isMessageRow)
+        )
+        assertSame("the Android ViewGroup contains the candidate row", container, candidate.parent)
+    }
+
+    @Test
     fun `repeat placement does not rewrite the same TextView layout parameters`() {
         val (parent, avatar, label) = row(anchorTop = 60)
         val placement = plan(parent, avatar, label, gap = 0, above = false)
@@ -362,6 +537,26 @@ class MessageDetailsR1RegressionTest {
             MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED)
         )
         parent.layout(0, 0, parent.measuredWidth, parent.measuredHeight)
+    }
+
+    private fun measureAndLayout(parent: ScrollView, width: Int, height: Int) {
+        parent.measure(
+            MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY)
+        )
+        parent.layout(0, 0, parent.measuredWidth, parent.measuredHeight)
+    }
+
+    private fun visibleHeightWithin(container: ViewGroup, descendant: View): Int {
+        val descendantBounds = Rect(0, 0, descendant.width, descendant.height)
+        container.offsetDescendantRectToMyCoords(descendant, descendantBounds)
+        val left = if (container.clipToPadding) container.paddingLeft else 0
+        val top = if (container.clipToPadding) container.paddingTop else 0
+        val right = container.width - if (container.clipToPadding) container.paddingRight else 0
+        val bottom = container.height - if (container.clipToPadding) container.paddingBottom else 0
+        return if (descendantBounds.intersect(
+                left, top + container.scrollY, right, bottom + container.scrollY
+            )) descendantBounds.height() else 0
     }
 
     private class CountingTextView(context: Context) : TextView(context) {

@@ -215,6 +215,9 @@ private class HchatExtraHooker(
     private val messageDetailsColorListeners = MessageDetailsPreDrawQueue()
     private val messageDetailsBindStates = ThreadLocal<ArrayDeque<MessageDetailsBindState>>()
     private val messageDetailsBindTokens = WeakHashMap<View, MessageDetailsBindingGeneration>()
+    private val messageDetailsScrollAttachListeners = WeakHashMap<View, View.OnAttachStateChangeListener>()
+    private val messageDetailsRowGrowthListeners = WeakHashMap<View, View.OnLayoutChangeListener>()
+    private val messageDetailsTailCheckCallbacks = WeakHashMap<View, Runnable>()
     private val messageDetailsConfigHandler = Handler(Looper.getMainLooper())
     @Volatile private var messageDetailsConfig = readMessageDetailsConfig()
     private var appliedMessageDetailsConfig = messageDetailsConfig
@@ -1236,6 +1239,7 @@ private class HchatExtraHooker(
         if (isScrollingContainer(holderRoot)) return false
         val root = messageRowRoot(holderRoot)
         messageDetailsRetryListeners.cancel(root)
+        cancelMessageDetailsRowGrowth(root)
         val nativeMessage = capturedMessage ?: resolveMessageFromBindArgs(args)
             ?: resolveMessageFromAdapter(bindObject, messageBindPosition(args))
         if (nativeMessage == null) {
@@ -1259,7 +1263,14 @@ private class HchatExtraHooker(
             ?: capturedHolder?.takeIf { isMessageDetailsHolder(it, root) }
             ?: holder
         val nativeTimeLabel = findHolderTextView(viewTag, "timeTV", holderTimeFieldCache)
-        val inserted = insertMessageDetailsLabel(root, nativeTimeLabel, viewTag, details, nativeMessage = nativeMessage)
+        val inserted = insertMessageDetailsLabel(
+            root,
+            nativeTimeLabel,
+            viewTag,
+            details,
+            nativeMessage = nativeMessage,
+            adapterPosition = messageBindPosition(args) ?: -1
+        )
         if (!inserted) {
             if (attempt >= MESSAGE_DETAILS_MAX_RETRY) {
                 removeTaggedMessageDetailsViews(root)
@@ -1313,6 +1324,259 @@ private class HchatExtraHooker(
         }
     }
 
+    private fun observeMessageDetailsScrollAttachment(root: View) {
+        val (listener, isNew) = synchronized(messageDetailsScrollAttachListeners) {
+            messageDetailsScrollAttachListeners[root]?.let { return@synchronized it to false }
+            run {
+                val rootReference = WeakReference(root)
+                object : View.OnAttachStateChangeListener {
+                    override fun onViewAttachedToWindow(view: View) {
+                        val currentRoot = rootReference.get() ?: return
+                        if (view !== currentRoot) return
+                        val container = nearestMessageDetailsScrollContainer(currentRoot) ?: return
+                        MessageDetailsFollowLatestRegistry.observe(container)
+                        installMessageDetailsRecyclerScrollHook(container)
+                    }
+
+                    override fun onViewDetachedFromWindow(view: View) = Unit
+                }.also { messageDetailsScrollAttachListeners[root] = it }
+            } to true
+        }
+        if (!isNew) return
+        if (root.isAttachedToWindow) listener.onViewAttachedToWindow(root) else root.addOnAttachStateChangeListener(listener)
+    }
+
+    private fun observeMessageDetailsRowLayout(
+        root: View,
+        label: TextView,
+        bindPosition: Int
+    ) {
+        val token = messageDetailsBindToken(root)
+        val rootReference = WeakReference(root)
+        val labelReference = WeakReference(label)
+        val previous = synchronized(messageDetailsRowGrowthListeners) {
+            messageDetailsRowGrowthListeners.remove(root)
+        }
+        previous?.let(root::removeOnLayoutChangeListener)
+        lateinit var listener: View.OnLayoutChangeListener
+        listener = View.OnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+            val currentRoot = rootReference.get() ?: return@OnLayoutChangeListener
+            currentRoot.removeOnLayoutChangeListener(listener)
+            synchronized(messageDetailsRowGrowthListeners) {
+                if (messageDetailsRowGrowthListeners[currentRoot] === listener) {
+                    messageDetailsRowGrowthListeners.remove(currentRoot)
+                }
+            }
+            val currentLabel = labelReference.get() ?: return@OnLayoutChangeListener
+            scheduleMessageDetailsTailCheck(currentRoot, currentLabel, bindPosition, token)
+        }
+        synchronized(messageDetailsRowGrowthListeners) { messageDetailsRowGrowthListeners[root] = listener }
+        root.addOnLayoutChangeListener(listener)
+        // Check once after this bind even when the row keeps the same outer bounds.
+        // The one-shot layout listener above covers the case where this post precedes measure/layout.
+        scheduleMessageDetailsTailCheck(root, label, bindPosition, token)
+    }
+
+    private fun scheduleMessageDetailsTailCheck(
+        root: View,
+        label: TextView,
+        bindPosition: Int,
+        bindToken: Any
+    ) {
+        val rootReference = WeakReference(root)
+        val labelReference = WeakReference(label)
+        lateinit var callback: Runnable
+        callback = Runnable {
+            val currentRoot = rootReference.get() ?: return@Runnable
+            synchronized(messageDetailsTailCheckCallbacks) {
+                if (messageDetailsTailCheckCallbacks[currentRoot] !== callback) return@Runnable
+                messageDetailsTailCheckCallbacks.remove(currentRoot)
+            }
+            val currentLabel = labelReference.get() ?: return@Runnable
+            if (!messageDetailsConfig.enabled || !isCurrentMessageDetailsBind(currentRoot, bindToken) ||
+                !currentRoot.isAttachedToWindow || currentLabel.parent == null ||
+                currentLabel.tag != TAG_MESSAGE_DETAILS_VIEW
+            ) return@Runnable
+            val container = nearestMessageDetailsScrollContainer(currentRoot) ?: return@Runnable
+            MessageDetailsFollowLatestRegistry.observe(container)
+            installMessageDetailsRecyclerScrollHook(container)
+            val itemCount = messageDetailsAdapterItemCount(container) ?: return@Runnable
+            val position = messageDetailsAdapterPosition(container, currentRoot, bindPosition) ?: return@Runnable
+            val hasNewerAttachedMessage = messageDetailsHasNewerAttachedMessage(container, position)
+            if (position != itemCount - 1 && hasNewerAttachedMessage) return@Runnable
+            MessageDetailsFollowLatestRegistry.rememberTailRow(container, currentRoot, currentLabel, position)
+            val followingLatest = MessageDetailsFollowLatestRegistry.isFollowingLatest(container)
+            MessageDetailsFollowLatestScroll.correctTailOverflow(
+                container,
+                currentRoot,
+                currentLabel,
+                followingLatest,
+                isLatestRow = true
+            )
+        }
+        val previous = synchronized(messageDetailsTailCheckCallbacks) {
+            messageDetailsTailCheckCallbacks.put(root, callback)
+        }
+        previous?.let(root::removeCallbacks)
+        if (!root.post(callback)) {
+            synchronized(messageDetailsTailCheckCallbacks) {
+                if (messageDetailsTailCheckCallbacks[root] === callback) messageDetailsTailCheckCallbacks.remove(root)
+            }
+        }
+    }
+
+    private fun cancelMessageDetailsRowGrowth(root: View) {
+        val listener = synchronized(messageDetailsRowGrowthListeners) {
+            messageDetailsRowGrowthListeners.remove(root)
+        }
+        listener?.let(root::removeOnLayoutChangeListener)
+        val callback = synchronized(messageDetailsTailCheckCallbacks) {
+            messageDetailsTailCheckCallbacks.remove(root)
+        }
+        callback?.let(root::removeCallbacks)
+    }
+
+    private fun nearestMessageDetailsScrollContainer(row: View): View? {
+        var parent = row.parent as? View
+        while (parent != null) {
+            if (isScrollingContainer(parent)) return parent
+            parent = parent.parent as? View
+        }
+        return null
+    }
+
+    private fun messageDetailsAdapterItemCount(container: View): Int? {
+        val adapter = invokeMessageDetailsNoArg(container, "getAdapter") ?: return null
+        return invokeMessageDetailsInt(adapter, "getItemCount") ?: invokeMessageDetailsInt(adapter, "getCount")
+    }
+
+    private fun messageDetailsAdapterPosition(
+        container: View,
+        row: View,
+        bindPosition: Int
+    ): Int? {
+        var current = row
+        while (current !== container) {
+            (invokeMessageDetailsInt(container, "getChildAdapterPosition", current)
+                ?: invokeMessageDetailsInt(container, "getPositionForView", current))
+                ?.takeIf { it >= 0 }?.let { return it }
+            current = current.parent as? View ?: break
+        }
+        return bindPosition.takeIf { it >= 0 }
+    }
+
+    private fun messageDetailsHasNewerAttachedMessage(container: View, adapterPosition: Int): Boolean {
+        val parent = container as? ViewGroup ?: return false
+        return MessageDetailsFollowLatestScroll.hasNewerAttachedMessage(
+            parent,
+            adapterPosition,
+            childAdapterPosition = { child ->
+                invokeMessageDetailsInt(container, "getChildAdapterPosition", child)
+                    ?: invokeMessageDetailsInt(container, "getPositionForView", child)
+            },
+            isMessageRow = { child ->
+                if (findTaggedMessageDetailsLabel(child) != null) {
+                    true
+                } else {
+                    val holder = invokeMessageDetailsViewArgument(container, "findContainingViewHolder", child)
+                    holder != null && isMessageDetailsHolder(holder, messageRowRoot(child))
+                }
+            }
+        )
+    }
+
+    private fun messageDetailsHolderPosition(holder: Any): Int =
+        ((invokeMessageDetailsNoArg(holder, "getBindingAdapterPosition") as? Number)?.toInt()
+            ?: (invokeMessageDetailsNoArg(holder, "getAdapterPosition") as? Number)?.toInt())
+            ?.takeIf { it >= 0 } ?: -1
+
+    private fun invokeMessageDetailsNoArg(target: Any, name: String): Any? = runCatching {
+        target.javaClass.methods.firstOrNull { it.name == name && it.parameterTypes.isEmpty() }?.invoke(target)
+    }.getOrNull()
+
+    private fun invokeMessageDetailsViewArgument(target: Any, name: String, argument: View): Any? = runCatching {
+        target.javaClass.methods.firstOrNull { method ->
+            method.name == name && method.parameterTypes.size == 1 &&
+                method.parameterTypes[0].isAssignableFrom(argument.javaClass)
+        }?.invoke(target, argument)
+    }.getOrNull()
+
+    private fun invokeMessageDetailsInt(target: Any, name: String, vararg args: Any): Int? = runCatching {
+        val method = target.javaClass.methods.firstOrNull { candidate ->
+            candidate.name == name && candidate.parameterTypes.size == args.size &&
+                candidate.parameterTypes.zip(args).all { (parameter, argument) -> parameter.isAssignableFrom(argument.javaClass) }
+        } ?: generateSequence(target.javaClass) { it.superclass }
+            .mapNotNull { type ->
+                type.declaredMethods.firstOrNull { candidate ->
+                    candidate.name == name && candidate.parameterTypes.size == args.size &&
+                        candidate.parameterTypes.zip(args).all { (parameter, argument) -> parameter.isAssignableFrom(argument.javaClass) }
+                }?.apply { isAccessible = true }
+            }.firstOrNull()
+        (method?.invoke(target, *args) as? Number)?.toInt()
+    }.getOrNull()
+
+    private fun installMessageDetailsRecyclerScrollHook(container: View) {
+        if (!container.javaClass.name.contains("RecyclerView")) return
+        val findMethod = { name: String, parameters: Array<Class<*>> ->
+            // RecyclerView dispatches scroll callbacks virtually. Hook the concrete host override
+            // when present; hooking only RecyclerView.onScrolled misses subclasses that override it.
+            generateSequence(container.javaClass as Class<*>?) { it.superclass }
+                .mapNotNull { type -> runCatching { type.getDeclaredMethod(name, *parameters) }.getOrNull() }
+                .firstOrNull()
+        }
+        val scrollDispatch = findMethod(
+            "dispatchOnScrolled",
+            arrayOf(Int::class.javaPrimitiveType!!, Int::class.javaPrimitiveType!!)
+        ) ?: findMethod("onScrolled", arrayOf(Int::class.javaPrimitiveType!!, Int::class.javaPrimitiveType!!))
+        if (scrollDispatch != null) {
+            val hookKey = "hchat_message_details_scroll_${scrollDispatch.name}_${System.identityHashCode(scrollDispatch.declaringClass.classLoader)}_${scrollDispatch.declaringClass.name}"
+            runCatching {
+                HookRegistry.get().hookOnce(hookKey, scrollDispatch, XposedInterface.Hooker { chain ->
+                val verticalDelta = (chain.args.getOrNull(1) as? Number)?.toInt() ?: 0
+                chain.proceed().also {
+                    if (verticalDelta != 0) {
+                        (chain.thisObject as? View)?.let { list ->
+                            MessageDetailsFollowLatestRegistry.onRecyclerScrolled(list, verticalDelta)
+                        }
+                    }
+                }
+                })
+            }.onFailure { logger("消息列表跟随状态监听失败", it) }
+        }
+        for (methodName in arrayOf("onInterceptTouchEvent", "onTouchEvent")) {
+            val touchMethod = findMethod(methodName, arrayOf(android.view.MotionEvent::class.java)) ?: continue
+            val hookKey = "hchat_message_details_${methodName}_${System.identityHashCode(touchMethod.declaringClass.classLoader)}_${touchMethod.declaringClass.name}"
+            runCatching {
+                HookRegistry.get().hookOnce(hookKey, touchMethod, XposedInterface.Hooker { chain ->
+                    val event = chain.args.firstOrNull() as? android.view.MotionEvent
+                    chain.proceed().also {
+                        if (event != null) {
+                            (chain.thisObject as? View)?.let { list ->
+                                MessageDetailsFollowLatestRegistry.onRecyclerTouch(list, event)
+                            }
+                        }
+                    }
+                })
+            }.onFailure { logger("消息列表手势跟随状态监听失败: $methodName", it) }
+        }
+        for (methodName in arrayOf("scrollToPosition", "smoothScrollToPosition")) {
+            val method = findMethod(methodName, arrayOf(Int::class.javaPrimitiveType!!)) ?: continue
+            val hookKey = "hchat_message_details_${methodName}_${System.identityHashCode(method.declaringClass.classLoader)}_${method.declaringClass.name}"
+            runCatching {
+                HookRegistry.get().hookOnce(hookKey, method, XposedInterface.Hooker { chain ->
+                    val position = (chain.args.firstOrNull() as? Number)?.toInt() ?: -1
+                    chain.proceed().also {
+                        if (position >= 0) {
+                            (chain.thisObject as? View)?.let { list ->
+                                MessageDetailsFollowLatestRegistry.onRecyclerPositionRequested(list, position)
+                            }
+                        }
+                    }
+                })
+            }.onFailure { logger("消息列表定位监听失败: $methodName", it) }
+        }
+    }
+
     private fun messageDetailsBindToken(root: View): Any = synchronized(messageDetailsBindTokens) {
         messageDetailsBindTokens.getOrPut(root) { MessageDetailsBindingGeneration() }.token()
     }
@@ -1339,7 +1603,8 @@ private class HchatExtraHooker(
         holder: Any,
         details: MessageDetails,
         preferredLabel: TextView? = null,
-        nativeMessage: Any? = null
+        nativeMessage: Any? = null,
+        adapterPosition: Int = -1
     ): Boolean {
         if (!MessageDetailsVisibility.shouldShow(details.type)) {
             clearExcludedMessageDetails(root)
@@ -1464,6 +1729,10 @@ private class HchatExtraHooker(
                 label, root, nativeTimeLabel, holder, nativeMessage, displayDetails,
                 identity, displayInputs, renderedText, renderKey
             )
+            observeMessageDetailsScrollAttachment(root)
+            val resolvedPosition = adapterPosition.takeIf { it >= 0 }
+                ?: messageDetailsHolderPosition(holder)
+            observeMessageDetailsRowLayout(root, label, resolvedPosition)
             updateMessageDetailsClickBehavior(label)
             if (cardMessage && avatarAnchor == null) {
                 observeCardDetailsLayout(root, label)
@@ -1480,6 +1749,7 @@ private class HchatExtraHooker(
         messageDetailsAttachCallbacks.cancel(root)
         messageDetailsLayoutCallbacks.cancel(root)
         messageDetailsRetryListeners.cancel(root)
+        cancelMessageDetailsRowGrowth(root)
         synchronized(messageDetailsBindTokens) {
             messageDetailsBindTokens.getOrPut(root) { MessageDetailsBindingGeneration() }.invalidate()
         }
@@ -1696,9 +1966,29 @@ private class HchatExtraHooker(
         messageDetailsRetryListeners.clear()
         messageDetailsPositionListeners.clear()
         messageDetailsColorListeners.clear()
+        clearMessageDetailsScrollObservers()
         synchronized(messageDetailsBindTokens) { messageDetailsBindTokens.clear() }
         messageDetailsRowLabels.clear()
         restoreAllOwnedAvatarBranchOffsets()
+    }
+
+    private fun clearMessageDetailsScrollObservers() {
+        val attachListeners = synchronized(messageDetailsScrollAttachListeners) {
+            messageDetailsScrollAttachListeners.entries.map { it.key to it.value }
+                .also { messageDetailsScrollAttachListeners.clear() }
+        }
+        attachListeners.forEach { (root, listener) -> root.removeOnAttachStateChangeListener(listener) }
+        val growthListeners = synchronized(messageDetailsRowGrowthListeners) {
+            messageDetailsRowGrowthListeners.entries.map { it.key to it.value }
+                .also { messageDetailsRowGrowthListeners.clear() }
+        }
+        growthListeners.forEach { (root, listener) -> root.removeOnLayoutChangeListener(listener) }
+        val tailChecks = synchronized(messageDetailsTailCheckCallbacks) {
+            messageDetailsTailCheckCallbacks.entries.map { it.key to it.value }
+                .also { messageDetailsTailCheckCallbacks.clear() }
+        }
+        tailChecks.forEach { (root, callback) -> root.removeCallbacks(callback) }
+        MessageDetailsFollowLatestRegistry.clear()
     }
 
     private fun refreshAttachedMessageDetailsLabels() {
