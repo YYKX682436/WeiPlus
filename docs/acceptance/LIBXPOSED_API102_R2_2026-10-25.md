@@ -44,4 +44,15 @@
 
 ## 真机范围
 
-真机故障组合由上面的生产 JVM 回归覆盖；未在设备上注入框架撤销故障（`NOT_VERIFIED`）。本轮未完成设备冷启动、设置进退和基础业务烟测：任务开始时 ADB 设备 `feb70d35` 状态为 `unauthorized`，指定现有 ADB key 重试后仍未授权，无法安全安装或控制设备。没有卸载微信，也没有清除微信数据。`com.tencent.mm.wx` 设备端场景本轮同样为 `NOT_VERIFIED`。
+设备恢复授权后已补做烟测。Redmi K50 Ultra / Android 15/API 35；重新读取实际 `/data/adb/modules/zygisk_lsposed/framework.dex`，确认 `LIB_API=102` 且 `getApiVersion()` 的字节码直接返回 102。LSPosed 模块数据库确认 `h.Hchat` 对 user 0 已启用，并将 `com.tencent.mm` 纳入 scope。通过 `adb install -r` 更新正式 APK，没有卸载模块/微信或清除数据；安装后设备端 `base.apk` SHA-256 与交付 APK 均为 `259dc3a25e84cd82e54c837c39291f52fd24a2eacde7c917e3059cfedb8df7e9`。
+
+| 检查 | 结果 |
+| --- | --- |
+| 新入口冷启动 | PASS，主进程 `com.tencent.mm` 在 15:01:06 加载 `api=102`；`push`、`appbrand0`、`appbrand1` 也有入口加载记录 |
+| 设置进入/返回 | PASS，从微信“我→设置→Hchat→美化”进入，页面底部返回回到 Hchat 设置，系统返回回到微信设置 |
+| 基础发送 | PASS，向文件传输助手发送唯一一条 `r2_hookonce_smoke_20261025`，新消息在会话中显示 |
+| 模块设置保存/开关变更 | 未改动用户配置，NOT_VERIFIED 本轮真机设置写入/即时切换 |
+| R2 撤销故障注入 | 生产 JVM 回归 PASS；真机未注入框架撤销故障，NOT_VERIFIED |
+| 第二微信包 | 设备未安装 `com.tencent.mm.wx`，NOT_VERIFIED |
+
+入口日志摘要保存在 `dist/api102-r2-device-smoke.txt`。本轮真机确认了 API、模块注册、入口加载、设置导航与文件传输助手发送；没有改变任何模块偏好设置。
