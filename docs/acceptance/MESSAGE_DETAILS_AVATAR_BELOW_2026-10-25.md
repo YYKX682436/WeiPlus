@@ -53,3 +53,36 @@
 - Debug：`dist/Hchat-debug.apk`
 - 正式签名 R8 Release：`dist/Hchat-release-signed.apk`
 - Release SHA-256：`c14fa689d8eeed3934701980d1889a795fb539817e9e13369c39d526f5ca62e7`
+
+## R1 验收遗留收口
+
+审查基线：`3eb6b345a2258fb1d92ba4970460318829926561`。本节记录本轮在该基线上的复现与修复。
+
+### 修复前复现
+
+- 旧缓存只比较消息身份和格式键，没有比较模板实际展示字段。同一 `localId` 的 `serverId` 从 0 确认到真实值、同一消息的 `createTime` 改变、原生对象原地更新字段时，旧输出都可能复用。
+- 旧绑定路径每次进入标签插入都会遍历全局 binding snapshot。96 行各重复绑定 80 次的回归计数为 372,384 次全局条目访问。
+- 头像上方布局固定以父布局顶部为基准。真实 `RelativeLayout` 测量回归中，头像上方应留 5px，旧实现实际留下 41px。
+- 旧回归运行在旧生产实现上时，10 项中有 6 项失败，分别覆盖服务端 ID 更新、时间字段更新、同对象字段变更、无法解析时沿用 A 详情、全局扫描以及头像上方定位。修复后再次运行，11 项 Robolectric 测试全部通过；绑定 runner 也确认旧提交 `3eb6b345` 会被拒绝。
+
+### 修改
+
+- 将消息身份与显示输入拆开。身份使用会话、local/server ID、类型和方向；缓存键只快照活动模板真正使用的字段，并结合格式、时区、locale 和相对时间有效期判断显示结果是否可复用。未解析到新消息时立即取消旧代次任务、清除旧标签和旧点击 binding，不把 A 的详情作为 B 的内容。
+- 正常行绑定通过弱 key、弱 value 的 row→label 索引直接取得标签；常规插入不再遍历全局 snapshot。弱引用 binding 索引与行内 tag 所有权保持分离，页面清理释放索引和回调。
+- 头像上下方都以实测头像边界定位。上方空间足够时按头像上沿、标签测量高度和间距计算位置；不足时只移动头像分支并由原生 `RelativeLayout` 测量行高。重复 attach 保留同一 TextView 和相同 LayoutParams。
+- 点击开关只安装或移除交互监听；标签点击从当前 binding 读取消息，并在点击时才解析完整详情。保留对微信原生 `timeTV` 的既有监听清理，标签本身的绑定仅在移除时清除。
+
+### 本轮验证
+
+- `:app:testDebugUnitTest`：Robolectric 11 项通过，0 failures / 0 errors。覆盖真实 Android `RelativeLayout` 测量、上下定位、零间距、高内容不重复扩行、同消息显示输入失效、A→B 点击数据更新、关闭点击不改几何和偏移恢复。
+- 通过：`run_message_details_binding_tests.cjs`（并拒绝审查基线）、`run_message_details_layout_tests.cjs`（7 项）、`run_message_details_predraw_tests.cjs`（14 项）、`run_message_type_labels_tests.cjs`（96 项）、`run_performance_round1_tests.cjs`、`run_native_regression_tests.cjs`、`run_api102_r1_tests.cjs`。
+- `./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug :app:assembleRelease :app:lint`：成功。Lint 为 0 errors、653 warnings、50 hints；现有 `firstOrNull()` 非唯一结果警告仍在 Hchat 扩展和 Tablet 功能处。
+- 最终 APK：`dist/Hchat-release-signed.apk`，SHA-256：`ab6e17357e19c55e911e6af246c4558f298df2b815a91087afb86d4df2cd8cd3`。apksigner 验证通过，证书 SHA-256 与正式证书 `5de821feb8cf9dc1be4f1a656664f5d4d88755465d390b0a32a4050d0922a3fd` 一致；包名/版本为 `h.Hchat` 1.0.0，`META-INF/xposed/module.prop` 标记 min/target API 102。Release 已覆盖安装，未卸载或清除微信数据。
+- 设备仍为 Redmi K50 Ultra（22081212C，Android 15 / API 35）。安装并实测 `com.tencent.mm` 8.0.76 / versionCode 3140；`com.tencent.mm.wx` 未安装。
+- 最终 Release 在文件传输助手连续发送 3 条短消息，三个最新标签均完整识别为 `21:41:52`、`21:42:08`、`21:42:10`。零间距头像下方标签位于头像正下方；历史滚动和回到底部后标签仍随消息行显示。静置 12 秒前后，7 个可见时间标签的文字和屏幕边界坐标完全一致。
+- 最终 Release 点击开启时，点击时间标签后 WeChat 增加了居中详情窗口；关闭时点击同一标签没有新窗口，点击前后可见时间坐标不变。测试后恢复为原先的点击关闭状态；时间功能保持开启。
+
+### 尚未覆盖
+
+- `com.tencent.mm.wx` 未安装，未实测。
+- 本轮未在真机覆盖隐藏头像、卡片消息、头像上方不足空间、大字号和长自定义格式；这些分支由本轮实际 Android 布局回归及既有验收证据覆盖，但不计为本轮真机通过。

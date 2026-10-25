@@ -26,6 +26,62 @@ fun main() {
     val typeChanged = MessageDetailsIdentity("filehelper", 41L, 9001L, 1_800_000_000_000L, 3, true, original)
     assertThat(!a.sameMessage(typeChanged), "message type change must invalidate binding identity")
 
+    val displayKey = MessageDetailsRenderKey("${'$'}{time}", "HH:mm:ss", "UTC", "en-US", null, null)
+    val beforeServerAck = MessageDetailsIdentity("filehelper", 43L, 0L, 1_800_000_000_000L, 1, true, original)
+    val afterServerAck = MessageDetailsIdentity("filehelper", 43L, 9201L, 1_800_000_000_000L, 1, true, sameNativeRow)
+    val timeOnlyBefore = MessageDetailsDisplayInputs.capture(
+        setOf("time"), MessageDetailsDisplayValues(0L, 0L, 1_800_000_000_000L, 1, "filehelper", true)
+    )
+    val timeOnlyAfter = MessageDetailsDisplayInputs.capture(
+        setOf("time"), MessageDetailsDisplayValues(0L, 9201L, 1_800_000_000_000L, 1, "filehelper", true)
+    )
+    assertThat(
+        MessageDetailsDisplayReusePolicy.canReuse(
+            beforeServerAck, afterServerAck, timeOnlyBefore, timeOnlyAfter, displayKey, displayKey, false
+        ),
+        "a server ID change must not invalidate an unchanged time-only display"
+    )
+    val serverIdBefore = MessageDetailsDisplayInputs.capture(
+        setOf("msgSvrId"), MessageDetailsDisplayValues(0L, 0L, 1_800_000_000_000L, 1, "filehelper", true)
+    )
+    val serverIdAfter = MessageDetailsDisplayInputs.capture(
+        setOf("msgSvrId"), MessageDetailsDisplayValues(0L, 9201L, 1_800_000_000_000L, 1, "filehelper", true)
+    )
+    assertThat(serverIdBefore != serverIdAfter, "${'$'}{msgSvrId} must track a newly assigned server ID")
+    val createTimeAfter = MessageDetailsDisplayInputs.capture(
+        setOf("time", "createTime"), MessageDetailsDisplayValues(0L, 9201L, 1_800_000_000_000L + 60_000, 1, "filehelper", true)
+    )
+    val createTimeBefore = MessageDetailsDisplayInputs.capture(
+        setOf("time", "createTime"), MessageDetailsDisplayValues(0L, 9201L, 1_800_000_000_000L, 1, "filehelper", true)
+    )
+    assertThat(createTimeBefore != createTimeAfter, "time and createTime must track in-place native timestamp changes")
+
+    var snapshotScans = 0
+    var labelsCreated = 0
+    val rowIndex = MessageDetailsRowLabelIndex<Any, String>()
+    val globalIndex = MessageDetailsBindingIndex<String, Any> { snapshotScans++ }
+    val rows = List(64) { Any() }
+    val retainedLabels = mutableListOf<String>()
+    repeat(80) {
+        rows.forEach { row ->
+            val label = rowIndex.get(row) ?: "row-label-${labelsCreated++}".also {
+                retainedLabels += it
+                rowIndex.set(row, it)
+            }
+            globalIndex[label] = Any()
+        }
+    }
+    assertThat(labelsCreated == 64, "repeated row binding must create a single label per row")
+    assertThat(snapshotScans == 0, "normal row binding must not scan the global binding index")
+    assertThat(retainedLabels.size == 64, "the test must retain labels while checking the weak row index")
+
+    val clickB = MessageDetailsClickSource("message-B", "summary-B")
+    assertThat(MessageDetailsClickResolver.resolve(clickB) { message, _ -> "full:$message" } == "full:message-B",
+        "click detail resolution must follow the current message")
+    val unresolved = MessageDetailsClickSource<String, String>(null, "stale-A")
+    assertThat(MessageDetailsClickResolver.resolve(unresolved) { _, old -> old } == null,
+        "an unresolved B row must not return A's details")
+
     val generation = MessageDetailsBindingGeneration()
     val oldCallback = generation.token()
     generation.invalidate()
