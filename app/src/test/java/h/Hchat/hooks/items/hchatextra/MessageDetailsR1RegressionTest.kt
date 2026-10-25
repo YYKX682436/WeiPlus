@@ -313,6 +313,51 @@ class MessageDetailsR1RegressionTest {
             visibleHeightWithin(scroll, label))
         assertFalse("the latest row now reaches the viewport end", scroll.canScrollVertically(1))
 
+        val initialLabelWidth = label.width
+        val initialRowHeight = row.measuredHeight
+        label.text = "2026-10-26_03:51:37"
+        label.textSize = 24f
+        label.measure(
+            MeasureSpec.makeMeasureSpec(400, MeasureSpec.AT_MOST),
+            MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED)
+        )
+        val variantPlacement = MessageDetailsAvatarLayout.placement(
+            parentWidth = row.measuredWidth,
+            paddingLeft = row.paddingLeft,
+            paddingTop = row.paddingTop,
+            paddingRight = row.paddingRight,
+            anchorLeft = avatar.left,
+            anchorRight = avatar.right,
+            anchorTop = avatar.top,
+            anchorBottom = avatar.bottom,
+            labelWidth = label.measuredWidth,
+            labelHeight = label.measuredHeight,
+            gap = 8,
+            requestedAbove = false,
+            previouslyOwnedOffset = 0
+        )
+        MessageDetailsAvatarViewLayout.attach(
+            row,
+            label,
+            MessageDetailsAvatarViewLayout.layoutParams(variantPlacement)
+        )
+        measureAndLayout(scroll, width = 240, height = 200)
+        assertEquals("the TextView uses the configured larger font", 24f, label.textSize, 0f)
+        assertTrue("the long formatted timestamp is measured at its real width", label.width > initialLabelWidth)
+        assertTrue("the configured avatar gap grows the real Android message row", row.measuredHeight > initialRowHeight)
+        assertTrue("the configured avatar gap stays inside the measured row", label.bottom <= row.measuredHeight)
+        assertTrue("the stale tail offset also clips the larger configured label",
+            visibleHeightWithin(scroll, label) < label.height)
+
+        val variantCorrection = MessageDetailsFollowLatestScroll.correctTailOverflow(
+            scroll, row, label, followingLatest = true, isLatestRow = true
+        )
+        measureAndLayout(scroll, width = 240, height = 200)
+        assertTrue("overflow is measured from the actual formatted label bounds", variantCorrection > 0)
+        assertEquals("the long format, larger font, and avatar gap are fully visible after correction",
+            label.height, visibleHeightWithin(scroll, label))
+        assertFalse("the configured label still follows the exact list end", scroll.canScrollVertically(1))
+
         scroll.scrollTo(0, 0)
         val historyScrollY = scroll.scrollY
         assertEquals("a user reading history is never pulled to the tail", 0,
