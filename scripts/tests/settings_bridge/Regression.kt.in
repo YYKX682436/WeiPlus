@@ -1,0 +1,104 @@
+import android.app.Activity
+import android.app.Application
+import android.content.Intent
+import android.net.Uri
+import android.os.Bundle
+import android.widget.Toast
+import io.github.libxposed.api.XposedInterface
+import h.Hchat.hooks.core.XposedRuntime
+import h.Hchat.tests.api102.FrameworkFixture
+import h.Hchat.tests.api102.ChainFixture
+import java.text.SimpleDateFormat
+import java.util.Locale
+import java.util.Date
+
+@CONSTANTS@
+fun Intent.preferSystemDocumentsUi(activity:Activity)=this
+private object HchatConfigBackup {
+ var imports=0
+ fun exportToUri(activity:Activity,uri:Uri)=1
+ fun importFromUri(activity:Activity,uri:Uri):Int {imports++;return 1}
+}
+@OWNER@
+@BRIDGE@
+class SubActivity:Activity(){override fun onActivityResult(code:Int,result:Int,data:Intent?)=Unit}
+private fun field(owner:Any,name:String):Any?=owner.javaClass.getDeclaredField(name).apply{isAccessible=true}.get(owner)
+fun main(){
+ val framework=FrameworkFixture();XposedRuntime.initialize(framework.create())
+ val resultMethod=Activity::class.java.getDeclaredMethod("onActivityResult",Int::class.javaPrimitiveType,Int::class.javaPrimitiveType,Intent::class.java)
+ fun active()=framework.handles.filter{it.active}
+ fun resultHook()=active().single{it.executable==resultMethod}
+ fun cleared(){check(field(ConfigImportExportBridge,"currentActivity")==null&&field(ConfigImportExportBridge,"onImported")==null&&active().isEmpty())}
+ fun invoke(handle:FrameworkFixture.Handle,owner:Activity,code:Int,result:Int,data:Intent?,failure:Throwable?=null,onNative:(()->Unit)?=null){
+  val chain=ChainFixture(resultMethod,owner,arrayOf(code,result,data)){_,_->if(failure!=null)throw failure else {onNative?.invoke();"host result"}}
+  if(failure==null)check(chain.run(handle.hooker)=="host result") else check(runCatching{chain.run(handle.hooker)}.exceptionOrNull()===failure)
+  check(chain.proceeds==1)
+ }
+ val exportFailure=Activity().apply{failLaunch=true}
+ ConfigImportExportBridge.launchExport(exportFailure)
+ cleared();check(exportFailure.application.callbacks.isEmpty())
+ val importFailure=Activity().apply{failLaunch=true}
+ ConfigImportExportBridge.launchImport(importFailure){error("Failed launch delivered import callback")}
+ cleared();check(importFailure.application.callbacks.isEmpty())
+ framework.failOn=resultMethod
+ val partial=SubActivity()
+ ConfigImportExportBridge.launchExport(partial)
+ framework.failOn=null
+ cleared();check(partial.requests.isEmpty()&&partial.application.callbacks.isEmpty())
+ var closed=0
+ val hooks=SettingsActivityResultHooks{closed++};val owner=Activity()
+ hooks.attach(owner)
+ val handle=XposedRuntime.hook(resultMethod,XposedInterface.Hooker{it.proceed()})
+ hooks.add(Activity::class.java,setOf(handle))
+ val baseline=closed;owner.application.failUnregister=true
+ hooks.clear()
+ check(closed==baseline+1&&field(hooks,"activity")==null&&field(hooks,"lifecycle")==null&&!FrameworkFixture.handle(handle).active)
+ val throwingClose=SettingsActivityResultHooks{throw IllegalStateException("onClosed failed")}
+ throwingClose.attach(Activity());throwingClose.clear()
+ check(field(throwingClose,"activity")==null&&field(throwingClose,"lifecycle")==null)
+ val failedLaunchRegistration=Activity().apply{application.failRegister=true}
+ ConfigImportExportBridge.launchExport(failedLaunchRegistration)
+ cleared();check(failedLaunchRegistration.requests.isEmpty())
+ val failedRegistration=Activity().apply{application.failRegister=true}
+ runCatching{hooks.attach(failedRegistration)}
+ check(field(hooks,"activity")==null&&field(hooks,"lifecycle")==null)
+ val first=Activity();val second=Activity()
+ hooks.attach(first);val stale=hooks.generation();hooks.attach(second);hooks.clear(stale)
+ check(field(hooks,"activity")===second);hooks.clear()
+ val retryOwner=SettingsActivityResultHooks{}
+ retryOwner.attach(Activity())
+ val retryHandle=XposedRuntime.hook(resultMethod,XposedInterface.Hooker{it.proceed()})
+ retryOwner.add(Activity::class.java,setOf(retryHandle))
+ FrameworkFixture.handle(retryHandle).fail=true
+ retryOwner.clear()
+ check(FrameworkFixture.handle(retryHandle).active&&field(retryOwner,"activity")==null&&field(retryOwner,"lifecycle")==null)
+ FrameworkFixture.handle(retryHandle).fail=false
+ retryOwner.attach(Activity())
+ check(!FrameworkFixture.handle(retryHandle).active)
+ val oldGeneration=retryOwner.generation();retryOwner.attach(Activity())
+ val staleHandle=XposedRuntime.hook(resultMethod,XposedInterface.Hooker{it.proceed()})
+ retryOwner.add(Activity::class.java,setOf(staleHandle),oldGeneration)
+ check(!FrameworkFixture.handle(staleHandle).active)
+ retryOwner.clear()
+ val current=Activity();var imported=0;val next=Activity()
+ ConfigImportExportBridge.launchImport(current){imported++;ConfigImportExportBridge.launchImport(next){imported++}}
+ val oldHandle=resultHook()
+ val data=Intent().apply{this.data=Uri()}
+ invoke(oldHandle,current,CONFIG_IMPORT_REQUEST_CODE,Activity.RESULT_OK,data)
+ check(imported==1&&HchatConfigBackup.imports==1&&field(ConfigImportExportBridge,"currentActivity")===next&&active().size==1)
+ invoke(oldHandle,next,CONFIG_IMPORT_REQUEST_CODE,Activity.RESULT_OK,data)
+ check(imported==1&&HchatConfigBackup.imports==1&&field(ConfigImportExportBridge,"currentActivity")===next)
+ invoke(resultHook(),next,CONFIG_IMPORT_REQUEST_CODE,Activity.RESULT_CANCELED,null)
+ cleared();check(next.application.callbacks.isEmpty())
+ val reentered=Activity();val replacement=Activity();var reenteredCallbacks=0
+ ConfigImportExportBridge.launchImport(reentered){reenteredCallbacks++}
+ val originalHandle=resultHook();val importsBefore=HchatConfigBackup.imports
+ invoke(originalHandle,reentered,CONFIG_IMPORT_REQUEST_CODE,Activity.RESULT_OK,data,onNative={ConfigImportExportBridge.launchImport(replacement){reenteredCallbacks++}})
+ check(reenteredCallbacks==0&&HchatConfigBackup.imports==importsBefore&&field(ConfigImportExportBridge,"currentActivity")===replacement&&active().size==1)
+ invoke(resultHook(),replacement,CONFIG_IMPORT_REQUEST_CODE,Activity.RESULT_CANCELED,null);cleared()
+ val hostFailed=Activity();ConfigImportExportBridge.launchImport(hostFailed){error("Host failure delivered import")}
+ val failure=IllegalStateException("host onActivityResult failed")
+ invoke(resultHook(),hostFailed,CONFIG_IMPORT_REQUEST_CODE,Activity.RESULT_OK,data,failure)
+ cleared();check(hostFailed.application.callbacks.isEmpty())
+ println("PASS: actual settings bridge export/import launch failure and partial install release hooks and owner; unregister/onClosed/register failures cannot retain state; stale/reentrant callbacks preserve new requests and host failures")
+}

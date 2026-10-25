@@ -15,7 +15,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 
-import de.robv.android.xposed.XC_MethodHook;
+import io.github.libxposed.api.XposedInterface;
 
 /**
  * 微信 SqliteDB wrapper 变更与查询监听 API。
@@ -258,26 +258,37 @@ public final class WeChatDatabaseListenerApi {
                 continue;
             }
             try {
-                HookRegistry.get().hook(method, new XC_MethodHook(de.robv.android.xposed.callbacks.XCallback.PRIORITY_LOWEST) {
-                    @Override
-                    protected void beforeHookedMethod(MethodHookParam param) {
-                        if (query) {
-                            if (enterQuery()) transformQuery(param.args);
-                        } else {
-                            enterMutation();
-                            normalizeLegacyMsgSource(operation, param.thisObject, param.args);
-                        }
-                    }
-
-                    @Override
-                    protected void afterHookedMethod(MethodHookParam param) {
-                        if (query) {
-                            leaveQuery();
-                        } else if (leaveMutation()) {
-                            dispatchIfSuccessful(operation, method, param.args, param.getResult());
-                        }
-                    }
-                });
+                HookRegistry.get()
+                        .hook(
+                                method,
+                                chain -> {
+                                    Object[] args = chain.getArgs().toArray();
+                                    if (query) {
+                                        boolean outerQuery = enterQuery();
+                                        try {
+                                            if (outerQuery) transformQuery(args);
+                                            return chain.proceed(args);
+                                        } finally {
+                                            leaveQuery();
+                                        }
+                                    }
+                                    enterMutation();
+                                    Object result;
+                                    boolean outerMutation;
+                                    try {
+                                        normalizeLegacyMsgSource(
+                                                operation, chain.getThisObject(), args);
+                                        result = chain.proceed(args);
+                                    } finally {
+                                        outerMutation = leaveMutation();
+                                    }
+                                    // Only a completed outer mutation may publish changes. Host
+                                    // failures propagate.
+                                    if (outerMutation)
+                                        dispatchIfSuccessful(operation, method, args, result);
+                                    return result;
+                                },
+                                XposedInterface.PRIORITY_LOWEST);
                 hookedMethods.add(method);
                 if (allowObfuscatedWrapperMethod && operation != null) {
                     hookedWrapperMutationMethods.add(method);
@@ -496,7 +507,8 @@ public final class WeChatDatabaseListenerApi {
         for (Object arg : args) {
             if (!(arg instanceof String)) continue;
             String value = (String) arg;
-            if ("message".equalsIgnoreCase(value) || value.toLowerCase().contains("message")) return value;
+            if ("message".equalsIgnoreCase(value) || value.toLowerCase().contains("message"))
+                return value;
         }
         return "";
     }

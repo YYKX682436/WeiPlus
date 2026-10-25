@@ -24,6 +24,8 @@ const compiler = [
 const root = path.resolve(__dirname, '..');
 const output = fs.mkdtempSync(path.join(os.tmpdir(), 'hchat-redpacket-silent-tests-'));
 const state = path.join(output, 'state.jar');
+process.once('exit', () => fs.rmSync(output, {recursive:true,force:true}));
+const api = require('./lib/api102.cjs').prepare(output);
 const java = process.env.JAVA || 'java';
 const javac = process.env.JAVAC || 'javac';
 function run(command, args) {
@@ -38,12 +40,12 @@ run(javac, ['-d', output, tests + 'TextUtils.java', tests + 'RedPacketEffectiveR
 run(java, ['-Xmx256m', '-cp', compiler.join(path.delimiter), 'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler',
     '-no-stdlib', '-no-reflect', '-classpath', [output, stdlib].join(path.delimiter), '-d', state,
     production + 'core/RedPacketState.kt']);
-const classpath = [output, state, stdlib, json].join(path.delimiter);
+const classpath = [output, state, stdlib, json, api.classpath].join(path.delimiter);
 run(javac, ['-cp', classpath, '-d', output,
     'app/src/main/java/h/Hchat/utils/XmlValueReader.java',
+    'scripts/tests/api102/ChainFixture.java',
     ...['grab/RedPacketSilentHandler.java', 'grab/RedPacketUiAutomator.java', 'detect/RedPacketParser.java',
         'detect/RedPacketReflector.java', 'fake/RedPacketFakePacketCompat.java'].map(file => production + file),
     ...fs.readdirSync(path.join(root, tests)).filter(file => file.endsWith('.java')).map(file => tests + file)]);
 run(java, ['-cp', classpath, 'h.Hchat.hooks.items.payment.grab.SilentHandlerRegression']);
 run(java, ['-cp', classpath, 'h.Hchat.hooks.items.payment.grab.UiAutomatorRegression']);
-console.log('Test artifacts: ' + output);

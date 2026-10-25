@@ -1,6 +1,6 @@
 package h.Hchat.hooks.items.callmedialimit
 
-import de.robv.android.xposed.XC_MethodHook
+import io.github.libxposed.api.XposedInterface
 import h.Hchat.dexkit.DexMethodCache
 import h.Hchat.event.Events
 import h.Hchat.hooks.core.BaseFeature
@@ -86,24 +86,30 @@ private class CallRingtoneBlockHooker(
                 hookDirectionMethod(method, MULTI_TALK_OUTGOING_ARGUMENT_INDEX)
             }
             coreAccesses.forEach { access ->
-                HookRegistry.get().hook(access.start, object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        val roomRole = param.args?.getOrNull(3) as? Boolean ?: return
+                HookRegistry.get().hook(access.start, XposedInterface.Hooker { chain ->
+                    val args = chain.args
+                    val receiver = chain.thisObject
+                    var value: Any? = null
+                    var intercepted = false
+                    run before@ {
+                        val roomRole = args?.getOrNull(3) as? Boolean ?: return@before
                         val outgoing = !roomRole
-                        if (!shouldBlock(outgoing)) return
-                        val requestId = param.args?.getOrNull(0) as? Long ?: return
+                        if (!shouldBlock(outgoing)) return@before
+                        val requestId = args?.getOrNull(0) as? Long ?: return@before
                         runCatching {
                             KavaReflector.invokeOrThrow(
                                 access.acknowledge,
-                                param.thisObject,
+                                receiver,
                                 requestId
                             )
                         }.onSuccess {
-                            param.result = null
+                            run { intercepted = true; value = null }
                         }.onFailure {
                             logCoreAcknowledgeFailure(access.start, it)
                         }
                     }
+                    if (!intercepted) value = chain.proceed()
+                    value
                 })
             }
             installed = true
@@ -115,11 +121,16 @@ private class CallRingtoneBlockHooker(
     }
 
     private fun hookDirectionMethod(method: Method, outgoingArgumentIndex: Int) {
-        HookRegistry.get().hook(method, object : XC_MethodHook() {
-            override fun beforeHookedMethod(param: MethodHookParam) {
-                val outgoing = param.args?.getOrNull(outgoingArgumentIndex) as? Boolean ?: return
-                if (shouldBlock(outgoing)) param.result = null
+        HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+            val args = chain.args
+            var value: Any? = null
+            var intercepted = false
+            run before@ {
+                val outgoing = args?.getOrNull(outgoingArgumentIndex) as? Boolean ?: return@before
+                if (shouldBlock(outgoing)) run { intercepted = true; value = null }
             }
+            if (!intercepted) value = chain.proceed()
+            value
         })
     }
 

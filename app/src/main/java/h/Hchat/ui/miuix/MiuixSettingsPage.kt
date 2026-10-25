@@ -1,6 +1,7 @@
 package h.Hchat.ui.miuix
 
 import android.app.Activity
+import android.app.Application
 import android.content.ClipData
 import android.content.Context
 import android.content.Intent
@@ -120,8 +121,8 @@ import h.Hchat.preferences.HchatStorage
 import h.Hchat.preferences.TermsGate
 import h.Hchat.ui.UIRegistry
 import h.Hchat.utils.KavaReflector
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedBridge
+import io.github.libxposed.api.XposedInterface
+import h.Hchat.hooks.core.XposedRuntime
 import org.json.JSONArray
 import org.json.JSONObject
 import top.yukonga.miuix.kmp.nav.core.NavDisplay
@@ -605,7 +606,7 @@ object MiuixSettingsPage {
         val configVersion = mutableStateOf(0)
         val settingsBackHandlers = SettingsBackHandlerRegistry()
         lateinit var page: FrameLayout
-        val activityBackHooks = ArrayList<XC_MethodHook.Unhook>()
+        val activityBackHooks = ArrayList<XposedInterface.HookHandle>()
         var consumingBack = false
         var closed = false
         fun unhookActivityBack() {
@@ -652,42 +653,45 @@ object MiuixSettingsPage {
         hostTag.close = { closePage() }
         fun installActivityBackHooks() {
             if (activityBackHooks.isNotEmpty()) return
-            val keyHook = object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    val event = param.args.firstOrNull { it is KeyEvent } as? KeyEvent ?: return
-                    if (event.keyCode != KeyEvent.KEYCODE_BACK || page.parent == null) return
+            val keyHook =
+                XposedInterface.Hooker { chain ->
+                    if (chain.thisObject !== activity) return@Hooker chain.proceed()
+
+                    val event =
+                        chain.args.firstOrNull { it is KeyEvent } as? KeyEvent
+                            ?: return@Hooker chain.proceed()
+                    if (event.keyCode != KeyEvent.KEYCODE_BACK || page.parent == null)
+                        return@Hooker chain.proceed()
                     if (event.action == KeyEvent.ACTION_UP) {
                         handleBack()
                     }
-                    param.result = true
+                    return@Hooker true
                 }
-            }
-            val pressedHook = object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    if (page.parent == null) return
+            val pressedHook =
+                XposedInterface.Hooker { chain ->
+                    if (chain.thisObject !== activity) return@Hooker chain.proceed()
+
+                    if (page.parent == null) return@Hooker chain.proceed()
                     handleBack()
-                    param.result = null
+                    return@Hooker null
                 }
-            }
-            listOf(Activity::class.java, activity.javaClass).forEach { clazz ->
-                try {
-                    activityBackHooks.addAll(XposedBridge.hookAllMethods(clazz, "dispatchKeyEvent", keyHook))
-                } catch (_: Throwable) {
+            try {
+                listOf(Activity::class.java, activity.javaClass).distinct().forEach { clazz ->
+                    activityBackHooks.addAll(
+                        XposedRuntime.hookAllMethods(clazz, "dispatchKeyEvent", keyHook)
+                    )
+                    activityBackHooks.addAll(XposedRuntime.hookAllMethods(clazz, "onKeyDown", keyHook))
+                    activityBackHooks.addAll(XposedRuntime.hookAllMethods(clazz, "onKeyUp", keyHook))
+                    activityBackHooks.addAll(
+                        XposedRuntime.hookAllMethods(clazz, "onBackPressed", pressedHook)
+                    )
                 }
-                try {
-                    activityBackHooks.addAll(XposedBridge.hookAllMethods(clazz, "onKeyDown", keyHook))
-                } catch (_: Throwable) {
-                }
-                try {
-                    activityBackHooks.addAll(XposedBridge.hookAllMethods(clazz, "onKeyUp", keyHook))
-                } catch (_: Throwable) {
-                }
-                try {
-                    activityBackHooks.addAll(XposedBridge.hookAllMethods(clazz, "onBackPressed", pressedHook))
-                } catch (_: Throwable) {
-                }
+            } catch (error: Throwable) {
+                unhookActivityBack()
+                h.Hchat.utils.HLog.e("[Hchat:MiuixSettings] 返回键 Hook 安装失败", error)
             }
         }
+
         page = object : FrameLayout(activity) {
             override fun dispatchKeyEvent(event: KeyEvent): Boolean {
                 if (event.keyCode == KeyEvent.KEYCODE_BACK) {
@@ -915,52 +919,182 @@ internal object WeChatAvatarPathCache {
     }
 }
 
+private class SettingsActivityResultHooks(private val onClosed: () -> Unit) {
+    private val handles = LinkedHashMap<Class<*>, Set<XposedInterface.HookHandle>>()
+    private val retiredHandles = java.util.Collections.newSetFromMap(
+        java.util.IdentityHashMap<XposedInterface.HookHandle, Boolean>()
+    )
+    private var activity: Activity? = null
+    private var lifecycle: Application.ActivityLifecycleCallbacks? = null
+    private var requestGeneration = 0L
+
+    @Synchronized fun generation(): Long = requestGeneration
+
+    @Synchronized
+    fun attach(activity: Activity) {
+        clear()
+        this.activity = activity
+        val callback = object : Application.ActivityLifecycleCallbacks {
+            override fun onActivityDestroyed(value: Activity) {
+                if (value === this@SettingsActivityResultHooks.activity) clear()
+            }
+            override fun onActivityCreated(value: Activity, state: Bundle?) = Unit
+            override fun onActivityStarted(value: Activity) = Unit
+            override fun onActivityResumed(value: Activity) = Unit
+            override fun onActivityPaused(value: Activity) = Unit
+            override fun onActivityStopped(value: Activity) = Unit
+            override fun onActivitySaveInstanceState(value: Activity, state: Bundle) = Unit
+        }
+        lifecycle = callback
+        try {
+            activity.application.registerActivityLifecycleCallbacks(callback)
+        } catch (error: Throwable) {
+            clear()
+            throw error
+        }
+    }
+
+    @Synchronized fun contains(clazz: Class<*>) = handles.containsKey(clazz)
+
+    @Synchronized
+    fun add(clazz: Class<*>, installed: Set<XposedInterface.HookHandle>, expectedGeneration: Long = requestGeneration) {
+        if (expectedGeneration != requestGeneration) {
+            retiredHandles.addAll(installed)
+            retryRetiredHooks()
+            return
+        }
+        retryRetiredHooks()
+        if (installed.isNotEmpty()) handles[clazz] = installed
+    }
+
+    @Synchronized
+    fun clear(expectedGeneration: Long? = null) {
+        if (expectedGeneration != null && expectedGeneration != requestGeneration) return
+        requestGeneration++
+        val previous = handles.values.flatMap { it }.asReversed()
+        handles.clear()
+        val owner = activity
+        val callback = lifecycle
+        activity = null
+        lifecycle = null
+        try {
+            retiredHandles.addAll(previous)
+            retryRetiredHooks()
+            if (owner != null && callback != null) {
+                runCatching { owner.application.unregisterActivityLifecycleCallbacks(callback) }
+                    .onFailure { reportCleanupFailure("注销结果生命周期监听失败", it) }
+            }
+        } finally {
+            runCatching { onClosed() }.onFailure { reportCleanupFailure("清理结果回调失败", it) }
+        }
+    }
+
+    private fun retryRetiredHooks() {
+        val previous = retiredHandles.toList()
+        retiredHandles.clear()
+        previous.forEach { handle ->
+            runCatching { handle.unhook() }.onFailure {
+                retiredHandles.add(handle)
+                reportCleanupFailure("撤销结果 Hook 失败，保留重试句柄", it)
+            }
+        }
+    }
+
+    private fun reportCleanupFailure(message: String, error: Throwable) {
+        runCatching { h.Hchat.utils.HLog.e("[Hchat:MiuixSettings] $message", error) }
+    }
+}
+
 internal object NativeFakeLocationPickerBridge {
-    private val hookedClasses = HashSet<Class<*>>()
+    private val resultHooks = SettingsActivityResultHooks { pending = null }
     private var pending: PendingResult? = null
 
     @Synchronized
     fun launch(activity: Activity, onResult: (Double, Double) -> Unit) {
-        pending = PendingResult(activity, onResult)
-        hookActivityResult(activity.javaClass)
-        hookActivityResult(Activity::class.java)
-        val intent = Intent().apply {
-            setClassName(activity.packageName, "${activity.packageName}.plugin.location.ui.RedirectUI")
-            putExtra("map_view_type", 8)
-        }
-        runCatching {
-            activity.startActivityForResult(intent, FAKE_LOCATION_WECHAT_PICKER_REQUEST_CODE)
-        }.onFailure {
-            clearPending()
-            Toast.makeText(activity, "启动微信地图失败: ${it.message.orEmpty()}", Toast.LENGTH_SHORT).show()
+        var requestGeneration: Long? = null
+        try {
+            resultHooks.attach(activity)
+            requestGeneration = resultHooks.generation()
+            pending = PendingResult(activity, onResult)
+            hookActivityResult(activity.javaClass)
+            hookActivityResult(Activity::class.java)
+            val intent =
+                Intent().apply {
+                    setClassName(
+                        activity.packageName,
+                        "com.tencent.mm.plugin.location.ui.RedirectUI",
+                    )
+                    putExtra("map_view_type", 8)
+                }
+            runCatching {
+                    activity.startActivityForResult(
+                        intent,
+                        FAKE_LOCATION_WECHAT_PICKER_REQUEST_CODE,
+                    )
+                }
+                .onFailure {
+                    clearPending(requestGeneration)
+                    Toast.makeText(
+                            activity,
+                            "启动微信地图失败: ${it.message.orEmpty()}",
+                            Toast.LENGTH_SHORT,
+                        )
+                        .show()
+                }
+        } catch (error: Throwable) {
+            resultHooks.clear(requestGeneration)
+            h.Hchat.utils.HLog.e("[Hchat:Picker] 启动选择器失败", error)
+            Toast.makeText(activity, "启动选择器失败: ${error.message.orEmpty()}", Toast.LENGTH_SHORT)
+                .show()
         }
     }
 
     @Synchronized
     private fun hookActivityResult(clazz: Class<*>) {
-        if (hookedClasses.contains(clazz)) return
+        if (resultHooks.contains(clazz)) return
+        val installingGeneration = resultHooks.generation()
         runCatching {
-            XposedBridge.hookAllMethods(clazz, "onActivityResult", object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    val requestCode = param.args.getOrNull(0) as? Int ?: return
-                    if (requestCode != FAKE_LOCATION_WECHAT_PICKER_REQUEST_CODE) return
-                    val result = takePending() ?: return
-                    val resultCode = param.args.getOrNull(1) as? Int ?: return
-                    val data = param.args.getOrNull(2) as? Intent
-                    if (resultCode != Activity.RESULT_OK || data == null) return
-                    val location = extractLocation(data)
-                    if (location == null) {
-                        Toast.makeText(result.activity, "解析微信地图选点失败", Toast.LENGTH_SHORT).show()
-                    } else {
-                        result.callback(location.first, location.second)
-                    }
-                }
-            })
-        }.onSuccess { unhooks ->
-            if (unhooks.isNotEmpty()) hookedClasses.add(clazz)
-        }.onFailure {
-            h.Hchat.utils.HLog.e("[Hchat:FakeLocation] 地图选点结果 Hook 安装失败: ${clazz.name}", it)
-        }
+                XposedRuntime.hookAllMethods(
+                    clazz,
+                    "onActivityResult",
+                    XposedInterface.Hooker { chain ->
+                        if (resultHooks.generation() != installingGeneration) return@Hooker chain.proceed()
+                        val requestCode =
+                            chain.args.getOrNull(0) as? Int ?: return@Hooker chain.proceed()
+                        if (requestCode != FAKE_LOCATION_WECHAT_PICKER_REQUEST_CODE)
+                            return@Hooker chain.proceed()
+                        if (chain.thisObject !== pending?.activity) return@Hooker chain.proceed()
+                        val requestGeneration = resultHooks.generation()
+                        try {
+                            val hostResult = chain.proceed()
+                            if (resultHooks.generation() != requestGeneration) return@Hooker hostResult
+                            val result = takePending() ?: return@Hooker hostResult
+                            val resultCode =
+                                chain.args.getOrNull(1) as? Int ?: return@Hooker hostResult
+                            val data = chain.args.getOrNull(2) as? Intent
+                            if (resultCode != Activity.RESULT_OK || data == null)
+                                return@Hooker hostResult
+                            val location = extractLocation(data)
+                            if (location == null) {
+                                Toast.makeText(result.activity, "解析微信地图选点失败", Toast.LENGTH_SHORT)
+                                    .show()
+                            } else {
+                                result.callback(location.first, location.second)
+                            }
+
+                            return@Hooker hostResult
+                        } finally {
+                            resultHooks.clear(requestGeneration)
+                        }
+                    },
+                )
+            }
+            .onSuccess { unhooks -> resultHooks.add(clazz, unhooks, installingGeneration) }
+            .onFailure {
+                resultHooks.clear(installingGeneration)
+                h.Hchat.utils.HLog.e("[Hchat:FakeLocation] 地图选点结果 Hook 安装失败: ${clazz.name}", it)
+            }
+            .getOrThrow()
     }
 
     @Suppress("DEPRECATION")
@@ -994,8 +1128,8 @@ internal object NativeFakeLocationPickerBridge {
     }
 
     @Synchronized
-    private fun clearPending() {
-        pending = null
+    private fun clearPending(expectedGeneration: Long? = null) {
+        resultHooks.clear(expectedGeneration)
     }
 
     private data class PendingResult(
@@ -1005,71 +1139,123 @@ internal object NativeFakeLocationPickerBridge {
 }
 
 internal object RingtonePickerBridge {
-    private val hookedClasses = HashSet<Class<*>>()
+    private val resultHooks = SettingsActivityResultHooks { onPicked = null; currentActivity = null }
     private var onPicked: ((String) -> Unit)? = null
     private var currentActivity: Activity? = null
 
     @Synchronized
     fun launchSystem(activity: Activity, currentUri: String, onResult: (String) -> Unit) {
-        onPicked = onResult
-        currentActivity = activity
-        hookActivityResult(activity.javaClass)
-        hookActivityResult(Activity::class.java)
-        val intent = Intent(RingtoneManager.ACTION_RINGTONE_PICKER).apply {
-            putExtra(RingtoneManager.EXTRA_RINGTONE_TYPE, RingtoneManager.TYPE_NOTIFICATION)
-            putExtra(RingtoneManager.EXTRA_RINGTONE_TITLE, "选择通知铃声")
-            putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_DEFAULT, true)
-            putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_SILENT, true)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            if (currentUri.isNotBlank()) {
-                putExtra(RingtoneManager.EXTRA_RINGTONE_EXISTING_URI, Uri.parse(currentUri))
-            }
+        var requestGeneration: Long? = null
+        try {
+            resultHooks.attach(activity)
+            requestGeneration = resultHooks.generation()
+            onPicked = onResult
+            currentActivity = activity
+            hookActivityResult(activity.javaClass)
+            hookActivityResult(Activity::class.java)
+            val intent =
+                Intent(RingtoneManager.ACTION_RINGTONE_PICKER).apply {
+                    putExtra(RingtoneManager.EXTRA_RINGTONE_TYPE, RingtoneManager.TYPE_NOTIFICATION)
+                    putExtra(RingtoneManager.EXTRA_RINGTONE_TITLE, "选择通知铃声")
+                    putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_DEFAULT, true)
+                    putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_SILENT, true)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    if (currentUri.isNotBlank()) {
+                        putExtra(RingtoneManager.EXTRA_RINGTONE_EXISTING_URI, Uri.parse(currentUri))
+                    }
+                }
+            activity.startActivityForResult(intent, RINGTONE_SYSTEM_REQUEST_CODE)
+        } catch (error: Throwable) {
+            resultHooks.clear(requestGeneration)
+            h.Hchat.utils.HLog.e("[Hchat:Picker] 启动选择器失败", error)
+            Toast.makeText(activity, "启动选择器失败: ${error.message.orEmpty()}", Toast.LENGTH_SHORT)
+                .show()
         }
-        activity.startActivityForResult(intent, RINGTONE_SYSTEM_REQUEST_CODE)
     }
 
     @Synchronized
     fun launchFile(activity: Activity, onResult: (String) -> Unit) {
-        onPicked = onResult
-        currentActivity = activity
-        hookActivityResult(activity.javaClass)
-        hookActivityResult(Activity::class.java)
-        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            type = "*/*"
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
-        }.preferSystemDocumentsUi(activity)
+        var requestGeneration: Long? = null
         try {
-            activity.startActivityForResult(intent, RINGTONE_FILE_REQUEST_CODE)
-        } catch (_: Throwable) {
-            val fallback = Intent(Intent.ACTION_GET_CONTENT).apply {
-                addCategory(Intent.CATEGORY_OPENABLE)
-                type = "*/*"
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            resultHooks.attach(activity)
+            requestGeneration = resultHooks.generation()
+            onPicked = onResult
+            currentActivity = activity
+            hookActivityResult(activity.javaClass)
+            hookActivityResult(Activity::class.java)
+            val intent =
+                Intent(Intent.ACTION_OPEN_DOCUMENT)
+                    .apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        type = "*/*"
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+                    }
+                    .preferSystemDocumentsUi(activity)
+            try {
+                activity.startActivityForResult(intent, RINGTONE_FILE_REQUEST_CODE)
+            } catch (_: Throwable) {
+                val fallback =
+                    Intent(Intent.ACTION_GET_CONTENT).apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        type = "*/*"
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                activity.startActivityForResult(
+                    Intent.createChooser(fallback, "选择铃声文件"),
+                    RINGTONE_FILE_REQUEST_CODE,
+                )
             }
-            activity.startActivityForResult(Intent.createChooser(fallback, "选择铃声文件"), RINGTONE_FILE_REQUEST_CODE)
+        } catch (error: Throwable) {
+            resultHooks.clear(requestGeneration)
+            h.Hchat.utils.HLog.e("[Hchat:Picker] 启动选择器失败", error)
+            Toast.makeText(activity, "启动选择器失败: ${error.message.orEmpty()}", Toast.LENGTH_SHORT)
+                .show()
         }
     }
 
     @Synchronized
     private fun hookActivityResult(clazz: Class<*>) {
-        if (hookedClasses.contains(clazz)) return
+        if (resultHooks.contains(clazz)) return
+        val installingGeneration = resultHooks.generation()
         try {
-            XposedBridge.hookAllMethods(clazz, "onActivityResult", object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    val requestCode = param.args.getOrNull(0) as? Int ?: return
-                    if (requestCode != RINGTONE_SYSTEM_REQUEST_CODE && requestCode != RINGTONE_FILE_REQUEST_CODE) return
-                    val resultCode = param.args.getOrNull(1) as? Int ?: return
-                    if (resultCode != Activity.RESULT_OK) return
-                    val data = param.args.getOrNull(2) as? Intent ?: return
-                    val picked = extractPickedUri(data, requestCode)
-                    takeReadPermission(data, picked)
-                    onPicked?.invoke(picked?.toString().orEmpty())
-                }
-            })
-            hookedClasses.add(clazz)
-        } catch (_: Throwable) {
+            val installed =
+                XposedRuntime.hookAllMethods(
+                    clazz,
+                    "onActivityResult",
+                    XposedInterface.Hooker { chain ->
+                        if (resultHooks.generation() != installingGeneration) return@Hooker chain.proceed()
+                        val requestCode =
+                            chain.args.getOrNull(0) as? Int ?: return@Hooker chain.proceed()
+                        if (
+                            requestCode != RINGTONE_SYSTEM_REQUEST_CODE &&
+                                requestCode != RINGTONE_FILE_REQUEST_CODE
+                        )
+                            return@Hooker chain.proceed()
+                        if (chain.thisObject !== currentActivity) return@Hooker chain.proceed()
+                        val requestGeneration = resultHooks.generation()
+                        try {
+                            val hostResult = chain.proceed()
+                            if (resultHooks.generation() != requestGeneration) return@Hooker hostResult
+                            val resultCode =
+                                chain.args.getOrNull(1) as? Int ?: return@Hooker hostResult
+                            if (resultCode != Activity.RESULT_OK) return@Hooker hostResult
+                            val data =
+                                chain.args.getOrNull(2) as? Intent ?: return@Hooker hostResult
+                            val picked = extractPickedUri(data, requestCode)
+                            takeReadPermission(data, picked)
+                            onPicked?.invoke(picked?.toString().orEmpty())
+
+                            return@Hooker hostResult
+                        } finally {
+                            resultHooks.clear(requestGeneration)
+                        }
+                    },
+                )
+            resultHooks.add(clazz, installed, installingGeneration)
+        } catch (error: Throwable) {
+            resultHooks.clear(installingGeneration)
+            throw error
         }
     }
 
@@ -1142,62 +1328,98 @@ private fun Intent.preferSystemDocumentsUi(context: Context): Intent {
 }
 
 internal object RedPacketReplyFilePickerBridge {
-    private val hookedClasses = HashSet<Class<*>>()
+    private val resultHooks = SettingsActivityResultHooks { onPicked = null; currentActivity = null }
     private var onPicked: ((List<String>) -> Unit)? = null
     private var currentActivity: Activity? = null
 
     @Synchronized
     fun launch(activity: Activity, replyMode: Int, onResult: (List<String>) -> Unit) {
-        onPicked = onResult
-        currentActivity = activity
-        hookActivityResult(activity.javaClass)
-        hookActivityResult(Activity::class.java)
-        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            type = "*/*"
-            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
-        }.preferSystemDocumentsUi(activity)
+        var requestGeneration: Long? = null
         try {
-            activity.startActivityForResult(intent, REDPACKET_REPLY_FILE_REQUEST_CODE)
-        } catch (_: Throwable) {
-            val fallback = Intent(Intent.ACTION_GET_CONTENT).apply {
-                addCategory(Intent.CATEGORY_OPENABLE)
-                type = "*/*"
-                putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            resultHooks.attach(activity)
+            requestGeneration = resultHooks.generation()
+            onPicked = onResult
+            currentActivity = activity
+            hookActivityResult(activity.javaClass)
+            hookActivityResult(Activity::class.java)
+            val intent =
+                Intent(Intent.ACTION_OPEN_DOCUMENT)
+                    .apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        type = "*/*"
+                        putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+                    }
+                    .preferSystemDocumentsUi(activity)
+            try {
+                activity.startActivityForResult(intent, REDPACKET_REPLY_FILE_REQUEST_CODE)
+            } catch (_: Throwable) {
+                val fallback =
+                    Intent(Intent.ACTION_GET_CONTENT).apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        type = "*/*"
+                        putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                activity.startActivityForResult(
+                    Intent.createChooser(fallback, redPacketReplyPickerTitle(replyMode)),
+                    REDPACKET_REPLY_FILE_REQUEST_CODE,
+                )
             }
-            activity.startActivityForResult(
-                Intent.createChooser(fallback, redPacketReplyPickerTitle(replyMode)),
-                REDPACKET_REPLY_FILE_REQUEST_CODE
-            )
+        } catch (error: Throwable) {
+            resultHooks.clear(requestGeneration)
+            h.Hchat.utils.HLog.e("[Hchat:Picker] 启动选择器失败", error)
+            Toast.makeText(activity, "启动选择器失败: ${error.message.orEmpty()}", Toast.LENGTH_SHORT)
+                .show()
         }
     }
 
     @Synchronized
     private fun hookActivityResult(clazz: Class<*>) {
-        if (hookedClasses.contains(clazz)) return
+        if (resultHooks.contains(clazz)) return
+        val installingGeneration = resultHooks.generation()
         try {
-            XposedBridge.hookAllMethods(clazz, "onActivityResult", object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    val requestCode = param.args.getOrNull(0) as? Int ?: return
-                    if (requestCode != REDPACKET_REPLY_FILE_REQUEST_CODE) return
-                    val resultCode = param.args.getOrNull(1) as? Int ?: return
-                    if (resultCode != Activity.RESULT_OK) return
-                    val data = param.args.getOrNull(2) as? Intent ?: return
-                    val activity = currentActivity ?: return
-                    val paths = pickedUris(data)
-                        .mapNotNull { uri ->
-                            takeReadPermission(activity, data, uri)
-                            copyReplyFileToCache(activity, uri)
+            val installed =
+                XposedRuntime.hookAllMethods(
+                    clazz,
+                    "onActivityResult",
+                    XposedInterface.Hooker { chain ->
+                        if (resultHooks.generation() != installingGeneration) return@Hooker chain.proceed()
+                        val requestCode =
+                            chain.args.getOrNull(0) as? Int ?: return@Hooker chain.proceed()
+                        if (requestCode != REDPACKET_REPLY_FILE_REQUEST_CODE)
+                            return@Hooker chain.proceed()
+                        if (chain.thisObject !== currentActivity) return@Hooker chain.proceed()
+                        val requestGeneration = resultHooks.generation()
+                        try {
+                            val hostResult = chain.proceed()
+                            if (resultHooks.generation() != requestGeneration) return@Hooker hostResult
+                            val resultCode =
+                                chain.args.getOrNull(1) as? Int ?: return@Hooker hostResult
+                            if (resultCode != Activity.RESULT_OK) return@Hooker hostResult
+                            val data =
+                                chain.args.getOrNull(2) as? Intent ?: return@Hooker hostResult
+                            val activity = currentActivity ?: return@Hooker hostResult
+                            val paths =
+                                pickedUris(data)
+                                    .mapNotNull { uri ->
+                                        takeReadPermission(activity, data, uri)
+                                        copyReplyFileToCache(activity, uri)
+                                    }
+                                    .distinct()
+                            if (paths.isNotEmpty()) onPicked?.invoke(paths)
+
+                            return@Hooker hostResult
+                        } finally {
+                            resultHooks.clear(requestGeneration)
                         }
-                        .distinct()
-                    if (paths.isNotEmpty()) onPicked?.invoke(paths)
-                }
-            })
-            hookedClasses.add(clazz)
-        } catch (_: Throwable) {
+                    },
+                )
+            resultHooks.add(clazz, installed, installingGeneration)
+        } catch (error: Throwable) {
+            resultHooks.clear(installingGeneration)
+            throw error
         }
     }
 
@@ -1255,62 +1477,98 @@ internal object RedPacketReplyFilePickerBridge {
 }
 
 internal object AutoReplyFilePickerBridge {
-    private val hookedClasses = HashSet<Class<*>>()
+    private val resultHooks = SettingsActivityResultHooks { onPicked = null; currentActivity = null }
     private var onPicked: ((List<String>) -> Unit)? = null
     private var currentActivity: Activity? = null
 
     @Synchronized
     fun launch(activity: Activity, replyMode: Int, onResult: (List<String>) -> Unit) {
-        onPicked = onResult
-        currentActivity = activity
-        hookActivityResult(activity.javaClass)
-        hookActivityResult(Activity::class.java)
-        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            type = "*/*"
-            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
-        }.preferSystemDocumentsUi(activity)
+        var requestGeneration: Long? = null
         try {
-            activity.startActivityForResult(intent, AUTO_REPLY_FILE_REQUEST_CODE)
-        } catch (_: Throwable) {
-            val fallback = Intent(Intent.ACTION_GET_CONTENT).apply {
-                addCategory(Intent.CATEGORY_OPENABLE)
-                type = "*/*"
-                putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            resultHooks.attach(activity)
+            requestGeneration = resultHooks.generation()
+            onPicked = onResult
+            currentActivity = activity
+            hookActivityResult(activity.javaClass)
+            hookActivityResult(Activity::class.java)
+            val intent =
+                Intent(Intent.ACTION_OPEN_DOCUMENT)
+                    .apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        type = "*/*"
+                        putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+                    }
+                    .preferSystemDocumentsUi(activity)
+            try {
+                activity.startActivityForResult(intent, AUTO_REPLY_FILE_REQUEST_CODE)
+            } catch (_: Throwable) {
+                val fallback =
+                    Intent(Intent.ACTION_GET_CONTENT).apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        type = "*/*"
+                        putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                activity.startActivityForResult(
+                    Intent.createChooser(fallback, autoReplyPickerTitle(replyMode)),
+                    AUTO_REPLY_FILE_REQUEST_CODE,
+                )
             }
-            activity.startActivityForResult(
-                Intent.createChooser(fallback, autoReplyPickerTitle(replyMode)),
-                AUTO_REPLY_FILE_REQUEST_CODE
-            )
+        } catch (error: Throwable) {
+            resultHooks.clear(requestGeneration)
+            h.Hchat.utils.HLog.e("[Hchat:Picker] 启动选择器失败", error)
+            Toast.makeText(activity, "启动选择器失败: ${error.message.orEmpty()}", Toast.LENGTH_SHORT)
+                .show()
         }
     }
 
     @Synchronized
     private fun hookActivityResult(clazz: Class<*>) {
-        if (hookedClasses.contains(clazz)) return
+        if (resultHooks.contains(clazz)) return
+        val installingGeneration = resultHooks.generation()
         try {
-            XposedBridge.hookAllMethods(clazz, "onActivityResult", object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    val requestCode = param.args.getOrNull(0) as? Int ?: return
-                    if (requestCode != AUTO_REPLY_FILE_REQUEST_CODE) return
-                    val resultCode = param.args.getOrNull(1) as? Int ?: return
-                    if (resultCode != Activity.RESULT_OK) return
-                    val data = param.args.getOrNull(2) as? Intent ?: return
-                    val activity = currentActivity ?: return
-                    val paths = pickedUris(data)
-                        .mapNotNull { uri ->
-                            takeReadPermission(activity, data, uri)
-                            copyReplyFileToCache(activity, uri)
+            val installed =
+                XposedRuntime.hookAllMethods(
+                    clazz,
+                    "onActivityResult",
+                    XposedInterface.Hooker { chain ->
+                        if (resultHooks.generation() != installingGeneration) return@Hooker chain.proceed()
+                        val requestCode =
+                            chain.args.getOrNull(0) as? Int ?: return@Hooker chain.proceed()
+                        if (requestCode != AUTO_REPLY_FILE_REQUEST_CODE)
+                            return@Hooker chain.proceed()
+                        if (chain.thisObject !== currentActivity) return@Hooker chain.proceed()
+                        val requestGeneration = resultHooks.generation()
+                        try {
+                            val hostResult = chain.proceed()
+                            if (resultHooks.generation() != requestGeneration) return@Hooker hostResult
+                            val resultCode =
+                                chain.args.getOrNull(1) as? Int ?: return@Hooker hostResult
+                            if (resultCode != Activity.RESULT_OK) return@Hooker hostResult
+                            val data =
+                                chain.args.getOrNull(2) as? Intent ?: return@Hooker hostResult
+                            val activity = currentActivity ?: return@Hooker hostResult
+                            val paths =
+                                pickedUris(data)
+                                    .mapNotNull { uri ->
+                                        takeReadPermission(activity, data, uri)
+                                        copyReplyFileToCache(activity, uri)
+                                    }
+                                    .distinct()
+                            if (paths.isNotEmpty()) onPicked?.invoke(paths)
+
+                            return@Hooker hostResult
+                        } finally {
+                            resultHooks.clear(requestGeneration)
                         }
-                        .distinct()
-                    if (paths.isNotEmpty()) onPicked?.invoke(paths)
-                }
-            })
-            hookedClasses.add(clazz)
-        } catch (_: Throwable) {
+                    },
+                )
+            resultHooks.add(clazz, installed, installingGeneration)
+        } catch (error: Throwable) {
+            resultHooks.clear(installingGeneration)
+            throw error
         }
     }
 
@@ -1368,62 +1626,98 @@ internal object AutoReplyFilePickerBridge {
 }
 
 internal object ScheduledTaskFilePickerBridge {
-    private val hookedClasses = HashSet<Class<*>>()
+    private val resultHooks = SettingsActivityResultHooks { onPicked = null; currentActivity = null }
     private var onPicked: ((List<String>) -> Unit)? = null
     private var currentActivity: Activity? = null
 
     @Synchronized
     fun launch(activity: Activity, taskType: Int, onResult: (List<String>) -> Unit) {
-        onPicked = onResult
-        currentActivity = activity
-        hookActivityResult(activity.javaClass)
-        hookActivityResult(Activity::class.java)
-        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            type = "*/*"
-            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
-        }.preferSystemDocumentsUi(activity)
+        var requestGeneration: Long? = null
         try {
-            activity.startActivityForResult(intent, SCHEDULED_TASK_FILE_REQUEST_CODE)
-        } catch (_: Throwable) {
-            val fallback = Intent(Intent.ACTION_GET_CONTENT).apply {
-                addCategory(Intent.CATEGORY_OPENABLE)
-                type = "*/*"
-                putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            resultHooks.attach(activity)
+            requestGeneration = resultHooks.generation()
+            onPicked = onResult
+            currentActivity = activity
+            hookActivityResult(activity.javaClass)
+            hookActivityResult(Activity::class.java)
+            val intent =
+                Intent(Intent.ACTION_OPEN_DOCUMENT)
+                    .apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        type = "*/*"
+                        putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+                    }
+                    .preferSystemDocumentsUi(activity)
+            try {
+                activity.startActivityForResult(intent, SCHEDULED_TASK_FILE_REQUEST_CODE)
+            } catch (_: Throwable) {
+                val fallback =
+                    Intent(Intent.ACTION_GET_CONTENT).apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        type = "*/*"
+                        putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                activity.startActivityForResult(
+                    Intent.createChooser(fallback, scheduledTaskPickerTitle(taskType)),
+                    SCHEDULED_TASK_FILE_REQUEST_CODE,
+                )
             }
-            activity.startActivityForResult(
-                Intent.createChooser(fallback, scheduledTaskPickerTitle(taskType)),
-                SCHEDULED_TASK_FILE_REQUEST_CODE
-            )
+        } catch (error: Throwable) {
+            resultHooks.clear(requestGeneration)
+            h.Hchat.utils.HLog.e("[Hchat:Picker] 启动选择器失败", error)
+            Toast.makeText(activity, "启动选择器失败: ${error.message.orEmpty()}", Toast.LENGTH_SHORT)
+                .show()
         }
     }
 
     @Synchronized
     private fun hookActivityResult(clazz: Class<*>) {
-        if (hookedClasses.contains(clazz)) return
+        if (resultHooks.contains(clazz)) return
+        val installingGeneration = resultHooks.generation()
         try {
-            XposedBridge.hookAllMethods(clazz, "onActivityResult", object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    val requestCode = param.args.getOrNull(0) as? Int ?: return
-                    if (requestCode != SCHEDULED_TASK_FILE_REQUEST_CODE) return
-                    val resultCode = param.args.getOrNull(1) as? Int ?: return
-                    if (resultCode != Activity.RESULT_OK) return
-                    val data = param.args.getOrNull(2) as? Intent ?: return
-                    val activity = currentActivity ?: return
-                    val paths = scheduledTaskPickedUris(data)
-                        .mapNotNull { uri ->
-                            scheduledTaskTakeReadPermission(activity, data, uri)
-                            copyScheduledTaskFileToCache(activity, uri)
+            val installed =
+                XposedRuntime.hookAllMethods(
+                    clazz,
+                    "onActivityResult",
+                    XposedInterface.Hooker { chain ->
+                        if (resultHooks.generation() != installingGeneration) return@Hooker chain.proceed()
+                        val requestCode =
+                            chain.args.getOrNull(0) as? Int ?: return@Hooker chain.proceed()
+                        if (requestCode != SCHEDULED_TASK_FILE_REQUEST_CODE)
+                            return@Hooker chain.proceed()
+                        if (chain.thisObject !== currentActivity) return@Hooker chain.proceed()
+                        val requestGeneration = resultHooks.generation()
+                        try {
+                            val hostResult = chain.proceed()
+                            if (resultHooks.generation() != requestGeneration) return@Hooker hostResult
+                            val resultCode =
+                                chain.args.getOrNull(1) as? Int ?: return@Hooker hostResult
+                            if (resultCode != Activity.RESULT_OK) return@Hooker hostResult
+                            val data =
+                                chain.args.getOrNull(2) as? Intent ?: return@Hooker hostResult
+                            val activity = currentActivity ?: return@Hooker hostResult
+                            val paths =
+                                scheduledTaskPickedUris(data)
+                                    .mapNotNull { uri ->
+                                        scheduledTaskTakeReadPermission(activity, data, uri)
+                                        copyScheduledTaskFileToCache(activity, uri)
+                                    }
+                                    .distinct()
+                            if (paths.isNotEmpty()) onPicked?.invoke(paths)
+
+                            return@Hooker hostResult
+                        } finally {
+                            resultHooks.clear(requestGeneration)
                         }
-                        .distinct()
-                    if (paths.isNotEmpty()) onPicked?.invoke(paths)
-                }
-            })
-            hookedClasses.add(clazz)
-        } catch (_: Throwable) {
+                    },
+                )
+            resultHooks.add(clazz, installed, installingGeneration)
+        } catch (error: Throwable) {
+            resultHooks.clear(installingGeneration)
+            throw error
         }
     }
 
@@ -1480,35 +1774,49 @@ internal object ScheduledTaskFilePickerBridge {
 }
 
 internal object AudioTransformDocumentBridge {
-    private val hookedClasses = HashSet<Class<*>>()
+    private val resultHooks = SettingsActivityResultHooks { onInputPicked = null; onOutputPicked = null; currentActivity = null }
     private var onInputPicked: ((String, String) -> Unit)? = null
     private var onOutputPicked: ((Uri, String) -> Unit)? = null
     private var currentActivity: Activity? = null
 
     @Synchronized
     fun launchInput(activity: Activity, onResult: (String, String) -> Unit) {
-        onInputPicked = onResult
-        currentActivity = activity
-        hookActivityResult(activity.javaClass)
-        hookActivityResult(Activity::class.java)
-        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            type = "*/*"
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
-        }.preferSystemDocumentsUi(activity)
+        var requestGeneration: Long? = null
         try {
-            activity.startActivityForResult(intent, AUDIO_TRANSFORM_INPUT_REQUEST_CODE)
-        } catch (_: Throwable) {
-            val fallback = Intent(Intent.ACTION_GET_CONTENT).apply {
-                addCategory(Intent.CATEGORY_OPENABLE)
-                type = "*/*"
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            resultHooks.attach(activity)
+            requestGeneration = resultHooks.generation()
+            onInputPicked = onResult
+            currentActivity = activity
+            hookActivityResult(activity.javaClass)
+            hookActivityResult(Activity::class.java)
+            val intent =
+                Intent(Intent.ACTION_OPEN_DOCUMENT)
+                    .apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        type = "*/*"
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+                    }
+                    .preferSystemDocumentsUi(activity)
+            try {
+                activity.startActivityForResult(intent, AUDIO_TRANSFORM_INPUT_REQUEST_CODE)
+            } catch (_: Throwable) {
+                val fallback =
+                    Intent(Intent.ACTION_GET_CONTENT).apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        type = "*/*"
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                activity.startActivityForResult(
+                    Intent.createChooser(fallback, "选择音频文件"),
+                    AUDIO_TRANSFORM_INPUT_REQUEST_CODE,
+                )
             }
-            activity.startActivityForResult(
-                Intent.createChooser(fallback, "选择音频文件"),
-                AUDIO_TRANSFORM_INPUT_REQUEST_CODE
-            )
+        } catch (error: Throwable) {
+            resultHooks.clear(requestGeneration)
+            h.Hchat.utils.HLog.e("[Hchat:Picker] 启动选择器失败", error)
+            Toast.makeText(activity, "启动选择器失败: ${error.message.orEmpty()}", Toast.LENGTH_SHORT)
+                .show()
         }
     }
 
@@ -1517,57 +1825,95 @@ internal object AudioTransformDocumentBridge {
         activity: Activity,
         suggestedFileName: String,
         mimeType: String,
-        onResult: (Uri, String) -> Unit
+        onResult: (Uri, String) -> Unit,
     ) {
-        onOutputPicked = onResult
-        currentActivity = activity
-        hookActivityResult(activity.javaClass)
-        hookActivityResult(Activity::class.java)
-        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            type = mimeType
-            putExtra(Intent.EXTRA_TITLE, suggestedFileName)
-            addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        }.preferSystemDocumentsUi(activity)
+        var requestGeneration: Long? = null
         try {
-            activity.startActivityForResult(intent, AUDIO_TRANSFORM_OUTPUT_REQUEST_CODE)
-        } catch (_: Throwable) {
-            Toast.makeText(activity, "当前系统不支持创建输出文件", Toast.LENGTH_SHORT).show()
+            resultHooks.attach(activity)
+            requestGeneration = resultHooks.generation()
+            onOutputPicked = onResult
+            currentActivity = activity
+            hookActivityResult(activity.javaClass)
+            hookActivityResult(Activity::class.java)
+            val intent =
+                Intent(Intent.ACTION_CREATE_DOCUMENT)
+                    .apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        type = mimeType
+                        putExtra(Intent.EXTRA_TITLE, suggestedFileName)
+                        addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                    .preferSystemDocumentsUi(activity)
+            try {
+                activity.startActivityForResult(intent, AUDIO_TRANSFORM_OUTPUT_REQUEST_CODE)
+            } catch (_: Throwable) {
+                resultHooks.clear(requestGeneration)
+                Toast.makeText(activity, "当前系统不支持创建输出文件", Toast.LENGTH_SHORT).show()
+            }
+        } catch (error: Throwable) {
+            resultHooks.clear(requestGeneration)
+            h.Hchat.utils.HLog.e("[Hchat:Picker] 启动选择器失败", error)
+            Toast.makeText(activity, "启动选择器失败: ${error.message.orEmpty()}", Toast.LENGTH_SHORT)
+                .show()
         }
     }
 
     @Synchronized
     private fun hookActivityResult(clazz: Class<*>) {
-        if (hookedClasses.contains(clazz)) return
+        if (resultHooks.contains(clazz)) return
+        val installingGeneration = resultHooks.generation()
         try {
-            XposedBridge.hookAllMethods(clazz, "onActivityResult", object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    val requestCode = param.args.getOrNull(0) as? Int ?: return
-                    if (requestCode != AUDIO_TRANSFORM_INPUT_REQUEST_CODE &&
-                        requestCode != AUDIO_TRANSFORM_OUTPUT_REQUEST_CODE
-                    ) return
-                    val resultCode = param.args.getOrNull(1) as? Int ?: return
-                    if (resultCode != Activity.RESULT_OK) return
-                    val data = param.args.getOrNull(2) as? Intent ?: return
-                    val activity = currentActivity ?: return
-                    val uri = data.data ?: return
-                    if (requestCode == AUDIO_TRANSFORM_INPUT_REQUEST_CODE) {
-                        takeReadPermission(activity, data, uri)
-                        val copied = copyInputFileToCache(activity, uri) ?: return
-                        onInputPicked?.invoke(copied.first, copied.second)
-                    } else {
-                        val displayName = queryDisplayName(activity, uri)
-                            ?: uri.lastPathSegment
-                            ?.substringAfterLast('/')
-                            ?.substringAfterLast(':')
-                            .orEmpty()
-                        onOutputPicked?.invoke(uri, displayName.ifBlank { "output" })
-                    }
-                }
-            })
-            hookedClasses.add(clazz)
-        } catch (_: Throwable) {
+            val installed =
+                XposedRuntime.hookAllMethods(
+                    clazz,
+                    "onActivityResult",
+                    XposedInterface.Hooker { chain ->
+                        if (resultHooks.generation() != installingGeneration) return@Hooker chain.proceed()
+                        val requestCode =
+                            chain.args.getOrNull(0) as? Int ?: return@Hooker chain.proceed()
+                        if (
+                            requestCode != AUDIO_TRANSFORM_INPUT_REQUEST_CODE &&
+                                requestCode != AUDIO_TRANSFORM_OUTPUT_REQUEST_CODE
+                        )
+                            return@Hooker chain.proceed()
+                        if (chain.thisObject !== currentActivity) return@Hooker chain.proceed()
+                        val requestGeneration = resultHooks.generation()
+                        try {
+                            val hostResult = chain.proceed()
+                            if (resultHooks.generation() != requestGeneration) return@Hooker hostResult
+                            val resultCode =
+                                chain.args.getOrNull(1) as? Int ?: return@Hooker hostResult
+                            if (resultCode != Activity.RESULT_OK) return@Hooker hostResult
+                            val data =
+                                chain.args.getOrNull(2) as? Intent ?: return@Hooker hostResult
+                            val activity = currentActivity ?: return@Hooker hostResult
+                            val uri = data.data ?: return@Hooker hostResult
+                            if (requestCode == AUDIO_TRANSFORM_INPUT_REQUEST_CODE) {
+                                takeReadPermission(activity, data, uri)
+                                val copied =
+                                    copyInputFileToCache(activity, uri) ?: return@Hooker hostResult
+                                onInputPicked?.invoke(copied.first, copied.second)
+                            } else {
+                                val displayName =
+                                    queryDisplayName(activity, uri)
+                                        ?: uri.lastPathSegment
+                                            ?.substringAfterLast('/')
+                                            ?.substringAfterLast(':')
+                                            .orEmpty()
+                                onOutputPicked?.invoke(uri, displayName.ifBlank { "output" })
+                            }
+
+                            return@Hooker hostResult
+                        } finally {
+                            resultHooks.clear(requestGeneration)
+                        }
+                    },
+                )
+            resultHooks.add(clazz, installed, installingGeneration)
+        } catch (error: Throwable) {
+            resultHooks.clear(installingGeneration)
+            throw error
         }
     }
 
@@ -1612,85 +1958,150 @@ internal object AudioTransformDocumentBridge {
 }
 
 internal object ConfigImportExportBridge {
-    private val hookedClasses = HashSet<Class<*>>()
+    private val resultHooks = SettingsActivityResultHooks { onImported = null; currentActivity = null }
     private var onImported: (() -> Unit)? = null
     private var currentActivity: Activity? = null
 
     @Synchronized
     fun launchExport(activity: Activity) {
-        currentActivity = activity
-        hookActivityResult(activity.javaClass)
-        hookActivityResult(Activity::class.java)
-        val fileName = "Hchat_config_" + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date()) + ".json"
-        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            type = "application/json"
-            putExtra(Intent.EXTRA_TITLE, fileName)
-            addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-        }.preferSystemDocumentsUi(activity)
+        var requestGeneration: Long? = null
         try {
-            activity.startActivityForResult(intent, CONFIG_EXPORT_REQUEST_CODE)
-        } catch (_: Throwable) {
-            Toast.makeText(activity, "当前系统不支持创建配置文件", Toast.LENGTH_SHORT).show()
+            resultHooks.attach(activity)
+            requestGeneration = resultHooks.generation()
+            currentActivity = activity
+            hookActivityResult(activity.javaClass)
+            hookActivityResult(Activity::class.java)
+            val fileName =
+                "Hchat_config_" +
+                    SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date()) +
+                    ".json"
+            val intent =
+                Intent(Intent.ACTION_CREATE_DOCUMENT)
+                    .apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        type = "application/json"
+                        putExtra(Intent.EXTRA_TITLE, fileName)
+                        addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                    }
+                    .preferSystemDocumentsUi(activity)
+            try {
+                activity.startActivityForResult(intent, CONFIG_EXPORT_REQUEST_CODE)
+            } catch (_: Throwable) {
+                resultHooks.clear(requestGeneration)
+                Toast.makeText(activity, "当前系统不支持创建配置文件", Toast.LENGTH_SHORT).show()
+            }
+        } catch (error: Throwable) {
+            resultHooks.clear(requestGeneration)
+            h.Hchat.utils.HLog.e("[Hchat:Picker] 启动选择器失败", error)
+            Toast.makeText(activity, "启动选择器失败: ${error.message.orEmpty()}", Toast.LENGTH_SHORT)
+                .show()
         }
     }
 
     @Synchronized
     fun launchImport(activity: Activity, onDone: () -> Unit) {
-        onImported = onDone
-        currentActivity = activity
-        hookActivityResult(activity.javaClass)
-        hookActivityResult(Activity::class.java)
-        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            type = "*/*"
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        }.preferSystemDocumentsUi(activity)
+        var requestGeneration: Long? = null
         try {
-            activity.startActivityForResult(intent, CONFIG_IMPORT_REQUEST_CODE)
-        } catch (_: Throwable) {
-            val fallback = Intent(Intent.ACTION_GET_CONTENT).apply {
-                addCategory(Intent.CATEGORY_OPENABLE)
-                type = "*/*"
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            resultHooks.attach(activity)
+            requestGeneration = resultHooks.generation()
+            onImported = onDone
+            currentActivity = activity
+            hookActivityResult(activity.javaClass)
+            hookActivityResult(Activity::class.java)
+            val intent =
+                Intent(Intent.ACTION_OPEN_DOCUMENT)
+                    .apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        type = "*/*"
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                    .preferSystemDocumentsUi(activity)
+            try {
+                activity.startActivityForResult(intent, CONFIG_IMPORT_REQUEST_CODE)
+            } catch (_: Throwable) {
+                val fallback =
+                    Intent(Intent.ACTION_GET_CONTENT).apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        type = "*/*"
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                activity.startActivityForResult(
+                    Intent.createChooser(fallback, "选择 Hchat 配置文件"),
+                    CONFIG_IMPORT_REQUEST_CODE,
+                )
             }
-            activity.startActivityForResult(Intent.createChooser(fallback, "选择 Hchat 配置文件"), CONFIG_IMPORT_REQUEST_CODE)
+        } catch (error: Throwable) {
+            resultHooks.clear(requestGeneration)
+            h.Hchat.utils.HLog.e("[Hchat:Picker] 启动选择器失败", error)
+            Toast.makeText(activity, "启动选择器失败: ${error.message.orEmpty()}", Toast.LENGTH_SHORT)
+                .show()
         }
     }
 
     @Synchronized
     private fun hookActivityResult(clazz: Class<*>) {
-        if (hookedClasses.contains(clazz)) return
+        if (resultHooks.contains(clazz)) return
+        val installingGeneration = resultHooks.generation()
         try {
-            XposedBridge.hookAllMethods(clazz, "onActivityResult", object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    val requestCode = param.args.getOrNull(0) as? Int ?: return
-                    if (requestCode != CONFIG_EXPORT_REQUEST_CODE && requestCode != CONFIG_IMPORT_REQUEST_CODE) return
-                    val resultCode = param.args.getOrNull(1) as? Int ?: return
-                    if (resultCode != Activity.RESULT_OK) return
-                    val data = param.args.getOrNull(2) as? Intent ?: return
-                    val uri = data.data ?: return
-                    val activity = currentActivity ?: return
-                    if (requestCode == CONFIG_EXPORT_REQUEST_CODE) {
-                        val count = HchatConfigBackup.exportToUri(activity, uri)
-                        if (count > 0) {
-                            Toast.makeText(activity, "已导出 $count 项配置", Toast.LENGTH_SHORT).show()
-                        } else {
-                            Toast.makeText(activity, "导出失败", Toast.LENGTH_SHORT).show()
+            val installed =
+                XposedRuntime.hookAllMethods(
+                    clazz,
+                    "onActivityResult",
+                    XposedInterface.Hooker { chain ->
+                        if (resultHooks.generation() != installingGeneration) return@Hooker chain.proceed()
+                        val requestCode =
+                            chain.args.getOrNull(0) as? Int ?: return@Hooker chain.proceed()
+                        if (
+                            requestCode != CONFIG_EXPORT_REQUEST_CODE &&
+                                requestCode != CONFIG_IMPORT_REQUEST_CODE
+                        )
+                            return@Hooker chain.proceed()
+                        if (chain.thisObject !== currentActivity) return@Hooker chain.proceed()
+                        val requestGeneration = resultHooks.generation()
+                        try {
+                            val hostResult = chain.proceed()
+                            if (resultHooks.generation() != requestGeneration) return@Hooker hostResult
+                            val resultCode =
+                                chain.args.getOrNull(1) as? Int ?: return@Hooker hostResult
+                            if (resultCode != Activity.RESULT_OK) return@Hooker hostResult
+                            val data =
+                                chain.args.getOrNull(2) as? Intent ?: return@Hooker hostResult
+                            val uri = data.data ?: return@Hooker hostResult
+                            val activity = currentActivity ?: return@Hooker hostResult
+                            if (requestCode == CONFIG_EXPORT_REQUEST_CODE) {
+                                val count = HchatConfigBackup.exportToUri(activity, uri)
+                                if (count > 0) {
+                                    Toast.makeText(activity, "已导出 $count 项配置", Toast.LENGTH_SHORT)
+                                        .show()
+                                } else {
+                                    Toast.makeText(activity, "导出失败", Toast.LENGTH_SHORT).show()
+                                }
+                            } else {
+                                val count = HchatConfigBackup.importFromUri(activity, uri)
+                                if (count > 0) {
+                                    onImported?.invoke()
+                                    Toast.makeText(
+                                            activity,
+                                            "已导入 $count 项配置，当前设置页已刷新",
+                                            Toast.LENGTH_LONG,
+                                        )
+                                        .show()
+                                } else {
+                                    Toast.makeText(activity, "导入失败或文件无配置", Toast.LENGTH_SHORT)
+                                        .show()
+                                }
+                            }
+
+                            return@Hooker hostResult
+                        } finally {
+                            resultHooks.clear(requestGeneration)
                         }
-                    } else {
-                        val count = HchatConfigBackup.importFromUri(activity, uri)
-                        if (count > 0) {
-                            onImported?.invoke()
-                            Toast.makeText(activity, "已导入 $count 项配置，当前设置页已刷新", Toast.LENGTH_LONG).show()
-                        } else {
-                            Toast.makeText(activity, "导入失败或文件无配置", Toast.LENGTH_SHORT).show()
-                        }
-                    }
-                }
-            })
-            hookedClasses.add(clazz)
-        } catch (_: Throwable) {
+                    },
+                )
+            resultHooks.add(clazz, installed, installingGeneration)
+        } catch (error: Throwable) {
+            resultHooks.clear(installingGeneration)
+            throw error
         }
     }
 }

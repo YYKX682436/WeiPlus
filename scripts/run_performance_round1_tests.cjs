@@ -24,15 +24,8 @@ function run(command, args) {
   process.stdout.write(r.stdout || ''); process.stderr.write(r.stderr || '');
   if (r.error || r.status !== 0) throw r.error || Error(command + ' failed: ' + r.status);
 }
+const api=require('./lib/api102.cjs').prepare(output);
 const fixtures = {
- 'de/robv/android/xposed/XC_MethodHook.java': `package de.robv.android.xposed;
- public class XC_MethodHook {
-  public static class MethodHookParam { private Object result; private Throwable failure;
-   public Object getResult(){return result;}public Throwable getThrowable(){return failure;}
-   public void setResult(Object v){result=v;failure=null;}public void setThrowable(Throwable v){failure=v;result=null;}}
-  protected void beforeHookedMethod(MethodHookParam p)throws Throwable{}protected void afterHookedMethod(MethodHookParam p)throws Throwable{}
-  public void before(MethodHookParam p)throws Throwable{beforeHookedMethod(p);}public void after(MethodHookParam p)throws Throwable{afterHookedMethod(p);}}
- `,
 'android/content/ContentValues.java': `package android.content; import java.util.*; public class ContentValues extends HashMap<String,Object> {
  public ContentValues() {} public ContentValues(ContentValues other) {super(other);} public Long getAsLong(String k){Object v=get(k);return v==null?null:Long.valueOf(v.toString());}
  public Integer getAsInteger(String k){Long v=getAsLong(k);return v==null?null:v.intValue();} }`,
@@ -58,10 +51,11 @@ const fixtures = {
 for (const [file, data] of Object.entries(fixtures)) { const p=path.join(output,file);fs.mkdirSync(path.dirname(p),{recursive:true});fs.writeFileSync(p,data); }
 fs.mkdirSync(path.join(output, 'android/text'), {recursive:true});
 fs.copyFileSync(path.join(root,'scripts/tests/message_parser/TextUtils.java'), path.join(output,'android/text/TextUtils.java'));
-run(process.env.JAVAC || 'javac', ['-d', output, ...['android/content/ContentValues.java','android/text/TextUtils.java','android/database/Cursor.java'].map(x=>path.join(output,x))]);
+run(process.env.JAVAC || 'javac', ['-d', output, '-cp',api.classpath,...['android/content/ContentValues.java','android/text/TextUtils.java','android/database/Cursor.java'].map(x=>path.join(output,x)), 'scripts/tests/api102/ChainFixture.java']);
 function kotlinHook(file, anchor) {
  const input=fs.readFileSync(path.join(root,source+file),'utf8');
- const start=input.indexOf('object : XC_MethodHook()',input.indexOf(anchor));
+ const start=input.indexOf('XposedInterface.Hooker {',input.indexOf(anchor));
+ if(start<0)throw Error('Production interceptor missing: '+anchor);
  const begin=input.indexOf('{',start);let depth=1,end=begin+1;
  while(depth){if(input[end]==='{')depth++;if(input[end]==='}')depth--;end++;}
  return input.slice(begin,end);
@@ -72,16 +66,17 @@ fs.writeFileSync(rowHooks,fs.readFileSync(path.join(root,tests+'RowHookRegressio
  .replace('@BUBBLE_HOOK@',kotlinHook('hooks/items/messagebubble/MessageBubbleFeature.kt','fun install()')));
 const jar=path.join(output,'production.jar');
 run(process.env.JAVA || 'java', ['-Xmx384m','-cp',jars.join(path.delimiter),'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler',
- '-no-stdlib','-no-reflect','-classpath',[output,stdlib].join(path.delimiter),'-d',jar,
+ '-no-stdlib','-no-reflect','-classpath',[output,stdlib,api.classpath].join(path.delimiter),'-d',jar,
  ...['hooks/api/model/WeChatMessage.kt','hooks/api/model/WeChatMessageTypes.kt','hooks/api/model/DatabaseChange.kt',
  'hooks/items/groupmonitor/GroupSnapshotState.kt','hooks/items/hchatextra/MessageDetailsBindingIndex.kt','hooks/items/antirecall/RecallCachePolicy.kt','hooks/core/ChatAdapterRefresh.kt'].map(x=>source+x), tests+'StateRegression.kt',tests+'AdapterRefreshRegression.kt',rowHooks]);
 const entry = fs.readFileSync(path.join(root, source+'ModuleEntry.java'),'utf8');
-const start = entry.indexOf('new XC_MethodHook()',entry.indexOf('private void installMsgDescTextFallback'));
+const start = entry.indexOf('chain -> {',entry.indexOf('private void installMsgDescTextFallback'));
+if(start<0)throw Error('Production summary interceptor missing');
 const brace = entry.indexOf('{',start); let depth=1, end=brace+1;
 while (depth) {if(entry[end]==='{')depth++;if(entry[end]==='}')depth--;end++;}
 fs.writeFileSync(path.join(output,'ActualSummaryHook.java'),
- 'import java.lang.reflect.Method; import de.robv.android.xposed.XC_MethodHook; public class ActualSummaryHook { public static XC_MethodHook create(Method m) { return '+entry.slice(start,end)+'; }}');
-const cp=[output,jar,stdlib].join(path.delimiter);
+ 'import java.lang.reflect.Method; import io.github.libxposed.api.XposedInterface; public class ActualSummaryHook { public static XposedInterface.Hooker create(Method m) { return '+entry.slice(start,end)+'; }}');
+const cp=[output,jar,stdlib,api.classpath].join(path.delimiter);
 run(process.env.JAVAC || 'javac', ['-cp',cp,'-d',output,...Object.keys(fixtures).map(x=>path.join(output,x)),
  path.join(output,'android/text/TextUtils.java'),source+'hooks/api/message/WeChatMessageChangeApi.java',
  source+'hooks/api/message/WeChatMessageStoreApi.java',source+'hooks/api/message/WeChatMessageObserveApi.java',

@@ -3,7 +3,7 @@ package h.Hchat.hooks.items.membertitle
 import android.text.SpannableStringBuilder
 import android.view.View
 import android.widget.TextView
-import de.robv.android.xposed.XC_MethodHook
+import io.github.libxposed.api.XposedInterface
 import h.Hchat.dexkit.DexMethodCache
 import h.Hchat.hooks.api.contact.WeChatChatroomApi
 import h.Hchat.hooks.api.core.WeChatApis
@@ -61,10 +61,12 @@ class MemberTitleRenderer(
         if (usernameBindInstalled) return true
         val method = locateUsernameBindMethod() ?: return false
         return try {
-            HookRegistry.get().hook(method, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    handleUsernameBind(param)
+            HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                val value = chain.proceed()
+                run after@ {
+                    handleUsernameBind(chain)
                 }
+                value
             })
             usernameBindInstalled = true
             true
@@ -74,11 +76,11 @@ class MemberTitleRenderer(
         }
     }
 
-    private fun handleUsernameBind(param: XC_MethodHook.MethodHookParam) {
+    private fun handleUsernameBind(param: XposedInterface.Chain) {
         if (!store.isEnabled()) return
         val roomId = currentRoomId()
         if (!isRoom(roomId)) return
-        val args = param.args ?: return
+        val args = param.args.toTypedArray() ?: return
         val holder = args.firstOrNull() ?: return
         val tv = findUserTextView(holder) ?: return
         var msg: Any? = null

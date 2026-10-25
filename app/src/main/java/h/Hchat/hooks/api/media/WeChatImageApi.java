@@ -27,8 +27,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import de.robv.android.xposed.XC_MethodHook;
-import de.robv.android.xposed.XposedBridge;
+import io.github.libxposed.api.XposedInterface;
+import h.Hchat.hooks.core.XposedRuntime;
 
 /**
  * 微信图片发送 API。
@@ -332,35 +332,50 @@ public final class WeChatImageApi {
                 || marsHookedManagerClasses.putIfAbsent(managerClass, Boolean.TRUE) != null) {
             return;
         }
+        java.util.List<XposedInterface.HookHandle> installed = new java.util.ArrayList<>();
         try {
-            XC_MethodHook captureConstructedManager = new XC_MethodHook() {
-                @Override
-                protected void afterHookedMethod(MethodHookParam param) {
-                    rememberMarsCdnManager(managerClass, param != null ? param.thisObject : null);
-                }
-            };
-            Set<XC_MethodHook.Unhook> unhooks = XposedBridge.hookAllConstructors(
-                    managerClass,
-                    captureConstructedManager);
-            for (XC_MethodHook.Unhook unhook : unhooks) {
+            XposedInterface.Hooker captureConstructedManager =
+                    new XposedInterface.Hooker() {
+                        @Override
+                        public Object intercept(XposedInterface.Chain chain) throws Throwable {
+                            Object[] args = chain.getArgs().toArray();
+                            Object hookResult = chain.proceed();
+                            Object receiver = chain.getThisObject();
+                            rememberMarsCdnManager(managerClass, receiver);
+
+                            return hookResult;
+                        }
+                    };
+            Set<XposedInterface.HookHandle> unhooks =
+                    XposedRuntime.hookAllConstructors(managerClass, captureConstructedManager);
+            installed.addAll(unhooks);
+            for (XposedInterface.HookHandle unhook : unhooks) {
                 HookRegistry.get().add(unhook);
             }
-            Set<XC_MethodHook.Unhook> startUnhooks = XposedBridge.hookAllMethods(
-                    managerClass,
-                    "startC2CDownload",
-                    new XC_MethodHook() {
-                        @Override
-                        protected void beforeHookedMethod(MethodHookParam param) {
-                            rememberMarsCdnManager(
-                                    managerClass,
-                                    param != null ? param.thisObject : null);
-                        }
-                    });
-            for (XC_MethodHook.Unhook unhook : startUnhooks) {
+            Set<XposedInterface.HookHandle> startUnhooks =
+                    XposedRuntime.hookAllMethods(
+                            managerClass,
+                            "startC2CDownload",
+                            chain -> {
+                                try {
+                                    rememberMarsCdnManager(managerClass, chain.getThisObject());
+                                } catch (Throwable error) {
+                                    logStatic(logger, "Mars CDN实例捕获失败: " + error.getMessage());
+                                }
+                                return chain.proceed();
+                            });
+            installed.addAll(startUnhooks);
+            for (XposedInterface.HookHandle unhook : startUnhooks) {
                 HookRegistry.get().add(unhook);
             }
             resolveMarsCdnManager(managerClass);
         } catch (Throwable e) {
+            for (int index = installed.size() - 1; index >= 0; index--) {
+                try {
+                    HookRegistry.get().unhook(installed.get(index));
+                } catch (Throwable ignored) {
+                }
+            }
             marsHookedManagerClasses.remove(managerClass);
             logStatic(logger, "Mars CDN实例捕获Hook安装失败: " + e.getMessage());
         }

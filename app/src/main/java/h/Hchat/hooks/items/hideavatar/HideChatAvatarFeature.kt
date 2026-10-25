@@ -1,7 +1,7 @@
 package h.Hchat.hooks.items.hideavatar
 
 import android.view.View
-import de.robv.android.xposed.XC_MethodHook
+import io.github.libxposed.api.XposedInterface
 import h.Hchat.dexkit.DexMethodCache
 import h.Hchat.event.Events
 import h.Hchat.hooks.api.core.WeChatApis
@@ -71,10 +71,13 @@ private class HideChatAvatarRuntime(
             return false
         }
         return runCatching {
-            HookRegistry.get().hook(method, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    applyVisibility(param.args)
+            HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                val args = chain.args.toTypedArray()
+                val value = chain.proceed()
+                run after@ {
+                    applyVisibility(args)
                 }
+                value
             })
             installed = true
             true

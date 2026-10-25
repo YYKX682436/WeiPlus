@@ -1,6 +1,6 @@
 package h.Hchat.hooks.items.typingreport
 
-import de.robv.android.xposed.XC_MethodHook
+import io.github.libxposed.api.XposedInterface
 import h.Hchat.dexkit.DexMethodCache
 import h.Hchat.event.Events
 import h.Hchat.hooks.core.BaseFeature
@@ -70,12 +70,16 @@ private class TypingReportBlockHooker(
         if (installed) return true
         val method = locateSendTypingMethod(allowDexSearch) ?: return false
         return runCatching {
-            HookRegistry.get().hook(method, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
+            HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                var value: Any? = null
+                var intercepted = false
+                run before@ {
                     if (isEnabled()) {
-                        param.result = null
+                        run { intercepted = true; value = null }
                     }
                 }
+                if (!intercepted) value = chain.proceed()
+                value
             })
             installed = true
             true

@@ -1,7 +1,7 @@
 package h.Hchat.hooks.items.shortvideo
 
 import android.os.Looper
-import de.robv.android.xposed.XC_MethodHook
+import io.github.libxposed.api.XposedInterface
 import h.Hchat.dexkit.DexMethodCache
 import h.Hchat.hooks.api.core.WeChatApis
 import h.Hchat.hooks.core.FeatureContext
@@ -183,17 +183,20 @@ internal class FinderFeedDetailResolver private constructor(
 
         private fun installCallbackHook(method: Method): Boolean {
             return runCatching {
-                HookRegistry.get().hookOnce("shared:finder_feed_detail:callback:${method.toGenericString()}", method, object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        val scene = param.thisObject ?: return
-                        val request = pending.remove(scene) ?: return
-                        val errType = (param.args.getOrNull(1) as? Number)?.toInt() ?: -1
-                        val errCode = (param.args.getOrNull(2) as? Number)?.toInt() ?: -1
+                HookRegistry.get().hookOnce("shared:finder_feed_detail:callback:${method.toGenericString()}", method, XposedInterface.Hooker { chain ->
+                    val args = chain.args
+                    val receiver = chain.thisObject
+                    val value = chain.proceed()
+                    run after@ {
+                        val scene = receiver ?: return@after
+                        val request = pending.remove(scene) ?: return@after
+                        val errType = (args.getOrNull(1) as? Number)?.toInt() ?: -1
+                        val errCode = (args.getOrNull(2) as? Number)?.toInt() ?: -1
                         if (errType == 0 && errCode == 0) {
                             request.finderObject = extractFinderObject(
                                 scene,
-                                param.args.getOrNull(4),
-                                param.args.getOrNull(5) as? ByteArray,
+                                args.getOrNull(4),
+                                args.getOrNull(5) as? ByteArray,
                                 request.feedId
                             )
                             if (request.finderObject == null) {
@@ -206,6 +209,7 @@ internal class FinderFeedDetailResolver private constructor(
                         }
                         request.completed.countDown()
                     }
+                    value
                 })
                 true
             }.getOrElse {

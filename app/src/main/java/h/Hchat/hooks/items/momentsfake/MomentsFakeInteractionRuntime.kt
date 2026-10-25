@@ -9,7 +9,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.AbsListView
 import android.widget.Toast
-import de.robv.android.xposed.XC_MethodHook
+import io.github.libxposed.api.XposedInterface
 import h.Hchat.hooks.api.core.WeChatApis
 import h.Hchat.hooks.api.sns.SnsCachedNativeLookup
 import h.Hchat.hooks.api.sns.SnsContextMenuTarget
@@ -90,10 +90,13 @@ internal class MomentsFakeInteractionRuntime(
             runCatching {
                 HookRegistry.get().hook(
                     KavaReflector.accessible(method) ?: method,
-                    object : XC_MethodHook() {
-                        override fun afterHookedMethod(param: MethodHookParam) {
-                            mergeIntoNativeInfo(param.thisObject)
+                    XposedInterface.Hooker { chain ->
+                        val receiver = chain.thisObject
+                        val value = chain.proceed()
+                        run after@ {
+                            mergeIntoNativeInfo(receiver)
                         }
+                        value
                     }
                 )
                 true
@@ -309,21 +312,24 @@ internal class MomentsFakeInteractionRuntime(
         return runCatching {
             HookRegistry.get().hook(
                 KavaReflector.accessible(method) ?: method,
-                object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        val nativeInfo = param.args?.getOrNull(0) ?: return
-                        val snsId = snsId(nativeInfo) ?: return
+                XposedInterface.Hooker { chain ->
+                    val args = chain.args
+                    var value: Any? = null
+                    var intercepted = false
+                    run before@ {
+                        val nativeInfo = args?.getOrNull(0) ?: return@before
+                        val snsId = snsId(nativeInfo) ?: return@before
                         val comments = knownEntry(store.entry(snsId)).comments
-                        if (comments.isEmpty()) return
-                        val reply = param.args?.getOrNull(3) ?: return
+                        if (comments.isEmpty()) return@before
+                        val reply = args?.getOrNull(3) ?: return@before
                         val fakeReply = when (reply) {
                             is Number -> comments.any { comment ->
                                 codec.commentNodeId(comment.id) == reply.toInt()
                             }
                             else -> codec.matchesFakeCommentNode(reply, comments)
                         }
-                        if (!fakeReply) return
-                        param.result = null
+                        if (!fakeReply) return@before
+                        run { intercepted = true; value = null }
                         mainHandler.post {
                             Toast.makeText(
                                 context.hostContext(),
@@ -332,6 +338,8 @@ internal class MomentsFakeInteractionRuntime(
                             ).show()
                         }
                     }
+                    if (!intercepted) value = chain.proceed()
+                    value
                 }
             )
             true

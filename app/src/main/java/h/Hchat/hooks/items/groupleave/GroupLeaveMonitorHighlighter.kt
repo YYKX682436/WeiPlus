@@ -10,7 +10,7 @@ import android.text.Spanned
 import android.text.style.ForegroundColorSpan
 import android.view.View
 import android.widget.TextView
-import de.robv.android.xposed.XC_MethodHook
+import io.github.libxposed.api.XposedInterface
 import h.Hchat.dexkit.DexMethodCache
 import h.Hchat.hooks.api.core.WeChatApis
 import h.Hchat.hooks.core.DexInstallScheduler
@@ -60,12 +60,15 @@ object GroupLeaveMonitorHighlighter {
             return false
         }
         return runCatching {
-            HookRegistry.get().hook(method, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    val original = param.args?.getOrNull(0) as? CharSequence ?: return
-                    val highlighted = highlight(context, original) ?: return
-                    param.args[0] = highlighted
+            HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                val args = chain.args.toTypedArray()
+                run before@ {
+                    val original = args?.getOrNull(0) as? CharSequence ?: return@before
+                    val highlighted = highlight(context, original) ?: return@before
+                    args[0] = highlighted
                 }
+                val value = chain.proceed(args)
+                value
             })
             textCleanupInstalled = true
             true
@@ -232,22 +235,27 @@ object GroupLeaveMonitorHighlighter {
         var lastError: Throwable? = null
         for (method in methods) {
             runCatching {
-                HookRegistry.get().hook(method, object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        val uri = findHchatUri(param.args) ?: return
+                HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                    val args = chain.args.toTypedArray()
+                    var value: Any? = null
+                    var intercepted = false
+                    run before@ {
+                        val uri = findHchatUri(args) ?: return@before
                         val memberId = GroupLeaveMonitorLinks.memberIdFromUri(uri)
-                        if (memberId.isBlank()) return
-                        val viewContext = param.args?.firstOrNull { it is View }?.let { (it as View).context }
-                            ?: context.hostContext()
+                        if (memberId.isBlank()) return@before
+                        val viewContext = args?.firstOrNull { it is View }?.let { (it as View).context }
+                        ?: context.hostContext()
                         openProfile(viewContext, memberId)
-                        param.result = if (method.returnType == java.lang.Boolean.TYPE ||
-                            method.returnType == Boolean::class.javaObjectType
-                        ) {
-                            true
-                        } else {
-                            null
-                        }
+                        run { intercepted = true; value = if (method.returnType == java.lang.Boolean.TYPE ||
+                                method.returnType == Boolean::class.javaObjectType
+                            ) {
+                                true
+                            } else {
+                                null
+                        } }
                     }
+                    if (!intercepted) value = chain.proceed()
+                    value
                 })
                 count++
             }.onFailure {

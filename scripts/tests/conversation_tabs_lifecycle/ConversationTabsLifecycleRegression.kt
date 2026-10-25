@@ -459,9 +459,25 @@ fun main() {
         invoke(OtherUi(), "onDestroy")
         invoke(MainUI(), "onResume")
         expect(ConversationTabsRuntime.hostCount() == 0, "Only MainUI with an existing root can attach")
-        registry.dispatch(MainUI(), KavaReflector.findMethodRecursive(MainUI::class.java, "getLayoutView")!!,
-            MainUIView(), IllegalStateException("Native layout failed"))
+        val nativeFailure = IllegalStateException("Native layout failed")
+        expect(runCatching { registry.dispatch(MainUI(), KavaReflector.findMethodRecursive(MainUI::class.java, "getLayoutView")!!,
+            MainUIView(), nativeFailure) }.exceptionOrNull() === nativeFailure, "Preserve native layout failure identity")
         expect(ConversationTabsRuntime.hostCount() == 0, "Native failure cannot create a host")
+    }
+    scenario("native destroy failure still releases host, view observers and queued work") {
+        val owner = ready()
+        val root = owner.nativeRoot!!
+        val strip = owner.strip()
+        val observer = owner.observer()
+        val failure = IllegalStateException("Native destroy failed")
+        val destroy = KavaReflector.findMethodRecursive(MainUI::class.java, "onDestroy")!!
+        expect(runCatching { registry.dispatch(owner,destroy,null,failure) }.exceptionOrNull() === failure,
+            "Preserve native destroy exception identity")
+        expect(ConversationTabsRuntime.hostCount() == 0 && strip.parent == null,
+            "Native failure must not retain the overlay or owner")
+        expect(root.listParams().topMargin == 20 && root.attachListenerCount == 0,
+            "Destroy failure still restores native margin and releases root listener")
+        observer.expectListeners(0)
     }
     scenario("partial hook installation rolls back and retries") {
         registry.failOn = "onResume"

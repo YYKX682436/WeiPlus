@@ -1,0 +1,71 @@
+import io.github.libxposed.api.XposedInterface
+import h.Hchat.tests.api102.ChainFixture
+import java.lang.reflect.Field
+import java.lang.reflect.Method
+
+class Page(@JvmField val rows:MutableList<String>,val hasMore:Boolean=true)
+class ProjectionOwner {fun refresh()=Unit}
+object KavaReflector {
+ fun readField(field:Field,receiver:Any?):Any?=field.get(receiver)
+ fun writeField(field:Field,receiver:Any?,value:Any?):Boolean {field.set(receiver,value);return true}
+}
+object HLog {fun e(message:String,error:Throwable)=Unit}
+private class ProjectionHarness {
+ private val TAG="test"
+ data class Installation(val lifecycle:Long,val hooks:Long)
+ class Filter(val active:Boolean)
+ private data class QueryScope(val installation:Installation,val filter:Filter?,var rootApplied:Boolean=false)
+ private val queryScopes=ThreadLocal<ArrayDeque<QueryScope>>()
+ private val legacyDepth=ThreadLocal<Int>()
+ private val installation=Installation(1L,1L)
+ private val notice=ProjectionOwner::class.java.getMethod("refresh")
+ private data class Refresh(val method:Method)
+ private val updates=listOf(notice)
+ private val listField=Page::class.java.getField("rows")
+ var active=true
+ var captureAllowed=true
+ var filter:Filter?=null
+ var hidden=setOf("hide")
+ private fun tabFilter()=filter
+ private fun hiddenIds()=hidden
+ private fun isActive(value:Installation)=active&&value==installation
+ private fun captureRefresh(installation:Installation,owner:Any,refresh:Refresh)=isActive(installation)&&captureAllowed
+ private fun hasTabFilterInQuery()=queryScopes.get()?.lastOrNull()?.filter?.active==true
+ private fun username(row:Any?)=row as? String
+ @ENTER@
+ @LEAVE@
+ val legacy=XposedInterface.Hooker @LEGACY@
+ val modern=XposedInterface.Hooker @MODERN@
+ fun depths(query:Int,legacy:Int=0){check((queryScopes.get()?.size?:0)==query);check((legacyDepth.get()?:0)==legacy)}
+}
+private fun invoke(hook:XposedInterface.Hooker,native:()->Any?):Any? {
+ val chain=ChainFixture(ProjectionOwner::class.java.getMethod("refresh"),ProjectionOwner(),emptyArray()){_,_->native()}
+ try{return chain.run(hook)}finally{check(chain.proceeds==1)}
+}
+fun main(){
+ val h=ProjectionHarness();val failure=IllegalStateException("native query failed")
+ invoke(h.legacy){h.depths(1,1);invoke(h.legacy){h.depths(2,2);"inner"};h.depths(1,1);"outer"}
+ h.depths(0)
+ check(runCatching{invoke(h.legacy){h.depths(1,1);throw failure}}.exceptionOrNull()===failure);h.depths(0)
+ invoke(h.legacy){
+  check(runCatching{invoke(h.legacy){throw failure}}.exceptionOrNull()===failure)
+  h.depths(1,1)
+ }
+ h.depths(0)
+ h.captureAllowed=false;invoke(h.legacy){h.depths(0);null};h.depths(0);h.captureAllowed=true
+ val page=Page(mutableListOf("show","hide"))
+ check(invoke(h.modern){h.depths(1);page}===page&&page.rows==listOf("show")&&page.hasMore);h.depths(0)
+ check(runCatching{invoke(h.modern){h.depths(1);throw failure}}.exceptionOrNull()===failure);h.depths(0)
+ invoke(h.modern){
+  h.depths(1)
+  check(runCatching{invoke(h.legacy){h.depths(2,1);throw failure}}.exceptionOrNull()===failure)
+  h.depths(1)
+  Page(mutableListOf("hide"))
+ }.also{check((it as Page).rows.isEmpty()&&it.hasMore)}
+ h.depths(0)
+ h.filter=ProjectionHarness.Filter(true)
+ val tabPage=Page(mutableListOf("hide","show"));invoke(h.modern){tabPage}
+ check(tabPage.rows.size==2);h.depths(0)
+ h.active=false;invoke(h.modern){h.depths(0);Page(mutableListOf("hide"))}.also{check((it as Page).rows.size==1)};h.depths(0)
+ println("PASS: actual homepage legacy and modern query interceptors pair nested scopes, preserve query failures and native page identity/flags, clean all exits and respect stale generations and active tab filtering")
+}

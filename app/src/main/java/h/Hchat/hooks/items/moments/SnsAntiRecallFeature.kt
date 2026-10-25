@@ -3,7 +3,7 @@ package h.Hchat.hooks.items.moments
 import android.content.ContentValues
 import android.content.SharedPreferences
 import android.database.Cursor
-import de.robv.android.xposed.XC_MethodHook
+import io.github.libxposed.api.XposedInterface
 import h.Hchat.dexkit.DexMethodCache
 import h.Hchat.hooks.core.BaseFeature
 import h.Hchat.hooks.core.FeatureContext
@@ -84,20 +84,24 @@ private class SnsAntiRecallHooker(
         for (method in KavaReflector.declaredMethods(dbClass)) {
             if (!isSnsWriteMethod(method) && !isSnsRawQueryMethod(method)) continue
             if (!hookedMethods.add(method)) continue
-            HookRegistry.get().hook(method, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
+            HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                val args = chain.args.toTypedArray()
+                val receiver = chain.thisObject
+                run before@ {
                     try {
                         if (isSnsWriteMethod(method)) {
-                            handleSnsWrite(param.thisObject, param.args, isSnsUpdateMethod(method))
+                            handleSnsWrite(receiver, args, isSnsUpdateMethod(method))
                         } else if (isSnsRawQueryMethod(method)) {
-                            if (internalQuery.get() == true) return
-                            if (!isMomentAntiRecallEnabled()) return
-                            handleSnsQuery(param.args)
+                            if (internalQuery.get() == true) return@before
+                            if (!isMomentAntiRecallEnabled()) return@before
+                            handleSnsQuery(args)
                         }
                     } catch (e: Throwable) {
                         HLog.e("[Hchat:SnsAntiRecall] Hook处理失败", e)
                     }
                 }
+                val value = chain.proceed(args)
+                value
             })
             count++
         }
@@ -191,12 +195,16 @@ private class SnsAntiRecallHooker(
         val method = findEnableFlutterSnsPageMethod() ?: return 0
         if (!hookedMethods.add(method)) return 0
         return try {
-            HookRegistry.get().hook(method, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
+            HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                var value: Any? = null
+                var intercepted = false
+                run before@ {
                     if (isMomentAntiRecallEnabled() && isForceLegacyProfileEnabled()) {
-                        param.result = false
+                        run { intercepted = true; value = false }
                     }
                 }
+                if (!intercepted) value = chain.proceed()
+                value
             })
             1
         } catch (e: Throwable) {

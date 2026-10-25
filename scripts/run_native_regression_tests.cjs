@@ -52,7 +52,7 @@ run(['-Djava.io.tmpdir=' + output, '-cp', jar + path.delimiter + path.join(lib, 
 const read = file => fs.readFileSync(path.join(root, file), 'utf8');
 const entry = read('app/src/main/java/h/Hchat/ModuleEntry.java');
 const packageHelper = read('app/src/main/java/h/Hchat/WechatPackage.kt');
-const scope = read('app/src/main/res/values/arrays.xml');
+const scope = read('app/src/main/resources/META-INF/xposed/scope.list');
 const featureManager = read('app/src/main/java/h/Hchat/hooks/core/FeatureManager.kt');
 const backgroundRuntime = read('app/src/main/java/h/Hchat/hooks/items/backgroundassist/BackgroundRunAssistRuntime.kt');
 const backgroundRoot = read('app/src/main/java/h/Hchat/hooks/items/backgroundassist/BackgroundRunAssistRoot.kt');
@@ -69,8 +69,7 @@ const nativeSendFeature = read('app/src/main/java/h/Hchat/hooks/items/sendbutton
 const appSources = path.join(root, 'app/src/main');
 assert.match(entry, /WechatPackage\.isTarget/);
 assert.doesNotMatch(entry, /startsWith\("com\.tencent\.mm"\)/);
-assert.match(scope, /<item>com\.tencent\.mm<\/item>/);
-assert.match(scope, /<item>com\.tencent\.mm\.wx<\/item>/);
+assert.deepEqual(scope.trim().split(/\r?\n/), ["com.tencent.mm", "com.tencent.mm.wx"]);
 assert.match(packageHelper, /packageName == OFFICIAL \|\| packageName == MODIFIED/);
 assert.match(featureManager, /lifecycleFeatures\.toList\(\)\.asReversed\(\)/);
 assert.doesNotMatch(featureManager, /observeConfigChanges|notifyConfigChanged|configPreferenceListeners|getFeaturePrefs/);

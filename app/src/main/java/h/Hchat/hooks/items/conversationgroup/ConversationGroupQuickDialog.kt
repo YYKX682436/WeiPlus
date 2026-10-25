@@ -897,7 +897,7 @@ private object ConversationGroupDocumentBridge {
     private val nextRequestCode = AtomicInteger(REQUEST_CODE_START)
     private val pending = ConcurrentHashMap<Int, Pending>()
     private val requests = ConcurrentHashMap<Int, ConversationGroupFileRequest<DocumentResult>>()
-    private val hooks = ConversationGroupFileResultHooks(::onResult)
+    private val hooks = ConversationGroupFileResultHooks(::onResult, ::onHostFailure)
 
     fun launchExport(activity: Activity, json: String, callback: (DocumentResult) -> Unit) {
         val fileName = "Hchat_chat_groups_" +
@@ -942,6 +942,7 @@ private object ConversationGroupDocumentBridge {
         val request = ConversationGroupFileRequest.create(activity, callback) {
             pending.remove(requestCode)
             requests.remove(requestCode)
+            if (pending.isEmpty()) hooks.clear()
         }
         if (request == null) {
             callback(DocumentResult("聊天分组文件任务较多，请稍后重试"))
@@ -976,6 +977,11 @@ private object ConversationGroupDocumentBridge {
             if (!requests.containsKey(candidate)) return candidate
         }
         error("文件选择请求已满")
+    }
+
+    private fun onHostFailure(activity: Activity, code: Int) {
+        val value = pending[code] ?: return
+        if (value.request.activity.get() === activity && pending.remove(code, value)) value.request.cancel()
     }
 
     private fun onResult(activity: Activity, code: Int, resultCode: Int, data: Intent?) {

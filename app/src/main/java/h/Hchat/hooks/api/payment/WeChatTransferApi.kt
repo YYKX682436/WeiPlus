@@ -11,7 +11,7 @@ import org.json.JSONObject
 import java.lang.reflect.Constructor
 import java.util.Collections
 import java.util.IdentityHashMap
-import de.robv.android.xposed.XC_MethodHook
+import io.github.libxposed.api.XposedInterface
 
 /**
  * 微信普通转账领取/退回 API。
@@ -133,17 +133,18 @@ class WeChatTransferApi(
         if (queryHookInstalled) return true
         val method = dexFinder?.transferQueryResponseMethod ?: return false
         return runCatching {
-            HookRegistry.get().hook(method, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    val callback = pendingQueries.remove(param.thisObject) ?: return
-                    callback(
-                        QueryResult(
-                            errorCode = (param.args.getOrNull(0) as? Number)?.toInt() ?: -1,
-                            errorMessage = param.args.getOrNull(1) as? String ?: "",
-                            response = param.args.getOrNull(2) as? JSONObject
-                        )
+            HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                val hostResult = chain.proceed()
+                val callback = pendingQueries.remove(chain.thisObject) ?: return@Hooker hostResult
+                callback(
+                    QueryResult(
+                        errorCode = (chain.args.getOrNull(0) as? Number)?.toInt() ?: -1,
+                        errorMessage = chain.args.getOrNull(1) as? String ?: "",
+                        response = chain.args.getOrNull(2) as? JSONObject,
                     )
-                }
+                )
+
+                return@Hooker hostResult
             })
             queryHookInstalled = true
             true

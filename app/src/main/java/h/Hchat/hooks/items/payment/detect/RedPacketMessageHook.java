@@ -11,7 +11,7 @@ import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
 
-import de.robv.android.xposed.XC_MethodHook;
+import io.github.libxposed.api.XposedInterface;
 
 /**
  * AddMsg 消息预监听。
@@ -73,16 +73,19 @@ public class RedPacketMessageHook {
                 }
                 if (addMsgArgIndexes.isEmpty()) continue;
 
-                HookRegistry.get().hook(method, new XC_MethodHook() {
-                    @Override
-                    protected void beforeHookedMethod(MethodHookParam param) {
-                        if (param.args == null) return;
-                        for (int index : addMsgArgIndexes) {
-                            if (index >= 0 && index < param.args.length && param.args[index] != null) {
-                                handleAddMsgBeforeDb(param.args[index]);
-                            }
-                        }
+                HookRegistry.get().hook(method, chain -> {
+                    Object[] hookArgs = chain.getArgs().toArray();
+                    Object receiver = chain.getThisObject();
+                    observe: {
+                        if (hookArgs == null) break observe;
+        for (int index : addMsgArgIndexes) {
+            if (index >= 0 && index < hookArgs.length && hookArgs[index] != null) {
+                handleAddMsgBeforeDb(hookArgs[index]);
+            }
+        }
                     }
+                    Object value = chain.proceed(hookArgs);
+                    return value;
                 });
                 count++;
             }

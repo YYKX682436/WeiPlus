@@ -19,10 +19,15 @@ function run(args) {
   if (result.stderr) process.stderr.write(result.stderr);
   if (result.error || result.status !== 0) throw result.error || new Error('JVM check failed: ' + result.status);
 }
+const api = require('./lib/api102.cjs').prepare(output);
+const prepared = [output, api.classpath].join(path.delimiter);
+const compileJava = spawnSync(process.env.JAVAC || 'javac', ['-cp', api.classpath, '-d', output,
+  'scripts/tests/api102/ChainFixture.java', 'scripts/tests/api102/FrameworkFixture.java',
+  'app/src/main/java/h/Hchat/hooks/core/XposedRuntime.java'], {cwd:root, encoding:'utf8'});
+if(compileJava.status !== 0) throw Error(compileJava.stdout + compileJava.stderr);
 const groups = [
   ['hook_registry', 'HookRegistryRegressionKt', [
     'app/src/main/java/h/Hchat/hooks/core/HookRegistry.kt',
-    'scripts/tests/hook_registry/XposedStub.kt',
     'scripts/tests/hook_registry/HookRegistryRegression.kt'
   ]],
   ['send_dispatch', 'h.Hchat.hooks.items.sendbutton.NativeSendButtonHandlersRegressionKt', [
@@ -34,8 +39,8 @@ for (const [name, main, sources] of groups) {
   const jar = path.join(output, name + '.jar');
   run(['-Xmx256m', '-cp', jars.map(file => path.join(lib, file)).join(path.delimiter),
     'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler', '-no-stdlib', '-no-reflect',
-    '-classpath', path.join(lib, stdlib), '-d', jar, ...sources]);
-  run(['-Djava.io.tmpdir=' + output, '-cp', jar + path.delimiter + path.join(lib, stdlib), main]);
+    '-classpath', [prepared, path.join(lib, stdlib)].join(path.delimiter), '-d', jar, ...sources]);
+  run(['-Djava.io.tmpdir=' + output, '-cp', [jar,prepared,path.join(lib,stdlib)].join(path.delimiter), main]);
 }
 const hook = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/items/sendbutton/NativeSendButtonHook.kt'), 'utf8');
 assert.doesNotMatch(hook, /dispatchTouchEvent/, 'Native send hook must not install a global touch listener');

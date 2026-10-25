@@ -8,7 +8,7 @@ import h.Hchat.utils.KavaReflector;
 import java.lang.ref.WeakReference;
 import java.lang.reflect.Method;
 
-import de.robv.android.xposed.XC_MethodHook;
+import io.github.libxposed.api.XposedInterface;
 
 /**
  * 当前微信 Activity 跟踪 API。
@@ -37,23 +37,33 @@ public final class WeChatCurrentActivityApi {
             Method onResume = KavaReflector.findDeclaredMethod(Activity.class, "onResume");
             Method onPause = KavaReflector.findDeclaredMethod(Activity.class, "onPause");
             Method onDestroy = KavaReflector.findDeclaredMethod(Activity.class, "onDestroy");
-            HookRegistry.get().hook(onResume, new XC_MethodHook() {
-                @Override
-                protected void afterHookedMethod(MethodHookParam param) {
-                    if (param.thisObject instanceof Activity) {
-                        currentActivity = new WeakReference<>((Activity) param.thisObject);
-                    }
-                }
-            });
-            XC_MethodHook clearHook = new XC_MethodHook() {
-                @Override
-                protected void afterHookedMethod(MethodHookParam param) {
-                    Activity current = currentActivity();
-                    if (current != null && current == param.thisObject) {
-                        currentActivity = new WeakReference<>(null);
-                    }
-                }
-            };
+            HookRegistry.get()
+                    .hook(
+                            onResume,
+                            new XposedInterface.Hooker() {
+                                @Override
+                                public Object intercept(XposedInterface.Chain chain)
+                                        throws Throwable {
+                                    Object[] args = chain.getArgs().toArray();
+                                    Object hookResult = chain.proceed();
+                                    Object receiver = chain.getThisObject();
+                                    if (receiver instanceof Activity) {
+                                        currentActivity = new WeakReference<>((Activity) receiver);
+                                    }
+
+                                    return hookResult;
+                                }
+                            });
+            XposedInterface.Hooker clearHook =
+                    chain -> {
+                        try {
+                            return chain.proceed();
+                        } finally {
+                            Activity current = currentActivity();
+                            if (current != null && current == chain.getThisObject())
+                                currentActivity = new WeakReference<>(null);
+                        }
+                    };
             HookRegistry.get().hook(onPause, clearHook);
             HookRegistry.get().hook(onDestroy, clearHook);
             installed = true;

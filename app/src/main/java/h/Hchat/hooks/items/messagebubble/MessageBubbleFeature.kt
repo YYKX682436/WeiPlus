@@ -9,7 +9,7 @@ import android.graphics.drawable.Drawable
 import android.view.View
 import android.view.ViewGroup
 import android.widget.TextView
-import de.robv.android.xposed.XC_MethodHook
+import io.github.libxposed.api.XposedInterface
 import h.Hchat.R
 import android.content.SharedPreferences
 import android.os.Handler
@@ -152,21 +152,18 @@ private class MessageBubbleRenderer(
             return false
         }
         return runCatching {
-            HookRegistry.get().hook(method, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    if (!enabled) return
-                    val state = captureBindState(param.args)
-                    state.root?.let(::restoreBoundBubble)
-                    param.setObjectExtra("hchat.bubble.bind", state)
+            HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                if (!enabled && boundRoots.isEmpty()) return@Hooker chain.proceed()
+                val args = chain.args.toTypedArray()
+                // A recycled row must be reset before WeChat binds even when the toggle just turned off.
+                val state = captureBindState(args)
+                state.root?.let(::restoreBoundBubble)
+                val result = chain.proceed()
+                if (enabled) {
+                    val boundHolder = state.root?.tag?.takeIf(::isNativeMessageHolder) ?: state.nativeHolder
+                    applyBubble(args, state.copy(nativeHolder = boundHolder))
                 }
-
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    val state = param.getObjectExtra("hchat.bubble.bind") as? BindState ?: return
-                    if (!enabled || param.hasThrowable()) return
-                    val boundHolder = state.root?.tag?.takeIf(::isNativeMessageHolder)
-                        ?: state.nativeHolder
-                    applyBubble(param.args, state.copy(nativeHolder = boundHolder))
-                }
+                result
             })
             adapterBindInstalled = true
             true

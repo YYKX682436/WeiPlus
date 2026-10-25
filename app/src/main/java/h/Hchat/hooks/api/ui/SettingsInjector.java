@@ -28,9 +28,8 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.Map;
 
-import de.robv.android.xposed.XC_MethodHook;
-import de.robv.android.xposed.XposedBridge;
-import de.robv.android.xposed.XposedHelpers;
+import io.github.libxposed.api.XposedInterface;
+import h.Hchat.hooks.core.XposedRuntime;
 
 import h.Hchat.dexkit.SettingsDexFinder;
 import h.Hchat.hooks.core.HookRegistry;
@@ -75,7 +74,7 @@ public class SettingsInjector {
     private final SettingsEntrySettings entrySettings;
     private final File dexCacheDir;
     private final HashSet<Class<?>> plusMenuAdapterViewHookedClasses = new HashSet<>();
-    private XC_MethodHook.Unhook contextGetStringUnhook;
+    private XposedInterface.HookHandle contextGetStringUnhook;
     private volatile Class<?> modernLocationParentClass;
     private volatile Class<?> modernLocationFrontClass;
 
@@ -156,28 +155,44 @@ public class SettingsInjector {
 
         try {
             // Hook SettingsUI.initView()
-            HookRegistry.get().add(XposedHelpers.findAndHookMethod(dex.settingsUIClass, "initView",
-                    new XC_MethodHook() {
-                        @Override
-                        protected void afterHookedMethod(MethodHookParam param) {
-                            Activity activity = (Activity) param.thisObject;
-                            try {
-                                Constructor<?> ctor = KavaReflector.findConstructor(
-                                        dex.iconPreferenceClass, Context.class);
-                                Object prefInstance = KavaReflector.newInstance(ctor, activity);
+            HookRegistry.get()
+                    .hook(
+                            KavaReflector.findMethodRecursive(dex.settingsUIClass, "initView"),
+                            new XposedInterface.Hooker() {
+                                @Override
+                                public Object intercept(XposedInterface.Chain chain)
+                                        throws Throwable {
+                                    Object[] args = chain.getArgs().toArray();
+                                    Object hookResult = chain.proceed();
+                                    Object receiver = chain.getThisObject();
+                                    Activity activity = (Activity) receiver;
+                                    try {
+                                        Constructor<?> ctor =
+                                                KavaReflector.findConstructor(
+                                                        dex.iconPreferenceClass, Context.class);
+                                        Object prefInstance =
+                                                KavaReflector.newInstance(ctor, activity);
 
-                                KavaReflector.invoke(dex.methodSetKey, prefInstance, PREFS_KEY);
-                                KavaReflector.invoke(dex.methodSetTitle, prefInstance, PREFS_TITLE);
+                                        KavaReflector.invoke(
+                                                dex.methodSetKey, prefInstance, PREFS_KEY);
+                                        KavaReflector.invoke(
+                                                dex.methodSetTitle, prefInstance, PREFS_TITLE);
 
-                                Object prefScreen = KavaReflector.invokeMethod(activity, "getPreferenceScreen");
-                                KavaReflector.invoke(dex.methodAddPref, prefScreen, prefInstance, 0);
+                                        Object prefScreen =
+                                                KavaReflector.invokeMethod(
+                                                        activity, "getPreferenceScreen");
+                                        KavaReflector.invoke(
+                                                dex.methodAddPref, prefScreen, prefInstance, 0);
 
-                                logDetail("[Legacy] 设置条目已插入");
-                            } catch (Throwable e) {
-                                h.Hchat.utils.HLog.e(TAG + " [Legacy] 插入失败: " + e.getMessage(), e);
-                            }
-                        }
-                    }));
+                                        logDetail("[Legacy] 设置条目已插入");
+                                    } catch (Throwable e) {
+                                        h.Hchat.utils.HLog.e(
+                                                TAG + " [Legacy] 插入失败: " + e.getMessage(), e);
+                                    }
+
+                                    return hookResult;
+                                }
+                            });
 
             // Hook onPreferenceTreeClick
             // WeKit 用 resolve().firstMethod { name = "onPreferenceTreeClick" }
@@ -191,24 +206,43 @@ public class SettingsInjector {
             }
             if (targetTreeClick != null) {
                 final Method finalTarget = targetTreeClick;
-                HookRegistry.get().hook(finalTarget, new XC_MethodHook() {
-                    @Override
-                    protected void beforeHookedMethod(MethodHookParam param) {
-                        try {
-                            // WeKit: if (args.size < 2) return; val preference = args[1]
-                            if (param.args.length < 2) return;
-                            Object preference = param.args[1];
-                            if (preference == null) return;
+                HookRegistry.get()
+                        .hook(
+                                finalTarget,
+                                new XposedInterface.Hooker() {
+                                    @Override
+                                    public Object intercept(XposedInterface.Chain chain)
+                                            throws Throwable {
+                                        Object[] args = chain.getArgs().toArray();
+                                        Object receiver = chain.getThisObject();
+                                        Object hookResult = null;
+                                        boolean skipOriginal = false;
+                                        hookBody:
+                                        {
+                                            try {
+                                                // WeKit: if (args.size < 2) break hookBody; val
+                                                // preference = args[1]
+                                                if (args.length < 2) break hookBody;
+                                                Object preference = args[1];
+                                                if (preference == null) break hookBody;
 
-                            String key = (String) KavaReflector.invoke(dex.methodGetKey, preference);
-                            if (PREFS_KEY.equals(key)) {
-                                Activity activity = (Activity) param.thisObject;
-                                showModuleSettingsPage(activity);
-                                param.setResult(true);
-                            }
-                        } catch (Throwable ignored) {}
-                    }
-                });
+                                                String key =
+                                                        (String)
+                                                                KavaReflector.invoke(
+                                                                        dex.methodGetKey,
+                                                                        preference);
+                                                if (PREFS_KEY.equals(key)) {
+                                                    Activity activity = (Activity) receiver;
+                                                    showModuleSettingsPage(activity);
+                                                    hookResult = true;
+                                                    skipOriginal = true;
+                                                }
+                                            } catch (Throwable ignored) {
+                                            }
+                                        }
+                                        return skipOriginal ? hookResult : chain.proceed(args);
+                                    }
+                                });
                 logDetail("[Legacy] onPreferenceTreeClick Hook 已安装: " + finalTarget);
             } else {
                 logDetail("[Legacy] onPreferenceTreeClick 方法未找到");
@@ -399,12 +433,21 @@ public class SettingsInjector {
             // hook proxy class 构造函数，确保 handler 被设置
             Constructor<?> proxyConstructor = KavaReflector.findConstructor(proxyClass, activityClass);
             final Constructor<?> finalProxyConstructor = proxyConstructor;
-            HookRegistry.get().hook(proxyConstructor, new XC_MethodHook() {
-                @Override
-                protected void afterHookedMethod(MethodHookParam param) {
-                    ProxyBuilder.setInvocationHandler(param.thisObject, handler);
-                }
-            });
+            HookRegistry.get()
+                    .hook(
+                            proxyConstructor,
+                            new XposedInterface.Hooker() {
+                                @Override
+                                public Object intercept(XposedInterface.Chain chain)
+                                        throws Throwable {
+                                    Object[] args = chain.getArgs().toArray();
+                                    Object hookResult = chain.proceed();
+                                    Object receiver = chain.getThisObject();
+                                    ProxyBuilder.setInvocationHandler(receiver, handler);
+
+                                    return hookResult;
+                                }
+                            });
 
             logDetail("[Modern] ProxyBuilder 代理类已创建: " + proxyClass.getName());
             modernLocationParentClass = groupSettingItemClass;
@@ -414,28 +457,51 @@ public class SettingsInjector {
             // 找到返回 SettingLocation 的方法
             for (Method m : KavaReflector.declaredMethods(childSettingItemClass)) {
                 if (m.getReturnType() == dex.settingLocationClass) {
-                    HookRegistry.get().hook(m, new XC_MethodHook(
-                            de.robv.android.xposed.callbacks.XCallback.PRIORITY_HIGHEST) {
-                        @Override
-                        protected void afterHookedMethod(MethodHookParam param) {
-                            try {
-                                Object oldLocation = param.getResult();
-                                Class<?> parentClass = readSettingLocationClass(oldLocation, 0, groupSettingItemClass);
-                                Class<?> frontClass = readSettingLocationClass(oldLocation, 1, parentSettingItemClass);
-                                if (frontClass == proxyClass) {
-                                    return;
-                                }
-                                modernLocationParentClass = parentClass;
-                                modernLocationFrontClass = frontClass;
-                                logDetail("[Modern] 接入设置入口链: front="
-                                        + frontClass.getName());
-                                Object location = newSettingLocation(parentClass, proxyClass);
-                                param.setResult(location);
-                            } catch (Throwable e) {
-                                h.Hchat.utils.HLog.e(TAG + " [Modern] SettingLocation 构造失败: " + e.getMessage(), e);
-                            }
-                        }
-                    });
+                    HookRegistry.get()
+                            .hook(
+                                    m,
+                                    new XposedInterface.Hooker() {
+                                        @Override
+                                        public Object intercept(XposedInterface.Chain chain)
+                                                throws Throwable {
+                                            Object[] args = chain.getArgs().toArray();
+                                            Object hookResult = chain.proceed();
+                                            Object receiver = chain.getThisObject();
+                                            try {
+                                                Object oldLocation = hookResult;
+                                                Class<?> parentClass =
+                                                        readSettingLocationClass(
+                                                                oldLocation,
+                                                                0,
+                                                                groupSettingItemClass);
+                                                Class<?> frontClass =
+                                                        readSettingLocationClass(
+                                                                oldLocation,
+                                                                1,
+                                                                parentSettingItemClass);
+                                                if (frontClass == proxyClass) {
+                                                    return hookResult;
+                                                }
+                                                modernLocationParentClass = parentClass;
+                                                modernLocationFrontClass = frontClass;
+                                                logDetail(
+                                                        "[Modern] 接入设置入口链: front="
+                                                                + frontClass.getName());
+                                                Object location =
+                                                        newSettingLocation(parentClass, proxyClass);
+                                                hookResult = location;
+                                            } catch (Throwable e) {
+                                                h.Hchat.utils.HLog.e(
+                                                        TAG
+                                                                + " [Modern] SettingLocation 构造失败: "
+                                                                + e.getMessage(),
+                                                        e);
+                                            }
+
+                                            return hookResult;
+                                        }
+                                    },
+                                    XposedInterface.PRIORITY_HIGHEST);
                     logDetail("[Modern] SettingGroupPersonalInfo.hook: " + m.getName());
                     break;
                 }
@@ -447,52 +513,74 @@ public class SettingsInjector {
             if (providerMethod == null) {
                 logDetail("[Modern] ClassesProvider 方法未找到，跳过 Provider 注入");
             } else {
-                HookRegistry.get().hook(providerMethod, new XC_MethodHook() {
-                    @Override
-                    protected void afterHookedMethod(MethodHookParam param) {
-                        try {
-                            Map<?, ?> map = (Map<?, ?>) param.getResult();
-                            if (map == null) return;
+                HookRegistry.get()
+                        .hook(
+                                providerMethod,
+                                new XposedInterface.Hooker() {
+                                    @Override
+                                    public Object intercept(XposedInterface.Chain chain)
+                                            throws Throwable {
+                                        Object[] args = chain.getArgs().toArray();
+                                        Object hookResult = chain.proceed();
+                                        Object receiver = chain.getThisObject();
+                                        try {
+                                            Map<?, ?> map = (Map<?, ?>) hookResult;
+                                            if (map == null) return hookResult;
 
-                            Map<Object, Object> patched = new LinkedHashMap<>();
-                            patched.putAll((Map<?, ?>) map);
+                                            Map<Object, Object> patched = new LinkedHashMap<>();
+                                            patched.putAll((Map<?, ?>) map);
 
-                            if (hasBaseSettingItemValue(map)) {
-                                Object activity = param.args != null && param.args.length > 0 ? param.args[0] : null;
-                                if (activity == null) return;
-                                Object item = KavaReflector.newInstance(finalProxyConstructor, activity);
-                                ProxyBuilder.setInvocationHandler(item, handler);
-                                patched.put(SETTING_ITEM_ID, item);
-                                param.setResult(patched);
-                                return;
-                            }
+                                            if (hasBaseSettingItemValue(map)) {
+                                                Object activity =
+                                                        args != null && args.length > 0
+                                                                ? args[0]
+                                                                : null;
+                                                if (activity == null) return hookResult;
+                                                Object item =
+                                                        KavaReflector.newInstance(
+                                                                finalProxyConstructor, activity);
+                                                ProxyBuilder.setInvocationHandler(item, handler);
+                                                patched.put(SETTING_ITEM_ID, item);
+                                                hookResult = patched;
+                                                return hookResult;
+                                            }
 
-                            Object pageKey = findSettingsPageKey(
-                                    map,
-                                    groupSettingItemClass,
-                                    parentSettingItemClass,
-                                    childSettingItemClass);
-                            if (pageKey == null) {
-                                logDetail("[Modern] 主设置页集合未找到，跳过 Provider 注入");
-                                return;
-                            }
-                            Object value = pageKey != null ? map.get(pageKey) : null;
-                            if (!(value instanceof Iterable<?>)) {
-                                logDetail("[Modern] 主设置页集合不是 Iterable，跳过 Provider 注入");
-                                return;
-                            }
-                            LinkedHashSet<Object> newSet = new LinkedHashSet<>();
-                            for (Object item : (Iterable<?>) value) {
-                                newSet.add(item);
-                            }
-                            newSet.add(finalProxyClass);
-                            patched.put(pageKey, newSet);
-                            param.setResult(patched);
-                        } catch (Throwable e) {
-                            h.Hchat.utils.HLog.e(TAG + " [Modern] ClassesProvider 注入失败: " + e.getMessage(), e);
-                        }
-                    }
-                });
+                                            Object pageKey =
+                                                    findSettingsPageKey(
+                                                            map,
+                                                            groupSettingItemClass,
+                                                            parentSettingItemClass,
+                                                            childSettingItemClass);
+                                            if (pageKey == null) {
+                                                logDetail("[Modern] 主设置页集合未找到，跳过 Provider 注入");
+                                                return hookResult;
+                                            }
+                                            Object value =
+                                                    pageKey != null ? map.get(pageKey) : null;
+                                            if (!(value instanceof Iterable<?>)) {
+                                                logDetail(
+                                                        "[Modern] 主设置页集合不是 Iterable，跳过 Provider"
+                                                                + " 注入");
+                                                return hookResult;
+                                            }
+                                            LinkedHashSet<Object> newSet = new LinkedHashSet<>();
+                                            for (Object item : (Iterable<?>) value) {
+                                                newSet.add(item);
+                                            }
+                                            newSet.add(finalProxyClass);
+                                            patched.put(pageKey, newSet);
+                                            hookResult = patched;
+                                        } catch (Throwable e) {
+                                            h.Hchat.utils.HLog.e(
+                                                    TAG
+                                                            + " [Modern] ClassesProvider 注入失败: "
+                                                            + e.getMessage(),
+                                                    e);
+                                        }
+
+                                        return hookResult;
+                                    }
+                                });
 
                 logDetail("[Modern] SettingItemClassesProvider 已 Hook");
             }
@@ -564,44 +652,68 @@ public class SettingsInjector {
             return;
         }
 
-        HookRegistry.get().hook(superImportMethod, new XC_MethodHook() {
-            @Override
-            protected void afterHookedMethod(MethodHookParam param) {
-                try {
-                    if (mainOnly
-                            && dex.mainSettingsUIClass != null
-                            && !dex.mainSettingsUIClass.isInstance(param.thisObject)) {
-                        return;
-                    }
+        HookRegistry.get()
+                .hook(
+                        superImportMethod,
+                        new XposedInterface.Hooker() {
+                            @Override
+                            public Object intercept(XposedInterface.Chain chain) throws Throwable {
+                                Object[] args = chain.getArgs().toArray();
+                                Object hookResult = chain.proceed();
+                                Object receiver = chain.getThisObject();
+                                try {
+                                    if (mainOnly
+                                            && dex.mainSettingsUIClass != null
+                                            && !dex.mainSettingsUIClass.isInstance(receiver)) {
+                                        return hookResult;
+                                    }
 
-                    @SuppressWarnings("unchecked")
-                    HashSet<Class<?>> itemClasses = (HashSet<Class<?>>) param.args[0];
-                    itemClasses.add(proxyClass);
+                                    @SuppressWarnings("unchecked")
+                                    HashSet<Class<?>> itemClasses = (HashSet<Class<?>>) args[0];
+                                    itemClasses.add(proxyClass);
 
-                    logDetail("[Modern] superImportUIComponents 注入完成: "
-                            + ownerClass.getName());
-                } catch (Throwable e) {
-                    h.Hchat.utils.HLog.e(TAG + " [Modern] superImportUIComponents 失败: "
-                            + ownerClass.getName() + ", " + e.getMessage(), e);
-                }
-            }
-        });
+                                    logDetail(
+                                            "[Modern] superImportUIComponents 注入完成: "
+                                                    + ownerClass.getName());
+                                } catch (Throwable e) {
+                                    h.Hchat.utils.HLog.e(
+                                            TAG
+                                                    + " [Modern] superImportUIComponents 失败: "
+                                                    + ownerClass.getName()
+                                                    + ", "
+                                                    + e.getMessage(),
+                                            e);
+                                }
+
+                                return hookResult;
+                            }
+                        });
         logDetail("[Modern] superImportUIComponents Hook 已安装: "
                 + ownerClass.getName());
     }
 
     private void hookTitleStringResource() {
         if (contextGetStringUnhook != null) return;
-        contextGetStringUnhook = XposedHelpers.findAndHookMethod(
-                Context.class, "getString", int.class,
-                new XC_MethodHook() {
-                    @Override
-                    protected void beforeHookedMethod(MethodHookParam param) {
-                        if ((int) param.args[0] == HCHAT_SETTING_ITEM_NAME_RES_ID) {
-                            param.setResult(PREFS_TITLE);
-                        }
-                    }
-                });
+        contextGetStringUnhook =
+                XposedRuntime.hook(
+                        KavaReflector.findMethodRecursive(Context.class, "getString", int.class),
+                        new XposedInterface.Hooker() {
+                            @Override
+                            public Object intercept(XposedInterface.Chain chain) throws Throwable {
+                                Object[] args = chain.getArgs().toArray();
+                                Object receiver = chain.getThisObject();
+                                Object hookResult = null;
+                                boolean skipOriginal = false;
+                                hookBody:
+                                {
+                                    if ((int) args[0] == HCHAT_SETTING_ITEM_NAME_RES_ID) {
+                                        hookResult = PREFS_TITLE;
+                                        skipOriginal = true;
+                                    }
+                                }
+                                return skipOriginal ? hookResult : chain.proceed(args);
+                            }
+                        });
         HookRegistry.get().add(contextGetStringUnhook);
         logDetail("[Modern] Context.getString 标题资源 Hook 已安装");
     }
@@ -679,37 +791,65 @@ public class SettingsInjector {
             if (launcherClass == null) return;
 
             // Hook onCreate
-            HookRegistry.get().add(XposedHelpers.findAndHookMethod(launcherClass, "onCreate",
-                    android.os.Bundle.class,
-                    new XC_MethodHook() {
-                        @Override
-                        protected void beforeHookedMethod(MethodHookParam param) {
-                            try {
-                                Activity activity = (Activity) param.thisObject;
-                                Intent intent = activity.getIntent();
-                                if (intent != null && intent.hasExtra(MODULE_TAG)) {
-                                    new Handler(Looper.getMainLooper()).postDelayed(
-                                            () -> showModuleSettingsPage(activity), 500);
+            HookRegistry.get()
+                    .hook(
+                            KavaReflector.findMethodRecursive(
+                                    launcherClass, "onCreate", android.os.Bundle.class),
+                            new XposedInterface.Hooker() {
+                                @Override
+                                public Object intercept(XposedInterface.Chain chain)
+                                        throws Throwable {
+                                    Object[] args = chain.getArgs().toArray();
+                                    Object receiver = chain.getThisObject();
+                                    Object hookResult = null;
+                                    boolean skipOriginal = false;
+                                    hookBody:
+                                    {
+                                        try {
+                                            Activity activity = (Activity) receiver;
+                                            Intent intent = activity.getIntent();
+                                            if (intent != null && intent.hasExtra(MODULE_TAG)) {
+                                                new Handler(Looper.getMainLooper())
+                                                        .postDelayed(
+                                                                () ->
+                                                                        showModuleSettingsPage(
+                                                                                activity),
+                                                                500);
+                                            }
+                                        } catch (Throwable ignored) {
+                                        }
+                                    }
+                                    return skipOriginal ? hookResult : chain.proceed(args);
                                 }
-                            } catch (Throwable ignored) {}
-                        }
-                    }));
+                            });
 
             // Hook onNewIntent
-            HookRegistry.get().add(XposedHelpers.findAndHookMethod(launcherClass, "onNewIntent",
-                    Intent.class,
-                    new XC_MethodHook() {
-                        @Override
-                        protected void beforeHookedMethod(MethodHookParam param) {
-                            try {
-                                Activity activity = (Activity) param.thisObject;
-                                Intent intent = (Intent) param.args[0];
-                                if (intent != null && intent.hasExtra(MODULE_TAG)) {
-                                    showModuleSettingsPage(activity);
+            HookRegistry.get()
+                    .hook(
+                            KavaReflector.findMethodRecursive(
+                                    launcherClass, "onNewIntent", Intent.class),
+                            new XposedInterface.Hooker() {
+                                @Override
+                                public Object intercept(XposedInterface.Chain chain)
+                                        throws Throwable {
+                                    Object[] args = chain.getArgs().toArray();
+                                    Object receiver = chain.getThisObject();
+                                    Object hookResult = null;
+                                    boolean skipOriginal = false;
+                                    hookBody:
+                                    {
+                                        try {
+                                            Activity activity = (Activity) receiver;
+                                            Intent intent = (Intent) args[0];
+                                            if (intent != null && intent.hasExtra(MODULE_TAG)) {
+                                                showModuleSettingsPage(activity);
+                                            }
+                                        } catch (Throwable ignored) {
+                                        }
+                                    }
+                                    return skipOriginal ? hookResult : chain.proceed(args);
                                 }
-                            } catch (Throwable ignored) {}
-                        }
-                    }));
+                            });
 
             logDetail("[LauncherUI] 已安装");
         } catch (Throwable e) {
@@ -738,18 +878,29 @@ public class SettingsInjector {
             Class<?> plusActionViewClass = KavaReflector.loadClass(
                     "com.tencent.mm.ui.HomeUI$PlusActionView", classLoader);
             if (plusActionViewClass == null) return false;
-            for (XC_MethodHook.Unhook unhook : XposedBridge.hookAllConstructors(
-                    plusActionViewClass,
-                    new XC_MethodHook() {
-                        @Override
-                        protected void afterHookedMethod(MethodHookParam param) {
-                            try {
-                                markPlusView(resolvePlusActionRealView(param.thisObject));
-                            } catch (Throwable e) {
-                                h.Hchat.utils.HLog.e(TAG + " [PlusLongPress] 绑定加号入口失败: " + e.getMessage(), e);
-                            }
-                        }
-                    })) {
+            for (XposedInterface.HookHandle unhook :
+                    XposedRuntime.hookAllConstructors(
+                            plusActionViewClass,
+                            new XposedInterface.Hooker() {
+                                @Override
+                                public Object intercept(XposedInterface.Chain chain)
+                                        throws Throwable {
+                                    Object[] args = chain.getArgs().toArray();
+                                    Object hookResult = chain.proceed();
+                                    Object receiver = chain.getThisObject();
+                                    try {
+                                        markPlusView(resolvePlusActionRealView(receiver));
+                                    } catch (Throwable e) {
+                                        h.Hchat.utils.HLog.e(
+                                                TAG
+                                                        + " [PlusLongPress] 绑定加号入口失败: "
+                                                        + e.getMessage(),
+                                                e);
+                                    }
+
+                                    return hookResult;
+                                }
+                            })) {
                 HookRegistry.get().add(unhook);
             }
             return true;
@@ -789,7 +940,8 @@ public class SettingsInjector {
         if (plusAction instanceof View) {
             return (View) plusAction;
         }
-        if (plusAction == null || !classNameContains(plusAction.getClass(), "HomeUI$PlusActionView")) {
+        if (plusAction == null
+                || !classNameContains(plusAction.getClass(), "HomeUI$PlusActionView")) {
             return null;
         }
         try {
@@ -825,50 +977,76 @@ public class SettingsInjector {
         }
 
         try {
-            HookRegistry.get().hook(dex.plusSubMenuAdapterMethod, new XC_MethodHook() {
-                @Override
-                protected void afterHookedMethod(MethodHookParam param) {
-                    try {
-                        BaseAdapter adapter = param.getResult() instanceof BaseAdapter
-                                ? (BaseAdapter) param.getResult()
-                                : null;
-                        appendEnabledPlusMenuItems(param.thisObject, adapter);
-                    } catch (Throwable e) {
-                        h.Hchat.utils.HLog.e(TAG + " [PlusMenu] 添加入口失败: " + e.getMessage(), e);
-                    }
-                }
-            });
+            HookRegistry.get()
+                    .hook(
+                            dex.plusSubMenuAdapterMethod,
+                            new XposedInterface.Hooker() {
+                                @Override
+                                public Object intercept(XposedInterface.Chain chain)
+                                        throws Throwable {
+                                    Object[] args = chain.getArgs().toArray();
+                                    Object hookResult = chain.proceed();
+                                    Object receiver = chain.getThisObject();
+                                    try {
+                                        BaseAdapter adapter =
+                                                hookResult instanceof BaseAdapter
+                                                        ? (BaseAdapter) hookResult
+                                                        : null;
+                                        appendEnabledPlusMenuItems(receiver, adapter);
+                                    } catch (Throwable e) {
+                                        h.Hchat.utils.HLog.e(
+                                                TAG + " [PlusMenu] 添加入口失败: " + e.getMessage(), e);
+                                    }
 
-            HookRegistry.get().hook(dex.plusSubMenuOnItemClickMethod, new XC_MethodHook() {
-                @Override
-                protected void beforeHookedMethod(MethodHookParam param) {
-                    try {
-                        if (param.args == null || param.args.length < 3) return;
-                        int position = (int) param.args[2];
-                        int itemId = readPlusMenuItemId(param.thisObject, position);
-                        if (itemId == Integer.MIN_VALUE) {
-                            return;
-                        }
+                                    return hookResult;
+                                }
+                            });
 
-                        param.setResult(null);
-                        dismissPlusMenu(param.thisObject);
-                        if (itemId == QUICK_TERMINATE_PLUS_MENU_ID) {
-                            QuickTerminateRuntime.terminateCurrentProcess();
-                            return;
-                        }
+            HookRegistry.get()
+                    .hook(
+                            dex.plusSubMenuOnItemClickMethod,
+                            new XposedInterface.Hooker() {
+                                @Override
+                                public Object intercept(XposedInterface.Chain chain)
+                                        throws Throwable {
+                                    Object[] args = chain.getArgs().toArray();
+                                    Object receiver = chain.getThisObject();
+                                    Object hookResult = null;
+                                    boolean skipOriginal = false;
+                                    hookBody:
+                                    {
+                                        try {
+                                            if (args == null || args.length < 3) break hookBody;
+                                            int position = (int) args[2];
+                                            int itemId = readPlusMenuItemId(receiver, position);
+                                            if (itemId == Integer.MIN_VALUE) {
+                                                break hookBody;
+                                            }
 
-                        Context context = findContextFieldValue(param.thisObject);
-                        if (context == null) return;
-                        if (itemId == HCHAT_PLUS_MENU_ID) {
-                            showModuleSettingsPage(context);
-                        } else if (itemId == QUICK_READ_PLUS_MENU_ID) {
-                            QuickMarkReadRuntime.markAllRead(context, true);
-                        }
-                    } catch (Throwable e) {
-                        h.Hchat.utils.HLog.e(TAG + " [PlusMenu] 处理菜单点击失败: " + e.getMessage(), e);
-                    }
-                }
-            });
+                                            hookResult = null;
+                                            skipOriginal = true;
+                                            dismissPlusMenu(receiver);
+                                            if (itemId == QUICK_TERMINATE_PLUS_MENU_ID) {
+                                                QuickTerminateRuntime.terminateCurrentProcess();
+                                                break hookBody;
+                                            }
+
+                                            Context context = findContextFieldValue(receiver);
+                                            if (context == null) break hookBody;
+                                            if (itemId == HCHAT_PLUS_MENU_ID) {
+                                                showModuleSettingsPage(context);
+                                            } else if (itemId == QUICK_READ_PLUS_MENU_ID) {
+                                                QuickMarkReadRuntime.markAllRead(context, true);
+                                            }
+                                        } catch (Throwable e) {
+                                            h.Hchat.utils.HLog.e(
+                                                    TAG + " [PlusMenu] 处理菜单点击失败: " + e.getMessage(),
+                                                    e);
+                                        }
+                                    }
+                                    return skipOriginal ? hookResult : chain.proceed(args);
+                                }
+                            });
 
             hookPlusMenuPopulateAndShowMethods(dex.plusSubMenuHelperClass);
 
@@ -1171,23 +1349,33 @@ public class SettingsInjector {
             if (plusMenuAdapterViewHookedClasses.contains(adapterClass)) return;
             Method getViewMethod = findAdapterGetViewMethod(adapterClass);
             if (getViewMethod == null) return;
-            HookRegistry.get().hook(getViewMethod, new XC_MethodHook() {
-                @Override
-                protected void afterHookedMethod(MethodHookParam param) {
-                    try {
-                        if (param.args == null || param.args.length < 1) return;
-                        Object result = param.getResult();
-                        if (!(result instanceof View)) return;
-                        int position = (int) param.args[0];
-                        Object helper = findPlusMenuHelperFieldValue(param.thisObject);
-                        int itemId = readPlusMenuItemId(helper, position);
-                        if (itemId == Integer.MIN_VALUE) return;
-                        applyPlusMenuIcon((View) result, itemId);
-                    } catch (Throwable e) {
-                        h.Hchat.utils.HLog.e(TAG + " [PlusMenu] 设置菜单图标失败: " + e.getMessage(), e);
-                    }
-                }
-            });
+            HookRegistry.get()
+                    .hook(
+                            getViewMethod,
+                            new XposedInterface.Hooker() {
+                                @Override
+                                public Object intercept(XposedInterface.Chain chain)
+                                        throws Throwable {
+                                    Object[] args = chain.getArgs().toArray();
+                                    Object hookResult = chain.proceed();
+                                    Object receiver = chain.getThisObject();
+                                    try {
+                                        if (args == null || args.length < 1) return hookResult;
+                                        Object result = hookResult;
+                                        if (!(result instanceof View)) return hookResult;
+                                        int position = (int) args[0];
+                                        Object helper = findPlusMenuHelperFieldValue(receiver);
+                                        int itemId = readPlusMenuItemId(helper, position);
+                                        if (itemId == Integer.MIN_VALUE) return hookResult;
+                                        applyPlusMenuIcon((View) result, itemId);
+                                    } catch (Throwable e) {
+                                        h.Hchat.utils.HLog.e(
+                                                TAG + " [PlusMenu] 设置菜单图标失败: " + e.getMessage(), e);
+                                    }
+
+                                    return hookResult;
+                                }
+                            });
             plusMenuAdapterViewHookedClasses.add(adapterClass);
         }
     }
@@ -1250,22 +1438,43 @@ public class SettingsInjector {
         HashSet<Method> methods = new HashSet<>();
         for (Method populateMethod : findPlusMenuPopulateMethods(helperClass)) {
             if (!methods.add(populateMethod)) continue;
-            HookRegistry.get().hook(populateMethod, new XC_MethodHook() {
-                @Override
-                protected void afterHookedMethod(MethodHookParam param) {
-                    appendPlusMenuItemSafely(param.thisObject);
-                }
-            });
+            HookRegistry.get()
+                    .hook(
+                            populateMethod,
+                            new XposedInterface.Hooker() {
+                                @Override
+                                public Object intercept(XposedInterface.Chain chain)
+                                        throws Throwable {
+                                    Object[] args = chain.getArgs().toArray();
+                                    Object hookResult = chain.proceed();
+                                    Object receiver = chain.getThisObject();
+                                    appendPlusMenuItemSafely(receiver);
+
+                                    return hookResult;
+                                }
+                            });
         }
 
         for (Method showMethod : findPlusMenuBaseShowMethods(helperClass)) {
             if (!methods.add(showMethod)) continue;
-            HookRegistry.get().hook(showMethod, new XC_MethodHook() {
-                @Override
-                protected void beforeHookedMethod(MethodHookParam param) {
-                    appendPlusMenuItemSafely(param.thisObject);
-                }
-            });
+            HookRegistry.get()
+                    .hook(
+                            showMethod,
+                            new XposedInterface.Hooker() {
+                                @Override
+                                public Object intercept(XposedInterface.Chain chain)
+                                        throws Throwable {
+                                    Object[] args = chain.getArgs().toArray();
+                                    Object receiver = chain.getThisObject();
+                                    Object hookResult = null;
+                                    boolean skipOriginal = false;
+                                    hookBody:
+                                    {
+                                        appendPlusMenuItemSafely(receiver);
+                                    }
+                                    return skipOriginal ? hookResult : chain.proceed(args);
+                                }
+                            });
         }
     }
 
@@ -1391,7 +1600,7 @@ public class SettingsInjector {
 
     private void logDetail(String message) {
         if (VERBOSE) {
-            XposedBridge.log(TAG + " " + message);
+            h.Hchat.utils.HLog.i(TAG + " " + message);
         }
     }
 }

@@ -1,3 +1,5 @@
+import io.github.libxposed.api.XposedInterface
+import h.Hchat.tests.api102.ChainFixture
 import java.util.Collections
 import java.util.WeakHashMap
 class Looper { companion object { val main=Looper(); var onMain=true; fun getMainLooper()=main; fun myLooper()=if(onMain) main else null } }
@@ -49,11 +51,6 @@ class TextView:View() {
 class MessageBubbleSlot
 object MessageBubbleStore {fun recommendedTextColor(c:Any,s:MessageBubbleSlot)=999}
 object KavaReflector {fun invokeMethod(o:Any,m:String,arg:Int) {error("Unexpected neat text")}}
-open class XC_MethodHook {
-    class MethodHookParam(val args:Array<Any?>) {private val extras=HashMap<String,Any?>();fun setObjectExtra(k:String,v:Any?){extras[k]=v};fun getObjectExtra(k:String)=extras[k];fun hasThrowable()=false}
-    protected open fun beforeHookedMethod(p:MethodHookParam){};protected open fun afterHookedMethod(p:MethodHookParam){}
-    fun before(p:MethodHookParam)=beforeHookedMethod(p);fun after(p:MethodHookParam)=afterHookedMethod(p)
-}
 private class BubbleHarness {
     val prefs=Prefs()
     @CONFIG@
@@ -75,8 +72,8 @@ private class BubbleHarness {
     @APPLY_TEXT@
     @SET_TEXT@
     @APPLY_DRAWABLE@
-    val hook=object:XC_MethodHook() @HOOK@
-    fun bind(row:TextView,native:()->Unit) {val p=XC_MethodHook.MethodHookParam(arrayOf(row));hook.before(p);native();hook.after(p)}
+    val hook=XposedInterface.Hooker @HOOK@
+    fun bind(row:TextView,native:()->Unit) {val chain=ChainFixture(String::class.java.getMethod("length"),null,arrayOf(row)) { _, _ -> native(); null };chain.run(hook);check(chain.proceeds==1)}
 }
 fun main(args:Array<String>) {
     val h=BubbleHarness();val row=TextView();val A=Drawable("A");val B=Drawable("B");val C=Drawable("C")

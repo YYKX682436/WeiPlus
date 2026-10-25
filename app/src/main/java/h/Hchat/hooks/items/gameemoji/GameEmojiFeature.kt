@@ -3,7 +3,7 @@ package h.Hchat.hooks.items.gameemoji
 import android.app.Activity
 import android.os.Handler
 import android.os.Looper
-import de.robv.android.xposed.XC_MethodHook
+import io.github.libxposed.api.XposedInterface
 import h.Hchat.event.Events
 import h.Hchat.hooks.api.core.WeChatApis
 import h.Hchat.hooks.core.BaseFeature
@@ -71,14 +71,17 @@ private class GameEmojiRuntime(
         val fields = resolveEmojiFields(method.parameterTypes[1]) ?: return false
         emojiFields = fields
         return runCatching {
-            HookRegistry.get().hook(method, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    if (replaying.get() == true) return
-                    val emojiInfo = param.args?.getOrNull(1) ?: return
-                    val gameType = detectGameType(emojiInfo) ?: return
+            HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                val args = chain.args
+                var value: Any? = null
+                var intercepted = false
+                run before@ {
+                    if (replaying.get() == true) return@before
+                    val emojiInfo = args?.getOrNull(1) ?: return@before
+                    val gameType = detectGameType(emojiInfo) ?: return@before
                     when {
                         GameEmojiSettings.pickBeforeSendEnabled(context.hostContext()) -> {
-                            interceptForChoice(method, param, gameType)
+                            if (interceptForChoice(method, chain, gameType)) { intercepted = true; value = null }
                         }
                         GameEmojiSettings.fixedResultEnabled(context.hostContext()) -> {
                             val result = configuredResult(gameType)
@@ -88,6 +91,8 @@ private class GameEmojiRuntime(
                         }
                     }
                 }
+                if (!intercepted) value = chain.proceed()
+                value
             })
             installed = true
             true
@@ -100,40 +105,44 @@ private class GameEmojiRuntime(
 
     private fun interceptForChoice(
         method: Method,
-        param: XC_MethodHook.MethodHookParam,
+        param: XposedInterface.Chain,
         gameType: GameType
-    ) {
-        val activity = (WeChatApis.currentActivity()?.currentActivity() as? Activity)
-            ?.takeUnless { it.isFinishing || it.isDestroyed }
-            ?: return
-        if (!dialogShowing.compareAndSet(false, true)) {
-            param.result = null
-            return
-        }
-        val pending = PendingSend(method, param.thisObject, param.args.copyOf(), gameType)
-        param.result = null
-        mainHandler.post {
-            if (activity.isFinishing || activity.isDestroyed) {
-                dialogShowing.set(false)
-                replay(pending, null)
-                return@post
+    ) : Boolean {
+        var consumed = false
+        run action@ {
+            val activity = (WeChatApis.currentActivity()?.currentActivity() as? Activity)
+                ?.takeUnless { it.isFinishing || it.isDestroyed }
+                ?: return@action
+            if (!dialogShowing.compareAndSet(false, true)) {
+                consumed = true
+                return@action
             }
-            val choices = resultsFor(gameType).map { it.label to "" }
-            val handle = VoiceForwardMiuixDialog.showChoices(
-                activity = activity,
-                title = if (gameType == GameType.DICE) "选择骰子点数" else "选择猜拳结果",
-                summary = "",
-                choices = choices,
-                onSelected = { index ->
-                    resultsFor(gameType).getOrNull(index)?.let { replay(pending, it) }
-                },
-                onDismiss = { dialogShowing.set(false) }
-            )
-            if (!handle.isShowing()) {
-                dialogShowing.set(false)
-                replay(pending, null)
+            val pending = PendingSend(method, param.thisObject, param.args.toTypedArray().copyOf(), gameType)
+            consumed = true
+            mainHandler.post {
+                if (activity.isFinishing || activity.isDestroyed) {
+                    dialogShowing.set(false)
+                    replay(pending, null)
+                    return@post
+                }
+                val choices = resultsFor(gameType).map { it.label to "" }
+                val handle = VoiceForwardMiuixDialog.showChoices(
+                    activity = activity,
+                    title = if (gameType == GameType.DICE) "选择骰子点数" else "选择猜拳结果",
+                    summary = "",
+                    choices = choices,
+                    onSelected = { index ->
+                        resultsFor(gameType).getOrNull(index)?.let { replay(pending, it) }
+                    },
+                    onDismiss = { dialogShowing.set(false) }
+                )
+                if (!handle.isShowing()) {
+                    dialogShowing.set(false)
+                    replay(pending, null)
+                }
             }
         }
+        return consumed
     }
 
     private fun replay(pending: PendingSend, selected: GameResult?) {
@@ -144,7 +153,8 @@ private class GameEmojiRuntime(
         }
         replaying.set(true)
         try {
-            KavaReflector.invokeOrThrow(pending.method, pending.receiver, *pending.args)
+            h.Hchat.hooks.core.XposedRuntime.get().getInvoker(pending.method)
+                .setType(XposedInterface.Invoker.Type.ORIGIN).invoke(pending.receiver, *pending.args)
         } catch (e: Throwable) {
             logger("重新发送游戏表情失败", e)
         } finally {

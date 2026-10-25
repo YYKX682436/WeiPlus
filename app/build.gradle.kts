@@ -91,7 +91,7 @@ kotlin {
 }
 
 dependencies {
-    compileOnly("de.robv.android.xposed:api:82")
+    compileOnly("io.github.libxposed:api:102.0.0")
     implementation("io.github.billywei01:fastkv:3.0.1")
     implementation(files("libs/dexkit-2.2.0-76551eb-idle.aar"))
     implementation("dev.rikka.ndk.thirdparty:cxx:1.2.0")

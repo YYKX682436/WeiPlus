@@ -1,8 +1,9 @@
 package h.Hchat.hooks.core
 
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedBridge
-import java.lang.reflect.Member
+import io.github.libxposed.api.XposedInterface
+import io.github.libxposed.api.XposedInterface.Hooker
+import io.github.libxposed.api.XposedInterface.HookHandle
+import java.lang.reflect.Executable
 import java.util.concurrent.CancellationException
 
 /**
@@ -10,7 +11,7 @@ import java.util.concurrent.CancellationException
  */
 class HookRegistry private constructor() {
     private val lock = Any()
-    private val unhooks = ArrayList<XC_MethodHook.Unhook>()
+    private val unhooks = ArrayList<HookHandle>()
     private val keyedHooks = HashMap<String, KeyedHook>()
     private val installationLease = ThreadLocal<InstallationLease>()
     @Volatile private var generation = 0L
@@ -57,18 +58,20 @@ class HookRegistry private constructor() {
         lease == null || isInstallationGenerationActive(lease.generation) &&
             runCatching { lease.isActive() }.getOrDefault(false)
 
-    fun hook(method: Member, callback: XC_MethodHook): XC_MethodHook.Unhook = synchronized(lock) {
+    @JvmOverloads
+    fun hook(method: Executable, callback: Hooker, priority: Int = XposedInterface.PRIORITY_DEFAULT): HookHandle = synchronized(lock) {
         if (!isInstallationGenerationActive(installationGeneration()) || !isInstallationLeaseActive(installationLease.get())) {
             throw CancellationException("安装代次已失效")
         }
-        val unhook = XposedBridge.hookMethod(method, callback)
+        val unhook = XposedRuntime.hook(method, priority, callback)
         unhooks.add(unhook)
         installationLease.get()?.installedHooks?.add(unhook)
         unhook
     }
 
     /** Install a shared hook at most once per key and installation generation. */
-    fun hookOnce(key: String, method: Member, callback: XC_MethodHook): XC_MethodHook.Unhook =
+    @JvmOverloads
+    fun hookOnce(key: String, method: Executable, callback: Hooker, priority: Int = XposedInterface.PRIORITY_DEFAULT): HookHandle =
         synchronized(lock) {
             require(key.isNotBlank()) { "Hook key must not be blank" }
             if (!isInstallationGenerationActive(installationGeneration()) || !isInstallationLeaseActive(installationLease.get())) {
@@ -81,17 +84,18 @@ class HookRegistry private constructor() {
                 check(existing.member == method) { "Hook key '$key' is already assigned to ${existing.member}" }
                 return@synchronized existing.unhook
             }
-            val unhook = XposedBridge.hookMethod(method, callback)
+            val unhook = XposedRuntime.hook(method, priority, callback)
             unhooks.add(unhook)
             installationLease.get()?.installedHooks?.add(unhook)
             keyedHooks[key] = KeyedHook(installationGeneration(), method, unhook)
             unhook
         }
 
-    fun add(unhook: XC_MethodHook.Unhook?) {
+    fun add(unhook: HookHandle?) {
         if (unhook == null) return
         synchronized(lock) {
             if (isInstallationGenerationActive(installationGeneration()) && isInstallationLeaseActive(installationLease.get())) {
+                if (unhooks.any { it === unhook }) return
                 unhooks.add(unhook)
                 installationLease.get()?.installedHooks?.add(unhook)
                 return
@@ -103,7 +107,7 @@ class HookRegistry private constructor() {
 
     fun size(): Int = synchronized(lock) { unhooks.size }
 
-    fun unhook(unhook: XC_MethodHook.Unhook?) {
+    fun unhook(unhook: HookHandle?) {
         if (unhook == null) return
         unhook.unhook()
         // Release the module's handle after Xposed has removed the callback.
@@ -133,13 +137,13 @@ class HookRegistry private constructor() {
 
     private data class KeyedHook(
         val generation: Long,
-        val member: Member,
-        val unhook: XC_MethodHook.Unhook
+        val member: Executable,
+        val unhook: HookHandle
     )
 
     private data class InstallationLease(
         val generation: Long,
         val isActive: () -> Boolean,
-        val installedHooks: MutableList<XC_MethodHook.Unhook> = ArrayList()
+        val installedHooks: MutableList<HookHandle> = ArrayList()
     )
 }

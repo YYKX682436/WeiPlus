@@ -18,7 +18,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
-import de.robv.android.xposed.XC_MethodHook;
+import io.github.libxposed.api.XposedInterface;
 
 /**
  * 伪造/分裂红包发包与响应修正。
@@ -73,11 +73,14 @@ public class RedPacketFakePacketHook {
                     if (method.getParameterTypes().length != 3) continue;
                     String desc = sceneBaseClass.getName() + "#" + method;
                     if (!hookedDesc.add(desc)) continue;
-                    HookRegistry.get().hook(method, new XC_MethodHook() {
-                        @Override
-                        protected void beforeHookedMethod(MethodHookParam param) {
-                            handlePacketTamperBeforeDispatch(param);
+                    HookRegistry.get().hook(method, chain -> {
+                        Object[] hookArgs = chain.getArgs().toArray();
+                        Object receiver = chain.getThisObject();
+                        observe: {
+                            handlePacketTamperBeforeDispatch(chain);
                         }
+                        Object value = chain.proceed(hookArgs);
+                        return value;
                     });
                     hooked++;
                 }
@@ -119,11 +122,11 @@ public class RedPacketFakePacketHook {
         } catch (Throwable ignored) {}
     }
 
-    private void handlePacketTamperBeforeDispatch(XC_MethodHook.MethodHookParam param) {
+    private void handlePacketTamperBeforeDispatch(XposedInterface.Chain param) {
         try {
             if (!settings.getBoolean(RedPacketSettings.KEY_FAKE_PACKET_ENABLE, false)) return;
-            if (param == null || param.args == null || param.args.length < 2) return;
-            Object reqResp = param.args[1];
+            if (param == null || param.getArgs().toArray() == null || param.getArgs().toArray().length < 2) return;
+            Object reqResp = param.getArgs().toArray()[1];
             if (reqResp == null) return;
             int cgiId = ((Number) KavaReflector.invoke(KavaReflector.findMethod(reqResp.getClass(), "getType"), reqResp)).intValue();
             String uri = String.valueOf(KavaReflector.invoke(KavaReflector.findMethod(reqResp.getClass(), "getUri"), reqResp));
@@ -363,11 +366,14 @@ public class RedPacketFakePacketHook {
                 for (Method method : KavaReflector.declaredMethods(clazz)) {
                     if (!"onGYNetEnd".equals(method.getName())) continue;
                     if (method.getParameterTypes().length != 3) continue;
-                    HookRegistry.get().hook(method, new XC_MethodHook() {
-                        @Override
-                        protected void afterHookedMethod(MethodHookParam param) {
-                            fixFakePacketResponse(param.thisObject);
+                    HookRegistry.get().hook(method, chain -> {
+                        Object[] hookArgs = chain.getArgs().toArray();
+                        Object receiver = chain.getThisObject();
+                        Object value = chain.proceed(hookArgs);
+                        observe: {
+                            fixFakePacketResponse(receiver);
                         }
+                        return value;
                     });
                     hooked++;
                 }

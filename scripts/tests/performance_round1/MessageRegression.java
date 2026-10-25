@@ -31,10 +31,13 @@ public class MessageRegression {
         void emit(String operation,ContentValues values) { events.listener.accept(change(operation,values)); }
     }
     static int calls;
+    static Throwable lastFailure;
+    static final NullPointerException foreignFailure=new NullPointerException("Attempt to invoke virtual method boolean java.lang.String.isEmpty() on a null object reference");
     public static String summary(String mode) {
         calls++;
-        if (mode.equals("npe")) throw new NullPointerException("Attempt to invoke virtual method boolean java.lang.String.isEmpty() on a null object reference");
-        if (mode.equals("other")) throw new IllegalStateException("native failure");
+        if (mode.equals("npe")) {var failure=new NullPointerException("Attempt to invoke virtual method boolean java.lang.String.isEmpty() on a null object reference");lastFailure=failure;throw failure;}
+        if (mode.equals("other")) {var failure=new IllegalStateException("native failure");lastFailure=failure;throw failure;}
+        if (mode.equals("foreign")) throw foreignFailure;
         return mode.equals("null")?null:mode;
     }
     static Object callSummary(Method m,String mode) throws Throwable {
@@ -43,21 +46,20 @@ public class MessageRegression {
     }
     public static void main(String[] args) throws Throwable {
         Method summary=MessageRegression.class.getMethod("summary",String.class);
-        de.robv.android.xposed.XC_MethodHook actual = ActualSummaryHook.create(summary);
-        for (String mode : List.of("normal", "null", "npe", "other")) {
-            var param = new de.robv.android.xposed.XC_MethodHook.MethodHookParam();
+        io.github.libxposed.api.XposedInterface.Hooker actual = ActualSummaryHook.create(summary);
+        for (String mode : List.of("normal", "null", "npe", "other", "foreign")) {
             int before = calls;
-            actual.before(param);
-            check(calls == before && param.getThrowable() == null && param.getResult() == null);
-            try { param.setResult(summary.invoke(null, mode)); }
-            catch (InvocationTargetException e) { param.setThrowable(e.getCause()); }
-            Throwable originalFailure = param.getThrowable();
-            actual.after(param);
-            check(calls == before + 1);
-            if (mode.equals("npe")) check(param.getThrowable() == null && "".equals(param.getResult()));
-            if (mode.equals("other")) check(param.getThrowable() == originalFailure);
-            if (mode.equals("normal")) check("normal".equals(param.getResult()));
-            if (mode.equals("null")) check(param.getResult() == null);
+            var chain=new h.Hchat.tests.api102.ChainFixture(summary,null,new Object[]{mode},(owner,parameters)-> {
+                try{return summary.invoke(null,parameters);}catch(InvocationTargetException failure){throw failure.getCause();}
+            });
+            Object result=null; Throwable failure=null;
+            try{result=chain.run(actual);}catch(Throwable original){failure=original;}
+            check(calls==before+1 && chain.proceeds==1);
+            if(mode.equals("npe"))check(failure==null && "".equals(result));
+            if(mode.equals("other"))check(failure==lastFailure && failure instanceof IllegalStateException && "native failure".equals(failure.getMessage()));
+            if(mode.equals("foreign"))check(failure==foreignFailure);
+            if(mode.equals("normal"))check("normal".equals(result));
+            if(mode.equals("null"))check(result==null && failure==null);
         }
         calls = 0;
         check("normal".equals(callSummary(summary,"normal")) && calls==1);

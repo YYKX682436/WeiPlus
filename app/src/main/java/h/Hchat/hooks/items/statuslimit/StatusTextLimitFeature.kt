@@ -1,7 +1,7 @@
 package h.Hchat.hooks.items.statuslimit
 
 import android.content.Context
-import de.robv.android.xposed.XC_MethodHook
+import io.github.libxposed.api.XposedInterface
 import h.Hchat.hooks.core.BaseFeature
 import h.Hchat.hooks.core.FeatureContext
 import h.Hchat.hooks.core.HookRegistry
@@ -57,11 +57,14 @@ class StatusTextLimitFeature : BaseFeature() {
                     return
                 }
                 constructors.forEach { constructor ->
-                    HookRegistry.get().hook(constructor, object : XC_MethodHook() {
-                        override fun afterHookedMethod(param: MethodHookParam) {
-                            if (!isEnabled(context)) return
-                            expandLimit(param.thisObject)
+                    HookRegistry.get().hook(constructor, XposedInterface.Hooker { chain ->
+                        val receiver = chain.thisObject
+                        val value = chain.proceed()
+                        run after@ {
+                            if (!isEnabled(context)) return@after
+                            expandLimit(receiver)
                         }
+                        value
                     })
                 }
                 installed = true

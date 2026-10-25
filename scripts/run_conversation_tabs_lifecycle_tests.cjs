@@ -1,4 +1,4 @@
-// Compile production lifecycle/attachment methods against minimal JVM Android/Xposed fixtures.
+// Compile production lifecycle/attachment methods against minimal JVM Android fixtures and official API 102 types.
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
@@ -24,6 +24,10 @@ const compiler = [
 ];
 const output = fs.mkdtempSync(path.join(os.tmpdir(), 'hchat-conversation-tabs-lifecycle-'));
 const artifact = path.join(output, 'tabs-lifecycle.jar');
+process.once('exit',()=>fs.rmSync(output,{recursive:true,force:true}));
+const api=require('./lib/api102.cjs').prepare(output);
+const precompile=spawnSync(process.env.JAVAC||'javac',['-cp',api.classpath,'-d',output,'scripts/tests/api102/ChainFixture.java'],{cwd:root,encoding:'utf8'});
+if(precompile.status!==0)throw Error(precompile.stdout+precompile.stderr);
 const source = fs.readFileSync(path.join(root,
     'app/src/main/java/h/Hchat/hooks/items/conversationtabs/ConversationTabsRuntime.kt'), 'utf8');
 function between(start, end) {
@@ -36,7 +40,7 @@ let methods = between('    fun initialize(', '    private fun reload()');
 // Optional mutation checks prove the scenarios reject both lifecycle and position regressions.
 const mutation = process.env.TABS_LIFECYCLE_MUTATION;
 if (mutation === 'missed-resume') {
-    const original = 'if (root != null) ensureHost(param.thisObject, root)';
+    const original = 'if (root != null) ensureHost(chain.thisObject, root)';
     if (!methods.includes(original)) throw new Error('Resume mutation boundary missing');
     methods = methods.replace(original, '// Simulate missing recovery after an early layout.');
 } else if (mutation === 'stale-root') {
@@ -79,8 +83,7 @@ function run(args) {
 }
 const tests = path.join(root, 'scripts/tests/conversation_tabs_lifecycle');
 run(['-Xmx256m', '-cp', compiler.join(path.delimiter), 'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler',
-    '-no-stdlib', '-no-reflect', '-classpath', stdlib, '-d', artifact, extracted,
+    '-no-stdlib', '-no-reflect', '-classpath', [stdlib,api.classpath,output].join(path.delimiter), '-d', artifact, extracted,
     ...fs.readdirSync(tests).filter(file => file.endsWith('.kt')).map(file => path.join(tests, file))]);
-run(['-cp', [artifact, stdlib].join(path.delimiter),
+run(['-cp', [artifact, stdlib,api.classpath,output].join(path.delimiter),
     'h.Hchat.hooks.items.conversationtabs.ConversationTabsLifecycleRegressionKt']);
-console.log('Test artifacts: ' + output);

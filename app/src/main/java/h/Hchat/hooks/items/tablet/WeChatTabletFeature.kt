@@ -4,8 +4,8 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.view.View
 import android.widget.Button
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedBridge
+import io.github.libxposed.api.XposedInterface
+import h.Hchat.hooks.core.XposedRuntime
 import h.Hchat.hooks.core.BaseFeature
 import h.Hchat.hooks.core.Feature
 import h.Hchat.hooks.core.FeatureContext
@@ -114,12 +114,16 @@ class WeChatTabletFeature : BaseFeature() {
             val key = hookKey(method, fallbackClassLoader)
             synchronized(WeChatTabletFeature::class.java) {
                 if (padHookedLoaders.contains(key)) return
-                HookRegistry.get().hook(method, object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        param.result = Throwable().stackTrace.none {
-                            it.className.contains(CHAT_VOICE_STACK)
-                        }
+                HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                    var value: Any? = null
+                    var intercepted = false
+                    if (!intercepted) value = chain.proceed()
+                    run after@ {
+                        run { intercepted = true; value = Throwable().stackTrace.none {
+                                it.className.contains(CHAT_VOICE_STACK)
+                        } }
                     }
+                    value
                 })
                 padHookedLoaders.add(key)
             }
@@ -129,11 +133,14 @@ class WeChatTabletFeature : BaseFeature() {
             val key = hookKey(method, fallbackClassLoader)
             synchronized(WeChatTabletFeature::class.java) {
                 if (loginButtonHookedLoaders.contains(key)) return
-                HookRegistry.get().hook(method, object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        val button = param.args?.firstOrNull() as? Button ?: return
+                HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                    val args = chain.args
+                    run before@ {
+                        val button = args?.firstOrNull() as? Button ?: return@before
                         if (button.visibility != View.VISIBLE) button.visibility = View.VISIBLE
                     }
+                    val value = chain.proceed()
+                    value
                 })
                 loginButtonHookedLoaders.add(key)
             }

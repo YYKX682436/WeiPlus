@@ -16,7 +16,6 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
-import de.robv.android.xposed.XC_MethodHook;
 
 /**
  * 微信网络发包器缓存与发包封装。
@@ -58,19 +57,31 @@ public class WeChatNetworkDispatcher {
                 for (Method method : KavaReflector.declaredMethods(queueClass)) {
                     if (!isSendMethodCandidate(method, null) || !hookedQueueMethods.add(method)) continue;
                     try {
-                        HookRegistry.get().hook(method, new XC_MethodHook() {
-                            @Override
-                            protected void beforeHookedMethod(MethodHookParam param) {
-                                if (dispatcherInstance == null
-                                        || methodPriority(method) > methodPriority(dispatcherMethod)) {
-                                    cacheDispatcher(param.thisObject, method, "网络发包器已缓存");
-                                }
-                            }
-                        });
+                        HookRegistry.get()
+                                .hook(
+                                        method,
+                                        chain -> {
+                                            Object receiver = chain.getThisObject();
+                                            try {
+                                                if (dispatcherInstance == null
+                                                        || methodPriority(method)
+                                                                > methodPriority(
+                                                                        dispatcherMethod)) {
+                                                    cacheDispatcher(receiver, method, "网络发包器已缓存");
+                                                }
+                                            } catch (Throwable error) {
+                                                log("缓存网络发包器失败: " + error.getMessage());
+                                            }
+                                            return chain.proceed();
+                                        });
                         hooked++;
                     } catch (Throwable hookError) {
                         hookedQueueMethods.remove(method);
-                        log("网络队列方法Hook失败: " + method.toGenericString() + " " + hookError.getMessage());
+                        log(
+                                "网络队列方法Hook失败: "
+                                        + method.toGenericString()
+                                        + " "
+                                        + hookError.getMessage());
                     }
                 }
             } catch (Throwable e) {

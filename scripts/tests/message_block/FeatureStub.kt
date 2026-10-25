@@ -1,7 +1,7 @@
 package h.Hchat.hooks.core
 
 import android.content.Context
-import de.robv.android.xposed.XC_MethodHook
+import io.github.libxposed.api.XposedInterface
 import java.lang.reflect.Method
 
 open class BaseFeature {
@@ -25,5 +25,5 @@ object DexInstallScheduler {
 }
 object HookRegistry {
     fun get(): HookRegistry = this
-    fun hook(method: Method, callback: XC_MethodHook) {}
+    fun hook(method: Method, callback: XposedInterface.Hooker, priority: Int = XposedInterface.PRIORITY_DEFAULT) {}
 }

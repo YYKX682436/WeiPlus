@@ -3,7 +3,7 @@ package h.Hchat.hooks.items.conversationgroup
 import android.database.Cursor
 import android.os.Handler
 import android.os.Looper
-import de.robv.android.xposed.XC_MethodHook
+import io.github.libxposed.api.XposedInterface
 import h.Hchat.dexkit.DexMethodCache
 import h.Hchat.hooks.core.FeatureContext
 import h.Hchat.hooks.core.HookRegistry
@@ -16,7 +16,7 @@ import org.luckypray.dexkit.query.matchers.ClassMatcher
 import org.luckypray.dexkit.query.matchers.MethodMatcher
 import java.lang.reflect.Constructor
 import java.lang.reflect.Method
-import java.lang.reflect.Member
+import java.lang.reflect.Executable
 import java.lang.reflect.Modifier
 import java.lang.ref.WeakReference
 import java.util.Collections
@@ -32,7 +32,7 @@ internal object ConversationGroupHomeProjection {
     private val lifecycleLock = Any()
     @Volatile private var lifecycleGeneration = 0L
     private data class Installation(val lifecycle: Long, val hooks: Long)
-    private val installed = ConcurrentHashMap.newKeySet<Member>()
+    private val installed = ConcurrentHashMap.newKeySet<Executable>()
     private val legacyDepth = ThreadLocal<Int>()
     private val refreshers = Collections.synchronizedMap(WeakHashMap<Any, Refresh>())
     private val main = Handler(Looper.getMainLooper())
@@ -111,16 +111,19 @@ internal object ConversationGroupHomeProjection {
             DexMethodCache.saveConstructor(prefs, runtime, cacheKey, candidates.single())
             candidates
         }
-        constructors.forEach { constructor -> hook(constructor, object : XC_MethodHook() {
-            override fun beforeHookedMethod(param: MethodHookParam) {
-                if (!isActive(installation)) return
-                val scope = queryScopes.get()?.lastOrNull() ?: return
-                if (scope.installation != installation) return
-                val filter = scope.filter ?: return
-                if (!filter.active || scope.rootApplied) return
-                val original = param.args.firstOrNull() as? String ?: return
-                param.args[0] = filter.query(original)
+        constructors.forEach { constructor -> hook(constructor, XposedInterface.Hooker { chain ->
+            val args = chain.args.toTypedArray()
+            run before@ {
+                if (!isActive(installation)) return@before
+                val scope = queryScopes.get()?.lastOrNull() ?: return@before
+                if (scope.installation != installation) return@before
+                val filter = scope.filter ?: return@before
+                if (!filter.active || scope.rootApplied) return@before
+                val original = args.firstOrNull() as? String ?: return@before
+                args[0] = filter.query(original)
             }
+            val value = chain.proceed(args)
+            value
         }, installation) }
         true
     }.getOrElse { HLog.e("$TAG 安装标签查询失败", it); false }
@@ -183,14 +186,14 @@ internal object ConversationGroupHomeProjection {
                 it.parameterTypes.isEmpty() && Cursor::class.java.isAssignableFrom(it.returnType)
             }
             check(queries.isNotEmpty()) { "旧版首页 Cursor 查询缺失" }
-            (queries + changes).forEach { method -> hook(method, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    if (!captureRefresh(installation, param.thisObject, Refresh(notice))) return
-                    enterQuery(installation)
-                    legacyDepth.set((legacyDepth.get() ?: 0) + 1)
-                }
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    if (queryScopes.get()?.lastOrNull()?.installation != installation) return
+            (queries + changes).forEach { method -> hook(method, XposedInterface.Hooker { chain ->
+                val entered = captureRefresh(installation, chain.thisObject, Refresh(notice))
+                if (!entered) return@Hooker chain.proceed()
+                enterQuery(installation)
+                legacyDepth.set((legacyDepth.get() ?: 0) + 1)
+                try {
+                    chain.proceed()
+                } finally {
                     val depth = (legacyDepth.get() ?: 1) - 1
                     if (depth <= 0) legacyDepth.remove() else legacyDepth.set(depth)
                     leaveQuery(installation)
@@ -198,24 +201,29 @@ internal object ConversationGroupHomeProjection {
             }, installation) }
         }
         methods.filter { it.returnType == String::class.java && it.parameterTypes.isEmpty() }.forEach { root ->
-            hook(root, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    if (!isActive(installation)) return
-                    if ((legacyDepth.get() ?: 0) <= 0 || param.hasThrowable()) return
-                    val scope = queryScopes.get()?.lastOrNull()?.takeIf { it.installation == installation } ?: return
+            hook(root, XposedInterface.Hooker { chain ->
+                val receiver = chain.thisObject
+                var value: Any? = null
+                var intercepted = false
+                if (!intercepted) value = chain.proceed()
+                run after@ {
+                    if (!isActive(installation)) return@after
+                    if ((legacyDepth.get() ?: 0) <= 0) return@after
+                    val scope = queryScopes.get()?.lastOrNull()?.takeIf { it.installation == installation } ?: return@after
                     synchronized(lifecycleLock) {
-                        if (!isActive(installation)) return
-                        legacyStorage = WeakReference(param.thisObject)
+                        if (!isActive(installation)) return@after
+                        legacyStorage = WeakReference(receiver)
                     }
-                    val original = param.result as? String ?: return
+                    val original = value as? String ?: return@after
                     val filter = scope.filter
                     if (filter?.active == true) {
-                        param.result = filter.rootWhere(original)
+                        run { intercepted = true; value = filter.rootWhere(original) }
                         markQueryFilterApplied()
                     } else {
-                        param.result = ConversationGroupHomeVisibility.rootWhere(original, hiddenIds())
+                        run { intercepted = true; value = ConversationGroupHomeVisibility.rootWhere(original, hiddenIds()) }
                     }
                 }
+                value
             }, installation)
         }
         modern.forEach { page ->
@@ -242,21 +250,18 @@ internal object ConversationGroupHomeProjection {
                 val values = KavaReflector.invokeMethod(native, "convertTo") as? android.content.ContentValues
                 return values?.getAsString("username")
             }
-            hook(page, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    if (isActive(installation)) enterQuery(installation)
-                }
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    try {
-                    if (!isActive(installation)) return
-                    if (param.hasThrowable()) return
-                    updates.firstOrNull { it.declaringClass.isInstance(param.thisObject) }
-                        ?.let { captureRefresh(installation, param.thisObject, Refresh(it)) }
+            hook(page, XposedInterface.Hooker { chain ->
+                val entered = isActive(installation)
+                if (entered) enterQuery(installation)
+                try {
+                    val result = chain.proceed()
+                    if (!entered || !isActive(installation)) return@Hooker result
+                    updates.firstOrNull { it.declaringClass.isInstance(chain.thisObject) }
+                    ?.let { captureRefresh(installation, chain.thisObject, Refresh(it)) }
                     val hidden = if (hasTabFilterInQuery()) emptySet() else hiddenIds()
-                    if (hidden.isEmpty()) return
+                    if (hidden.isEmpty()) return@Hooker result
                     runCatching {
-                        val result = param.result ?: return
-                        val rows = KavaReflector.readField(listField, result) as? List<*> ?: return
+                        val rows = KavaReflector.readField(listField, result) as? List<*> ?: return@runCatching
                         val filtered = rows.filterNot { username(it) in hidden }
                         if (filtered.size != rows.size) {
                             if (rows is MutableList<*>) {
@@ -268,51 +273,62 @@ internal object ConversationGroupHomeProjection {
                                 check(KavaReflector.writeField(listField, result, ArrayList(filtered)))
                             }
                         }
-                        // Keep native hasMore and next flag unchanged, including completely hidden pages.
+                        // Preserve native hasMore and next flags, including completely hidden pages.
                     }.onFailure { HLog.e("$TAG 过滤首页分页失败", it) }
-                    } finally { leaveQuery(installation) }
+                    result
+                } finally {
+                    if (entered) leaveQuery(installation)
                 }
             }, installation)
-            hook(visible, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    if (!isActive(installation)) return
-                    if (param.result != true) return
+            hook(visible, XposedInterface.Hooker { chain ->
+                val args = chain.args
+                var value: Any? = null
+                var intercepted = false
+                if (!intercepted) value = chain.proceed()
+                run after@ {
+                    if (!isActive(installation)) return@after
+                    if (value != true) return@after
                     val filter = tabFilter()
                     if (filter?.active == true) {
-                        val row = param.args.firstOrNull()
-                        val native = KavaReflector.readField(conversation, row) ?: return
-                        val values = KavaReflector.invokeMethod(native, "convertTo") as? android.content.ContentValues ?: return
+                        val row = args.firstOrNull()
+                        val native = KavaReflector.readField(conversation, row) ?: return@after
+                        val values = KavaReflector.invokeMethod(native, "convertTo") as? android.content.ContentValues ?: return@after
                         val nativeContact = contact?.let { KavaReflector.readField(it, row) }
                         val contactValues = nativeContact?.let { KavaReflector.invokeMethod(it, "convertTo") } as? android.content.ContentValues
-                        param.result = filter.accepts(values.getAsString("username").orEmpty(),
-                            values.getAsInteger("unReadCount") ?: 0, values.getAsInteger("unReadMuteCount") ?: 0,
-                            contactValues?.getAsInteger("verifyFlag") ?: 0)
-                        return
+                        run { intercepted = true; value = filter.accepts(values.getAsString("username").orEmpty(),
+                                values.getAsInteger("unReadCount") ?: 0, values.getAsInteger("unReadMuteCount") ?: 0,
+                                contactValues?.getAsInteger("verifyFlag") ?: 0) }
+                        return@after
                     }
                     val hidden = hiddenIds()
-                    if (hidden.isNotEmpty() && username(param.args.firstOrNull()) in hidden) param.result = false
+                    if (hidden.isNotEmpty() && username(args.firstOrNull()) in hidden) run { intercepted = true; value = false }
                 }
+                value
             }, installation)
         }
-        updates.forEach { update -> hook(update, object : XC_MethodHook() {
-            override fun beforeHookedMethod(param: MethodHookParam) {
-                val argument = param.args?.getOrNull(0)
-                captureRefresh(installation, param.thisObject, Refresh(
+        updates.forEach { update -> hook(update, XposedInterface.Hooker { chain ->
+            val args = chain.args
+            val receiver = chain.thisObject
+            run before@ {
+                val argument = args?.getOrNull(0)
+                captureRefresh(installation, receiver, Refresh(
                     update,
                     if (update.parameterTypes.size == 3 && argument != null) {
                         WeakReference(argument)
                     } else null
                 ))
             }
-            override fun afterHookedMethod(param: MethodHookParam) {
-                if (!isActive(installation)) return
-                if (tabFilter()?.active != true || param.hasThrowable()) return
+            val value = chain.proceed()
+            run after@ {
+                if (!isActive(installation)) return@after
+                if (tabFilter()?.active != true) return@after
                 // Native incremental updates may reject folded children before the visibility test.
                 // Reload at most once per burst; never recursively refresh our own type-5 reset.
-                val type = param.args.getOrNull(update.parameterTypes.size - 2) as? Int
-                if (type == 5) return
+                val type = args.getOrNull(update.parameterTypes.size - 2) as? Int
+                if (type == 5) return@after
                 requestTabRefresh(installation)
             }
+            value
         }, installation) }
         true
     }.getOrElse { HLog.e("$TAG 安装首页投影失败", it); false }
@@ -408,7 +424,7 @@ internal object ConversationGroupHomeProjection {
             types[types.size - 2] == Integer.TYPE && types.last() == String::class.java
     }
 
-    private fun hook(method: Member, callback: XC_MethodHook, installation: Installation): Unit = synchronized(lifecycleLock) {
+    private fun hook(method: Executable, callback: XposedInterface.Hooker, installation: Installation): Unit = synchronized(lifecycleLock) {
         if (!isActive(installation)) throw CancellationException("首页安装代次已失效")
         if (!installed.add(method)) return
         try { HookRegistry.get().withInstallationGeneration(installation.hooks) { HookRegistry.get().hook(method, callback) } }

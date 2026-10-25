@@ -38,7 +38,7 @@ import androidx.navigationevent.compose.LocalNavigationEventDispatcherOwner
 import androidx.savedstate.SavedStateRegistry
 import androidx.savedstate.SavedStateRegistryController
 import androidx.savedstate.SavedStateRegistryOwner
-import de.robv.android.xposed.XC_MethodHook
+import io.github.libxposed.api.XposedInterface
 import h.Hchat.dexkit.DexMethodCache
 import h.Hchat.event.Events
 import h.Hchat.hooks.api.core.WeChatApis
@@ -288,10 +288,13 @@ private class CustomBottomBarRuntime(
         if (constructors.isEmpty()) return false
         return runCatching {
             constructors.forEach { constructor ->
-                HookRegistry.get().hook(constructor, object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        observeBottomTab(param.thisObject as? ViewGroup)
+                HookRegistry.get().hook(constructor, XposedInterface.Hooker { chain ->
+                    val receiver = chain.thisObject
+                    val value = chain.proceed()
+                    run after@ {
+                        observeBottomTab(receiver as? ViewGroup)
                     }
+                    value
                 })
             }
             bottomTabConstructorHooksInstalled = true
@@ -310,12 +313,15 @@ private class CustomBottomBarRuntime(
             return
         }
         runCatching {
-            HookRegistry.get().hook(method, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    val view = param.thisObject as? View ?: return
-                    if (!isBottomBlurSuppressed(view.rootView)) return
+            HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                val receiver = chain.thisObject
+                run before@ {
+                    val view = receiver as? View ?: return@before
+                    if (!isBottomBlurSuppressed(view.rootView)) return@before
                     clearBottomBlurView(view, invalidate = false)
                 }
+                val value = chain.proceed()
+                value
             })
             frostedDrawHookInstalled = true
         }.onFailure {
@@ -331,15 +337,19 @@ private class CustomBottomBarRuntime(
             exactSetTo).distinctBy(Method::toGenericString)
         return runCatching {
             methods.forEach { method ->
-                HookRegistry.get().hook(method, object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
+                HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                    val args = chain.args
+                    val receiver = chain.thisObject
+                    val value = chain.proceed()
+                    run after@ {
                         val selectedIndex = if (method == exactSetTo) {
-                            param.args.getOrNull(0) as? Int
+                            args.getOrNull(0) as? Int
                         } else {
                             null
                         }
-                        syncFloatingHost(param.thisObject as? ViewGroup, selectedIndex)
+                        syncFloatingHost(receiver as? ViewGroup, selectedIndex)
                     }
+                    value
                 })
             }
             bottomTabStateHooksInstalled = true
@@ -393,10 +403,13 @@ private class CustomBottomBarRuntime(
                 !Modifier.isAbstract(it.modifiers)
         } ?: return false
         return runCatching {
-            HookRegistry.get().hook(onResume, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    applyFromActivity(param.thisObject as? Activity)
+            HookRegistry.get().hook(onResume, XposedInterface.Hooker { chain ->
+                val receiver = chain.thisObject
+                val value = chain.proceed()
+                run after@ {
+                    applyFromActivity(receiver as? Activity)
                 }
+                value
             })
             resumeHookInstalled = true
             true
@@ -410,10 +423,13 @@ private class CustomBottomBarRuntime(
         if (createHookInstalled) return true
         val method = locateMainTabCreateMethod(allowDexSearch) ?: return false
         return runCatching {
-            HookRegistry.get().hook(method, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    applyFromActivity(findActivity(param.thisObject))
+            HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                val receiver = chain.thisObject
+                val value = chain.proceed()
+                run after@ {
+                    applyFromActivity(findActivity(receiver))
                 }
+                value
             })
             createHookInstalled = true
             true

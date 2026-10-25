@@ -4,7 +4,7 @@ import android.app.Activity
 import android.os.Handler
 import android.os.Looper
 import android.view.View
-import de.robv.android.xposed.XC_MethodHook
+import io.github.libxposed.api.XposedInterface
 import h.Hchat.hooks.core.BaseFeature
 import h.Hchat.hooks.core.FeatureContext
 import h.Hchat.hooks.core.HookRegistry
@@ -80,18 +80,24 @@ private class AutoViewOriginalRuntime(
             return false
         }
         return runCatching {
-            HookRegistry.get().hook(onResume!!, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    val activity = param.thisObject as? Activity ?: return
+            HookRegistry.get().hook(onResume!!, XposedInterface.Hooker { chain ->
+                val receiver = chain.thisObject
+                val value = chain.proceed()
+                run after@ {
+                    val activity = receiver as? Activity ?: return@after
                     bindPageListener(activity)
                     scheduleCurrentPage(activity)
                 }
+                value
             })
-            HookRegistry.get().hook(onDestroy!!, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    val activity = param.thisObject as? Activity ?: return
+            HookRegistry.get().hook(onDestroy!!, XposedInterface.Hooker { chain ->
+                val receiver = chain.thisObject
+                run before@ {
+                    val activity = receiver as? Activity ?: return@before
                     clearActivity(activity)
                 }
+                val value = chain.proceed()
+                value
             })
             installed = true
             true
@@ -124,13 +130,17 @@ private class AutoViewOriginalRuntime(
         }
         if (!hookedPageListenerMethods.add(callback!!)) return
         runCatching {
-            HookRegistry.get().hook(callback, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    val owner = readFieldByType(param.thisObject, IMAGE_GALLERY_UI) as? Activity
-                        ?: return
-                    val position = (param.args.firstOrNull() as? Number)?.toInt() ?: return
+            HookRegistry.get().hook(callback, XposedInterface.Hooker { chain ->
+                val args = chain.args
+                val receiver = chain.thisObject
+                val value = chain.proceed()
+                run after@ {
+                    val owner = readFieldByType(receiver, IMAGE_GALLERY_UI) as? Activity
+                    ?: return@after
+                    val position = (args.firstOrNull() as? Number)?.toInt() ?: return@after
                     scheduleAutoView(owner, position, PAGE_CHANGE_INITIAL_DELAY_MS)
                 }
+                value
             })
         }.onFailure {
             hookedPageListenerMethods.remove(callback)

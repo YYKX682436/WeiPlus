@@ -6,7 +6,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.MenuItem
-import de.robv.android.xposed.XC_MethodHook
+import io.github.libxposed.api.XposedInterface
 import h.Hchat.hooks.core.BaseFeature
 import h.Hchat.hooks.core.FeatureContext
 import h.Hchat.hooks.core.HookRegistry
@@ -68,10 +68,13 @@ class MomentsContactFilterFeature : BaseFeature() {
             Bundle::class.java
         ) ?: return false
         return runCatching {
-            HookRegistry.get().hook(onCreate, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    bindFilterMenu(param.thisObject as? Activity ?: return)
+            HookRegistry.get().hook(onCreate, XposedInterface.Hooker { chain ->
+                val receiver = chain.thisObject
+                val value = chain.proceed()
+                run after@ {
+                    bindFilterMenu(receiver as? Activity ?: return@after)
                 }
+                value
             })
             true
         }.getOrElse {

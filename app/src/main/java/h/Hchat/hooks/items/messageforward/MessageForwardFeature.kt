@@ -8,7 +8,7 @@ import android.os.SystemClock
 import android.view.MenuItem
 import android.view.View
 import android.widget.Toast
-import de.robv.android.xposed.XC_MethodHook
+import io.github.libxposed.api.XposedInterface
 import h.Hchat.event.Events
 import h.Hchat.hooks.api.core.WeChatApis
 import h.Hchat.hooks.api.sns.PreparedSnsForward
@@ -126,17 +126,21 @@ private class MessageForwardHooker(
         val createMethods = SingleMessageMenuLocator.menuCreateMethods(context, logger)
         val clickMethods = SingleMessageMenuLocator.menuClickMethods(context, logger)
         val createHooked = createMethods.count { method ->
-            hook(method, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    addForwardMenu(param)
+            hook(method, XposedInterface.Hooker { chain ->
+                val value = chain.proceed()
+                run after@ {
+                    addForwardMenu(chain)
                 }
+                value
             })
         }
         val clickHooked = clickMethods.count { method ->
-            hook(method, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    handleForwardClick(param)
+            hook(method, XposedInterface.Hooker { chain ->
+                run before@ {
+                    handleForwardClick(chain)
                 }
+                val value = chain.proceed()
+                value
             })
         }
         if (createHooked <= 0) logger("转发菜单创建Hook未安装", null)
@@ -148,16 +152,22 @@ private class MessageForwardHooker(
             MultiSelectMessageMenuLocator.multiSelectExitMethod(context, it, logger)
         }
         val multiCreateHooked = multiCreateMethod != null && multiExitMethod != null &&
-            hook(multiCreateMethod, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    addMultiMomentsMenu(param)
+            hook(multiCreateMethod, XposedInterface.Hooker { chain ->
+                val value = chain.proceed()
+                run after@ {
+                    addMultiMomentsMenu(chain)
                 }
+                value
             })
         val multiClickHooked = multiClickMethod != null && multiExitMethod != null &&
-            hook(multiClickMethod, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    handleMultiMomentsClick(param, multiExitMethod)
+            hook(multiClickMethod, XposedInterface.Hooker { chain ->
+                var value: Any? = null
+                var intercepted = false
+                run before@ {
+                    if (handleMultiMomentsClick(chain, multiExitMethod)) { intercepted = true; value = null }
                 }
+                if (!intercepted) value = chain.proceed()
+                value
             })
         if (!multiCreateHooked) logger("多选转发朋友圈菜单创建Hook未安装", null)
         if (!multiClickHooked) logger("多选转发朋友圈菜单点击Hook未安装", null)
@@ -167,10 +177,12 @@ private class MessageForwardHooker(
             includeDetails = false,
             logger = logger
         ).count { method ->
-            hook(method, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    addFavoriteForwardMenu(param)
+            hook(method, XposedInterface.Hooker { chain ->
+                val value = chain.proceed()
+                run after@ {
+                    addFavoriteForwardMenu(chain)
                 }
+                value
             })
         }
         val favoriteClickHooked = FavoriteMenuLocator.menuClickMethods(
@@ -178,10 +190,14 @@ private class MessageForwardHooker(
             includeDetails = false,
             logger = logger
         ).count { method ->
-            hook(method, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    handleFavoriteForwardClick(param)
+            hook(method, XposedInterface.Hooker { chain ->
+                var value: Any? = null
+                var intercepted = false
+                run before@ {
+                    if (handleFavoriteForwardClick(chain)) { intercepted = true; value = null }
                 }
+                if (!intercepted) value = chain.proceed()
+                value
             })
         }
         if (favoriteCreateHooked <= 0) logger("收藏转发菜单创建Hook未安装", null)
@@ -201,7 +217,7 @@ private class MessageForwardHooker(
         executor.shutdownNow()
     }
 
-    private fun hook(method: Method, callback: XC_MethodHook): Boolean {
+    private fun hook(method: Method, callback: XposedInterface.Hooker): Boolean {
         if (Modifier.isAbstract(method.modifiers) || method.declaringClass.isInterface) return false
         if (!hookedMethods.add(method)) return true
         return runCatching {
@@ -214,10 +230,10 @@ private class MessageForwardHooker(
         }
     }
 
-    private fun addForwardMenu(param: XC_MethodHook.MethodHookParam) {
+    private fun addForwardMenu(param: XposedInterface.Chain) {
         clearBindings()
         if (!singleForwardEnabled()) return
-        val args = param.args ?: return
+        val args = param.args.toTypedArray() ?: return
         val menu = args.getOrNull(0) ?: return
         val view = args.getOrNull(1) as? View ?: return
         val nativeMessage = resolveNativeMessage(view.tag) ?: return
@@ -229,9 +245,9 @@ private class MessageForwardHooker(
         moveAfterRepeat(menu, item)
     }
 
-    private fun handleForwardClick(param: XC_MethodHook.MethodHookParam) {
+    private fun handleForwardClick(param: XposedInterface.Chain) {
         if (!singleForwardEnabled()) return
-        val item = param.args?.firstNotNullOfOrNull { it as? MenuItem } ?: return
+        val item = param.args.toTypedArray()?.firstNotNullOfOrNull { it as? MenuItem } ?: return
         if (item.itemId != SingleMessageMenuLocator.HCHAT_FORWARD_MENU_ITEM_ID) return
         val binding = consumeBinding(item)
         val activity = currentActivity()
@@ -252,54 +268,58 @@ private class MessageForwardHooker(
         }
     }
 
-    private fun addMultiMomentsMenu(param: XC_MethodHook.MethodHookParam) {
+    private fun addMultiMomentsMenu(param: XposedInterface.Chain) {
         if (!multiMomentsEnabled()) return
         val selected = MultiSelectMessageResolver.resolve(param.thisObject)
         val types = selected.mapNotNull(::nativeMessageType)
         if (selected.isEmpty() || types.size != selected.size || momentsCombinationError(types) != null) return
-        val menu = param.args?.getOrNull(0) ?: return
+        val menu = param.args.toTypedArray()?.getOrNull(0) ?: return
         addPlainMenuItem(menu, MULTI_MOMENTS_MENU_ITEM_ID, MULTI_MOMENTS_MENU_TITLE)
     }
 
     private fun handleMultiMomentsClick(
-        param: XC_MethodHook.MethodHookParam,
+        param: XposedInterface.Chain,
         exitMethod: Method
-    ) {
-        if (!multiMomentsEnabled()) return
-        val item = param.args?.firstNotNullOfOrNull { it as? MenuItem } ?: return
-        if (item.itemId != MULTI_MOMENTS_MENU_ITEM_ID) return
-        param.result = null
+    ) : Boolean {
+        var consumed = false
+        run action@ {
+            if (!multiMomentsEnabled()) return@action
+            val item = param.args.toTypedArray()?.firstNotNullOfOrNull { it as? MenuItem } ?: return@action
+            if (item.itemId != MULTI_MOMENTS_MENU_ITEM_ID) return@action
+            consumed = true
 
-        val activity = currentActivity() ?: return
-        val selected = MultiSelectMessageResolver.resolve(param.thisObject)
-        val snapshots = selected.mapNotNull { SelectedMessageSnapshot.fromNativeForMoments(it) }
-            .sortedWith(compareBy<SelectedMessageSnapshot> { it.createTime }.thenBy { it.msgId })
-        if (selected.isEmpty() || snapshots.size != selected.size) {
-            toast(activity, "部分选中消息无法读取")
-            return
-        }
-        val preparation = prepareMomentsIntent(activity, snapshots)
-        val intent = preparation.intent
-        if (intent == null) {
-            toast(activity, preparation.error)
-            return
-        }
-        val exitTarget = MultiSelectMessageUi.resolveExitTarget(param.thisObject, exitMethod, logger)
-        if (exitTarget == null) {
-            toast(activity, "无法退出多选状态，请稍后重试")
-            return
-        }
-        exitTarget.exit(logger)
-        main.post {
-            if (!activity.isFinishing && !activity.isDestroyed) {
-                startMomentsEditor(activity, intent)
+            val activity = currentActivity() ?: return@action
+            val selected = MultiSelectMessageResolver.resolve(param.thisObject)
+            val snapshots = selected.mapNotNull { SelectedMessageSnapshot.fromNativeForMoments(it) }
+                .sortedWith(compareBy<SelectedMessageSnapshot> { it.createTime }.thenBy { it.msgId })
+            if (selected.isEmpty() || snapshots.size != selected.size) {
+                toast(activity, "部分选中消息无法读取")
+                return@action
+            }
+            val preparation = prepareMomentsIntent(activity, snapshots)
+            val intent = preparation.intent
+            if (intent == null) {
+                toast(activity, preparation.error)
+                return@action
+            }
+            val exitTarget = MultiSelectMessageUi.resolveExitTarget(param.thisObject, exitMethod, logger)
+            if (exitTarget == null) {
+                toast(activity, "无法退出多选状态，请稍后重试")
+                return@action
+            }
+            exitTarget.exit(logger)
+            main.post {
+                if (!activity.isFinishing && !activity.isDestroyed) {
+                    startMomentsEditor(activity, intent)
+                }
             }
         }
+        return consumed
     }
 
-    private fun addFavoriteForwardMenu(param: XC_MethodHook.MethodHookParam) {
+    private fun addFavoriteForwardMenu(param: XposedInterface.Chain) {
         if (!favoriteForwardEnabled()) return
-        val args = param.args ?: return
+        val args = param.args.toTypedArray() ?: return
         val favorite = FavoriteMenuItemResolver.resolveMenuItem(args.getOrNull(2))
             ?: FavoriteMenuItemResolver.resolveMenuItem(args.getOrNull(1) as? View)
             ?: FavoriteMenuItemResolver.resolveMenuItem(args)
@@ -332,32 +352,36 @@ private class MessageForwardHooker(
     }
 
     @Synchronized
-    private fun handleFavoriteForwardClick(param: XC_MethodHook.MethodHookParam) {
-        if (!favoriteForwardEnabled()) return
-        val item = param.args?.firstNotNullOfOrNull { it as? MenuItem } ?: return
-        if (item.itemId != FAVORITE_FORWARD_MENU_ITEM_ID) return
-        val now = SystemClock.elapsedRealtime()
-        if (lastFavoriteHandledItem?.get() === item &&
-            now - lastFavoriteHandledAt < FAVORITE_CLICK_DEDUP_MS
-        ) return
-        param.result = null
+    private fun handleFavoriteForwardClick(param: XposedInterface.Chain) : Boolean {
+        var consumed = false
+        run action@ {
+            if (!favoriteForwardEnabled()) return@action
+            val item = param.args.toTypedArray()?.firstNotNullOfOrNull { it as? MenuItem } ?: return@action
+            if (item.itemId != FAVORITE_FORWARD_MENU_ITEM_ID) return@action
+            val now = SystemClock.elapsedRealtime()
+            if (lastFavoriteHandledItem?.get() === item &&
+                now - lastFavoriteHandledAt < FAVORITE_CLICK_DEDUP_MS
+            ) return@action
+            consumed = true
 
-        val activity = currentActivity() ?: return
-        val localId = favoriteBindingsByItem.remove(item)
-            ?: pendingFavoriteLocalId.takeIf { it > 0L }
-            ?: FavoriteMenuItemResolver.localId(FavoriteMenuItemResolver.resolve(param.args))
-        favoriteBindingsByItem.clear()
-        pendingFavoriteLocalId = 0L
-        if (localId <= 0L) {
-            toast(activity, "当前收藏不可用")
-            return
+            val activity = currentActivity() ?: return@action
+            val localId = favoriteBindingsByItem.remove(item)
+                ?: pendingFavoriteLocalId.takeIf { it > 0L }
+                ?: FavoriteMenuItemResolver.localId(FavoriteMenuItemResolver.resolve(param.args.toTypedArray()))
+            favoriteBindingsByItem.clear()
+            pendingFavoriteLocalId = 0L
+            if (localId <= 0L) {
+                toast(activity, "当前收藏不可用")
+                return@action
+            }
+            lastFavoriteHandledItem = WeakReference(item)
+            lastFavoriteHandledAt = now
+            main.post {
+                if (activity.isFinishing || activity.isDestroyed) return@post
+                showFavoriteActions(activity, localId)
+            }
         }
-        lastFavoriteHandledItem = WeakReference(item)
-        lastFavoriteHandledAt = now
-        main.post {
-            if (activity.isFinishing || activity.isDestroyed) return@post
-            showFavoriteActions(activity, localId)
-        }
+        return consumed
     }
 
     private fun sendFavorite(

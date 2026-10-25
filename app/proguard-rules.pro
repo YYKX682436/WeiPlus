@@ -31,11 +31,14 @@
 -keep class me.yun.silk.** { *; }
 -keep class me.yun.silk.utils.** { *; }
 
-# Xposed
--keep class de.robv.android.xposed.** { *; }
--keep class h.Hchat.ModuleEntry { *; }
+# libxposed API 102: R8 rewrites the registered, obfuscated entry name.
+-dontwarn io.github.libxposed.annotation.**
+-adaptresourcefilecontents META-INF/xposed/java_init.list
+-keep,allowoptimization,allowobfuscation public class * extends io.github.libxposed.api.XposedModule {
+    public <init>();
+}
 
-# 反射注入 native 库搜索路径用到的加载器
+# 从框架提供的模块 APK 提取 Native 库
 -keep class h.Hchat.loader.utils.NativeLibraryLoader { *; }
 
 # 保留反射访问的微信内部类字段名

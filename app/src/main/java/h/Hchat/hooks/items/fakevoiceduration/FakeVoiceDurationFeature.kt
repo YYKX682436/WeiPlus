@@ -1,7 +1,7 @@
 package h.Hchat.hooks.items.fakevoiceduration
 
 import android.content.Context
-import de.robv.android.xposed.XC_MethodHook
+import io.github.libxposed.api.XposedInterface
 import h.Hchat.dexkit.DexMethodCache
 import h.Hchat.event.Events
 import h.Hchat.hooks.core.BaseFeature
@@ -87,11 +87,15 @@ private class FakeVoiceDurationRuntime(
         if (installed) return true
         return runCatching {
             val method = locateRecorderDurationMethod() ?: return false
-            HookRegistry.get().hook(method, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    if (!FakeVoiceDurationFeature.isEnabled(context.hostContext())) return
-                    param.result = FakeVoiceDurationFeature.durationMillis(context.hostContext()).toLong()
+            HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                var value: Any? = null
+                var intercepted = false
+                run before@ {
+                    if (!FakeVoiceDurationFeature.isEnabled(context.hostContext())) return@before
+                    run { intercepted = true; value = FakeVoiceDurationFeature.durationMillis(context.hostContext()).toLong() }
                 }
+                if (!intercepted) value = chain.proceed()
+                value
             })
             installed = true
             true

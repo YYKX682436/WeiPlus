@@ -1,0 +1,110 @@
+import io.github.libxposed.api.XposedInterface.Chain
+import io.github.libxposed.api.XposedInterface.Hooker
+import h.Hchat.tests.api102.ChainFixture
+import h.Hchat.hooks.api.message.OutgoingTextDecoratorRegistry
+import h.Hchat.hooks.items.sendbutton.NativeSendButtonHandlers
+import java.lang.ref.WeakReference
+
+open class View
+class Editable(private val value:StringBuilder):CharSequence {
+ constructor(value:String):this(StringBuilder(value))
+ var failInsertAt:Int?=null
+ var inserts=0
+ val insertFailure=IllegalStateException("text watcher failed after mutation")
+ var failReplace=false
+ val rollbackFailure=IllegalArgumentException("text watcher failed while restoring")
+ override val length get()=value.length
+ override fun get(index:Int)=value[index]
+ override fun subSequence(start:Int,end:Int)=value.subSequence(start,end)
+ fun insert(at:Int,text:String){value.insert(at,text);inserts++;if(inserts==failInsertAt)throw insertFailure}
+ fun replace(from:Int,to:Int,text:CharSequence){if(failReplace)throw rollbackFailure;value.replace(from,to,text.toString())}
+ fun delete(from:Int,to:Int){value.delete(from,to)}
+ override fun toString()=value.toString()
+}
+class TextView:View(){var text:CharSequence=Editable("hello")}
+class Footer(val input:TextView=TextView())
+object SystemClock { fun elapsedRealtime()=200L }
+object WeChatApis { fun chatPage()=this;fun currentTalker()="peer" }
+private class SendHarness {
+ private val TAG="test"
+ var lastChatFooter=WeakReference<Any>(null)
+ val handlers=NativeSendButtonHandlers {_,_->}
+ var start:InputStart?=InputStart(100L,"peer")
+ var cleared=0
+ var pending=0
+ var throwRead=false
+ private fun findChatFooter(value:Any?)=value as? Footer
+ private fun rememberActivityFromFooter(value:Any)=Unit
+ private fun findInputView(value:Any?)=(value as? Footer)?.input
+ private fun trackInputView(value:Any?)=Unit
+ private fun currentInputStart(view:View,talker:String)=start
+ private fun readInputText(value:Any):String {if(throwRead)error("cleanup failed");return (value as Footer).input.text.toString()}
+ private fun clearInputText(value:Any){(value as Footer).input.text=Editable("")}
+ private fun rememberPendingInputStart(view:View,inputStart:InputStart?,talker:String,text:String){pending++}
+ private fun clearInputStart(view:View){cleared++;start=null}
+ private fun invokeNoArg(value:Any,name:String):Any?=null
+ private fun setInputText(value:Any,text:String):Boolean {(value as TextView).text=Editable(text);return true}
+ private fun dispatchHandlers(text:String)=handlers.dispatch(text)
+ @DATA@
+ @INPUT_START@
+ @APPLY@
+ @RESTORE@
+ @INTERCEPT@
+ fun applyForTest(footer:Footer):Any?=applyTextDecorators(footer,"peer",readInputText(footer),100L)
+ fun call(footer:Any=Footer(),native:()->Any?):Pair<Any?,Int>{
+  val chain=ChainFixture(String::class.java.getMethod("length"),footer,emptyArray()) {_,_->native()}
+  val result=chain.run(Hooker(::interceptSendClick));return result to chain.proceeds
+ }
+}
+fun main(){
+ var durations=mutableListOf<Long>()
+ val decorator=OutgoingTextDecoratorRegistry.register("test") {context->durations+=context.inputDurationMs;OutgoingTextDecoratorRegistry.TextDecoration("[","]")}
+ run {
+  val h=SendHarness();val footer=Footer();h.handlers.register("owner"){true}
+  val (result,calls)=h.call(footer){error("Handled send must not call WeChat")}
+  check(result==null&&calls==0&&footer.input.text.isEmpty()&&h.pending==1&&h.start==null)
+ }
+ run {
+  val h=SendHarness();val footer=Footer();var calls=0
+  val (result,proceeds)=h.call(footer){calls++;check(footer.input.text.toString()=="[hello]");footer.input.text=Editable("");"sent"}
+  check(result=="sent"&&calls==1&&proceeds==1&&h.start==null)
+ }
+ run {
+  val h=SendHarness();val footer=Footer()
+  val (result,calls)=h.call(footer){false}
+  check(result==false&&calls==1&&footer.input.text.toString()=="hello"&&h.start!=null)
+ }
+ run {
+  val h=SendHarness();val footer=Footer();var calls=0;val failure=IllegalStateException("host send failed")
+  check(runCatching{h.call(footer){calls++;throw failure}}.exceptionOrNull()===failure)
+  check(calls==1&&footer.input.text.toString()=="hello"&&h.start!=null)
+ }
+ run {
+  val h=SendHarness();val footer=Footer();val failure=IllegalStateException("changed then failed")
+  check(runCatching{h.call(footer){footer.input.text=Editable("new input");throw failure}}.exceptionOrNull()===failure)
+  check(footer.input.text.toString()=="new input")
+ }
+ run {
+  val h=SendHarness();val (result,calls)=h.call(Any()){"unrelated"};check(result=="unrelated"&&calls==1)
+ }
+ check(durations.size==4&&durations.all{it==100L})
+ check(OutgoingTextDecoratorRegistry.decorateText("peer","later")=="[later]"&&durations.last()==0L)
+ for(failAt in listOf(1,2)) {
+  val h=SendHarness();val footer=Footer();val editable=footer.input.text as Editable;editable.failInsertAt=failAt
+  var calls=0
+  val (_,proceeds)=h.call(footer){calls++;check(footer.input.text.toString()=="hello");null}
+  check(calls==1&&proceeds==1&&footer.input.text.toString()=="hello")
+ }
+ run {
+  val h=SendHarness();val footer=Footer();val editable=footer.input.text as Editable;editable.failInsertAt=2
+  check(runCatching{h.applyForTest(footer)}.exceptionOrNull()===editable.insertFailure)
+  check(footer.input.text.toString()=="hello")
+ }
+ run {
+  val h=SendHarness();val footer=Footer();val editable=footer.input.text as Editable;editable.failInsertAt=2;editable.failReplace=true
+  val failure=runCatching{h.applyForTest(footer)}.exceptionOrNull()
+  check(failure===editable.insertFailure&&failure.suppressed.any{it===editable.rollbackFailure})
+ }
+ decorator.unsubscribe()
+ println("PASS: actual send interceptor short-circuits module-owned sends, continues host once, decorates with input duration, restores rejected/throwing input and preserves new input and host failures")
+}

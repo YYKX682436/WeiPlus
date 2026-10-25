@@ -1,7 +1,7 @@
 package h.Hchat.hooks.items.miniprogrambaselib
 
 import android.content.Context
-import de.robv.android.xposed.XC_MethodHook
+import io.github.libxposed.api.XposedInterface
 import h.Hchat.dexkit.DexMethodCache
 import h.Hchat.hooks.core.BaseFeature
 import h.Hchat.hooks.core.DexInstallScheduler
@@ -99,12 +99,15 @@ private class MiniProgramCompatibilityRuntime(
         return runCatching {
             val launchConstructor = locateLaunchConstructor() ?: return false
             locatePrivateOpenUrlMethod() ?: return false
-            HookRegistry.get().hook(launchConstructor, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    if (!FakeMiniProgramBaseLibFeature.isEnabled(context.hostContext())) return
-                    if (param.args.size <= LIB_VERSION_ARG_INDEX) return
-                    param.args[LIB_VERSION_ARG_INDEX] = SPOOFED_LIB_VERSION
+            HookRegistry.get().hook(launchConstructor, XposedInterface.Hooker { chain ->
+                val args = chain.args.toTypedArray()
+                run before@ {
+                    if (!FakeMiniProgramBaseLibFeature.isEnabled(context.hostContext())) return@before
+                    if (args.size <= LIB_VERSION_ARG_INDEX) return@before
+                    args[LIB_VERSION_ARG_INDEX] = SPOOFED_LIB_VERSION
                 }
+                val value = chain.proceed(args)
+                value
             })
             installed = true
             true
@@ -259,14 +262,17 @@ private fun isPrivateOpenUrlMethod(method: Method): Boolean {
 }
 
 private fun hookPrivateOpenUrlMethod(method: Method, context: Context) {
-    HookRegistry.get().hook(method, object : XC_MethodHook() {
-        override fun beforeHookedMethod(param: MethodHookParam) {
-            if (!FakeMiniProgramBaseLibFeature.isEnabled(context)) return
-            val request = param.args.getOrNull(1) as? JSONObject ?: return
+    HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+        val args = chain.args
+        run before@ {
+            if (!FakeMiniProgramBaseLibFeature.isEnabled(context)) return@before
+            val request = args.getOrNull(1) as? JSONObject ?: return@before
             val url = request.optString("url")
-            if (!isWeChatUpdateUrl(url)) return
+            if (!isWeChatUpdateUrl(url)) return@before
             request.put("url", "")
         }
+        val value = chain.proceed()
+        value
     })
 }
 

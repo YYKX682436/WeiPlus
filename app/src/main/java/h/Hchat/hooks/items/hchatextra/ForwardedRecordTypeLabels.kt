@@ -12,7 +12,7 @@ import android.widget.BaseAdapter
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
-import de.robv.android.xposed.XC_MethodHook
+import io.github.libxposed.api.XposedInterface
 import h.Hchat.dexkit.DexMethodCache
 import h.Hchat.hooks.core.FeatureContext
 import h.Hchat.hooks.core.HookRegistry
@@ -39,7 +39,7 @@ internal class ForwardedRecordTypeLabels(
     // Values must not strongly retain a descendant of the weak row key.
     private val rows = WeakHashMap<View, RowState>()
     private val adapters = WeakHashMap<BaseAdapter, Boolean>()
-    private var unhook: XC_MethodHook.Unhook? = null
+    private var unhook: XposedInterface.HookHandle? = null
     @Volatile private var destroyed = false
     private var lastFailure = 0L
 
@@ -50,33 +50,36 @@ internal class ForwardedRecordTypeLabels(
         if (unhook != null) return true
         return try {
             val targets = locate() ?: return false
-            unhook = HookRegistry.get().hook(targets.bind, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    if (Looper.myLooper() != Looper.getMainLooper()) return
-                    (param.args.getOrNull(1) as? View)?.let(::clearRow)
+            unhook = HookRegistry.get().hook(targets.bind, XposedInterface.Hooker { chain ->
+                val args = chain.args
+                val receiver = chain.thisObject
+                run before@ {
+                    if (Looper.myLooper() != Looper.getMainLooper()) return@before
+                    (args.getOrNull(1) as? View)?.let(::clearRow)
                 }
-
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    if (destroyed || param.hasThrowable() || Looper.myLooper() != Looper.getMainLooper()) return
-                    val row = param.result as? View ?: return
+                val value = chain.proceed()
+                run after@ {
+                    if (destroyed || Looper.myLooper() != Looper.getMainLooper()) return@after
+                    val row = value as? View ?: return@after
                     clearRow(row)
-                    val activity = activity(row.context) ?: return
-                    if (!targets.detail.isInstance(activity)) return
-                    val adapter = param.thisObject as? BaseAdapter ?: return
+                    val activity = activity(row.context) ?: return@after
+                    if (!targets.detail.isInstance(activity)) return@after
+                    val adapter = receiver as? BaseAdapter ?: return@after
                     adapters[adapter] = true
-                    if (!enabled()) return
+                    if (!enabled()) return@after
                     try {
-                        val position = param.args.getOrNull(0) as? Int ?: return
+                        val position = args.getOrNull(0) as? Int ?: return@after
                         // BaseAdapter.getItem is the verified bridge to the same dataitem used by getView.
-                        val item = adapter.getItem(position) ?: return
-                        if (!targets.dataType.declaringClass.isInstance(item)) return
+                        val item = adapter.getItem(position) ?: return@after
+                        if (!targets.dataType.declaringClass.isInstance(item)) return@after
                         val type = KavaReflector.readField(targets.dataType, item) as? Int
-                            ?: throw IllegalStateException("record datatype read failed: ${targets.dataType}")
+                        ?: throw IllegalStateException("record datatype read failed: ${targets.dataType}")
                         bindLabel(row, type)
                     } catch (error: Throwable) {
                         logFailure("聊天记录类型绑定失败: ${targets.bind}", error)
                     }
                 }
+                value
             })
             true
         } catch (error: Throwable) {

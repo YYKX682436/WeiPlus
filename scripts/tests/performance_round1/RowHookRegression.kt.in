@@ -1,18 +1,8 @@
 import java.util.ArrayDeque
 
-open class XC_MethodHook {
-    class MethodHookParam(val args: Array<Any?>, val thisObject: Any = Adapter()) {
-        private val extras = HashMap<String, Any?>()
-        var failed = false
-        fun setObjectExtra(key: String, value: Any?) { extras[key] = value }
-        fun getObjectExtra(key: String): Any? = extras[key]
-        fun hasThrowable() = failed
-    }
-    protected open fun beforeHookedMethod(param: MethodHookParam) {}
-    protected open fun afterHookedMethod(param: MethodHookParam) {}
-    fun before(param: MethodHookParam) = beforeHookedMethod(param)
-    fun after(param: MethodHookParam) = afterHookedMethod(param)
-}
+import io.github.libxposed.api.XposedInterface
+import h.Hchat.tests.api102.ChainFixture
+
 class Adapter
 class Row(var tag: Any? = null)
 private class DetailsHarness {
@@ -34,48 +24,62 @@ private class DetailsHarness {
         binds++; boundMessage = message
     }
     fun logger(message: String, error: Throwable?) { throw AssertionError(message, error) }
-    val hook = object : XC_MethodHook() @DETAILS_HOOK@
+    val hook = XposedInterface.Hooker @DETAILS_HOOK@
 }
 private class BubbleHarness {
     data class BindState(val root: Row?, val nativeHolder: Any?)
     var enabled = false
+    val boundRoots = HashSet<Row>()
     var captures = 0
     var restores = 0
     var applies = 0
     fun captureBindState(args: Array<Any?>?): BindState { captures++; return BindState(args?.getOrNull(0) as? Row, null) }
-    fun restoreBoundBubble(root: Row) { restores++ }
+    fun restoreBoundBubble(root: Row) { restores++;boundRoots.remove(root) }
     fun isNativeMessageHolder(value: Any) = true
-    fun applyBubble(args: Array<Any?>?, state: BindState) { applies++ }
-    val hook = object : XC_MethodHook() @BUBBLE_HOOK@
+    fun applyBubble(args: Array<Any?>?, state: BindState) { applies++;state.root?.let(boundRoots::add) }
+    val hook = XposedInterface.Hooker @BUBBLE_HOOK@
+}
+private fun invoke(hook: XposedInterface.Hooker, row: Row, message: String = "message", owner: Any = Adapter(), native: () -> Any? = { "native-result" }): Any? {
+    val chain=ChainFixture(String::class.java.getMethod("length"),owner,arrayOf(row,message)) { _, _ -> native() }
+    return chain.run(hook).also { check(chain.proceeds==1) }
 }
 fun main() {
     val h = DetailsHarness(); val row = Row()
-    fun param(message: String = "message") = XC_MethodHook.MethodHookParam(arrayOf(row, message))
-    repeat(500) { val p=param(); h.hook.before(p);h.hook.after(p) }
+    repeat(500) { check(invoke(h.hook,row)=="native-result") }
     check(h.captures==0 && h.binds==0 && h.messageDetailsBindStates.get()==null)
     h.messageDetailsConfig.enabled=true
-    val outer=param("outer");h.hook.before(outer)
-    val nested=param("current");h.hook.before(nested);h.hook.after(nested);h.hook.after(outer)
+    invoke(h.hook,row,"outer") { invoke(h.hook,row,"current") }
     check(h.binds==1 && h.boundMessage=="current" && h.messageDetailsBindStates.get()==null)
-    val inFlight=param();h.hook.before(inFlight);h.messageDetailsConfig.enabled=false
-    val skipped=param();h.hook.before(skipped);h.hook.after(skipped)
-    check(h.messageDetailsBindStates.get()?.size==1)
-    h.messageDetailsConfig.enabled=true;h.hook.after(inFlight)
+    invoke(h.hook,row) {
+        h.messageDetailsConfig.enabled=false
+        invoke(h.hook,row)
+        check(h.messageDetailsBindStates.get()?.size==1)
+        h.messageDetailsConfig.enabled=true
+    }
     check(h.binds==2 && h.messageDetailsBindStates.get()==null)
-    val failed=param();h.hook.before(failed);failed.failed=true;h.hook.after(failed)
+    val nativeFailure=IllegalStateException("native binding failed")
+    check(runCatching { invoke(h.hook,row) { throw nativeFailure } }.exceptionOrNull() === nativeFailure)
     check(h.binds==2 && h.messageDetailsBindStates.get()==null)
-    val unrelated=XC_MethodHook.MethodHookParam(arrayOf(row, "wrong"),Any());h.hook.before(unrelated);h.hook.after(unrelated)
+    invoke(h.hook,row,"wrong",Any())
     check(h.binds==2 && h.messageDetailsBindStates.get()==null)
-    println("PASS: production detail hooks skip 500 disabled binds, pair nested frames across off-on, propagate current message, and clean throwable/foreign-adapter paths")
+    // An inner failed bind must unwind its frame without consuming its outer frame.
+    invoke(h.hook,row,"outer after failure") {
+        check(runCatching { invoke(h.hook,row,"failed inner") { throw nativeFailure } }.exceptionOrNull()===nativeFailure)
+        check(h.messageDetailsBindStates.get()?.size==1)
+    }
+    check(h.binds==3 && h.messageDetailsBindStates.get()==null)
+    println("PASS: production detail interceptor skips 500 disabled binds, pairs nested off-on frames, propagates current message and host exceptions, and always unwinds frames")
     val b=BubbleHarness()
-    repeat(500) {val p=param();b.hook.before(p);b.hook.after(p)}
+    repeat(500) {invoke(b.hook,row)}
     check(b.captures==0 && b.applies==0 && b.restores==0)
-    b.enabled=true;val full=param();b.hook.before(full);b.hook.after(full)
+    b.enabled=true
+    invoke(b.hook,row) {check(b.restores==1 && b.applies==0); "native-result"}
     check(b.captures==1 && b.applies==1 && b.restores==1)
-    val pending=param();b.hook.before(pending);b.enabled=false
-    val off=param();b.hook.before(off);b.hook.after(off);b.hook.after(pending)
+    invoke(b.hook,row) {b.enabled=false;invoke(b.hook,row)}
     check(b.captures==2 && b.applies==1)
-    b.enabled=true;val onAgain=param();b.hook.before(onAgain);b.hook.after(onAgain)
+    b.enabled=true;invoke(b.hook,row)
     check(b.applies==2)
-    println("PASS: production bubble hooks skip 500 disabled binds and retain per-invocation pairing across nested off-on changes")
+    check(runCatching {invoke(b.hook,row) {throw nativeFailure}}.exceptionOrNull()===nativeFailure)
+    check(b.applies==2 && b.restores==4)
+    println("PASS: production bubble interceptor restores before native bind, draws only after success while enabled, and preserves native exception identity")
 }

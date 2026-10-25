@@ -1,7 +1,7 @@
 package h.Hchat.hooks.items.fakelocation
 
 import android.content.Context
-import de.robv.android.xposed.XC_MethodHook
+import io.github.libxposed.api.XposedInterface
 import h.Hchat.dexkit.DexMethodCache
 import h.Hchat.event.Events
 import h.Hchat.hooks.core.BaseFeature
@@ -162,14 +162,17 @@ private object FakeLocationProcessHooker {
         callbacks.forEach { callback ->
             if (!hookedCallbacks.add(callback)) return@forEach
             runCatching {
-                HookRegistry.get().hook(callback, object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
+                HookRegistry.get().hook(callback, XposedInterface.Hooker { chain ->
+                    val args = chain.args
+                    run before@ {
                         runCatching {
-                            hookLocationGetters(context, param.args?.firstOrNull(), logger)
+                            hookLocationGetters(context, args?.firstOrNull(), logger)
                         }.onFailure {
                             logger("虚拟定位运行时 Hook 失败", it)
                         }
                     }
+                    val value = chain.proceed()
+                    value
                 })
             }.onFailure {
                 hookedCallbacks.remove(callback)
@@ -201,11 +204,15 @@ private object FakeLocationProcessHooker {
     private fun hookGetter(context: Context, method: Method, value: () -> Double) {
         if (!hookedGetters.add(method)) return
         runCatching {
-            HookRegistry.get().hook(method, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    if (!FakeLocationFeature.isEnabled(context)) return
-                    param.result = value()
+            HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                var value: Any? = null
+                var intercepted = false
+                run before@ {
+                    if (!FakeLocationFeature.isEnabled(context)) return@before
+                    run { intercepted = true; value = value() }
                 }
+                if (!intercepted) value = chain.proceed()
+                value
             })
         }.onFailure {
             hookedGetters.remove(method)

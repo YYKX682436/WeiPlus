@@ -20,7 +20,7 @@ import android.widget.Toast;
 
 import java.io.File;
 
-import de.robv.android.xposed.XposedBridge;
+
 
 /**
  * 红包通知层。

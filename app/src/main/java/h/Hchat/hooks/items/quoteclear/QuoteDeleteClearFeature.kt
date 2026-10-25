@@ -6,7 +6,7 @@ import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputConnectionWrapper
 import android.widget.TextView
-import de.robv.android.xposed.XC_MethodHook
+import io.github.libxposed.api.XposedInterface
 import h.Hchat.dexkit.DexMethodCache
 import h.Hchat.event.Events
 import h.Hchat.hooks.core.BaseFeature
@@ -87,19 +87,27 @@ private class QuoteDeleteClearRuntime(
         val onAttached = KavaReflector.findMethodRecursive(footerClass, "onAttachedToWindow") ?: return false
         val onDetached = KavaReflector.findMethodRecursive(footerClass, "onDetachedFromWindow")
         return runCatching {
-            HookRegistry.get().hook(onAttached, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    val footer = param.thisObject
+            HookRegistry.get().hook(onAttached, XposedInterface.Hooker { chain ->
+                val receiver = chain.thisObject
+                val value = chain.proceed()
+                run after@ {
+                    val footer = receiver
                     if (footer is View) {
                         currentFooterRef = WeakReference(footer)
                     }
                 }
+                value
             })
             if (onDetached != null) {
-                HookRegistry.get().hook(onDetached, object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        if (currentFooterRef.get() === param.thisObject) {
-                            currentFooterRef = WeakReference(null)
+                HookRegistry.get().hook(onDetached, XposedInterface.Hooker { chain ->
+                    val receiver = chain.thisObject
+                    try {
+                        chain.proceed()
+                    } finally {
+                        run after@ {
+                            if (currentFooterRef.get() === receiver) {
+                                currentFooterRef = WeakReference(null)
+                            }
                         }
                     }
                 })
@@ -120,16 +128,21 @@ private class QuoteDeleteClearRuntime(
             EditorInfo::class.java
         ) ?: return false
         return runCatching {
-            HookRegistry.get().hook(method, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    val input = param.thisObject as? TextView ?: return
-                    val footer = footerForInput(input) ?: return
-                    val target = param.result as? InputConnection ?: return
+            HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                val receiver = chain.thisObject
+                var value: Any? = null
+                var intercepted = false
+                if (!intercepted) value = chain.proceed()
+                run after@ {
+                    val input = receiver as? TextView ?: return@after
+                    val footer = footerForInput(input) ?: return@after
+                    val target = value as? InputConnection ?: return@after
                     val footerRef = WeakReference(footer)
-                    param.result = QuoteDeleteInputConnection(target) {
-                        clearQuoteByInputDelete(input, footerRef)
-                    }
+                    run { intercepted = true; value = QuoteDeleteInputConnection(target) {
+                            clearQuoteByInputDelete(input, footerRef)
+                    } }
                 }
+                value
             })
             inputConnectionHookInstalled = true
             true
@@ -146,12 +159,16 @@ private class QuoteDeleteClearRuntime(
             return false
         }
         return runCatching {
-            HookRegistry.get().hook(method, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    if (handleOnKeyDelete(param)) {
-                        param.setResult(true)
+            HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                var value: Any? = null
+                var intercepted = false
+                run before@ {
+                    if (handleOnKeyDelete(chain)) {
+                        run { intercepted = true; value = true }
                     }
                 }
+                if (!intercepted) value = chain.proceed()
+                value
             })
             onKeyHookInstalled = true
             true
@@ -161,9 +178,9 @@ private class QuoteDeleteClearRuntime(
         }
     }
 
-    private fun handleOnKeyDelete(param: XC_MethodHook.MethodHookParam): Boolean {
+    private fun handleOnKeyDelete(param: XposedInterface.Chain): Boolean {
         if (!isEnabled()) return false
-        val event = param.args?.getOrNull(2) as? KeyEvent ?: return false
+        val event = param.args.toTypedArray()?.getOrNull(2) as? KeyEvent ?: return false
         if (event.action != KeyEvent.ACTION_DOWN || event.keyCode != KeyEvent.KEYCODE_DEL) return false
         val footer = findChatFooter(param) ?: currentFooter() ?: return false
         if (inputText(param, footer).isNotEmpty()) return false
@@ -185,8 +202,8 @@ private class QuoteDeleteClearRuntime(
         return true
     }
 
-    private fun findChatFooter(param: XC_MethodHook.MethodHookParam): Any? {
-        (param.args?.getOrNull(0) as? View)?.let { view ->
+    private fun findChatFooter(param: XposedInterface.Chain): Any? {
+        (param.args.toTypedArray()?.getOrNull(0) as? View)?.let { view ->
             findChatFooterInParents(view)?.let { return it }
         }
         return findChatFooterFromObject(param.thisObject, 0)
@@ -292,8 +309,8 @@ private class QuoteDeleteClearRuntime(
         return (KavaReflector.invokeMethod(footer, "getLastText") as? CharSequence)?.toString().orEmpty()
     }
 
-    private fun inputText(param: XC_MethodHook.MethodHookParam, footer: Any): String {
-        val input = param.args?.getOrNull(0) as? TextView
+    private fun inputText(param: XposedInterface.Chain, footer: Any): String {
+        val input = param.args.toTypedArray()?.getOrNull(0) as? TextView
         return input?.text?.toString() ?: lastText(footer)
     }
 

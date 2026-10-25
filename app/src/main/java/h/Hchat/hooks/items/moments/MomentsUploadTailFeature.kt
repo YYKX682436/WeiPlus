@@ -1,6 +1,6 @@
 package h.Hchat.hooks.items.moments
 
-import de.robv.android.xposed.XC_MethodHook
+import io.github.libxposed.api.XposedInterface
 import h.Hchat.event.Events
 import h.Hchat.hooks.core.BaseFeature
 import h.Hchat.hooks.core.DexInstallScheduler
@@ -69,13 +69,14 @@ private class MomentsUploadTailHooker(
         val sdkAppName = finder.snsSetSdkAppNameMethod ?: return false
         if (Modifier.isAbstract(commit.modifiers) || commit.declaringClass.isInterface) return false
         return runCatching {
-            HookRegistry.get().hook(commit, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
+            HookRegistry.get().hook(commit, XposedInterface.Hooker { chain ->
+                val receiver = chain.thisObject
+                run before@ {
                     if (!prefs.getBoolean(
-                            MomentsUploadTailSettings.KEY_ENABLE,
-                            MomentsUploadTailSettings.DEFAULT_ENABLE
+                        MomentsUploadTailSettings.KEY_ENABLE,
+                        MomentsUploadTailSettings.DEFAULT_ENABLE
                         )
-                    ) return
+                    ) return@before
                     val id = prefs.getString(
                         MomentsUploadTailSettings.KEY_SDK_ID,
                         MomentsUploadTailSettings.DEFAULT_SDK_ID
@@ -84,10 +85,12 @@ private class MomentsUploadTailHooker(
                         MomentsUploadTailSettings.KEY_SDK_APP_NAME,
                         MomentsUploadTailSettings.DEFAULT_SDK_APP_NAME
                     ).orEmpty().trim()
-                    if (id.isBlank() || name.isBlank()) return
-                    KavaReflector.invoke(sdkId, param.thisObject, id)
-                    KavaReflector.invoke(sdkAppName, param.thisObject, name)
+                    if (id.isBlank() || name.isBlank()) return@before
+                    KavaReflector.invoke(sdkId, receiver, id)
+                    KavaReflector.invoke(sdkAppName, receiver, name)
                 }
+                val value = chain.proceed()
+                value
             })
             installed = true
             true

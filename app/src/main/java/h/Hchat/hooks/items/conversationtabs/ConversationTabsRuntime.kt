@@ -19,7 +19,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.RelativeLayout
 import android.widget.FrameLayout
-import de.robv.android.xposed.XC_MethodHook
+import io.github.libxposed.api.XposedInterface
 import h.Hchat.hooks.core.DexInstallScheduler
 import h.Hchat.hooks.core.FeatureContext
 import h.Hchat.hooks.core.HookRegistry
@@ -126,35 +126,51 @@ internal object ConversationTabsRuntime {
             HLog.e("$TAG 未找到 MainUI 的唯一 MainUIView 字段，标签分组未安装")
             return false
         }
-        val hooks = arrayListOf<XC_MethodHook.Unhook>()
+        val hooks = arrayListOf<XposedInterface.HookHandle>()
         return runCatching {
-            hooks += HookRegistry.get().hook(layout, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    if (param.hasThrowable() || !clazz.isInstance(param.thisObject)) return
-                    val original = param.result as? View ?: return
+            hooks += HookRegistry.get().hook(layout, XposedInterface.Hooker { chain ->
+                val receiver = chain.thisObject
+                val value = chain.proceed()
+                run after@ {
+                    if (!clazz.isInstance(receiver)) return@after
+                    val original = value as? View ?: return@after
                     clearChangedAccount()
-                    ensureHost(param.thisObject, original)
+                    ensureHost(receiver, original)
                     reload()
                 }
+                value
             })
-            hooks += HookRegistry.get().hook(resume, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    if (param.hasThrowable() || !clazz.isInstance(param.thisObject)) return
+            hooks += HookRegistry.get().hook(resume, XposedInterface.Hooker { chain ->
+                val receiver = chain.thisObject
+                val value = chain.proceed()
+                run after@ {
+                    if (!clazz.isInstance(receiver)) return@after
                     clearChangedAccount()
                     // getLayoutView inflates a NEW root. Read the existing native root instead.
-                    val root = KavaReflector.readField(rootField, param.thisObject) as? View
-                    if (root != null) ensureHost(param.thisObject, root)
+                    val root = KavaReflector.readField(rootField, receiver) as? View
+                    if (root != null) ensureHost(receiver, root)
                     reload()
                 }
+                value
             })
-            hooks += HookRegistry.get().hook(destroy, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    if (!clazz.isInstance(param.thisObject)) return
-                    hosts.remove(param.thisObject)?.get()?.let { removeHost(it) }
-                    if (liveHosts().isEmpty()) synchronized(reloadLock) {
-                        invalidateLoads()
-                        filter = null; loadedIcons = emptyMap(); compiledFilters = emptyMap(); bitmaps.evictAll()
-                    }
+            hooks += HookRegistry.get().hook(destroy, XposedInterface.Hooker { chain ->
+                val receiver = chain.thisObject
+                try {
+                    chain.proceed()
+                } finally {
+                    runCatching {
+                        run after@ {
+                            if (!clazz.isInstance(receiver)) return@after
+                            hosts.remove(receiver)?.get()?.let { host ->
+                                runCatching { removeHost(host) }
+                                .onFailure { HLog.e("$TAG 清理标签分组视图失败", it) }
+                            }
+                            if (liveHosts().isEmpty()) synchronized(reloadLock) {
+                                invalidateLoads()
+                                filter = null; loadedIcons = emptyMap(); compiledFilters = emptyMap(); bitmaps.evictAll()
+                            }
+                        }
+                    }.onFailure { HLog.e("$TAG 清理标签分组生命周期失败", it) }
                 }
             })
             hookedMainUi = clazz

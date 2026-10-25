@@ -10,7 +10,6 @@ import h.Hchat.utils.KavaReflector;
 import java.lang.reflect.Method;
 import java.util.concurrent.CopyOnWriteArrayList;
 
-import de.robv.android.xposed.XC_MethodHook;
 
 /**
  * 微信 Activity 启动监听 API。
@@ -83,13 +82,14 @@ public final class WeChatActivityStartApi {
         int count = 0;
         for (Method method : KavaReflector.declaredMethods(clazz)) {
             if (!isStartMethod(method)) continue;
-            HookRegistry.get().hook(method, new XC_MethodHook() {
-                @Override
-                protected void beforeHookedMethod(MethodHookParam param) {
-                    Intent intent = findIntent(param.args);
-                    if (intent != null) dispatch(intent, param.thisObject, method);
-                }
-            });
+            HookRegistry.get()
+                    .hook(
+                            method,
+                            chain -> {
+                                Intent intent = findIntent(chain.getArgs().toArray());
+                                if (intent != null) dispatch(intent, chain.getThisObject(), method);
+                                return chain.proceed();
+                            });
             count++;
         }
         return count;

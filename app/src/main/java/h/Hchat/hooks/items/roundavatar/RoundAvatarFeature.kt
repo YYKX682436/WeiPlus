@@ -9,7 +9,7 @@ import android.graphics.Paint
 import android.graphics.Shader
 import android.graphics.drawable.Icon
 import android.widget.ImageView
-import de.robv.android.xposed.XC_MethodHook
+import io.github.libxposed.api.XposedInterface
 import h.Hchat.dexkit.DexMethodCache
 import h.Hchat.event.Events
 import h.Hchat.hooks.core.BaseFeature
@@ -22,7 +22,7 @@ import org.luckypray.dexkit.query.FindMethod
 import org.luckypray.dexkit.query.matchers.MethodMatcher
 import java.lang.ref.WeakReference
 import java.lang.reflect.Constructor
-import java.lang.reflect.Member
+import java.lang.reflect.Executable
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier
 import java.util.WeakHashMap
@@ -64,8 +64,8 @@ private class RoundAvatarRuntime(
     private val context: FeatureContext
 ) {
     private val methodPrefs = DexMethodCache.prefs(context.hostContext(), "Hchat_round_avatar_method_cache")
-    private val hookedMembers = ConcurrentHashMap.newKeySet<Member>()
-    private val notificationHookedMembers = ConcurrentHashMap.newKeySet<Member>()
+    private val hookedMembers = ConcurrentHashMap.newKeySet<Executable>()
+    private val notificationHookedMembers = ConcurrentHashMap.newKeySet<Executable>()
 
     @Volatile private var weChatInstalled = false
 
@@ -111,19 +111,22 @@ private class RoundAvatarRuntime(
         return weChatInstalled
     }
 
-    private fun hookRadius(member: Member, radiusIndex: Int, maskIndex: Int): Boolean {
+    private fun hookRadius(member: Executable, radiusIndex: Int, maskIndex: Int): Boolean {
         if (hookedMembers.contains(member)) return true
         return runCatching {
-            HookRegistry.get().hook(member, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    if (!RoundAvatarSettings.enabled(context.hostContext())) return
-                    if (radiusIndex !in param.args.indices) return
-                    param.args[radiusIndex] = RoundAvatarSettings.radiusFactor(context.hostContext())
-                    if (maskIndex in param.args.indices) {
-                        val mask = (param.args[maskIndex] as? Number)?.toInt() ?: return
-                        param.args[maskIndex] = mask and DEFAULT_RADIUS_MASK.inv()
+            HookRegistry.get().hook(member, XposedInterface.Hooker { chain ->
+                val args = chain.args.toTypedArray()
+                run before@ {
+                    if (!RoundAvatarSettings.enabled(context.hostContext())) return@before
+                    if (radiusIndex !in args.indices) return@before
+                    args[radiusIndex] = RoundAvatarSettings.radiusFactor(context.hostContext())
+                    if (maskIndex in args.indices) {
+                        val mask = (args[maskIndex] as? Number)?.toInt() ?: return@before
+                        args[maskIndex] = mask and DEFAULT_RADIUS_MASK.inv()
                     }
                 }
+                val value = chain.proceed(args)
+                value
             })
             hookedMembers += member
             true
@@ -141,15 +144,18 @@ private class RoundAvatarRuntime(
         ) ?: return
         if (!notificationHookedMembers.add(method)) return
         runCatching {
-            HookRegistry.get().hook(method, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    if (!RoundAvatarSettings.enabled(context.hostContext())) return
-                    val source = param.args.firstOrNull() as? Bitmap ?: return
-                    param.args[0] = RoundAvatarBitmapProcessor.round(
+            HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                val args = chain.args.toTypedArray()
+                run before@ {
+                    if (!RoundAvatarSettings.enabled(context.hostContext())) return@before
+                    val source = args.firstOrNull() as? Bitmap ?: return@before
+                    args[0] = RoundAvatarBitmapProcessor.round(
                         source,
                         RoundAvatarSettings.radiusFactor(context.hostContext())
                     )
                 }
+                val value = chain.proceed(args)
+                value
             })
         }.onFailure {
             notificationHookedMembers.remove(method)
@@ -165,17 +171,20 @@ private class RoundAvatarRuntime(
         ) ?: return
         if (!notificationHookedMembers.add(method)) return
         runCatching {
-            HookRegistry.get().hook(method, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    if (!RoundAvatarSettings.enabled(context.hostContext())) return
-                    val icon = param.args.firstOrNull() as? Icon ?: return
-                    val source = KavaReflector.invokeMethod(icon, "getBitmap") as? Bitmap ?: return
+            HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                val args = chain.args.toTypedArray()
+                run before@ {
+                    if (!RoundAvatarSettings.enabled(context.hostContext())) return@before
+                    val icon = args.firstOrNull() as? Icon ?: return@before
+                    val source = KavaReflector.invokeMethod(icon, "getBitmap") as? Bitmap ?: return@before
                     val rounded = RoundAvatarBitmapProcessor.round(
                         source,
                         RoundAvatarSettings.radiusFactor(context.hostContext())
                     )
-                    if (rounded !== source) param.args[0] = Icon.createWithBitmap(rounded)
+                    if (rounded !== source) args[0] = Icon.createWithBitmap(rounded)
                 }
+                val value = chain.proceed(args)
+                value
             })
         }.onFailure {
             notificationHookedMembers.remove(method)
@@ -186,16 +195,19 @@ private class RoundAvatarRuntime(
     private fun hookNotificationPost(method: Method?) {
         if (method == null || !notificationHookedMembers.add(method)) return
         runCatching {
-            HookRegistry.get().hook(method, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    if (!RoundAvatarSettings.enabled(context.hostContext())) return
-                    val notification = param.args.firstOrNull { it is Notification } as? Notification ?: return
-                    val source = notification.largeIcon ?: return
+            HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                val args = chain.args
+                run before@ {
+                    if (!RoundAvatarSettings.enabled(context.hostContext())) return@before
+                    val notification = args.firstOrNull { it is Notification } as? Notification ?: return@before
+                    val source = notification.largeIcon ?: return@before
                     notification.largeIcon = RoundAvatarBitmapProcessor.round(
                         source,
                         RoundAvatarSettings.radiusFactor(context.hostContext())
                     )
                 }
+                val value = chain.proceed()
+                value
             })
         }.onFailure {
             notificationHookedMembers.remove(method)
@@ -275,7 +287,7 @@ private class RoundAvatarRuntime(
         return constructor to modify
     }
 
-    private fun findMethodsByStrings(vararg strings: String): List<Member> {
+    private fun findMethodsByStrings(vararg strings: String): List<Executable> {
         return runCatching {
             context.dexKitBridge().findMethod(
                 FindMethod().apply {

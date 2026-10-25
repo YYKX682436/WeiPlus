@@ -3,7 +3,7 @@ package h.Hchat.hooks.items.multirecall
 import android.app.Activity
 import android.view.MenuItem
 import android.widget.Toast
-import de.robv.android.xposed.XC_MethodHook
+import io.github.libxposed.api.XposedInterface
 import h.Hchat.event.Events
 import h.Hchat.hooks.api.core.WeChatApis
 import h.Hchat.hooks.api.message.MultiSelectMessageMenuLocator
@@ -60,57 +60,67 @@ private class MultiRecallHooker(
         val exitMethod = menuClickMethod?.let {
             MultiSelectMessageMenuLocator.multiSelectExitMethod(context, it, logger)
         }
-        val createHooked = menuCreateMethod != null && exitMethod != null && hookMethod(menuCreateMethod, object : XC_MethodHook() {
-            override fun afterHookedMethod(param: MethodHookParam) {
-                addRecallMenu(param)
+        val createHooked = menuCreateMethod != null && exitMethod != null && hookMethod(menuCreateMethod, XposedInterface.Hooker { chain ->
+            val value = chain.proceed()
+            run after@ {
+                addRecallMenu(chain)
             }
+            value
         })
-        val clickHooked = menuClickMethod != null && exitMethod != null && hookMethod(menuClickMethod, object : XC_MethodHook() {
-            override fun beforeHookedMethod(param: MethodHookParam) {
-                handleRecallMenuClick(param, exitMethod)
+        val clickHooked = menuClickMethod != null && exitMethod != null && hookMethod(menuClickMethod, XposedInterface.Hooker { chain ->
+            var value: Any? = null
+            var intercepted = false
+            run before@ {
+                if (handleRecallMenuClick(chain, exitMethod)) { intercepted = true; value = null }
             }
+            if (!intercepted) value = chain.proceed()
+            value
         })
         if (!createHooked) logger("多选撤回菜单创建Hook未安装", null)
         if (!clickHooked) logger("多选撤回菜单点击Hook未安装", null)
         return createHooked && clickHooked
     }
 
-    private fun addRecallMenu(param: XC_MethodHook.MethodHookParam) {
+    private fun addRecallMenu(param: XposedInterface.Chain) {
         if (!isEnabled()) return
         val selected = MultiSelectMessageResolver.resolve(param.thisObject)
         if (recallMessages(selected) == null) return
-        val menu = param.args?.getOrNull(0) ?: return
+        val menu = param.args.toTypedArray()?.getOrNull(0) ?: return
         addMenuItem(menu)
     }
 
-    private fun handleRecallMenuClick(param: XC_MethodHook.MethodHookParam, exitMethod: Method) {
-        if (!isEnabled()) return
-        val menuItem = param.args?.getOrNull(0) as? MenuItem ?: return
-        if (menuItem.itemId != MENU_ITEM_ID) return
+    private fun handleRecallMenuClick(param: XposedInterface.Chain, exitMethod: Method) : Boolean {
+        var consumed = false
+        run action@ {
+            if (!isEnabled()) return@action
+            val menuItem = param.args.toTypedArray()?.getOrNull(0) as? MenuItem ?: return@action
+            if (menuItem.itemId != MENU_ITEM_ID) return@action
 
-        val activity = currentActivity()
-        val selected = MultiSelectMessageResolver.resolve(param.thisObject)
-        val messages = recallMessages(selected)
-        if (messages == null) {
-            toast(activity, if (selected.isEmpty()) "未找到选中的消息" else "只能批量撤回自己发送的消息")
-            param.result = null
-            return
+            val activity = currentActivity()
+            val selected = MultiSelectMessageResolver.resolve(param.thisObject)
+            val messages = recallMessages(selected)
+            if (messages == null) {
+                toast(activity, if (selected.isEmpty()) "未找到选中的消息" else "只能批量撤回自己发送的消息")
+                consumed = true
+                return@action
+            }
+            val exitTarget = MultiSelectMessageUi.resolveExitTarget(param.thisObject, exitMethod, logger)
+            if (exitTarget == null) {
+                toast(activity, "无法退出多选状态，请稍后重试")
+                consumed = true
+                return@action
+            }
+            val sender = WeChatApis.message().sender()
+            val success = messages.count { message ->
+                runCatching { sender?.revokeNative(message) == true }
+                    .onFailure { logger("批量撤回消息异常: msgId=${messageId(message)}", it) }
+                    .getOrDefault(false)
+            }
+            toast(activity, "已发起撤回 $success/${messages.size} 条消息")
+            exitTarget.exit(logger)
+            consumed = true
         }
-        val exitTarget = MultiSelectMessageUi.resolveExitTarget(param.thisObject, exitMethod, logger)
-        if (exitTarget == null) {
-            toast(activity, "无法退出多选状态，请稍后重试")
-            param.result = null
-            return
-        }
-        val sender = WeChatApis.message().sender()
-        val success = messages.count { message ->
-            runCatching { sender?.revokeNative(message) == true }
-                .onFailure { logger("批量撤回消息异常: msgId=${messageId(message)}", it) }
-                .getOrDefault(false)
-        }
-        toast(activity, "已发起撤回 $success/${messages.size} 条消息")
-        exitTarget.exit(logger)
-        param.result = null
+        return consumed
     }
 
     private fun recallMessages(messages: List<Any>): List<Any>? {
@@ -170,7 +180,7 @@ private class MultiRecallHooker(
         return prefs.getBoolean(MultiRecallSettings.KEY_ENABLE, MultiRecallSettings.DEFAULT_ENABLE)
     }
 
-    private fun hookMethod(method: Method, callback: XC_MethodHook): Boolean {
+    private fun hookMethod(method: Method, callback: XposedInterface.Hooker): Boolean {
         if (!hookedMethods.add(method)) return true
         return runCatching {
             HookRegistry.get().hook(method, callback)

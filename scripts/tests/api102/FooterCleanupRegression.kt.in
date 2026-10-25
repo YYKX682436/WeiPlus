@@ -1,0 +1,27 @@
+import io.github.libxposed.api.XposedInterface
+import h.Hchat.tests.api102.ChainFixture
+import java.lang.ref.WeakReference
+private class QuoteHarness {
+ var currentFooterRef=WeakReference<Any>(null)
+ val hook=XposedInterface.Hooker @QUOTE@
+}
+private class SwipeHarness {
+ var lastFooterRef=WeakReference<Any>(null)
+ val hook=XposedInterface.Hooker @SWIPE@
+}
+fun main(){
+ val owner=Any();val foreign=Any();val failure=IllegalStateException("native detach failed")
+ val quote=QuoteHarness();val swipe=SwipeHarness()
+ for((hook,set,get)in listOf(
+  Triple(quote.hook,{value:Any->quote.currentFooterRef=WeakReference(value)},{quote.currentFooterRef.get()}),
+  Triple(swipe.hook,{value:Any->swipe.lastFooterRef=WeakReference(value)},{swipe.lastFooterRef.get()})
+ )){
+  set(owner)
+  val chain=ChainFixture(String::class.java.getMethod("length"),owner,emptyArray()){_,_->throw failure}
+  check(runCatching{chain.run(hook)}.exceptionOrNull()===failure&&chain.proceeds==1&&get()==null)
+  set(owner)
+  val other=ChainFixture(String::class.java.getMethod("length"),foreign,emptyArray()){_,_->null}
+  other.run(hook);check(get()===owner&&other.proceeds==1)
+ }
+ println("PASS: actual quote-clear and swipe footer detach interceptors release matching owner even on host failure, preserve foreign owner and propagate host once")
+}

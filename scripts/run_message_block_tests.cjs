@@ -24,6 +24,8 @@ const compiler = [
 const root = path.resolve(__dirname, '..');
 const output = fs.mkdtempSync(path.join(os.tmpdir(), 'hchat-message-block-tests-'));
 const artifact = path.join(output, 'rules.jar');
+process.once('exit', () => fs.rmSync(output, {recursive:true,force:true}));
+const api = require('./lib/api102.cjs').prepare(output);
 const java = process.env.JAVA || 'java';
 function run(args) {
     const result = spawnSync(java, args, {cwd: root, encoding: 'utf8', timeout: 60000});
@@ -48,10 +50,9 @@ fs.writeFileSync(selection, 'package h.Hchat.hooks.items.messageblock\n' +
     uiSlice('internal fun messageBlockBindingFromContact(', 'internal fun normalizedMessageBlockBinding(') +
     uiSlice('internal fun groupMemberEntry(', '\nsuspend fun loadAvatarBitmap('));
 run(['-Xmx256m', '-cp', compiler.join(path.delimiter), 'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler',
-    '-no-stdlib', '-no-reflect', '-classpath', [stdlib, json].join(path.delimiter), '-d', artifact, selection,
+    '-no-stdlib', '-no-reflect', '-classpath', [stdlib, json, api.classpath].join(path.delimiter), '-d', artifact, selection,
     ...['hooks/items/messageblock/MessageBlockFeature.kt', 'hooks/items/messageblock/MessageBlockSettings.kt',
         'hooks/api/model/WeChatMessage.kt', 'hooks/api/model/WeChatMessageTypes.kt',
         'hooks/api/model/WeChatParsedMessage.kt'].map(file => source + file),
     ...fs.readdirSync(path.join(root, tests)).filter(file => file.endsWith('.kt')).map(file => tests + file)]);
-run(['-cp', [artifact, stdlib, json].join(path.delimiter), 'h.Hchat.hooks.items.messageblock.RuleRegressionKt']);
-console.log('Test artifacts: ' + output);
+run(['-cp', [artifact, stdlib, json, api.classpath].join(path.delimiter), 'h.Hchat.hooks.items.messageblock.RuleRegressionKt']);

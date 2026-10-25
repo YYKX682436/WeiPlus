@@ -1,6 +1,7 @@
 package h.Hchat.hooks.items.payment.core;
 
-import de.robv.android.xposed.XposedBridge;
+import h.Hchat.tests.api102.FrameworkFixture;
+import h.Hchat.hooks.core.XposedRuntime;
 import java.lang.reflect.Method;
 
 public final class LoggerRegression {
@@ -12,6 +13,8 @@ public final class LoggerRegression {
     }
 
     public static void main(String[] arguments) throws Exception {
+        FrameworkFixture framework=new FrameworkFixture();
+        XposedRuntime.initialize(framework.create());
         Class<?> logger;
         try {
             logger = Class.forName("h.Hchat.hooks.items.payment.core.RedPacketLogger");
@@ -24,26 +27,26 @@ public final class LoggerRegression {
                 "消息观察：累计=1", "hookAll 完成", "进入静默模式, sendid=test",
                 "请求对象已创建", "收红包响应", "拆红包完成"}) {
             log.invoke(null, message);
-            check(XposedBridge.messages.isEmpty(), "正常流程不得输出调试日志：" + message);
-            check(XposedBridge.errors.isEmpty(), "普通状态不能误报错误：" + message);
+            check(framework.logs.isEmpty(), "正常流程不得输出调试日志：" + message);
+            check(framework.logs.isEmpty(), "普通状态不能误报错误：" + message);
         }
         for (String message : new String[] {"ERROR 原始错误", "安装失败: 原始原因", "未找到组件", "接口不可用", "无合适方法", "回调异常"}) {
-            int previous = XposedBridge.errors.size();
+            int previous = framework.logs.size();
             log.invoke(null, message);
-            check(XposedBridge.errors.size() == previous + 1, "真实错误必须写入 LSPosed 错误日志：" + message);
-            check(XposedBridge.errors.get(previous).getMessage().equals("[Hchat:RedPacket] " + message), "错误原文必须完整保留");
+            check(framework.logs.size() == previous + 1, "真实错误必须写入 LSPosed 错误日志：" + message);
+            check(framework.logs.get(previous).message.equals("[Hchat:RedPacket] " + message), "错误原文必须完整保留");
         }
         IllegalStateException cause = new IllegalStateException("实际错误文本", new IllegalArgumentException("底层原因"));
         error.invoke(null, "消息观察安装失败", cause);
-        Throwable emitted = XposedBridge.errors.get(XposedBridge.errors.size() - 1);
-        check(emitted.getCause() == cause, "异常和堆栈不能只剩 getMessage");
-        check(emitted.getCause().getCause() == cause.getCause(), "嵌套原因必须保留");
+        Throwable emitted = framework.logs.get(framework.logs.size() - 1).error;
+        check(emitted == cause, "异常和堆栈不能只剩 getMessage");
+        check(emitted.getCause() == cause.getCause(), "嵌套原因必须保留");
         log.invoke(null, cause);
-        check(XposedBridge.errors.get(XposedBridge.errors.size() - 1).getCause() == cause, "Throwable 日志必须按异常输出");
-        int messageCount = XposedBridge.messages.size();
-        int errorCount = XposedBridge.errors.size();
+        check(framework.logs.get(framework.logs.size() - 1).error == cause, "Throwable 日志必须按异常输出");
+        int messageCount = framework.logs.size();
+        int errorCount = framework.logs.size();
         log.invoke(null, new Object[] {null});
-        check(XposedBridge.messages.size() == messageCount && XposedBridge.errors.size() == errorCount, "空日志不得产生噪声");
+        check(framework.logs.size() == messageCount && framework.logs.size() == errorCount, "空日志不得产生噪声");
         System.out.println("红包日志回归通过，断言=" + checks);
     }
 }

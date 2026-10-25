@@ -9,6 +9,10 @@
 
 ## 架构检查
 
+- 只支持官方 libxposed API `102.0.0`，`minApiVersion=targetApiVersion=102`。入口为无参 `XposedModule`，只使用 `META-INF/xposed` 注册文件；禁止恢复旧 API、双入口、旧参数仿制层或 API 100/101 兼容路径。
+- `onModuleLoaded` 后才能使用框架 API，`onPackageReady` 安装 Application/Tinker 早期 Hook；attach 后重新读取宿主 ClassLoader。调用链使用官方 Hooker/Chain，修改参数复制数组，正常 proceed 一次，短路零次，finally 清理，宿主异常原样传播。Chain 不跨线程或回调生命周期。
+- 框架绕过调用只用官方 ORIGIN invoker；反射复用 KavaReflector 或标准反射，不引入 API 100 helper。框架日志由 HLog 分级记录。Native 模块身份只取框架 ApplicationInfo.sourceDir。
+
 - 从 `ModuleEntry` 跟踪包名与进程分流，再看 `FeatureRegistry`、`FeatureManager`、`DexInstallScheduler`、`HookRegistry` 和具体回调。
 - 普通开关应安装轻量 Hook 并在回调快速检查当前配置。昂贵 DexKit、数据库、网络和资源初始化应按需执行。
 - 仅早期必须生效的功能声明重启要求或 `ENABLED_ONLY`。配置读取异常时有副作用的行为应关闭。
@@ -23,7 +27,12 @@
 ./gradlew :app:lint
 ```
 
-Release 已启用 R8 和资源压缩。确认反射、Xposed、JNI 和运行时资源引用后再调整 keep 规则。修改前查看 Git 状态，保留已有未提交文件；只清理能确认属于本次任务的产物。
+Release 已启用 R8 和资源压缩。必须检查混淆后 java_init.list 对应真实入口类，API 类未打包、旧注册和旧类型清零。确认反射、Xposed、JNI 和运行时资源引用后再调整 keep 规则。修改前查看 Git 状态，保留已有未提交文件；只清理可确认无用的项目产物，包含历史遗留；保留签名材料和用户数据。
+
+## 回归
+
+- `scripts/lib/api102.cjs` 从正式 API 102 AAR 提取官方声明，最小测试 Chain 执行真实生产拦截器；不允许旧 API stub 或 before/after 测试壳制造通过。
+- 运行受影响回归与现有脚本，完成 Debug、正式签名 Release 与 Lint。真机先核实实际框架 API，再验证可用宿主；框架或环境不满足时记录 NOT_VERIFIED，不恢复旧路径。
 
 ## 交付标准
 

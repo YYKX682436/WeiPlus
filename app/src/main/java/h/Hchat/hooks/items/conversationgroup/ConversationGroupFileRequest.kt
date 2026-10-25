@@ -6,8 +6,8 @@ import android.content.Intent
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedBridge
+import io.github.libxposed.api.XposedInterface
+import h.Hchat.hooks.core.XposedRuntime
 import h.Hchat.utils.HLog
 import java.lang.ref.WeakReference
 import java.util.concurrent.ArrayBlockingQueue
@@ -169,10 +169,11 @@ internal class ConversationGroupFileRequest<T> private constructor(
 
 /** 只持有自己注册的结果 Hook；失败可重试，功能销毁后允许重新安装。 */
 internal class ConversationGroupFileResultHooks(
-    private val onResult: (Activity, Int, Int, Intent?) -> Unit
+    private val onResult: (Activity, Int, Int, Intent?) -> Unit,
+    private val onHostFailure: (Activity, Int) -> Unit = { _, _ -> }
 ) {
-    private val hooks = linkedMapOf<Class<*>, Set<XC_MethodHook.Unhook>>()
-    private val retiredHooks = linkedSetOf<XC_MethodHook.Unhook>()
+    private val hooks = linkedMapOf<Class<*>, Set<XposedInterface.HookHandle>>()
+    private val retiredHooks = linkedSetOf<XposedInterface.HookHandle>()
     private var generation = 0L
 
     @Synchronized
@@ -183,17 +184,28 @@ internal class ConversationGroupFileResultHooks(
             var clazz: Class<*>? = activityClass
             while (clazz != null && Activity::class.java.isAssignableFrom(clazz)) {
                 if (!hooks.containsKey(clazz)) {
-                    val handles = XposedBridge.hookAllMethods(clazz, "onActivityResult", object : XC_MethodHook() {
-                        override fun afterHookedMethod(param: MethodHookParam) {
-                            val owner = param.thisObject as? Activity ?: return
-                            val code = param.args.getOrNull(0) as? Int ?: return
-                            val result = param.args.getOrNull(1) as? Int ?: Activity.RESULT_CANCELED
-                            synchronized(this@ConversationGroupFileResultHooks) {
-                                if (generation == installingGeneration) {
-                                    onResult(owner, code, result, param.args.getOrNull(2) as? Intent)
+                    val handles = XposedRuntime.hookAllMethods(clazz, "onActivityResult", XposedInterface.Hooker { chain ->
+                        val owner = chain.thisObject as? Activity
+                        val code = chain.args.getOrNull(0) as? Int
+                        val resultCode = chain.args.getOrNull(1) as? Int ?: Activity.RESULT_CANCELED
+                        val data = chain.args.getOrNull(2) as? Intent
+                        var succeeded = false
+                        val value = try {
+                            chain.proceed().also { succeeded = true }
+                        } finally {
+                            if (!succeeded && owner != null && code != null) {
+                                synchronized(this@ConversationGroupFileResultHooks) {
+                                    if (generation == installingGeneration) {
+                                        runCatching { onHostFailure(owner, code) }
+                                        .onFailure { HLog.e("[Hchat:ConversationGroup] 取消失败的文件结果请求异常", it) }
+                                    }
                                 }
                             }
                         }
+                        if (owner != null && code != null) synchronized(this@ConversationGroupFileResultHooks) {
+                            if (generation == installingGeneration) onResult(owner, code, resultCode, data)
+                        }
+                        value
                     })
                     hooks[clazz] = handles
                 }

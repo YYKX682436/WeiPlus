@@ -1,23 +1,25 @@
 package h.Hchat.utils;
 
-import de.robv.android.xposed.XposedBridge;
+import android.util.Log;
+import h.Hchat.hooks.core.XposedRuntime;
 
-/**
- * LSPosed treats Throwable logs as error logs. Use this only for real failures.
- */
+/** Framework logging with explicit severity; error logs are reserved for real failures. */
 public final class HLog {
-    private HLog() {
-    }
+  private HLog() {}
 
-    public static void e(String message) {
-        XposedBridge.log(new RuntimeException(message));
-    }
+  public static void e(String message) {
+    XposedRuntime.get().log(Log.ERROR, "Hchat", message);
+  }
 
-    public static void e(String message, Throwable throwable) {
-        if (throwable == null) {
-            e(message);
-            return;
-        }
-        XposedBridge.log(new RuntimeException(message, throwable));
+  public static void e(String message, Throwable throwable) {
+    if (throwable == null) {
+      e(message);
+      return;
     }
+    XposedRuntime.get().log(Log.ERROR, "Hchat", message, throwable);
+  }
+
+  public static void i(String message) {
+    XposedRuntime.get().log(Log.INFO, "Hchat", message);
+  }
 }

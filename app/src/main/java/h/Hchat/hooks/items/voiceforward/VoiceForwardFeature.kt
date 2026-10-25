@@ -12,7 +12,7 @@ import android.widget.AdapterView
 import android.widget.ListAdapter
 import android.widget.ListView
 import android.widget.Toast
-import de.robv.android.xposed.XC_MethodHook
+import io.github.libxposed.api.XposedInterface
 import h.Hchat.dexkit.DexMethodCache
 import h.Hchat.event.Events
 import h.Hchat.hooks.api.core.WeChatApis
@@ -183,30 +183,39 @@ private class VoiceForwardHooker(
     }
 
     private fun hookChatMethod(method: Method, menuCreate: Boolean): Boolean {
-        return hookMethod(method, object : XC_MethodHook() {
-            override fun afterHookedMethod(param: MethodHookParam) {
-                if (menuCreate) addForwardMenu(param)
+        return hookMethod(method, XposedInterface.Hooker { chain ->
+            var value: Any? = null
+            var intercepted = false
+            run before@ {
+                if (!menuCreate) if (handleForwardClick(chain)) { intercepted = true; value = true }
             }
-
-            override fun beforeHookedMethod(param: MethodHookParam) {
-                if (!menuCreate) handleForwardClick(param)
+            if (!intercepted) value = chain.proceed()
+            run after@ {
+                if (menuCreate) addForwardMenu(chain)
             }
+            value
         })
     }
 
     private fun hookFavoriteMenuCreateMethod(method: Method): Boolean {
-        return hookMethod(method, object : XC_MethodHook() {
-            override fun afterHookedMethod(param: MethodHookParam) {
-                addFavoriteMenu(param)
+        return hookMethod(method, XposedInterface.Hooker { chain ->
+            val value = chain.proceed()
+            run after@ {
+                addFavoriteMenu(chain)
             }
+            value
         })
     }
 
     private fun hookFavoriteClickMethod(method: Method): Boolean {
-        return hookMethod(method, object : XC_MethodHook() {
-            override fun beforeHookedMethod(param: MethodHookParam) {
-                handleFavoriteClick(param)
+        return hookMethod(method, XposedInterface.Hooker { chain ->
+            var value: Any? = null
+            var intercepted = false
+            run before@ {
+                if (handleFavoriteClick(chain)) { intercepted = true; value = null }
             }
+            if (!intercepted) value = chain.proceed()
+            value
         })
     }
 
@@ -227,11 +236,15 @@ private class VoiceForwardHooker(
             addAll(locateFavoriteSearchItemClickMethods())
         }.distinctBy(Method::toGenericString)
         methods.forEach { method ->
-            if (hookMethod(method, object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        handleFavoriteSelectClick(param)
-                    }
-                })) hooked++
+            if (hookMethod(method, XposedInterface.Hooker { chain ->
+                var value: Any? = null
+                var intercepted = false
+                run before@ {
+                    if (handleFavoriteSelectClick(chain)) { intercepted = true; value = null }
+                }
+                if (!intercepted) value = chain.proceed()
+                value
+            })) hooked++
         }
         return hooked
     }
@@ -290,15 +303,17 @@ private class VoiceForwardHooker(
             val clazz = KavaReflector.loadClass(className, context.hostClassLoader()) ?: return@forEach
             val method = KavaReflector.findMethod(clazz, "onCreate", Bundle::class.java)
                 ?: return@forEach
-            if (hookMethod(method, object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        removeVoiceFromFavoriteSelectorIntent(param.thisObject)
-                    }
-
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        allowVoiceInFavoriteSelector(param.thisObject)
-                    }
-                })) {
+            if (hookMethod(method, XposedInterface.Hooker { chain ->
+                val receiver = chain.thisObject
+                run before@ {
+                    removeVoiceFromFavoriteSelectorIntent(receiver)
+                }
+                val value = chain.proceed()
+                run after@ {
+                    allowVoiceInFavoriteSelector(receiver)
+                }
+                value
+            })) {
                 hooked++
             }
         }
@@ -322,11 +337,14 @@ private class VoiceForwardHooker(
                     )
             }
             .forEach { queryMethod ->
-                if (hookMethod(queryMethod, object : XC_MethodHook() {
-                        override fun beforeHookedMethod(param: MethodHookParam) {
-                            removeVoiceFromFavoriteAdapter(param.thisObject)
-                        }
-                    })) {
+                if (hookMethod(queryMethod, XposedInterface.Hooker { chain ->
+                    val receiver = chain.thisObject
+                    run before@ {
+                        removeVoiceFromFavoriteAdapter(receiver)
+                    }
+                    val value = chain.proceed()
+                    value
+                })) {
                     hooked++
                 }
             }
@@ -336,11 +354,14 @@ private class VoiceForwardHooker(
                     method.parameterTypes.isEmpty() &&
                     method.returnType == Void.TYPE
             }
-            if (resetMethod != null && hookMethod(resetMethod, object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        removeVoiceFromFavoriteAdapter(param.thisObject)
-                    }
-                })) {
+            if (resetMethod != null && hookMethod(resetMethod, XposedInterface.Hooker { chain ->
+                val receiver = chain.thisObject
+                run before@ {
+                    removeVoiceFromFavoriteAdapter(receiver)
+                }
+                val value = chain.proceed()
+                value
+            })) {
                 hooked++
             }
         }
@@ -423,15 +444,21 @@ private class VoiceForwardHooker(
                         }
                 }
                 .forEach { method ->
-                    hookMethod(method, object : XC_MethodHook() {
-                        override fun beforeHookedMethod(param: MethodHookParam) {
-                            if (!favoriteClickForwardEnabled()) return
-                            if (param.thisObject !in favoriteSelectorFilters) return
-                            val item = param.args?.getOrNull(0) ?: return
+                    hookMethod(method, XposedInterface.Hooker { chain ->
+                        val args = chain.args
+                        val receiver = chain.thisObject
+                        var value: Any? = null
+                        var intercepted = false
+                        run before@ {
+                            if (!favoriteClickForwardEnabled()) return@before
+                            if (receiver !in favoriteSelectorFilters) return@before
+                            val item = args?.getOrNull(0) ?: return@before
                             if (favoriteType(item) == FAVORITE_VOICE_TYPE) {
-                                param.result = false
+                                run { intercepted = true; value = false }
                             }
                         }
+                        if (!intercepted) value = chain.proceed()
+                        value
                     })
                 }
             current = current.superclass
@@ -524,22 +551,28 @@ private class VoiceForwardHooker(
     }
 
     private fun hookMultiNativeMenuCreateMethod(method: Method): Boolean {
-        return hookMethod(method, object : XC_MethodHook() {
-            override fun afterHookedMethod(param: MethodHookParam) {
-                addMultiNativeVoiceMenu(param)
+        return hookMethod(method, XposedInterface.Hooker { chain ->
+            val value = chain.proceed()
+            run after@ {
+                addMultiNativeVoiceMenu(chain)
             }
+            value
         })
     }
 
     private fun hookMultiNativeMenuClickMethod(method: Method, exitMethod: Method): Boolean {
-        return hookMethod(method, object : XC_MethodHook() {
-            override fun beforeHookedMethod(param: MethodHookParam) {
-                handleMultiNativeVoiceMenuClick(param, exitMethod)
+        return hookMethod(method, XposedInterface.Hooker { chain ->
+            var value: Any? = null
+            var intercepted = false
+            run before@ {
+                if (handleMultiNativeVoiceMenuClick(chain, exitMethod)) { intercepted = true; value = null }
             }
+            if (!intercepted) value = chain.proceed()
+            value
         })
     }
 
-    private fun hookMethod(method: Method, callback: XC_MethodHook): Boolean {
+    private fun hookMethod(method: Method, callback: XposedInterface.Hooker): Boolean {
         if (!hookedMethods.add(method)) return true
         return try {
             HookRegistry.get().hook(method, callback)
@@ -555,12 +588,12 @@ private class VoiceForwardHooker(
         return DexMethodCache.runtimeKey(context.hostContext(), context.hostClassLoader())
     }
 
-    private fun addForwardMenu(param: XC_MethodHook.MethodHookParam) {
+    private fun addForwardMenu(param: XposedInterface.Chain) {
         if (!isEnabled()) return
         val allowForward = chatForwardEnabled() && !messageForwardMenuEnabled()
         val allowSave = chatSaveEnabled()
         if (!allowForward && !allowSave) return
-        val args = param.args ?: return
+        val args = param.args.toTypedArray() ?: return
         if (args.size < 3) return
         val menu = args[0] ?: return
         val message = resolveNativeMessage(args) ?: return
@@ -575,12 +608,12 @@ private class VoiceForwardHooker(
         }
     }
 
-    private fun addFavoriteMenu(param: XC_MethodHook.MethodHookParam) {
+    private fun addFavoriteMenu(param: XposedInterface.Chain) {
         if (!isEnabled()) return
         val allowForward = favoriteMenuForwardEnabled()
         val allowSave = favoriteSaveEnabled()
         if (!allowForward && !allowSave) return
-        val args = param.args ?: return
+        val args = param.args.toTypedArray() ?: return
         val menu = args.getOrNull(0) ?: return
         val view = args.getOrNull(1) as? View
         val favorite = resolveFavoriteVoiceMenuItem(param) ?: return
@@ -605,11 +638,11 @@ private class VoiceForwardHooker(
         }
     }
 
-    private fun addMultiNativeVoiceMenu(param: XC_MethodHook.MethodHookParam) {
+    private fun addMultiNativeVoiceMenu(param: XposedInterface.Chain) {
         if (!isEnabled() || (!chatMultiForwardEnabled() && !chatMultiMergeEnabled())) return
         val messages = MultiSelectMessageResolver.resolve(param.thisObject)
         if (messages.isEmpty() || messages.any { !isVoiceMessage(it) }) return
-        val menu = param.args?.getOrNull(0) ?: return
+        val menu = param.args.toTypedArray()?.getOrNull(0) ?: return
         if (chatMultiForwardEnabled()) {
             addVoiceMenuItem(menu, null, 0, MULTI_VOICE_NATIVE_FORWARD_ID, MULTI_VOICE_NATIVE_FORWARD_TITLE, "icons_filled_share")
         }
@@ -660,188 +693,204 @@ private class VoiceForwardHooker(
         return 0
     }
 
-    private fun handleForwardClick(param: XC_MethodHook.MethodHookParam) {
-        if (!isEnabled()) return
-        val args = param.args ?: return
-        val menuItem = args.getOrNull(0) as? MenuItem ?: return
-        if (menuItem.itemId != MENU_FORWARD_ID && menuItem.itemId != MENU_SAVE_ID) return
-        if (menuItem.itemId == MENU_FORWARD_ID && !chatForwardEnabled()) return
-        if (menuItem.itemId == MENU_SAVE_ID && !chatSaveEnabled()) return
-        val message = resolveNativeMessage(args)
-        val activity = resolveActivity(args.getOrNull(1))
-        if (message == null || activity == null) {
-            toast(activity, "语音消息不可用")
-            param.result = true
-            return
+    private fun handleForwardClick(param: XposedInterface.Chain) : Boolean {
+        var consumed = false
+        run action@ {
+            if (!isEnabled()) return@action
+            val args = param.args.toTypedArray() ?: return@action
+            val menuItem = args.getOrNull(0) as? MenuItem ?: return@action
+            if (menuItem.itemId != MENU_FORWARD_ID && menuItem.itemId != MENU_SAVE_ID) return@action
+            if (menuItem.itemId == MENU_FORWARD_ID && !chatForwardEnabled()) return@action
+            if (menuItem.itemId == MENU_SAVE_ID && !chatSaveEnabled()) return@action
+            val message = resolveNativeMessage(args)
+            val activity = resolveActivity(args.getOrNull(1))
+            if (message == null || activity == null) {
+                toast(activity, "语音消息不可用")
+                consumed = true
+                return@action
+            }
+            val source = resolveVoiceSource(message)
+            if (source == null) {
+                toast(activity, "语音文件不存在")
+                consumed = true
+                return@action
+            }
+            if (menuItem.itemId == MENU_SAVE_ID) {
+                saveVoice(activity, source)
+            } else {
+                showContactPicker(activity, source)
+            }
+            consumed = true
         }
-        val source = resolveVoiceSource(message)
-        if (source == null) {
-            toast(activity, "语音文件不存在")
-            param.result = true
-            return
-        }
-        if (menuItem.itemId == MENU_SAVE_ID) {
-            saveVoice(activity, source)
-        } else {
-            showContactPicker(activity, source)
-        }
-        param.result = true
+        return consumed
     }
 
-    private fun handleFavoriteClick(param: XC_MethodHook.MethodHookParam) {
-        if (!isEnabled()) return
-        val args = param.args ?: return
-        val menuItem = args.getOrNull(0) as? MenuItem ?: return
-        if (menuItem.itemId != MENU_FORWARD_ID && menuItem.itemId != MENU_SAVE_ID) return
-        if (menuItem.itemId == MENU_FORWARD_ID && !favoriteMenuForwardEnabled()) return
-        if (menuItem.itemId == MENU_SAVE_ID && !favoriteSaveEnabled()) return
-        val activity = WeChatApis.currentActivity()?.currentActivity() as? Activity
-        val favorite = favoriteBindingsByMenuItem.remove(menuItem)
-            ?: resolveFavoriteItem(param.thisObject)
-            ?: resolveFavoriteItem(args)
-            ?: pendingFavoriteItem(param.thisObject, activity)
-        val source = favorite?.let { resolveFavoriteVoiceSource(it) }
-            ?: pendingFavoriteVoiceSource(param.thisObject, activity)
-        if (source == null) {
-            toast(activity, if (favorite == null) "收藏语音不可用" else "收藏语音文件不存在")
-            param.result = null
-            return
+    private fun handleFavoriteClick(param: XposedInterface.Chain) : Boolean {
+        var consumed = false
+        run action@ {
+            if (!isEnabled()) return@action
+            val args = param.args.toTypedArray() ?: return@action
+            val menuItem = args.getOrNull(0) as? MenuItem ?: return@action
+            if (menuItem.itemId != MENU_FORWARD_ID && menuItem.itemId != MENU_SAVE_ID) return@action
+            if (menuItem.itemId == MENU_FORWARD_ID && !favoriteMenuForwardEnabled()) return@action
+            if (menuItem.itemId == MENU_SAVE_ID && !favoriteSaveEnabled()) return@action
+            val activity = WeChatApis.currentActivity()?.currentActivity() as? Activity
+            val favorite = favoriteBindingsByMenuItem.remove(menuItem)
+                ?: resolveFavoriteItem(param.thisObject)
+                ?: resolveFavoriteItem(args)
+                ?: pendingFavoriteItem(param.thisObject, activity)
+            val source = favorite?.let { resolveFavoriteVoiceSource(it) }
+                ?: pendingFavoriteVoiceSource(param.thisObject, activity)
+            if (source == null) {
+                toast(activity, if (favorite == null) "收藏语音不可用" else "收藏语音文件不存在")
+                consumed = true
+                return@action
+            }
+            val targetActivity = activity
+            if (targetActivity == null) {
+                consumed = true
+                return@action
+            }
+            if (menuItem.itemId == MENU_SAVE_ID) {
+                saveVoice(targetActivity, source)
+            } else {
+                showContactPicker(targetActivity, source)
+            }
+            consumed = true
         }
-        val targetActivity = activity
-        if (targetActivity == null) {
-            param.result = null
-            return
-        }
-        if (menuItem.itemId == MENU_SAVE_ID) {
-            saveVoice(targetActivity, source)
-        } else {
-            showContactPicker(targetActivity, source)
-        }
-        param.result = null
+        return consumed
     }
 
-    private fun handleFavoriteSelectClick(param: XC_MethodHook.MethodHookParam) {
-        if (!favoriteClickForwardEnabled()) return
-        val view = param.args?.getOrNull(1) as? View ?: return
-        val selectActivity = favoriteSelectActivity(param.thisObject)
-            ?: unwrapActivity(view.context)
-        val adapterView = param.args?.getOrNull(0) as? AdapterView<*>
-        val position = (param.args?.getOrNull(2) as? Number)?.toInt() ?: -1
-        val adapterPosition = position - (adapterView?.let { viewGroup ->
-            (viewGroup as? android.widget.ListView)?.headerViewsCount
-        } ?: 0) - if (selectActivity?.javaClass?.name in FAVORITE_SEARCH_UI_NAMES) 1 else 0
-        val favorite = sequenceOf(
-            resolveFavoriteItem(view.tag),
-            resolveFavoriteMenuItem(view),
-            resolveFavoriteItem(view),
-            FavoriteMenuItemResolver.resolveAdapterItem(adapterView?.adapter, adapterPosition)
-        ).filterNotNull().firstOrNull(::isFavoriteVoice) ?: return
-        val activity = selectActivity
-            ?: WeChatApis.currentActivity()?.currentActivity() as? Activity
-        val target = favoriteSelectTargetTalker(activity ?: param.thisObject)
-        if (target.isBlank()) {
-            toast(activity, "当前聊天不可用")
-            param.result = null
-            return
-        }
-        val source = resolveFavoriteVoiceSource(favorite)
-        if (source == null) {
-            toast(activity, "收藏语音文件不存在")
-            param.result = null
-            return
-        }
-        val targetActivity = activity
-        if (targetActivity == null || targetActivity.isFinishing) {
-            param.result = null
-            return
-        }
-        if (!seenDialogs.contains(targetActivity)) {
-            seenDialogs.add(targetActivity)
-            VoiceForwardMiuixDialog.showFavoriteVoiceSendConfirm(
-                activity = targetActivity,
-                preparePreview = {
-                    preparePreviewVoice(source)
-                },
-                onConfirm = {
-                    val sent = sendVoiceForForward(source, target)
-                    toast(targetActivity, if (sent) "收藏语音已发送" else "收藏语音发送失败")
-                    if (sent && !targetActivity.isFinishing) {
-                        targetActivity.finish()
+    private fun handleFavoriteSelectClick(param: XposedInterface.Chain) : Boolean {
+        var consumed = false
+        run action@ {
+            if (!favoriteClickForwardEnabled()) return@action
+            val view = param.args.toTypedArray()?.getOrNull(1) as? View ?: return@action
+            val selectActivity = favoriteSelectActivity(param.thisObject)
+                ?: unwrapActivity(view.context)
+            val adapterView = param.args.toTypedArray()?.getOrNull(0) as? AdapterView<*>
+            val position = (param.args.toTypedArray()?.getOrNull(2) as? Number)?.toInt() ?: -1
+            val adapterPosition = position - (adapterView?.let { viewGroup ->
+                (viewGroup as? android.widget.ListView)?.headerViewsCount
+            } ?: 0) - if (selectActivity?.javaClass?.name in FAVORITE_SEARCH_UI_NAMES) 1 else 0
+            val favorite = sequenceOf(
+                resolveFavoriteItem(view.tag),
+                resolveFavoriteMenuItem(view),
+                resolveFavoriteItem(view),
+                FavoriteMenuItemResolver.resolveAdapterItem(adapterView?.adapter, adapterPosition)
+            ).filterNotNull().firstOrNull(::isFavoriteVoice) ?: return@action
+            val activity = selectActivity
+                ?: WeChatApis.currentActivity()?.currentActivity() as? Activity
+            val target = favoriteSelectTargetTalker(activity ?: param.thisObject)
+            if (target.isBlank()) {
+                toast(activity, "当前聊天不可用")
+                consumed = true
+                return@action
+            }
+            val source = resolveFavoriteVoiceSource(favorite)
+            if (source == null) {
+                toast(activity, "收藏语音文件不存在")
+                consumed = true
+                return@action
+            }
+            val targetActivity = activity
+            if (targetActivity == null || targetActivity.isFinishing) {
+                consumed = true
+                return@action
+            }
+            if (!seenDialogs.contains(targetActivity)) {
+                seenDialogs.add(targetActivity)
+                VoiceForwardMiuixDialog.showFavoriteVoiceSendConfirm(
+                    activity = targetActivity,
+                    preparePreview = {
+                        preparePreviewVoice(source)
+                    },
+                    onConfirm = {
+                        val sent = sendVoiceForForward(source, target)
+                        toast(targetActivity, if (sent) "收藏语音已发送" else "收藏语音发送失败")
+                        if (sent && !targetActivity.isFinishing) {
+                            targetActivity.finish()
+                        }
+                    },
+                    onDismiss = {
+                        seenDialogs.remove(targetActivity)
                     }
-                },
-                onDismiss = {
-                    seenDialogs.remove(targetActivity)
-                }
-            )
+                )
+            }
+            consumed = true
         }
-        param.result = null
+        return consumed
     }
 
-    private fun handleMultiNativeVoiceMenuClick(param: XC_MethodHook.MethodHookParam, exitMethod: Method) {
-        if (!isEnabled()) return
-        val args = param.args ?: return
-        val menuItem = args.getOrNull(0) as? MenuItem ?: return
-        val isIndividualForward = menuItem.itemId == MULTI_VOICE_NATIVE_FORWARD_ID
-        val isMerge = menuItem.itemId == MULTI_VOICE_MERGE_ID
-        if (!isIndividualForward && !isMerge) return
-        if (isIndividualForward && !chatMultiForwardEnabled()) return
-        if (isMerge && !chatMultiMergeEnabled()) return
-        val activity = WeChatApis.currentActivity()?.currentActivity() as? Activity
-        val messages = MultiSelectMessageResolver.resolve(param.thisObject)
-        if (messages.isEmpty() || messages.any { !isVoiceMessage(it) }) {
-            toast(activity, "未找到选中的语音消息")
-            param.result = null
-            return
-        }
-        val sources = messages.mapNotNull { resolveVoiceSource(it) }
-        if (sources.size != messages.size) {
-            toast(activity, "部分语音文件不存在")
-            param.result = null
-            return
-        }
-        val exitTarget = MultiSelectMessageUi.resolveExitTarget(param.thisObject, exitMethod, logger)
-        if (exitTarget == null) {
-            toast(activity, "无法退出多选状态，请稍后重试")
-            param.result = null
-            return
-        }
-        if (activity == null) {
-            toast(null, "当前页面不可用")
-        } else if (isIndividualForward) {
-            showContactPicker(activity, sources, exitTarget)
-        } else {
-            VoiceForwardMiuixDialog.showChoices(
-                activity = activity,
-                title = "合并语音",
-                summary = "请选择合并语音的操作",
-                choices = listOf(
-                    "转发" to "选择好友或群聊发送合并语音",
-                    "保存" to "保存合并后的 MP3 文件"
-                ),
-                onSelected = { choice ->
-                    if (choice == 1) {
-                        mergeMultiVoices(
-                            activity = activity,
-                            sources = sources,
-                            saveOutput = true,
-                            exitTarget = exitTarget
-                        )
-                    } else {
-                        showContactPicker(activity, sources, exitTarget) { targets ->
+    private fun handleMultiNativeVoiceMenuClick(param: XposedInterface.Chain, exitMethod: Method) : Boolean {
+        var consumed = false
+        run action@ {
+            if (!isEnabled()) return@action
+            val args = param.args.toTypedArray() ?: return@action
+            val menuItem = args.getOrNull(0) as? MenuItem ?: return@action
+            val isIndividualForward = menuItem.itemId == MULTI_VOICE_NATIVE_FORWARD_ID
+            val isMerge = menuItem.itemId == MULTI_VOICE_MERGE_ID
+            if (!isIndividualForward && !isMerge) return@action
+            if (isIndividualForward && !chatMultiForwardEnabled()) return@action
+            if (isMerge && !chatMultiMergeEnabled()) return@action
+            val activity = WeChatApis.currentActivity()?.currentActivity() as? Activity
+            val messages = MultiSelectMessageResolver.resolve(param.thisObject)
+            if (messages.isEmpty() || messages.any { !isVoiceMessage(it) }) {
+                toast(activity, "未找到选中的语音消息")
+                consumed = true
+                return@action
+            }
+            val sources = messages.mapNotNull { resolveVoiceSource(it) }
+            if (sources.size != messages.size) {
+                toast(activity, "部分语音文件不存在")
+                consumed = true
+                return@action
+            }
+            val exitTarget = MultiSelectMessageUi.resolveExitTarget(param.thisObject, exitMethod, logger)
+            if (exitTarget == null) {
+                toast(activity, "无法退出多选状态，请稍后重试")
+                consumed = true
+                return@action
+            }
+            if (activity == null) {
+                toast(null, "当前页面不可用")
+            } else if (isIndividualForward) {
+                showContactPicker(activity, sources, exitTarget)
+            } else {
+                VoiceForwardMiuixDialog.showChoices(
+                    activity = activity,
+                    title = "合并语音",
+                    summary = "请选择合并语音的操作",
+                    choices = listOf(
+                        "转发" to "选择好友或群聊发送合并语音",
+                        "保存" to "保存合并后的 MP3 文件"
+                    ),
+                    onSelected = { choice ->
+                        if (choice == 1) {
                             mergeMultiVoices(
                                 activity = activity,
                                 sources = sources,
-                                saveOutput = false,
-                                exitTarget = exitTarget,
-                                forwardTargets = targets
+                                saveOutput = true,
+                                exitTarget = exitTarget
                             )
+                        } else {
+                            showContactPicker(activity, sources, exitTarget) { targets ->
+                                mergeMultiVoices(
+                                    activity = activity,
+                                    sources = sources,
+                                    saveOutput = false,
+                                    exitTarget = exitTarget,
+                                    forwardTargets = targets
+                                )
+                            }
                         }
-                    }
-                },
-                onDismiss = {}
-            )
+                    },
+                    onDismiss = {}
+                )
+            }
+            consumed = true
         }
-        param.result = null
+        return consumed
     }
 
     private fun mergeMultiVoices(
@@ -1512,8 +1561,8 @@ private class VoiceForwardHooker(
         return FavoriteMenuItemResolver.resolveMenuItem(source)
     }
 
-    private fun resolveFavoriteVoiceMenuItem(param: XC_MethodHook.MethodHookParam): Any? {
-        val args = param.args ?: return null
+    private fun resolveFavoriteVoiceMenuItem(param: XposedInterface.Chain): Any? {
+        val args = param.args.toTypedArray() ?: return null
         val candidates = listOfNotNull(
             args.getOrNull(2),
             args.getOrNull(1) as? View,

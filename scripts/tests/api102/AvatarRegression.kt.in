@@ -1,0 +1,55 @@
+import io.github.libxposed.api.XposedInterface.Hooker
+import h.Hchat.tests.api102.ChainFixture
+import java.util.WeakHashMap
+
+class Bitmap(val name:String)
+class ImageView {var displayed:Bitmap?=null;fun setImageBitmap(value:Bitmap){displayed=value}}
+open class Drawable {var initialized=false;val bounds=Any()}
+class Canvas {var draws=0;fun drawBitmap(value:Bitmap,from:Any?,to:Any,paint:Any){draws++}}
+object AvatarSurface {val OTHER=Any()}
+object AvatarSurfaceClassifier {fun forView(value:Any)=AvatarSurface.OTHER;fun forObject(value:Any?)=AvatarSurface.OTHER}
+object CustomFriendAvatarStore {val avatars=HashMap<String,Bitmap>();fun loadBitmap(context:Any,id:String)=avatars[id]}
+private class AvatarHarness {
+ val context=this
+ fun hostContext()=this
+ val drawableWxids=WeakHashMap<Any?,String>()
+ val drawableSurfaces=WeakHashMap<Any?,Any>()
+ val drawableRadiusFactors=WeakHashMap<Any?,Float?>()
+ var scoped=true
+ val DRAW_PAINT=Any()
+ fun conversationGroupHasCustomAvatar(id:String)=false
+ fun automaticGroupAvatarSource(id:String)=if(id.endsWith("@chatroom"))"member" else null
+ fun avatarScopeEnabled(id:String,surface:Any)=scoped
+ fun processBitmap(value:Bitmap,radius:Float?)=value
+ fun effectiveRadiusFactor(args:Array<Any?>,from:Int,to:Int)=(args.getOrNull(from) as? Number)?.toFloat()
+ val legacy=Hooker @LEGACY@
+ val constructor=Hooker @CONSTRUCTOR@
+ val modify=Hooker @MODIFY@
+ val draw=Hooker @DRAW@
+}
+private fun call(hook:Hooker,owner:Any?,args:Array<Any?>,original:(Array<Any?>)->Any?):Pair<Any?,Int>{
+ val chain=ChainFixture(String::class.java.getMethod("length"),owner,args){_,parameters->original(parameters)}
+ return chain.run(hook) to chain.proceeds
+}
+fun main(){
+ val h=AvatarHarness();val group="group@chatroom";val custom=Bitmap("group custom")
+ CustomFriendAvatarStore.avatars[group]=custom
+ val image=ImageView();val supplied=arrayOf<Any?>(image,group,0.5f)
+ val (value,calls)=call(h.legacy,null,supplied){check(it[1]=="member");"host result"}
+ check(calls==1&&value=="host result"&&image.displayed===custom&&supplied[1]==group)
+ val constructed=Drawable()
+ val ctorArgs=arrayOf<Any?>(Any(),group,0.5f,0,0,0)
+ val (ctorResult,ctorCalls)=call(h.constructor,constructed,ctorArgs){check(it[1]=="member");constructed.initialized=true;null}
+ check(ctorResult==null&&ctorCalls==1&&constructed.initialized&&h.drawableWxids[constructed]==group&&h.drawableRadiusFactors[constructed]==0.5f)
+ val failure=IllegalStateException("constructor failed");val failed=Drawable()
+ check(runCatching{call(h.constructor,failed,ctorArgs){throw failure}}.exceptionOrNull()===failure)
+ check(!h.drawableWxids.containsKey(failed))
+ val target=Drawable();val modifyArgs=arrayOf<Any?>(target,Any(),group,0.7f,0,0,0)
+ call(h.modify,null,modifyArgs){check(it[2]=="member");null}
+ check(h.drawableWxids[target]==group&&h.drawableRadiusFactors[target]==0.7f&&modifyArgs[2]==group)
+ val canvas=Canvas();val (drawn,drawCalls)=call(h.draw,constructed,arrayOf(canvas)){error("Custom drawing must short-circuit host")}
+ check(drawn==null&&drawCalls==0&&canvas.draws==1)
+ h.scoped=false;val (native,nativeCalls)=call(h.draw,constructed,arrayOf(canvas)){"native draw"}
+ check(native=="native draw"&&nativeCalls==1&&canvas.draws==1)
+ println("PASS: actual avatar interceptors copy host arguments, retain original group identity after proceed, use initialized constructor receiver, preserve constructor failure and short-circuit custom drawing")
+}

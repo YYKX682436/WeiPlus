@@ -10,7 +10,7 @@ import h.Hchat.utils.KavaReflector;
 
 import java.lang.reflect.Method;
 
-import de.robv.android.xposed.XC_MethodHook;
+import io.github.libxposed.api.XposedInterface;
 
 /**
  * 数据库插入兜底监听。
@@ -81,13 +81,16 @@ public class RedPacketDatabaseHook {
                 }
                 if (!hasContentValuesArg(method)) continue;
 
-                HookRegistry.get().hook(method, new XC_MethodHook() {
-                    @Override
-                    protected void beforeHookedMethod(MethodHookParam param) {
-                        ContentValues values = findContentValuesArg(param.args);
-                        if (values == null) return;
-                        handleDatabaseInsert(findTableNameArg(param.args), values);
+                HookRegistry.get().hook(method, chain -> {
+                    Object[] hookArgs = chain.getArgs().toArray();
+                    Object receiver = chain.getThisObject();
+                    observe: {
+                        ContentValues values = findContentValuesArg(hookArgs);
+        if (values == null) break observe;
+        handleDatabaseInsert(findTableNameArg(hookArgs), values);
                     }
+                    Object value = chain.proceed(hookArgs);
+                    return value;
                 });
                 hookedCount++;
             }

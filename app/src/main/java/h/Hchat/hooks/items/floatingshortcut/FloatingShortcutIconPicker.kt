@@ -2,8 +2,8 @@ package h.Hchat.hooks.items.floatingshortcut
 
 import android.app.Activity
 import android.content.Intent
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedBridge
+import io.github.libxposed.api.XposedInterface
+import h.Hchat.hooks.core.XposedRuntime
 import java.lang.ref.WeakReference
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
@@ -17,14 +17,31 @@ object FloatingShortcutIconPicker {
 
     private val nextRequestCode = AtomicInteger(REQUEST_CODE_START)
     private val pending = ConcurrentHashMap<Int, Pending>()
+    private val ownedHooks = ArrayList<XposedInterface.HookHandle>()
+    @Volatile private var hookGeneration = 0L
     private val hookedClasses = ConcurrentHashMap.newKeySet<Class<*>>()
 
+    @Synchronized
     fun launch(
         activity: Activity,
         key: String,
         callback: (FloatingShortcutIconPickResult) -> Unit
     ) {
-        hookActivityHierarchy(activity.javaClass)
+        try {
+            hookActivityHierarchy(activity.javaClass)
+        } catch (error: Throwable) {
+            // This owner cannot deliver a partial hierarchy: invalidate it and roll back every handle.
+            val abandoned = pending.values.toList()
+            pending.clear()
+            releaseHooksIfIdle()
+            abandoned.forEach { request ->
+                runCatching { request.callback(FloatingShortcutIconPickResult.CANCELLED) }
+                    .onFailure { h.Hchat.utils.HLog.e("[Hchat:Picker] 取消选择请求失败", it) }
+            }
+            h.Hchat.utils.HLog.e("[Hchat:Picker] 安装选择结果 Hook 失败", error)
+            callback(FloatingShortcutIconPickResult.FAILED)
+            return
+        }
         val requestCode = allocateRequestCode()
         pending[requestCode] = Pending(WeakReference(activity), key, callback)
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
@@ -45,7 +62,7 @@ object FloatingShortcutIconPicker {
                         requestCode
                     )
                 }.onFailure {
-                    pending.remove(requestCode)?.callback?.invoke(FloatingShortcutIconPickResult.FAILED)
+                    pending.remove(requestCode).also { releaseHooksIfIdle() }?.callback?.invoke(FloatingShortcutIconPickResult.FAILED)
                 }
             }
     }
@@ -67,7 +84,7 @@ object FloatingShortcutIconPicker {
             if (!pending.containsKey(candidate)) return candidate
         }
         val oldest = pending.keys.minOrNull() ?: REQUEST_CODE_START
-        pending.remove(oldest)?.callback?.invoke(FloatingShortcutIconPickResult.CANCELLED)
+        pending.remove(oldest).also { releaseHooksIfIdle() }?.callback?.invoke(FloatingShortcutIconPickResult.CANCELLED)
         return oldest
     }
 
@@ -75,22 +92,39 @@ object FloatingShortcutIconPicker {
     private fun hookActivityResult(clazz: Class<*>) {
         if (!hookedClasses.add(clazz)) return
         runCatching {
-            XposedBridge.hookAllMethods(clazz, "onActivityResult", object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    val requestCode = param.args.getOrNull(0) as? Int ?: return
-                    val result = pending[requestCode] ?: return
+            val installingGeneration = hookGeneration
+            XposedRuntime.hookAllMethods(clazz, "onActivityResult", XposedInterface.Hooker { chain ->
+                val args = chain.args
+                val receiver = chain.thisObject
+                var succeeded = false
+                val value = try {
+                    chain.proceed().also { succeeded = true }
+                } finally {
+                    if (!succeeded && hookGeneration == installingGeneration) {
+                        val code = args.getOrNull(0) as? Int
+                        val request = code?.let(pending::get)
+                        if (request != null && request.activity.get() === receiver) {
+                            pending.remove(code, request)
+                            releaseHooksIfIdle()
+                        }
+                    }
+                }
+                run after@ {
+                    if (hookGeneration != installingGeneration) return@after
+                    val requestCode = args.getOrNull(0) as? Int ?: return@after
+                    val result = pending[requestCode] ?: return@after
                     val activity = result.activity.get()
                     if (activity == null) {
-                        pending.remove(requestCode, result)
-                        return
+                        pending.remove(requestCode, result).also { releaseHooksIfIdle() }
+                        return@after
                     }
-                    if (param.thisObject !== activity || !pending.remove(requestCode, result)) return
-                    val resultCode = param.args.getOrNull(1) as? Int ?: return
-                    val data = param.args.getOrNull(2) as? Intent
+                    if (receiver !== activity || !pending.remove(requestCode, result).also { releaseHooksIfIdle() }) return@after
+                    val resultCode = args.getOrNull(1) as? Int ?: return@after
+                    val data = args.getOrNull(2) as? Intent
                     val uri = data?.data
                     if (resultCode != Activity.RESULT_OK || uri == null) {
                         result.callback(FloatingShortcutIconPickResult.CANCELLED)
-                        return
+                        return@after
                     }
                     Thread({
                         val path = runCatching {
@@ -111,31 +145,60 @@ object FloatingShortcutIconPicker {
                         }
                     }, "Hchat-FloatingShortcutIcon").start()
                 }
-            })
-        }.onFailure { hookedClasses.remove(clazz) }
+                value
+            }).also { ownedHooks.addAll(it) }
+        }.onFailure {
+            hookedClasses.remove(clazz)
+            throw it
+        }
     }
 
     @Synchronized
     private fun hookActivityDestroy(clazz: Class<*>) {
         if (!destroyHookedClasses.add(clazz)) return
         runCatching {
-            XposedBridge.hookAllMethods(clazz, "onDestroy", object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    val activity = param.thisObject as? Activity ?: return
-                    pending.entries.forEach { entry ->
-                        val owner = entry.value.activity.get()
-                        if (owner == null || owner === activity) {
-                            pending.remove(entry.key, entry.value)
+            val installingGeneration = hookGeneration
+            XposedRuntime.hookAllMethods(clazz, "onDestroy", XposedInterface.Hooker { chain ->
+                val receiver = chain.thisObject
+                try {
+                    chain.proceed()
+                } finally {
+                    run after@ {
+                        if (hookGeneration != installingGeneration) return@after
+                        val activity = receiver as? Activity ?: return@after
+                        pending.entries.forEach { entry ->
+                            val owner = entry.value.activity.get()
+                            if (owner == null || owner === activity) {
+                                pending.remove(entry.key, entry.value).also { releaseHooksIfIdle() }
+                            }
                         }
                     }
                 }
-            })
+            }).also { ownedHooks.addAll(it) }
         }.onFailure {
             destroyHookedClasses.remove(clazz)
+
+            throw it
         }
     }
 
     private val destroyHookedClasses = ConcurrentHashMap.newKeySet<Class<*>>()
+
+
+    @Synchronized
+    private fun releaseHooksIfIdle() {
+        if (pending.isNotEmpty()) return
+        hookGeneration++
+        val iterator = ownedHooks.iterator()
+        while (iterator.hasNext()) {
+            val handle = iterator.next()
+            runCatching { handle.unhook() }
+                .onSuccess { iterator.remove() }
+                .onFailure { h.Hchat.utils.HLog.e("[Hchat:Picker] 卸载结果 Hook 失败", it) }
+        }
+        hookedClasses.clear()
+        destroyHookedClasses.clear()
+    }
 
     private const val REQUEST_CODE_START = 0x7410
     private const val REQUEST_CODE_END = 0x74ff

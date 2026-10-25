@@ -1,7 +1,7 @@
 package h.Hchat.hooks.items.miniprogramsplashad
 
 import android.content.Context
-import de.robv.android.xposed.XC_MethodHook
+import io.github.libxposed.api.XposedInterface
 import h.Hchat.dexkit.DexMethodCache
 import h.Hchat.hooks.core.BaseFeature
 import h.Hchat.hooks.core.DexInstallScheduler
@@ -190,11 +190,15 @@ private fun isSplashAdCheckMethod(method: Method): Boolean {
 }
 
 private fun hookSplashAdCheckMethod(method: Method, context: Context) {
-    HookRegistry.get().hook(method, object : XC_MethodHook() {
-        override fun beforeHookedMethod(param: MethodHookParam) {
+    HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+        var value: Any? = null
+        var intercepted = false
+        run before@ {
             if (SkipGlobalMiniProgramSplashAdsFeature.isEnabled(context)) {
-                param.result = false
+                run { intercepted = true; value = false }
             }
         }
+        if (!intercepted) value = chain.proceed()
+        value
     })
 }

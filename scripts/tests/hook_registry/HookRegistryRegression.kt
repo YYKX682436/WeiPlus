@@ -1,85 +1,149 @@
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedBridge
+import io.github.libxposed.api.XposedInterface
+import h.Hchat.tests.api102.FrameworkFixture
+import h.Hchat.tests.api102.ChainFixture
+import h.Hchat.hooks.core.XposedRuntime
 import h.Hchat.hooks.core.HookRegistry
 import java.util.concurrent.atomic.AtomicBoolean
 
 fun main() {
+    val framework = FrameworkFixture()
+    XposedRuntime.initialize(framework.create())
     val registry = HookRegistry.get()
+    val observe = XposedInterface.Hooker { it.proceed() }
     val method = String::class.java.getMethod("length")
-    val permanent = registry.hook(method, XC_MethodHook())
+    val permanent = registry.hook(method, observe)
     repeat(1_000) {
-        val first = registry.hook(method, XC_MethodHook())
-        val second = registry.hook(method, XC_MethodHook())
+        val first = registry.hook(method, observe)
+        val second = registry.hook(method, observe)
         check(registry.size() == 3)
         registry.unhook(first)
         registry.unhook(second)
-        check(!first.active && !second.active)
+        check(!FrameworkFixture.handle(first).active && !FrameworkFixture.handle(second).active)
         check(registry.size() == 1) { "Removed hooks remained in the registry" }
-        check(permanent.active) { "Unrelated hook removed" }
+        check(FrameworkFixture.handle(permanent).active) { "Unrelated hook removed" }
     }
 
     val keyedMethod = String::class.java.getMethod("substring", Int::class.javaPrimitiveType)
-    val hooksBefore = XposedBridge.totalHookCalls
-    val keyedA = registry.hookOnce("shared:test", keyedMethod, XC_MethodHook())
-    val keyedB = registry.hookOnce("shared:test", keyedMethod, XC_MethodHook())
+    val hooksBefore = framework.calls
+    val keyedA = registry.hookOnce("shared:test", keyedMethod, observe)
+    val keyedB = registry.hookOnce("shared:test", keyedMethod, observe)
     check(keyedA === keyedB) { "Repeated shared-hook installation returned different handles" }
-    check(XposedBridge.totalHookCalls == hooksBefore + 1) { "Shared Hook was installed more than once" }
+    check(framework.calls == hooksBefore + 1) { "Shared Hook was installed more than once" }
     check(registry.size() == 2)
     check(runCatching {
-        registry.hookOnce("shared:test", method, XC_MethodHook())
+        registry.hookOnce("shared:test", method, observe)
     }.isFailure) { "A key must not be reassigned to another method" }
     registry.unhook(keyedA)
-    val keyedC = registry.hookOnce("shared:test", keyedMethod, XC_MethodHook())
+    val keyedC = registry.hookOnce("shared:test", keyedMethod, observe)
     check(keyedC !== keyedA && registry.size() == 2) { "Unhook must release the key for a later generation" }
 
     val leaseActive = AtomicBoolean(true)
-    var partialInstall: XC_MethodHook.Unhook? = null
-    val callsBeforeCancelledInstall = XposedBridge.totalHookCalls
+    var partialInstall: XposedInterface.HookHandle? = null
+    val callsBeforeCancelledInstall = framework.calls
     check(runCatching {
         registry.withInstallationGeneration(
             registry.installationGeneration(),
             isLeaseActive = { leaseActive.get() }
         ) {
-            partialInstall = registry.hook(method, XC_MethodHook())
+            partialInstall = registry.hook(method, observe)
             leaseActive.set(false)
-            registry.hook(method, XC_MethodHook())
+            registry.hook(method, observe)
         }
     }.isFailure) { "A canceled install task must not add another Hook" }
-    check(partialInstall?.active == false && registry.size() == 2) {
+    check(partialInstall?.let { FrameworkFixture.handle(it).active } == false && registry.size() == 2) {
         "Hooks installed by a canceled task must be rolled back"
     }
-    check(XposedBridge.totalHookCalls == callsBeforeCancelledInstall + 1)
+    check(framework.calls == callsBeforeCancelledInstall + 1)
+
+    val beforeFailure = registry.size()
+    framework.failOn = keyedMethod
+    check(runCatching {
+        registry.withInstallationGeneration(registry.installationGeneration()) {
+            registry.hook(method, observe)
+            registry.hook(keyedMethod, observe)
+        }
+    }.isFailure)
+    framework.failOn = null
+    check(registry.size() == beforeFailure) { "A partial framework installation failure leaked a prefix" }
 
     registry.unhook(null)
-    val failing = registry.hook(method, XC_MethodHook())
-    failing.fail = true
+    val failing = registry.hook(method, observe)
+    FrameworkFixture.handle(failing).fail = true
     check(runCatching { registry.unhook(failing) }.isFailure)
     check(registry.size() == 3) { "Failed unhook lost the handle needed to retry" }
-    failing.fail = false
+    FrameworkFixture.handle(failing).fail = false
     registry.unhook(failing)
     registry.unhook(failing)
     check(registry.size() == 2)
 
-    val bulkFailure = registry.hookOnce("shared:bulk-failure", method, XC_MethodHook())
-    bulkFailure.fail = true
+    val bulkFailure = registry.hookOnce("shared:bulk-failure", method, observe)
+    FrameworkFixture.handle(bulkFailure).fail = true
     val oldGeneration = registry.installationGeneration()
     registry.unhookAll()
-    check(registry.size() == 1 && bulkFailure.active) { "Bulk unload must retain a failed handle for retry" }
-    check(!permanent.active && !keyedC.active)
-    val callsBeforeStaleSharedHook = XposedBridge.totalHookCalls
+    check(registry.size() == 1 && FrameworkFixture.handle(bulkFailure).active) { "Bulk unload must retain a failed handle for retry" }
+    check(!FrameworkFixture.handle(permanent).active && !FrameworkFixture.handle(keyedC).active)
+    val callsBeforeStaleSharedHook = framework.calls
     check(runCatching {
-        registry.hookOnce("shared:bulk-failure", method, XC_MethodHook())
+        registry.hookOnce("shared:bulk-failure", method, observe)
     }.isFailure) { "A failed unhook from an old generation must not be reused" }
-    check(XposedBridge.totalHookCalls == callsBeforeStaleSharedHook) {
+    check(framework.calls == callsBeforeStaleSharedHook) {
         "A failed shared-hook teardown must not create a duplicate callback"
     }
-    bulkFailure.fail = false
+    FrameworkFixture.handle(bulkFailure).fail = false
     registry.unhookAll()
-    check(registry.size() == 0 && !bulkFailure.active) { "A later lifecycle pass must retry failed unhooks" }
+    check(registry.size() == 0 && !FrameworkFixture.handle(bulkFailure).active) { "A later lifecycle pass must retry failed unhooks" }
     check(runCatching {
         registry.withInstallationGeneration(oldGeneration) {
-            registry.hook(method, XC_MethodHook())
+            registry.hook(method, observe)
         }
     }.isFailure) { "A stale asynchronous generation reinstalled a Hook" }
+    val order = ArrayList<String>()
+    val priorityMethod = String::class.java.getMethod("substring", Int::class.javaPrimitiveType)
+    val low = registry.hook(priorityMethod, XposedInterface.Hooker { chain ->
+        order += "low-in"
+        val args = chain.args.toTypedArray()
+        args[0] = 2
+        val result = chain.proceed(args)
+        order += "low-out"
+        "low[$result]"
+    }, -100)
+    val high = registry.hook(priorityMethod, XposedInterface.Hooker { chain ->
+        order += "high-in"
+        check(runCatching { (chain.args as MutableList<Any?>)[0] = 3 }.isFailure) {
+            "The official Chain argument list must stay immutable"
+        }
+        val result = chain.proceed()
+        order += "high-out"
+        "high[$result]"
+    }, 100)
+    val installed = listOf(low, high).map(FrameworkFixture::handle).sortedByDescending { it.priority }
+    var hostCalls = 0
+    fun invokeAt(index: Int, owner: Any?, arguments: Array<Any?>): Any? {
+        if (index == installed.size) { hostCalls++;return (owner as String).substring(arguments[0] as Int) }
+        return ChainFixture(priorityMethod, owner, arguments) { receiver, args ->
+            invokeAt(index+1, receiver, args)
+        }.run(installed[index].hooker)
+    }
+    check(invokeAt(0,"abcd",arrayOf(1)) == "high[low[cd]]")
+    check(hostCalls == 1 && order == listOf("high-in","low-in","low-out","high-out"))
+    var retained: XposedInterface.Chain? = null
+    val boundary = ChainFixture(method,"abcd",emptyArray()) { _, _ -> 4 }
+    check(boundary.run { chain -> retained=chain;chain.proceed() } == 4)
+    check(runCatching { retained!!.proceed() }.isFailure) { "A returned Chain remained usable" }
+    val blocked=ChainFixture(method,"abcd",emptyArray()) { _, _ -> error("Short circuit entered the host") }
+    check(blocked.run { "blocked" } == "blocked" && blocked.proceeds==0)
+    val hostFailure=IllegalStateException("host failed")
+    val failedBoundary=ChainFixture(method,"abcd",emptyArray()) { _, _ -> throw hostFailure }
+    check(runCatching { failedBoundary.run(observe) }.exceptionOrNull() === hostFailure && failedBoundary.proceeds==1)
+    registry.unhookAll()
+    val overloads = String::class.java.declaredMethods.filter { it.name == "substring" }
+    check(overloads.size > 1)
+    val batchStart = framework.handles.size
+    framework.failOn = overloads.last()
+    check(runCatching { XposedRuntime.hookAllMethods(String::class.java, "substring", observe) }.isFailure)
+    framework.failOn = null
+    val partialBatch = framework.handles.drop(batchStart)
+    check(partialBatch.isNotEmpty() && partialBatch.none { it.active }) { "A direct multi-method batch retained its installed prefix" }
+    println("PASS: API102 immutable arguments, copied argument replacement, return replacement, short circuit, priority nesting, host exception identity and expired Chain rejection")
     println("PASS: 1000 removal cycles, shared-key dedupe, key release, individual and bulk failed-unhook retry, canceled-task rollback, stale-generation rejection")
 }

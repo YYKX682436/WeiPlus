@@ -1,0 +1,63 @@
+import io.github.libxposed.api.XposedInterface
+import h.Hchat.tests.api102.ChainFixture
+import java.lang.reflect.Method
+
+class Intent {val extras=HashMap<String,Boolean>();fun putExtra(name:String,value:Boolean){extras[name]=value}}
+object HLog {fun e(message:String,failure:Throwable)=Unit}
+private class UploadHarness {
+ var enabled=true
+ private fun isEnabled()=enabled
+ @UPLOAD_ARGS@
+ @UPLOAD_RESULT@
+ val hook=XposedInterface.Hooker @UPLOAD_HOOK@
+}
+private class ScanHarness {
+ var enabled=true
+ private fun isEnabled()=enabled
+ @SCAN_ARGS@
+ @SCAN_SCENE@
+ @SCAN_INT@
+ val hook=XposedInterface.Hooker @SCAN_HOOK@
+}
+private class SnsHarness {
+ var enabled=true
+ val internalQuery=ThreadLocal<Boolean>()
+ private val method=String::class.java.getMethod("length")
+ private fun isSnsWriteMethod(method:Method)=false
+ private fun isSnsUpdateMethod(method:Method)=false
+ private fun isSnsRawQueryMethod(method:Method)=true
+ private fun isMomentAntiRecallEnabled()=enabled
+ private fun handleSnsWrite(owner:Any?,args:Array<Any?>,update:Boolean)=Unit
+ @SNS_QUERY@
+ @SNS_SQL@
+ @SNS_IN@
+ @SNS_REGEX@
+ val hook=XposedInterface.Hooker @SNS_HOOK@
+}
+private fun invoke(hook:XposedInterface.Hooker,args:Array<Any?>,native:(Array<Any?>)->Any?):Any? {
+ val chain=ChainFixture(String::class.java.getMethod("length"),null,args){_,parameters->native(parameters)}
+ try{return chain.run(hook)}finally{check(chain.proceeds==1)}
+}
+fun main(){
+ val u=UploadHarness();val intent=Intent();val original=arrayOf<Any?>(intent,true,true)
+ check(invoke(u.hook,original){check(it[1]==false&&it[2]==false);"sent"}=="sent")
+ check(original[1]==true&&original[2]==true&&intent.extras["CropImage_Compress_Img"]==false&&intent.extras["key_delete_origin_file"]==false)
+ val failure=IllegalStateException("native upload failed");val failedIntent=Intent()
+ check(runCatching{invoke(u.hook,arrayOf(failedIntent,true,true)){throw failure}}.exceptionOrNull()===failure)
+ check(!failedIntent.extras.containsKey("key_delete_origin_file"))
+ u.enabled=false;invoke(u.hook,arrayOf(Intent(),true,true)){check(it[1]==true&&it[2]==true);null}
+ val s=ScanHarness()
+ for((size,sourceIndex,sceneIndex,source,scene)in listOf(listOf(15,2,3,1,34),listOf(16,3,4,4,37))){
+  val args=arrayOfNulls<Any?>(size);args[sourceIndex]=source;args[sceneIndex]=scene
+  invoke(s.hook,args){check(it[sourceIndex]==0&&it[sceneIndex]==4);null}
+  check(args[sourceIndex]==source&&args[sceneIndex]==scene)
+  s.enabled=false;invoke(s.hook,args){check(it[sourceIndex]==source&&it[sceneIndex]==scene);null};s.enabled=true
+ }
+ val sns=SnsHarness();val sql="select *, rowid from SnsInfo WHERE (sourceType & 2 != 0)"
+ val sqlArgs=arrayOf<Any?>(sql,emptyArray<String>())
+ invoke(sns.hook,sqlArgs){check(it[0]=="select *, rowid from SnsInfo WHERE (1=1)");null}
+ check(sqlArgs[0]==sql)
+ sns.internalQuery.set(true);invoke(sns.hook,sqlArgs){check(it[0]==sql);null};sns.internalQuery.remove()
+ sns.enabled=false;invoke(sns.hook,sqlArgs){check(it[0]==sql);null}
+ println("PASS: production upload, scan and SNS helper mutations reach proceed(newArgs), retain immutable original arguments, honor disabled/internal query paths and preserve host failure")
+}

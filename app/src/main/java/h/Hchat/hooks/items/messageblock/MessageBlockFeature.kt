@@ -1,7 +1,6 @@
 package h.Hchat.hooks.items.messageblock
 
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.callbacks.XCallback
+import io.github.libxposed.api.XposedInterface
 import h.Hchat.event.Events
 import h.Hchat.hooks.api.core.WeChatApis
 import h.Hchat.hooks.api.model.WeChatMessage
@@ -45,27 +44,32 @@ class MessageBlockFeature : BaseFeature() {
                 if (method.returnType != Void.TYPE) continue
                 val addMsgArgIndexes = addMsgArgIndexes(method, parser)
                 if (addMsgArgIndexes.isEmpty()) continue
-                HookRegistry.get().hook(method, object : XC_MethodHook(XCallback.PRIORITY_HIGHEST) {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        val args = param.args ?: return
+                HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                    val args = chain.args.toTypedArray()
+                    var value: Any? = null
+                    var intercepted = false
+                    run before@ {
+                        val args = args ?: return@before
                         val settings = MessageBlockSettings(context.hostContext())
-                        if (!settings.isEnabled()) return
+                        if (!settings.isEnabled()) return@before
                         val selfWxId = WeChatApis.account()?.selfWxId().orEmpty()
                         for (index in addMsgArgIndexes) {
                             val addMsg = args.getOrNull(index) ?: continue
                             val parsed = runCatching { parser.parseAddMsg(addMsg, selfWxId) }.getOrNull()
-                                ?: continue
+                            ?: continue
                             if (shouldBlock(settings, parsed)) {
                                 if (KeywordNotificationRuntime.shouldAllowBlockedMessageIntoDatabase(context.hostContext(), parsed)) {
-                                    return
+                                    return@before
                                 }
                                 postBlockedMessage(context, parsed)
-                                param.result = null
-                                return
+                                run { intercepted = true; value = null }
+                                return@before
                             }
                         }
                     }
-                })
+                    if (!intercepted) value = chain.proceed()
+                    value
+                }, XposedInterface.PRIORITY_HIGHEST)
                 count++
             }
         }

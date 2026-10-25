@@ -7,8 +7,11 @@ process.once('exit',()=>fs.rmSync(tmp,{recursive:true,force:true}));
 const jars=fs.readdirSync(lib).filter(x=>x.endsWith('.jar')).map(x=>path.join(lib,x));
 const stdlib=jars.find(x=>/kotlin-stdlib-[\d.]+\.jar$/.test(x));
 const src='app/src/main/java/h/Hchat/',test='scripts/tests/performance_round1/';
+const api=require('./lib/api102.cjs').prepare(tmp);
+const support=spawnSync('javac',['-cp',api.classpath,'-d',tmp,'scripts/tests/api102/ChainFixture.java'],{cwd:root,encoding:'utf8'});
+if(support.status!==0)throw Error(support.stdout+support.stderr);
 function block(input,anchor,start=0){const at=input.indexOf(anchor,start);if(at<0)throw Error('Missing '+anchor);const begin=input.indexOf('{',at);let n=1,end=begin+1;while(n){if(end>=input.length)throw Error('Unbalanced '+anchor);if(input[end]==='{')n++;if(input[end]==='}')n--;end++;}return input.slice(at,end);}
-function compile(name,files){const jar=path.join(tmp,name+'.jar');const r=spawnSync('java',['-Xmx384m','-cp',jars.join(path.delimiter),'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler','-no-stdlib','-no-reflect','-classpath',stdlib,'-d',jar,...files],{cwd:root,encoding:'utf8'});if(r.status!==0)throw Error(r.stdout+r.stderr);return [jar,stdlib].join(path.delimiter);}
+function compile(name,files){const jar=path.join(tmp,name+'.jar');const r=spawnSync('java',['-Xmx384m','-cp',jars.join(path.delimiter),'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler','-no-stdlib','-no-reflect','-classpath',[stdlib,api.classpath,tmp].join(path.delimiter),'-d',jar,...files],{cwd:root,encoding:'utf8'});if(r.status!==0)throw Error(r.stdout+r.stderr);return [jar,stdlib,api.classpath,tmp].join(path.delimiter);}
 const source=fs.readFileSync(path.join(root,src+'hooks/items/messagebubble/MessageBubbleFeature.kt'),'utf8');
 const replacements={
  CONFIG:source.slice(source.indexOf('private val boundRoots'),source.indexOf('private val bubbleViewIds')),
@@ -16,7 +19,7 @@ const replacements={
  CAPTURE:block(source,'private fun captureBindState'),RESTORE_BOUND:block(source,'private fun restoreBoundBubble'),
  RESTORE_ORIGINAL:block(source,'private fun restoreOriginal'),RESTORE_TEXT:block(source,'private fun restoreTextColor'),
  APPLY_TEXT:block(source,'private fun applyTextContrast'),SET_TEXT:block(source,'private fun setTargetTextColor'),
- APPLY_DRAWABLE:block(source,'private fun applyDrawable'),HOOK:block(source,'object : XC_MethodHook()',source.indexOf('fun install()')).replace('object : XC_MethodHook()','')};
+ APPLY_DRAWABLE:block(source,'private fun applyDrawable'),HOOK:block(source,'XposedInterface.Hooker {',source.indexOf('fun install()')).replace('XposedInterface.Hooker ','')};
 let bubble=fs.readFileSync(path.join(root,test+'BubbleClosure.kt.in'),'utf8');
 for(const [key,value] of Object.entries(replacements))bubble=bubble.replace('@'+key+'@',value);
 const bf=path.join(tmp,'BubbleClosure.kt');fs.writeFileSync(bf,bubble);const bcp=compile('bubble',[bf]);

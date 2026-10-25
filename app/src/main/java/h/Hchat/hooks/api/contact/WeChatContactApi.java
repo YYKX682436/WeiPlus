@@ -31,7 +31,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 
-import de.robv.android.xposed.XC_MethodHook;
+import io.github.libxposed.api.XposedInterface;
 
 /**
  * 微信联系人/群聊 API。
@@ -46,8 +46,8 @@ public final class WeChatContactApi {
     }
 
     private static final String CONTACT_FIELDS_BASE =
-            "r.username, r.alias, r.conRemark, r.nickname, r.encryptUsername, "
-                    + "r.type, r.lvbuff AS lvbuff, i.reserved1 AS avatarUrl, i.reserved2 AS avatarBackupUrl";
+            "r.username, r.alias, r.conRemark, r.nickname, r.encryptUsername, r.type, r.lvbuff AS"
+                    + " lvbuff, i.reserved1 AS avatarUrl, i.reserved2 AS avatarBackupUrl";
     private static final String PICKER_CONTACT_FIELDS_BASE =
             "r.username, r.alias, r.conRemark, r.nickname, r.encryptUsername, "
                     + "r.type, i.reserved1 AS avatarUrl, i.reserved2 AS avatarBackupUrl";
@@ -269,7 +269,9 @@ public final class WeChatContactApi {
                     RoomDataMember member = parseRoomDataMember(memberBytes);
                     if (!TextUtils.isEmpty(member.username) && member.displayName != null) {
                         String displayName = member.displayName;
-                        result.put(member.username, member.username.equals(displayName) ? "" : displayName);
+                        result.put(
+                                member.username,
+                                member.username.equals(displayName) ? "" : displayName);
                     }
                 } else {
                     reader.skip(wireType);
@@ -357,15 +359,12 @@ public final class WeChatContactApi {
 
     public List<WeChatContact> getFriends() {
         return queryContacts(
-                "SELECT " + contactFields()
-                        + " FROM rcontact r "
-                        + "LEFT JOIN img_flag i ON r.username = i.username "
-                        + "WHERE (r.encryptUsername!='' OR r.username=(SELECT value FROM userinfo WHERE id=2)) "
-                        + "AND r.verifyFlag=0 "
-                        + "AND (r.type & 1)!=0 "
-                        + "AND (r.type & 8)=0 "
-                        + "AND (r.type & 32)=0 "
-                        + "AND r.username NOT LIKE '%chatroom'",
+                "SELECT "
+                        + contactFields()
+                        + " FROM rcontact r LEFT JOIN img_flag i ON r.username = i.username WHERE"
+                        + " (r.encryptUsername!='' OR r.username=(SELECT value FROM userinfo WHERE"
+                        + " id=2)) AND r.verifyFlag=0 AND (r.type & 1)!=0 AND (r.type & 8)=0 AND"
+                        + " (r.type & 32)=0 AND r.username NOT LIKE '%chatroom'",
                 null);
     }
 
@@ -377,23 +376,19 @@ public final class WeChatContactApi {
      */
     public List<WeChatContact> getPickerContacts() {
         return queryPickerContacts(
-                "SELECT " + pickerContactFields()
-                        + " FROM rcontact r "
-                        + "LEFT JOIN img_flag i ON r.username = i.username "
-                        + "WHERE ((r.verifyFlag=0 "
-                        + "AND r.username NOT LIKE '%@chatroom' "
-                        + "AND r.username NOT LIKE '%@im.chatroom' "
-                        + "AND r.username NOT LIKE 'gh\\_%' ESCAPE '\\' "
-                        + "AND r.username NOT IN "
-                        + "('filehelper','fmessage','tmessage','qqmail','weixin','floatbottle',"
-                        + "'medianote','medianote@chatroom','newsapp','masssend','feedsapp','blogapp') "
-                        + "AND ((r.encryptUsername!='' OR r.username=(SELECT value FROM userinfo WHERE id=2)) "
-                        + "AND (r.type & 1)!=0 AND (r.type & 8)=0 AND (r.type & 32)=0)) "
-                        + "OR r.username LIKE '%@openim' "
-                        + "OR LOWER(COALESCE(r.username,'')) LIKE '%clawbot%' "
-                        + "OR LOWER(COALESCE(r.alias,'')) LIKE '%clawbot%' "
-                        + "OR LOWER(COALESCE(r.conRemark,'')) LIKE '%clawbot%' "
-                        + "OR LOWER(COALESCE(r.nickname,'')) LIKE '%clawbot%')",
+                "SELECT "
+                        + pickerContactFields()
+                        + " FROM rcontact r LEFT JOIN img_flag i ON r.username = i.username WHERE"
+                        + " ((r.verifyFlag=0 AND r.username NOT LIKE '%@chatroom' AND r.username"
+                        + " NOT LIKE '%@im.chatroom' AND r.username NOT LIKE 'gh\\_%' ESCAPE '\\'"
+                        + " AND r.username NOT IN "
+                        + "('filehelper','fmessage','tmessage','qqmail','weixin','floatbottle','medianote','medianote@chatroom','newsapp','masssend','feedsapp','blogapp')"
+                        + " AND ((r.encryptUsername!='' OR r.username=(SELECT value FROM userinfo"
+                        + " WHERE id=2)) AND (r.type & 1)!=0 AND (r.type & 8)=0 AND (r.type &"
+                        + " 32)=0)) OR r.username LIKE '%@openim' OR LOWER(COALESCE(r.username,''))"
+                        + " LIKE '%clawbot%' OR LOWER(COALESCE(r.alias,'')) LIKE '%clawbot%' OR"
+                        + " LOWER(COALESCE(r.conRemark,'')) LIKE '%clawbot%' OR"
+                        + " LOWER(COALESCE(r.nickname,'')) LIKE '%clawbot%')",
                 null);
     }
 
@@ -485,7 +480,10 @@ public final class WeChatContactApi {
 
         for (String wxId : wxIds) {
             WeChatContact contact = byId.get(wxId);
-            result.add(contact != null ? contact : new WeChatContact(wxId, "", "", "", "", "", "", "", "", 0, 0));
+            result.add(
+                    contact != null
+                            ? contact
+                            : new WeChatContact(wxId, "", "", "", "", "", "", "", "", 0, 0));
         }
         return result;
     }
@@ -636,10 +634,13 @@ public final class WeChatContactApi {
         if (labelIds.size() != 1) return false;
         String labelIdsColumn = findRcontactLabelIdsColumn();
         if (TextUtils.isEmpty(labelIdsColumn)) return false;
-        String value = databaseApi.queryFirstString(
-                "SELECT " + quoteColumn(labelIdsColumn) + " AS labelIds FROM rcontact WHERE username=? LIMIT 1",
-                new String[]{username},
-                "labelIds");
+        String value =
+                databaseApi.queryFirstString(
+                        "SELECT "
+                                + quoteColumn(labelIdsColumn)
+                                + " AS labelIds FROM rcontact WHERE username=? LIMIT 1",
+                        new String[] {username},
+                        "labelIds");
         return splitLabelIds(value).contains(labelIds.get(0));
     }
 
@@ -666,10 +667,13 @@ public final class WeChatContactApi {
         String labelIdsColumn = findRcontactLabelIdsColumn();
         if (TextUtils.isEmpty(labelIdsColumn)) return false;
 
-        String currentLabelIds = databaseApi.queryFirstString(
-                "SELECT " + quoteColumn(labelIdsColumn) + " AS labelIds FROM rcontact WHERE username=? LIMIT 1",
-                new String[]{username},
-                "labelIds");
+        String currentLabelIds =
+                databaseApi.queryFirstString(
+                        "SELECT "
+                                + quoteColumn(labelIdsColumn)
+                                + " AS labelIds FROM rcontact WHERE username=? LIMIT 1",
+                        new String[] {username},
+                        "labelIds");
         String labelIdsValue = buildContactLabelIdsValue(currentLabelIds, labelNames);
         if (labelIdsValue == null) return false;
         return applyContactLabelIds(username, labelIdsColumn, labelIdsValue);
@@ -701,7 +705,8 @@ public final class WeChatContactApi {
     public boolean modifyContactRemark(String username, String remarkName) {
         if (TextUtils.isEmpty(username)) return false;
         String cleanRemark = remarkName == null ? "" : remarkName.trim();
-        ContactRequestDispatch.Result result = sendSetContactPropertyRemark(username, cleanRemark, "");
+        ContactRequestDispatch.Result result =
+                sendSetContactPropertyRemark(username, cleanRemark, "");
         if (result == null || !result.serverAccepted()) {
             log("修改好友备注失败: 服务端未确认 username=" + username
                     + " outcome=" + (result != null ? result.outcome : "unavailable"));
@@ -1039,23 +1044,37 @@ public final class WeChatContactApi {
         }
         AtomicReference<ContactRequestDispatch.Callback> nativeCallback = new AtomicReference<>();
 
-        final XC_MethodHook.Unhook unhook;
+        final XposedInterface.HookHandle unhook;
         try {
-            unhook = HookRegistry.get().hook(callbackMethod, new XC_MethodHook() {
-                @Override
-                protected void afterHookedMethod(MethodHookParam param) {
-                    if (param.thisObject != scene || param.args == null || param.args.length < 2
-                            || !(param.args[0] instanceof Number)
-                            || !(param.args[1] instanceof Number)) {
-                        return;
-                    }
-                    ContactRequestDispatch.Callback callback = nativeCallback.get();
-                    if (callback != null) {
-                        callback.onResponse(((Number) param.args[0]).intValue(),
-                                ((Number) param.args[1]).intValue());
-                    }
-                }
-            });
+            unhook =
+                    HookRegistry.get()
+                            .hook(
+                                    callbackMethod,
+                                    new XposedInterface.Hooker() {
+                                        @Override
+                                        public Object intercept(XposedInterface.Chain chain)
+                                                throws Throwable {
+                                            Object[] args = chain.getArgs().toArray();
+                                            Object hookResult = chain.proceed();
+                                            Object receiver = chain.getThisObject();
+                                            if (receiver != scene
+                                                    || args == null
+                                                    || args.length < 2
+                                                    || !(args[0] instanceof Number)
+                                                    || !(args[1] instanceof Number)) {
+                                                return hookResult;
+                                            }
+                                            ContactRequestDispatch.Callback callback =
+                                                    nativeCallback.get();
+                                            if (callback != null) {
+                                                callback.onResponse(
+                                                        ((Number) args[0]).intValue(),
+                                                        ((Number) args[1]).intValue());
+                                            }
+
+                                            return hookResult;
+                                        }
+                                    });
         } catch (Throwable e) {
             log("联系人原生场景回调Hook失败: " + e.getMessage());
             return ContactRequestDispatch.notSubmitted();
@@ -1104,7 +1123,8 @@ public final class WeChatContactApi {
             }
             if (item == null) return null;
             boolean writeUsername = KavaReflector.writeField(item, "d", username);
-            boolean writeLabelIds = KavaReflector.writeField(item, "e", labelIdsValue == null ? "" : labelIdsValue);
+            boolean writeLabelIds =
+                    KavaReflector.writeField(item, "e", labelIdsValue == null ? "" : labelIdsValue);
             if (!writeUsername || !writeLabelIds) {
                 log("构造标签请求项失败: 字段写入失败 username=" + writeUsername + " labelIds=" + writeLabelIds);
                 return null;
@@ -1148,7 +1168,8 @@ public final class WeChatContactApi {
         if (scene == null) return null;
         try {
             Object requestWrapper = KavaReflector.readField(scene, "d");
-            Object reqResp = requestWrapper != null ? KavaReflector.readField(requestWrapper, "a") : null;
+            Object reqResp =
+                    requestWrapper != null ? KavaReflector.readField(requestWrapper, "a") : null;
             Object requestPb = reqResp != null ? KavaReflector.readField(reqResp, "a") : null;
             if (requestPb != null) return requestPb;
         } catch (Throwable ignored) {
@@ -1204,7 +1225,8 @@ public final class WeChatContactApi {
     private boolean isProtoObject(Object value) {
         return value != null
                 && KavaReflector.findMethodRecursive(value.getClass(), "toByteArray") != null
-                && KavaReflector.findMethodRecursive(value.getClass(), "parseFrom", byte[].class) != null;
+                && KavaReflector.findMethodRecursive(value.getClass(), "parseFrom", byte[].class)
+                        != null;
     }
 
     private void installNetworkHook() {
@@ -1358,7 +1380,8 @@ public final class WeChatContactApi {
         if (cached != null) return cached;
         boolean exists = false;
         try {
-            List<Map<String, Object>> rows = databaseApi.query("PRAGMA table_info(" + table + ")", null);
+            List<Map<String, Object>> rows =
+                    databaseApi.query("PRAGMA table_info(" + table + ")", null);
             for (Map<String, Object> row : rows) {
                 if (column.equalsIgnoreCase(str(row, "name"))) {
                     exists = true;

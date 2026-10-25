@@ -10,7 +10,8 @@ import android.os.Looper
 import android.os.SystemClock
 import android.view.View
 import android.widget.TextView
-import de.robv.android.xposed.XC_MethodHook
+import io.github.libxposed.api.XposedInterface.Chain
+import io.github.libxposed.api.XposedInterface.Hooker
 import h.Hchat.hooks.api.core.WeChatApis
 import h.Hchat.hooks.api.message.OutgoingTextDecoratorRegistry
 import h.Hchat.hooks.core.FeatureContext
@@ -27,8 +28,6 @@ import java.util.concurrent.ConcurrentHashMap
 object NativeSendButtonHook {
     private const val TAG = "[Hchat:SendButton]"
     private const val CHAT_FOOTER = "com.tencent.mm.pluginsdk.ui.chat.ChatFooter"
-    private const val TEXT_DECORATION_EXTRA = "hchat_send_text_decoration"
-    private const val INPUT_SESSION_EXTRA = "hchat_send_input_session"
     @Volatile
     private var installedGeneration = -1L
     private val chatFooterFieldCache = mutableMapOf<Class<*>, Field?>()
@@ -96,70 +95,7 @@ object NativeSendButtonHook {
                 h.Hchat.utils.HLog.e("$TAG 发送按钮Hook失败: 未定位到ChatFooter发送入口")
                 return false
             }
-                HookRegistry.get().hookOnce("native:send-button:click", method, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    val footer = findChatFooter(param.thisObject) ?: return
-                    lastChatFooter = WeakReference(footer)
-                    rememberActivityFromFooter(footer)
-                    val input = findInputView(footer)
-                    trackInputView(input)
-                    val inputView = input as? View
-                    val talker = WeChatApis.chatPage()?.currentTalker().orEmpty()
-                    val inputStart = inputView?.let { currentInputStart(it, talker) }
-                    val inputDuration = inputStart
-                        ?.let { (SystemClock.elapsedRealtime() - it.startedAt).coerceAtLeast(0L) }
-                        ?: 0L
-                    param.setObjectExtra(
-                        INPUT_SESSION_EXTRA,
-                        InputSendSession(footer, inputView)
-                    )
-                    val text = readInputText(footer)
-                    val handled = OutgoingTextDecoratorRegistry.withInputDuration(inputDuration) {
-                        val handledByModule = dispatchHandlers(text)
-                        handledByModule
-                    }
-                    if (!handled) {
-                        val currentText = readInputText(footer)
-                        runCatching {
-                            applyTextDecorators(
-                                footer,
-                                talker,
-                                currentText,
-                                inputDuration
-                            )
-                        }
-                            .onFailure {
-                                h.Hchat.utils.HLog.e("$TAG 发送文字装饰失败: ${it.message}", it)
-                            }
-                            .getOrNull()
-                            ?.let { param.setObjectExtra(TEXT_DECORATION_EXTRA, it) }
-                        return
-                    }
-                    clearInputText(footer)
-                    inputView?.let { view ->
-                        rememberPendingInputStart(view, inputStart, talker, text)
-                        clearInputStart(view)
-                    }
-                    param.result = null
-                }
-
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    val decoration = param.getObjectExtra(TEXT_DECORATION_EXTRA)
-                        as? AppliedTextDecoration
-                    if (decoration != null) {
-                        runCatching { restoreRejectedDecoration(decoration) }
-                            .onFailure {
-                                h.Hchat.utils.HLog.e("$TAG 恢复未发送文字失败: ${it.message}", it)
-                            }
-                    }
-                    val session = param.getObjectExtra(INPUT_SESSION_EXTRA) as? InputSendSession
-                        ?: return
-                    val inputView = session.inputView ?: return
-                    if (readInputText(session.footer).isEmpty()) {
-                        clearInputStart(inputView)
-                    }
-                }
-                })
+            HookRegistry.get().hookOnce("native:send-button:click", method, Hooker(::interceptSendClick))
             val inputTrackingInstalled = installInputTrackingHook(context.hostClassLoader())
             if (!inputTrackingInstalled) return false
             installedGeneration = generation
@@ -168,6 +104,51 @@ object NativeSendButtonHook {
             return false
         }
         return installedGeneration == HookRegistry.get().installationGeneration()
+    }
+
+    /** Invocation state stays on this stack, including exceptional and intercepted sends. */
+    internal fun interceptSendClick(chain: Chain): Any? {
+        val footer = findChatFooter(chain.thisObject) ?: return chain.proceed()
+        lastChatFooter = WeakReference(footer)
+        rememberActivityFromFooter(footer)
+        val input = findInputView(footer)
+        trackInputView(input)
+        val inputView = input as? View
+        val talker = WeChatApis.chatPage()?.currentTalker().orEmpty()
+        val inputStart = inputView?.let { currentInputStart(it, talker) }
+        val inputDuration = inputStart
+            ?.let { (SystemClock.elapsedRealtime() - it.startedAt).coerceAtLeast(0L) } ?: 0L
+        var decoration: AppliedTextDecoration? = null
+        try {
+            val text = readInputText(footer)
+            val handled = OutgoingTextDecoratorRegistry.withInputDuration(inputDuration) {
+                dispatchHandlers(text)
+            }
+            if (handled) {
+                clearInputText(footer)
+                inputView?.let { view ->
+                    rememberPendingInputStart(view, inputStart, talker, text)
+                    clearInputStart(view)
+                }
+                return null
+            }
+            decoration = runCatching {
+                applyTextDecorators(footer, talker, readInputText(footer), inputDuration)
+            }.onFailure {
+                h.Hchat.utils.HLog.e("$TAG 发送文字装饰失败: ${it.message}", it)
+            }.getOrNull()
+            return chain.proceed()
+        } finally {
+            decoration?.let { applied ->
+                runCatching { restoreRejectedDecoration(applied) }.onFailure {
+                    h.Hchat.utils.HLog.e("$TAG 恢复未发送文字失败: ${it.message}", it)
+                }
+            }
+            // Cleanup must not replace an exception raised by the host send call.
+            runCatching {
+                if (inputView != null && readInputText(footer).isEmpty()) clearInputStart(inputView)
+            }.onFailure { h.Hchat.utils.HLog.e("$TAG 清理输入状态失败", it) }
+        }
     }
 
     private fun installInputTrackingHook(classLoader: ClassLoader): Boolean {
@@ -184,10 +165,10 @@ object NativeSendButtonHook {
             return false
         }
         return runCatching {
-            HookRegistry.get().hookOnce("native:send-button:input-attach", attachMethod, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    trackInputView(findInputView(param.thisObject))
-                }
+            HookRegistry.get().hookOnce("native:send-button:input-attach", attachMethod, Hooker { chain ->
+                val result = chain.proceed()
+                trackInputView(findInputView(chain.thisObject))
+                result
             })
             true
         }.getOrElse {
@@ -310,8 +291,15 @@ object NativeSendButtonHook {
             else -> invokeNoArg(input, "getText") as? Editable
         }
         if (editable != null) {
-            if (combinedSuffix.isNotEmpty()) editable.insert(editable.length, combinedSuffix)
-            if (combinedPrefix.isNotEmpty()) editable.insert(0, combinedPrefix)
+            try {
+                if (combinedSuffix.isNotEmpty()) editable.insert(editable.length, combinedSuffix)
+                if (combinedPrefix.isNotEmpty()) editable.insert(0, combinedPrefix)
+            } catch (failure: Throwable) {
+                // A TextWatcher may throw between prefix/suffix edits; no decoration may leak.
+                runCatching { editable.replace(0, editable.length, originalText) }
+                    .onFailure { failure.addSuppressed(it) }
+                throw failure
+            }
             return AppliedTextDecoration(
                 input = input ?: chatFooter,
                 originalText = originalText,
@@ -551,10 +539,7 @@ object NativeSendButtonHook {
         val talker: String
     )
 
-    private data class InputSendSession(
-        val footer: Any,
-        val inputView: View?
-    )
+
 
     private data class PendingInputStart(
         val inputStart: InputStart,

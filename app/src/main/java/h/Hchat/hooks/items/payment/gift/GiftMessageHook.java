@@ -10,7 +10,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 
-import de.robv.android.xposed.XC_MethodHook;
+import io.github.libxposed.api.XposedInterface;
 
 import h.Hchat.dexkit.DexFinder;
 import h.Hchat.hooks.core.HookRegistry;
@@ -54,19 +54,22 @@ public class GiftMessageHook {
                 }
                 if (indexes.isEmpty()) continue;
 
-                XC_MethodHook.Unhook unhook = HookRegistry.get().hook(method, new XC_MethodHook() {
-                    @Override
-                    protected void beforeHookedMethod(MethodHookParam param) {
-                        Object[] args = param.args;
-                        if (args == null) return;
-                        for (Integer index : indexes) {
-                            if (index == null || index >= args.length) continue;
-                            try {
-                                onMessage(args[index]);
-                            } catch (Throwable ignored) {
-                            }
-                        }
+                XposedInterface.HookHandle unhook = HookRegistry.get().hook(method, chain -> {
+                    Object[] hookArgs = chain.getArgs().toArray();
+                    Object receiver = chain.getThisObject();
+                    observe: {
+                        Object[] args = hookArgs;
+        if (args == null) break observe;
+        for (Integer index : indexes) {
+            if (index == null || index >= args.length) continue;
+            try {
+                onMessage(args[index]);
+            } catch (Throwable ignored) {
+            }
+        }
                     }
+                    Object value = chain.proceed(hookArgs);
+                    return value;
                 });
                 if (unhook != null) subscriptions.add(unhook);
             }

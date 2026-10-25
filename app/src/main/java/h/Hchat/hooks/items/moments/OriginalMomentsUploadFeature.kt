@@ -1,7 +1,7 @@
 package h.Hchat.hooks.items.moments
 
 import android.content.Intent
-import de.robv.android.xposed.XC_MethodHook
+import io.github.libxposed.api.XposedInterface
 import h.Hchat.dexkit.DexMethodCache
 import h.Hchat.event.Events
 import h.Hchat.hooks.core.BaseFeature
@@ -69,16 +69,18 @@ private class OriginalMomentsUploadHooker(
         if (!imagePreviewInstalled) {
             locateImagePreviewSendMethod(allowDexSearch)?.let { method ->
                 try {
-                    HookRegistry.get().hook(method, object : XC_MethodHook() {
-                        override fun beforeHookedMethod(param: MethodHookParam) {
-                            if (!isEnabled()) return
-                            patchGalleryTimelineArgs(param.args)
+                    HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                        val args = chain.args.toTypedArray()
+                        run before@ {
+                            if (!isEnabled()) return@before
+                            patchGalleryTimelineArgs(args)
                         }
-
-                        override fun afterHookedMethod(param: MethodHookParam) {
-                            if (!isEnabled()) return
-                            patchGalleryResultIntent(param.args)
+                        val value = chain.proceed(args)
+                        run after@ {
+                            if (!isEnabled()) return@after
+                            patchGalleryResultIntent(args)
                         }
+                        value
                     })
                     imagePreviewInstalled = true
                 } catch (e: Throwable) {
@@ -89,11 +91,15 @@ private class OriginalMomentsUploadHooker(
         if (!createPicInstalled) {
             locateSnsCreatePicMethod(allowDexSearch)?.let { method ->
                 try {
-                    HookRegistry.get().hook(method, object : XC_MethodHook() {
-                        override fun beforeHookedMethod(param: MethodHookParam) {
-                            if (!isEnabled()) return
-                            bypassImageReencode(param)
+                    HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                        var value: Any? = null
+                        var intercepted = false
+                        run before@ {
+                            if (!isEnabled()) return@before
+                            if (bypassImageReencode(chain)) { intercepted = true; value = true }
                         }
+                        if (!intercepted) value = chain.proceed()
+                        value
                     })
                     createPicInstalled = true
                 } catch (e: Throwable) {
@@ -120,20 +126,24 @@ private class OriginalMomentsUploadHooker(
         intent.putExtra("key_delete_origin_file", false)
     }
 
-    private fun bypassImageReencode(param: XC_MethodHook.MethodHookParam) {
-        val args = param.args ?: return
-        if (args.size < 3) return
-        val dir = args[0] as? String ?: return
-        val sourcePath = args[1] as? String ?: return
-        val targetName = args[2] as? String ?: return
-        if (dir.isBlank() || sourcePath.isBlank() || targetName.isBlank()) return
-        if (convertWithoutZip(sourcePath, dir + targetName)) {
-            param.result = true
-            return
+    private fun bypassImageReencode(param: XposedInterface.Chain) : Boolean {
+        var consumed = false
+        run action@ {
+            val args = param.args.toTypedArray() ?: return@action
+            if (args.size < 3) return@action
+            val dir = args[0] as? String ?: return@action
+            val sourcePath = args[1] as? String ?: return@action
+            val targetName = args[2] as? String ?: return@action
+            if (dir.isBlank() || sourcePath.isBlank() || targetName.isBlank()) return@action
+            if (convertWithoutZip(sourcePath, dir + targetName)) {
+                consumed = true
+                return@action
+            }
+            if (copyWithWechatVfs(dir, sourcePath, targetName)) {
+                consumed = true
+            }
         }
-        if (copyWithWechatVfs(dir, sourcePath, targetName)) {
-            param.result = true
-        }
+        return consumed
     }
 
     private fun convertWithoutZip(sourcePath: String, targetPath: String): Boolean {

@@ -3,7 +3,7 @@ package h.Hchat.hooks.items.forwardlimit
 import android.app.Activity
 import android.content.Intent
 import android.os.Bundle
-import de.robv.android.xposed.XC_MethodHook
+import io.github.libxposed.api.XposedInterface
 import h.Hchat.dexkit.DexMethodCache
 import h.Hchat.hooks.core.BaseFeature
 import h.Hchat.hooks.core.DexInstallScheduler
@@ -105,25 +105,27 @@ private class RemoveForwardLimitHooker(
 
     private fun hookLimitMethod(method: Method): Boolean {
         return hook(method, "转发会话数量限制") {
-            if (isEnabled()) it.result = false
+            if (isEnabled()) false else it.proceed()
         }
     }
 
     private fun hookContactPageMethod(method: Method): Boolean {
         return hook(method, "转发完整联系人选择页") { param ->
-            if (!isEnabled()) return@hook
-            val activity = param.thisObject as? Activity ?: return@hook
-            val intent = activity.intent ?: return@hook
+            if (!isEnabled()) return@hook param.proceed()
+            val activity = param.thisObject as? Activity ?: return@hook param.proceed()
+            val intent = activity.intent ?: return@hook param.proceed()
             rewriteForwardLimit(intent)
+            param.proceed()
         }
     }
 
     private fun hookUicConfigMethod(method: Method): Boolean {
         return hook(method, "新版转发联系人配置") { param ->
-            if (!isEnabled()) return@hook
+            if (!isEnabled()) return@hook param.proceed()
             val intent = KavaReflector.invokeMethod(param.thisObject, "getIntent") as? Intent
-                ?: return@hook
+                ?: return@hook param.proceed()
             rewriteForwardLimit(intent)
+            param.proceed()
         }
     }
 
@@ -144,15 +146,11 @@ private class RemoveForwardLimitHooker(
     private fun hook(
         method: Method,
         label: String,
-        before: (XC_MethodHook.MethodHookParam) -> Unit
+        interceptor: XposedInterface.Hooker
     ): Boolean {
         if (!hookedMethods.add(method)) return true
         return runCatching {
-            HookRegistry.get().hook(method, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    before(param)
-                }
-            })
+            HookRegistry.get().hook(method, interceptor)
             true
         }.getOrElse {
             hookedMethods.remove(method)

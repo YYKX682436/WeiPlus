@@ -1,7 +1,7 @@
 package h.Hchat.hooks.api.message
 
 import android.text.TextUtils
-import de.robv.android.xposed.XC_MethodHook
+import io.github.libxposed.api.XposedInterface
 import h.Hchat.dexkit.DexFinder
 import h.Hchat.hooks.core.HookRegistry
 import h.Hchat.hooks.api.media.WeChatInternalServices
@@ -49,14 +49,12 @@ class WeChatLocalMessageApi(
         val method = finder.localMessageCreateTimeMethod ?: return false
         synchronized(this) {
             if (createTimeHookInstalled) return true
-            HookRegistry.get().hook(method, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    val pending = pendingCreateTime.get() ?: return
-                    val args = param.args ?: return
-                    val talker = args.getOrNull(0) as? String ?: return
-                    if (talker != pending.talker) return
-                    param.result = pending.createTime
-                }
+            HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                val pending = pendingCreateTime.get() ?: return@Hooker chain.proceed()
+                val args = chain.args
+                val talker = args.getOrNull(0) as? String ?: return@Hooker chain.proceed()
+                if (talker != pending.talker) return@Hooker chain.proceed()
+                return@Hooker pending.createTime
             })
             createTimeHookInstalled = true
         }

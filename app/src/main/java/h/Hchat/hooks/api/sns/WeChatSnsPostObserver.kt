@@ -1,7 +1,7 @@
 package h.Hchat.hooks.api.sns
 
 import android.content.Context
-import de.robv.android.xposed.XC_MethodHook
+import io.github.libxposed.api.XposedInterface
 import h.Hchat.dexkit.DexMethodCache
 import h.Hchat.hooks.core.HookRegistry
 import h.Hchat.utils.KavaReflector
@@ -63,20 +63,27 @@ class WeChatSnsPostObserver(
             }
             ?: return false
         return runCatching {
-            HookRegistry.get().hook(KavaReflector.accessible(method) ?: method, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    if (suppressDispatch.get() == true) return
-                    if (param.result != true) return
-                    val snsInfo = param.args?.firstOrNull {
-                        it?.javaClass?.name == SnsInteractionLocator.SNS_INFO_CLASS
-                    } ?: return
-                    if (KavaReflector.invokeMethod(snsInfo, "isAd") == true) return
-                    if (SnsLocalPostIdentity.isLocalOnly(context, KavaReflector.readField(snsInfo, "field_snsId"))) return
-                    listeners.forEach { listener ->
-                        runCatching { listener.onPostStored(snsInfo) }
-                            .onFailure { logger("朋友圈入库观察回调失败: ${it.message}") }
-                    }
+            HookRegistry.get().hook(KavaReflector.accessible(method) ?: method, XposedInterface.Hooker { chain ->
+                val hostResult = chain.proceed()
+                if (suppressDispatch.get() == true) return@Hooker hostResult
+                if (hostResult != true) return@Hooker hostResult
+                val snsInfo =
+                    chain.args?.firstOrNull { it?.javaClass?.name == SnsInteractionLocator.SNS_INFO_CLASS }
+                        ?: return@Hooker hostResult
+                if (KavaReflector.invokeMethod(snsInfo, "isAd") == true) return@Hooker hostResult
+                if (
+                    SnsLocalPostIdentity.isLocalOnly(
+                        context,
+                        KavaReflector.readField(snsInfo, "field_snsId"),
+                    )
+                )
+                    return@Hooker hostResult
+                listeners.forEach { listener ->
+                    runCatching { listener.onPostStored(snsInfo) }
+                        .onFailure { logger("朋友圈入库观察回调失败: ${it.message}") }
                 }
+
+                return@Hooker hostResult
             })
             hookedMethod = method
             true

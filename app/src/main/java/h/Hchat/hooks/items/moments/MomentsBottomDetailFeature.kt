@@ -2,7 +2,7 @@ package h.Hchat.hooks.items.moments
 
 import android.content.Context
 import android.widget.TextView
-import de.robv.android.xposed.XC_MethodHook
+import io.github.libxposed.api.XposedInterface
 import h.Hchat.dexkit.DexMethodCache
 import h.Hchat.event.Events
 import h.Hchat.hooks.api.sns.SnsContentTypes
@@ -116,12 +116,17 @@ private class MomentsBottomDetailRuntime(
         if (timeHookInstalled) return true
         val timeMethod = locateTimeMethod() ?: return false
         return runCatching {
-            HookRegistry.get().hook(timeMethod, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    if (!MomentsBottomDetailFeature.isEnabled(context.hostContext())) return
-                    val original = param.result as? String ?: return
-                    param.result = formatDetails(param.thisObject, original)
+            HookRegistry.get().hook(timeMethod, XposedInterface.Hooker { chain ->
+                val receiver = chain.thisObject
+                var value: Any? = null
+                var intercepted = false
+                if (!intercepted) value = chain.proceed()
+                run after@ {
+                    if (!MomentsBottomDetailFeature.isEnabled(context.hostContext())) return@after
+                    val original = value as? String ?: return@after
+                    run { intercepted = true; value = formatDetails(receiver, original) }
                 }
+                value
             })
             timeHookInstalled = true
             true
@@ -137,17 +142,21 @@ private class MomentsBottomDetailRuntime(
         val owner = locateTimeMethod()?.declaringClass ?: return false
         val groupMethod = locateGroupMethod(owner) ?: return false
         return runCatching {
-            HookRegistry.get().hook(groupMethod, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    if (!MomentsBottomDetailFeature.isEnabled(context.hostContext())) return
+            HookRegistry.get().hook(groupMethod, XposedInterface.Hooker { chain ->
+                var value: Any? = null
+                var intercepted = false
+                if (!intercepted) value = chain.proceed()
+                run after@ {
+                    if (!MomentsBottomDetailFeature.isEnabled(context.hostContext())) return@after
                     if (prefs.getBoolean(
-                            MomentsBottomDetailSettings.KEY_HIDE_GROUP_ICON,
-                            MomentsBottomDetailSettings.DEFAULT_HIDE_GROUP_ICON
+                        MomentsBottomDetailSettings.KEY_HIDE_GROUP_ICON,
+                        MomentsBottomDetailSettings.DEFAULT_HIDE_GROUP_ICON
                         )
                     ) {
-                        param.result = false
+                        run { intercepted = true; value = false }
                     }
                 }
+                value
             })
             groupHookInstalled = true
             true
@@ -163,13 +172,15 @@ private class MomentsBottomDetailRuntime(
         val formatterMethod = locateProfileFormatterMethod() ?: return false
         val itemMethod = locateProfileItemMethod(formatterMethod.declaringClass) ?: return false
         return runCatching {
-            HookRegistry.get().hook(itemMethod, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    if (!MomentsBottomDetailFeature.isEnabled(context.hostContext())) return
-                    val adapter = param.thisObject ?: return
-                    val info = param.result ?: return
+            HookRegistry.get().hook(itemMethod, XposedInterface.Hooker { chain ->
+                val receiver = chain.thisObject
+                val value = chain.proceed()
+                run after@ {
+                    if (!MomentsBottomDetailFeature.isEnabled(context.hostContext())) return@after
+                    val adapter = receiver ?: return@after
+                    val info = value ?: return@after
                     if (hasSnsFields(info.javaClass)) {
-                        val createTime = readLong(info, "field_createTime") ?: return
+                        val createTime = readLong(info, "field_createTime") ?: return@after
                         val recent = profileInfoByAdapter.get().getOrPut(adapter) { LinkedHashMap() }
                         recent[createTime] = info
                         while (recent.size > PROFILE_RECENT_ITEM_LIMIT) {
@@ -178,28 +189,37 @@ private class MomentsBottomDetailRuntime(
                         }
                     }
                 }
+                value
             })
-            HookRegistry.get().hook(formatterMethod, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    if (!MomentsBottomDetailFeature.isEnabled(context.hostContext())) return
-                    val adapter = param.thisObject ?: return
-                    val createTime = (param.args.getOrNull(2) as? Number)?.toLong() ?: return
-                    val info = profileInfoByAdapter.get()[adapter]?.get(createTime) ?: return
-                    val primary = param.args.getOrNull(0) as? TextView ?: return
-                    val secondary = param.args.getOrNull(1) as? TextView ?: return
+            HookRegistry.get().hook(formatterMethod, XposedInterface.Hooker { chain ->
+                val args = chain.args
+                val receiver = chain.thisObject
+                val value = chain.proceed()
+                run after@ {
+                    if (!MomentsBottomDetailFeature.isEnabled(context.hostContext())) return@after
+                    val adapter = receiver ?: return@after
+                    val createTime = (args.getOrNull(2) as? Number)?.toLong() ?: return@after
+                    val info = profileInfoByAdapter.get()[adapter]?.get(createTime) ?: return@after
+                    val primary = args.getOrNull(0) as? TextView ?: return@after
+                    val secondary = args.getOrNull(1) as? TextView ?: return@after
                     val original = profileOriginalText(primary, secondary)
                     primary.text = ""
                     secondary.text = formatDetails(info, original)
                     secondary.contentDescription = secondary.text
                 }
+                value
             })
             locateFlutterProfileSwitchMethod()?.let { method ->
-                HookRegistry.get().hook(method, object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
+                HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                    var value: Any? = null
+                    var intercepted = false
+                    run before@ {
                         if (MomentsBottomDetailFeature.isEnabled(context.hostContext())) {
-                            param.result = false
+                            run { intercepted = true; value = false }
                         }
                     }
+                    if (!intercepted) value = chain.proceed()
+                    value
                 })
             }
             profileHookInstalled = true

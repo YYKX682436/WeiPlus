@@ -16,7 +16,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 
-import de.robv.android.xposed.XC_MethodHook;
 
 /**
  * 微信消息事件 API。
@@ -73,17 +72,19 @@ public final class WeChatMessageEventApi {
                     if (parseApi.isLikelyAddMsgClass(parameterTypes[i])) addMsgArgIndexes.add(i);
                 }
                 if (addMsgArgIndexes.isEmpty()) continue;
-                HookRegistry.get().hook(method, new XC_MethodHook() {
-                    @Override
-                    protected void beforeHookedMethod(MethodHookParam param) {
-                        if (param.args == null) return;
-                        for (int index : addMsgArgIndexes) {
-                            if (index >= 0 && index < param.args.length && param.args[index] != null) {
-                                dispatchAddMsg(param.args[index]);
-                            }
-                        }
-                    }
-                });
+                HookRegistry.get()
+                        .hook(
+                                method,
+                                chain -> {
+                                    for (int index : addMsgArgIndexes) {
+                                        if (index >= 0
+                                                && index < chain.getArgs().size()
+                                                && chain.getArg(index) != null) {
+                                            dispatchAddMsg(chain.getArg(index));
+                                        }
+                                    }
+                                    return chain.proceed();
+                                });
                 count++;
             }
         }
@@ -139,13 +140,17 @@ public final class WeChatMessageEventApi {
                 || eventBus == null) {
             return;
         }
-        HookRegistry.get().hook(dexFinder.patDisplayTemplateMethod, new XC_MethodHook() {
-            @Override
-            protected void beforeHookedMethod(MethodHookParam param) {
-                if (param.args == null || param.args.length < 1) return;
-                dispatchPatMsg(param.args[0], param.args.length > 1 ? param.args[1] : null);
-            }
-        });
+        HookRegistry.get()
+                .hook(
+                        dexFinder.patDisplayTemplateMethod,
+                        chain -> {
+                            if (!chain.getArgs().isEmpty()) {
+                                dispatchPatMsg(
+                                        chain.getArg(0),
+                                        chain.getArgs().size() > 1 ? chain.getArg(1) : null);
+                            }
+                            return chain.proceed();
+                        });
         patHooked = true;
         log("拍一拍事件Hook: " + dexFinder.patDisplayTemplateMethod.getDeclaringClass().getName()
                 + "#" + dexFinder.patDisplayTemplateMethod.getName());
@@ -161,7 +166,8 @@ public final class WeChatMessageEventApi {
             long svrId = readPatSvrId(patMsg);
             if (TextUtils.isEmpty(fromUser) || TextUtils.isEmpty(pattedUser)) return;
             if (!isRecentPat(createTime)) return;
-            String key = fromUser + ":" + pattedUser + ":" + svrId + ":" + createTime + ":" + template;
+            String key =
+                    fromUser + ":" + pattedUser + ":" + svrId + ":" + createTime + ":" + template;
             long now = System.currentTimeMillis();
             Long previous = recentPatEvents.put(key, now);
             if (previous != null && now - previous < 300000L) return;

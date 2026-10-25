@@ -15,8 +15,8 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedBridge
+import io.github.libxposed.api.XposedInterface
+import h.Hchat.hooks.core.XposedRuntime
 import h.Hchat.hooks.core.BaseFeature
 import h.Hchat.hooks.core.FeatureContext
 import h.Hchat.hooks.core.HookRegistry
@@ -105,15 +105,21 @@ class ProfileIdFeature : BaseFeature() {
             methodsOf(clazz)
                 .firstOrNull { it.name == "onPreferenceTreeClick" && it.parameterTypes.size >= 2 }
                 ?.let { method ->
-                    HookRegistry.get().hook(method, object : XC_MethodHook() {
-                        override fun beforeHookedMethod(param: MethodHookParam) {
-                            val activity = param.thisObject as? Activity ?: return
-                            val preference = param.args.getOrNull(1) ?: return
-                            if (preferenceKey(preference) != CHATROOM_PREF_KEY) return
-                            val profileId = resolveProfileId(activity, ProfileKind.CHATROOM) ?: return
+                    HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                        val args = chain.args
+                        val receiver = chain.thisObject
+                        var value: Any? = null
+                        var intercepted = false
+                        run before@ {
+                            val activity = receiver as? Activity ?: return@before
+                            val preference = args.getOrNull(1) ?: return@before
+                            if (preferenceKey(preference) != CHATROOM_PREF_KEY) return@before
+                            val profileId = resolveProfileId(activity, ProfileKind.CHATROOM) ?: return@before
                             copyProfileId(activity, profileId)
-                            param.result = true
+                            run { intercepted = true; value = true }
                         }
+                        if (!intercepted) value = chain.proceed()
+                        value
                     })
                 }
                 ?: h.Hchat.utils.HLog.e("$TAG 未找到群聊资料页 Preference 点击方法")
@@ -131,19 +137,21 @@ class ProfileIdFeature : BaseFeature() {
             clazz: Class<*>,
             methodName: String,
             vararg parameterTypes: Class<*>,
-            block: (XC_MethodHook.MethodHookParam) -> Unit
+            block: (XposedInterface.Chain) -> Unit
         ) {
             val method = KavaReflector.findMethodRecursive(clazz, methodName, *parameterTypes)
             if (method == null) {
                 h.Hchat.utils.HLog.e("$TAG 未找到 ${clazz.name}#$methodName")
                 return
             }
-            HookRegistry.get().hook(method, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    runCatching { block(param) }.onFailure {
+            HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                val value = chain.proceed()
+                run after@ {
+                    runCatching { block(chain) }.onFailure {
                         h.Hchat.utils.HLog.e("$TAG 注入资料页 ID 失败: ${it.message}", it)
                     }
                 }
+                value
             })
         }
 

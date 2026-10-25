@@ -1,6 +1,6 @@
 package h.Hchat.hooks.items.callmedialimit
 
-import de.robv.android.xposed.XC_MethodHook
+import io.github.libxposed.api.XposedInterface
 import h.Hchat.dexkit.DexMethodCache
 import h.Hchat.event.Events
 import h.Hchat.hooks.core.BaseFeature
@@ -78,33 +78,45 @@ internal class CallMediaLimitHooker(
             val voipEventAccess = locateVoipEventAccess() ?: return false
 
             occupyMethods.forEach { method ->
-                HookRegistry.get().hook(method, object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        if (!isEnabled()) return
-                        param.result = false
+                HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                    var value: Any? = null
+                    var intercepted = false
+                    run before@ {
+                        if (!isEnabled()) return@before
+                        run { intercepted = true; value = false }
                     }
+                    if (!intercepted) value = chain.proceed()
+                    value
                 })
             }
-            HookRegistry.get().hook(voipEventAccess.dispatch, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    if (!isVoicePlaybackGuardActive() || !isEnabled()) return
-                    clearVoipUsageResult(param.thisObject, voipEventAccess.resultField)
+            HookRegistry.get().hook(voipEventAccess.dispatch, XposedInterface.Hooker { chain ->
+                val receiver = chain.thisObject
+                val value = chain.proceed()
+                run after@ {
+                    if (!isVoicePlaybackGuardActive() || !isEnabled()) return@after
+                    clearVoipUsageResult(receiver, voipEventAccess.resultField)
                 }
+                value
             })
-            HookRegistry.get().hook(voicePlaybackGuard, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    val depth = voicePlaybackGuardDepth.get() ?: 0
-                    voicePlaybackGuardDepth.set(depth + 1)
-                }
-
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    val depth = (voicePlaybackGuardDepth.get() ?: 1) - 1
-                    if (depth <= 0) {
-                        voicePlaybackGuardDepth.remove()
-                    } else {
-                        voicePlaybackGuardDepth.set(depth)
+            HookRegistry.get().hook(voicePlaybackGuard, XposedInterface.Hooker { chain ->
+                var value: Any? = null
+                try {
+                    run before@ {
+                        val depth = voicePlaybackGuardDepth.get() ?: 0
+                        voicePlaybackGuardDepth.set(depth + 1)
+                    }
+                    value = chain.proceed()
+                } finally {
+                    run after@ {
+                        val depth = (voicePlaybackGuardDepth.get() ?: 1) - 1
+                        if (depth <= 0) {
+                            voicePlaybackGuardDepth.remove()
+                        } else {
+                            voicePlaybackGuardDepth.set(depth)
+                        }
                     }
                 }
+                value
             })
             installed = true
             true

@@ -3,8 +3,8 @@ package h.Hchat.hooks.items.antirecall
 import android.content.SharedPreferences
 import h.Hchat.hooks.items.automessageforward.AutoMessageForwardSettings
 import android.content.ContentValues
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedBridge
+import io.github.libxposed.api.XposedInterface
+import h.Hchat.hooks.core.XposedRuntime
 import h.Hchat.dexkit.DexMethodCache
 import h.Hchat.event.Events
 import h.Hchat.hooks.api.core.WeChatApis
@@ -70,10 +70,13 @@ class AntiRecallFeature : BaseFeature() {
             var installed = false
             revokeEntries.map { it.method }.forEach { method ->
                 try {
-                    HookRegistry.get().hook(method, object : XC_MethodHook() {
-                        override fun beforeHookedMethod(param: MethodHookParam) {
-                            if (!cacheNeeded) return
-                            val args = param.args ?: return
+                    HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                        val args = chain.args.toTypedArray()
+                        var value: Any? = null
+                        var intercepted = false
+                        run before@ {
+                            if (!cacheNeeded) return@before
+                            val args = args ?: return@before
                             val talker = args.getOrNull(0) as? String ?: ""
                             val svrId = (args.getOrNull(1) as? Number)?.toLong() ?: 0L
                             val replaceMsg = args.getOrNull(3) as? String ?: ""
@@ -82,14 +85,16 @@ class AntiRecallFeature : BaseFeature() {
                             val payloadInfo = parseRevokePayload(talker, svrId, payload, replaceMsg)
                             val recalledInfo = resolveRecalledInfo(talker, svrId, payloadInfo)
                             publishRecallEvent(context, talker, svrId, recalledInfo)
-                            if (!isAntiRecallEnabled(context)) return
+                            if (!isAntiRecallEnabled(context)) return@before
                             val handledKey = recallHandledKey(talker, svrId, recalledInfo)
                             if (!isHandled(handledKey)) {
-                                if (!handleRecall(context, talker, svrId, recalledInfo, recallTime)) return
+                                if (!handleRecall(context, talker, svrId, recalledInfo, recallTime)) return@before
                                 markHandled(handledKey)
                             }
-                            param.setResult(null)
+                            run { intercepted = true; value = null }
                         }
+                        if (!intercepted) value = chain.proceed()
+                        value
                     })
                     installed = true
                 } catch (e: Throwable) {
@@ -257,18 +262,23 @@ class AntiRecallFeature : BaseFeature() {
         var installed = false
         methods.forEach { method ->
             try {
-                HookRegistry.get().hook(method, object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        if (!isAntiRecallEnabled(context) || !keepSelfRecallEnabled(context)) return
-                        val msgId = (param.args?.getOrNull(0) as? Number)?.toLong() ?: return
-                        val msg = param.args?.getOrNull(1) ?: return
+                HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                    val args = chain.args
+                    var value: Any? = null
+                    var intercepted = false
+                    run before@ {
+                        if (!isAntiRecallEnabled(context) || !keepSelfRecallEnabled(context)) return@before
+                        val msgId = (args?.getOrNull(0) as? Number)?.toLong() ?: return@before
+                        val msg = args?.getOrNull(1) ?: return@before
                         val type = messageObjectType(msg)
-                        if (!isWechatRecallType(type)) return
+                        if (!isWechatRecallType(type)) return@before
                         val outgoing = selfRecallMsgIds.contains(msgId) || messageObjectIsSend(msg)
-                        if (!outgoing) return
+                        if (!outgoing) return@before
                         markSelfRecallMsgId(msgId)
-                        param.setResult(blockedReturnValue(method))
+                        run { intercepted = true; value = blockedReturnValue(method) }
                     }
+                    if (!intercepted) value = chain.proceed()
+                    value
                 })
                 installed = true
             } catch (e: Throwable) {
@@ -287,12 +297,17 @@ class AntiRecallFeature : BaseFeature() {
         var installed = false
         methods.forEach { method ->
             try {
-                HookRegistry.get().hook(method, object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        if (!isAntiRecallEnabled(context) || !keepSelfRecallEnabled(context)) return
-                        if (!shouldBlockMsgProcessingClear(param.args)) return
-                        param.setResult(null)
+                HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                    val args = chain.args.toTypedArray()
+                    var value: Any? = null
+                    var intercepted = false
+                    run before@ {
+                        if (!isAntiRecallEnabled(context) || !keepSelfRecallEnabled(context)) return@before
+                        if (!shouldBlockMsgProcessingClear(args)) return@before
+                        run { intercepted = true; value = null }
                     }
+                    if (!intercepted) value = chain.proceed()
+                    value
                 })
                 installed = true
             } catch (e: Throwable) {
@@ -308,12 +323,17 @@ class AntiRecallFeature : BaseFeature() {
         var installed = false
         methods.forEach { method ->
             try {
-                HookRegistry.get().hook(method, object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        if (!isAntiRecallEnabled(context) || !keepSelfRecallEnabled(context)) return
-                        if (!shouldBlockLegacySelfRecallMediaCleanup(param.args)) return
-                        param.setResult(null)
+                HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                    val args = chain.args.toTypedArray()
+                    var value: Any? = null
+                    var intercepted = false
+                    run before@ {
+                        if (!isAntiRecallEnabled(context) || !keepSelfRecallEnabled(context)) return@before
+                        if (!shouldBlockLegacySelfRecallMediaCleanup(args)) return@before
+                        run { intercepted = true; value = null }
                     }
+                    if (!intercepted) value = chain.proceed()
+                    value
                 })
                 installed = true
             } catch (e: Throwable) {
@@ -466,11 +486,14 @@ class AntiRecallFeature : BaseFeature() {
         var count = 0
         for (method in KavaReflector.declaredMethods(dbClass)) {
             if (!isUpdateMethod(method)) continue
-            HookRegistry.get().hook(method, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    if (!isAntiRecallEnabled(context) || !keepSelfRecallEnabled(context)) return
-                    if (!fixSelfRecallUpdateValues(param.args)) return
+            HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                val args = chain.args.toTypedArray()
+                run before@ {
+                    if (!isAntiRecallEnabled(context) || !keepSelfRecallEnabled(context)) return@before
+                    if (!fixSelfRecallUpdateValues(args)) return@before
                 }
+                val value = chain.proceed()
+                value
             })
             count++
         }

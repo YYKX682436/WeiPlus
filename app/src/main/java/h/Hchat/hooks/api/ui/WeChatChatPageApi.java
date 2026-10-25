@@ -12,7 +12,7 @@ import h.Hchat.utils.KavaReflector;
 import java.lang.reflect.Method;
 import java.util.concurrent.CopyOnWriteArrayList;
 
-import de.robv.android.xposed.XC_MethodHook;
+import io.github.libxposed.api.XposedInterface;
 
 /**
  * 当前聊天页 API。
@@ -163,12 +163,15 @@ public final class WeChatChatPageApi {
 
     private void onStartActivity(Intent intent, Object caller, Method method) {
         if (intent == null) return;
-        String className = intent.getComponent() != null ? intent.getComponent().getClassName() : "";
+        String className =
+                intent.getComponent() != null ? intent.getComponent().getClassName() : "";
         String talker = talkerFromIntent(intent);
         if (TextUtils.isEmpty(talker)) return;
         pendingTalker = talker;
         if (isChatIntent(className, intent)) {
-            dispatchEnter(talker, !TextUtils.isEmpty(className) ? className : "intent:" + method.getName());
+            dispatchEnter(
+                    talker,
+                    !TextUtils.isEmpty(className) ? className : "intent:" + method.getName());
         }
     }
 
@@ -230,15 +233,17 @@ public final class WeChatChatPageApi {
         if (method == null) return 0;
         try {
             KavaReflector.accessible(method);
-            HookRegistry.get().hook(method, new XC_MethodHook() {
-                @Override
-                protected void beforeHookedMethod(MethodHookParam param) {
-                    String talker = firstStringArg(param.args);
-                    if (TextUtils.isEmpty(talker)) return;
-                    pendingTalker = talker;
-                    dispatchEnter(talker, sourceOf(method));
-                }
-            });
+            HookRegistry.get()
+                    .hook(
+                            method,
+                            chain -> {
+                                String talker = firstStringArg(chain.getArgs().toArray());
+                                if (!TextUtils.isEmpty(talker)) {
+                                    pendingTalker = talker;
+                                    dispatchEnter(talker, sourceOf(method));
+                                }
+                                return chain.proceed();
+                            });
             log("聊天页启动方法Hook: " + sourceOf(method));
             return 1;
         } catch (Throwable e) {
@@ -251,16 +256,26 @@ public final class WeChatChatPageApi {
         if (method == null) return 0;
         try {
             KavaReflector.accessible(method);
-            HookRegistry.get().hook(method, new XC_MethodHook() {
-                @Override
-                protected void afterHookedMethod(MethodHookParam param) {
-                    String talker = callStringMethod(param.thisObject, "getStringExtra", CHAT_USER);
-                    if (TextUtils.isEmpty(talker)) talker = pendingTalker;
-                    if (!TextUtils.isEmpty(talker)) {
-                        dispatchEnter(talker, sourceOf(method));
-                    }
-                }
-            });
+            HookRegistry.get()
+                    .hook(
+                            method,
+                            new XposedInterface.Hooker() {
+                                @Override
+                                public Object intercept(XposedInterface.Chain chain)
+                                        throws Throwable {
+                                    Object[] args = chain.getArgs().toArray();
+                                    Object hookResult = chain.proceed();
+                                    Object receiver = chain.getThisObject();
+                                    String talker =
+                                            callStringMethod(receiver, "getStringExtra", CHAT_USER);
+                                    if (TextUtils.isEmpty(talker)) talker = pendingTalker;
+                                    if (!TextUtils.isEmpty(talker)) {
+                                        dispatchEnter(talker, sourceOf(method));
+                                    }
+
+                                    return hookResult;
+                                }
+                            });
             log("聊天页Fragment进入方法Hook: " + sourceOf(method));
             return 1;
         } catch (Throwable e) {
@@ -273,14 +288,23 @@ public final class WeChatChatPageApi {
         if (method == null) return 0;
         try {
             KavaReflector.accessible(method);
-            HookRegistry.get().hook(method, new XC_MethodHook() {
-                @Override
-                protected void afterHookedMethod(MethodHookParam param) {
+            HookRegistry.get().hook(method, chain -> {
+                try {
+                    return chain.proceed();
+                } finally {
                     String old = currentTalker;
                     currentTalker = "";
                     pendingTalker = "";
                     if (!TextUtils.isEmpty(old)) {
-                        dispatch(ChatPageEvent.EXIT, old, sourceOf(method));
+                        try {
+                            dispatch(ChatPageEvent.EXIT, old, sourceOf(method));
+                        } catch (Throwable error) {
+                            // Cleanup observers cannot replace the host's result or exception.
+                            try {
+                                h.Hchat.utils.HLog.e("[WeChatChatPageApi] 退出事件派发失败", error);
+                            } catch (Throwable ignored) {
+                            }
+                        }
                     }
                 }
             });
@@ -363,7 +387,14 @@ public final class WeChatChatPageApi {
             try {
                 listener.onChatPageChanged(pageEvent);
             } catch (Throwable e) {
-                log("聊天页回调失败: " + e.getMessage());
+                try {
+                    log("聊天页回调失败: " + e.getMessage());
+                } catch (Throwable logFailure) {
+                    try {
+                        h.Hchat.utils.HLog.e("[WeChatChatPageApi] 回调错误日志失败", logFailure);
+                    } catch (Throwable ignored) {
+                    }
+                }
             }
         }
     }

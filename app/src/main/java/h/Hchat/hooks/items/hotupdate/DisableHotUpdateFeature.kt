@@ -1,8 +1,8 @@
 package h.Hchat.hooks.items.hotupdate
 
 import android.content.Context
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedBridge
+import io.github.libxposed.api.XposedInterface
+import h.Hchat.hooks.core.XposedRuntime
 import h.Hchat.dexkit.DexMethodCache
 import h.Hchat.hooks.core.BaseFeature
 import h.Hchat.hooks.core.Feature
@@ -111,10 +111,14 @@ class DisableHotUpdateFeature : BaseFeature() {
                     HLog.e("$TAG 未找到 TinkerApplication.getTinkerFlags")
                     return@runCatching false
                 }
-                HookRegistry.get().hook(method, object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        param.result = 0
+                HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                    var value: Any? = null
+                    var intercepted = false
+                    run before@ {
+                        run { intercepted = true; value = 0 }
                     }
+                    if (!intercepted) value = chain.proceed()
+                    value
                 })
                 true
             }.onFailure {
@@ -136,9 +140,12 @@ class DisableHotUpdateFeature : BaseFeature() {
                     return@runCatching false
                 }
                 methods.forEach { method ->
-                    HookRegistry.get().hook(method, object : XC_MethodHook() {
-                        override fun beforeHookedMethod(param: MethodHookParam) {
-                            val intent = param.args.getOrNull(1) as? android.content.Intent
+                    HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                        val args = chain.args
+                        var value: Any? = null
+                        var intercepted = false
+                        run before@ {
+                            val intent = args.getOrNull(1) as? android.content.Intent
                             runCatching {
                                 val shareIntentUtil = classLoader.loadClass("com.tencent.tinker.loader.shareutil.ShareIntentUtil")
                                 val setReturnCode = shareIntentUtil.getDeclaredMethod(
@@ -151,8 +158,10 @@ class DisableHotUpdateFeature : BaseFeature() {
                                     setReturnCode.invoke(null, intent, -1)
                                 }
                             }
-                            param.result = blockedReturnValue(method)
+                            run { intercepted = true; value = blockedReturnValue(method) }
                         }
+                        if (!intercepted) value = chain.proceed()
+                        value
                     })
                 }
                 true
@@ -173,10 +182,14 @@ class DisableHotUpdateFeature : BaseFeature() {
                 return
             }
             runCatching {
-                HookRegistry.get().hook(method, object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        param.result = blockedReturnValue(method)
+                HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                    var value: Any? = null
+                    var intercepted = false
+                    run before@ {
+                        run { intercepted = true; value = blockedReturnValue(method) }
                     }
+                    if (!intercepted) value = chain.proceed()
+                    value
                 })
             }.onFailure {
                 HLog.e("$TAG Hook 补丁应用入口失败: ${it.message}", it)
@@ -220,10 +233,14 @@ class DisableHotUpdateFeature : BaseFeature() {
                     else DexMethodCache.clear(cache, runtimeKey, "sync_response_consumer")
                 }
                 methods.forEach { method ->
-                    HookRegistry.get().hook(method, object : XC_MethodHook() {
-                        override fun beforeHookedMethod(param: MethodHookParam) {
-                            param.result = blockedReturnValue(method)
+                    HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                        var value: Any? = null
+                        var intercepted = false
+                        run before@ {
+                            run { intercepted = true; value = blockedReturnValue(method) }
                         }
+                        if (!intercepted) value = chain.proceed()
+                        value
                     })
                     count++
                 }
@@ -260,10 +277,14 @@ class DisableHotUpdateFeature : BaseFeature() {
                     else DexMethodCache.clear(cache, runtimeKey, "upgrade_response")
                 }
                 methods.forEach { method ->
-                    HookRegistry.get().hook(method, object : XC_MethodHook() {
-                        override fun beforeHookedMethod(param: MethodHookParam) {
-                            param.result = blockedReturnValue(method)
+                    HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                        var value: Any? = null
+                        var intercepted = false
+                        run before@ {
+                            run { intercepted = true; value = blockedReturnValue(method) }
                         }
+                        if (!intercepted) value = chain.proceed()
+                        value
                     })
                 }
             }.onFailure {
@@ -329,10 +350,14 @@ class DisableHotUpdateFeature : BaseFeature() {
                         method.returnType == Void.TYPE
                 }
                 methods.forEach { method ->
-                    HookRegistry.get().hook(method, object : XC_MethodHook() {
-                        override fun beforeHookedMethod(param: MethodHookParam) {
-                            param.result = blockedReturnValue(method)
+                    HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                        var value: Any? = null
+                        var intercepted = false
+                        run before@ {
+                            run { intercepted = true; value = blockedReturnValue(method) }
                         }
+                        if (!intercepted) value = chain.proceed()
+                        value
                     })
                 }
             }.onFailure {

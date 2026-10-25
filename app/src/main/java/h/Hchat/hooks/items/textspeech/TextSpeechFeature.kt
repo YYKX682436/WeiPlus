@@ -2,7 +2,7 @@ package h.Hchat.hooks.items.textspeech
 
 import android.app.Activity
 import android.view.KeyEvent
-import de.robv.android.xposed.XC_MethodHook
+import io.github.libxposed.api.XposedInterface
 import h.Hchat.event.Events
 import h.Hchat.hooks.api.core.WeChatApis
 import h.Hchat.hooks.core.BaseFeature
@@ -51,11 +51,16 @@ class TextSpeechFeature : BaseFeature() {
             return
         }
         runCatching {
-            HookRegistry.get().hook(method, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    val event = param.args.getOrNull(0) as? KeyEvent ?: return
-                    if (runtime?.handleVolumeKey(event) == true) param.result = true
+            HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                val args = chain.args
+                var value: Any? = null
+                var intercepted = false
+                run before@ {
+                    val event = args.getOrNull(0) as? KeyEvent ?: return@before
+                    if (runtime?.handleVolumeKey(event) == true) run { intercepted = true; value = true }
                 }
+                if (!intercepted) value = chain.proceed()
+                value
             })
         }.onFailure {
             HLog.e("$TAG 音量键 Hook 安装失败: ${it.message}", it)

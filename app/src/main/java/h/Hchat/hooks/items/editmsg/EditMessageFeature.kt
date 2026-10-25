@@ -6,7 +6,7 @@ import android.content.Context
 import android.view.MenuItem
 import android.view.View
 import android.widget.Toast
-import de.robv.android.xposed.XC_MethodHook
+import io.github.libxposed.api.XposedInterface
 import h.Hchat.event.Events
 import h.Hchat.hooks.api.core.WeChatApis
 import h.Hchat.hooks.api.message.SingleMessageMenuLocator
@@ -565,18 +565,19 @@ private class EditMessageHooker(
     }
 
     private fun hookChatMethod(method: Method, menuCreate: Boolean): Boolean {
-        return hookMethod(method, object : XC_MethodHook() {
-            override fun afterHookedMethod(param: MethodHookParam) {
-                if (menuCreate) addEditMenu(param)
+        return hookMethod(method, XposedInterface.Hooker { chain ->
+            run before@ {
+                if (!menuCreate) handleEditClick(chain)
             }
-
-            override fun beforeHookedMethod(param: MethodHookParam) {
-                if (!menuCreate) handleEditClick(param)
+            val value = chain.proceed()
+            run after@ {
+                if (menuCreate) addEditMenu(chain)
             }
+            value
         })
     }
 
-    private fun hookMethod(method: Method, callback: XC_MethodHook): Boolean {
+    private fun hookMethod(method: Method, callback: XposedInterface.Hooker): Boolean {
         if (!isHookableMethod(method)) return false
         if (!hookedMethods.add(method)) return true
         return try {
@@ -589,10 +590,10 @@ private class EditMessageHooker(
         }
     }
 
-    private fun addEditMenu(param: XC_MethodHook.MethodHookParam) {
+    private fun addEditMenu(param: XposedInterface.Chain) {
         clearMenuMessageBinding()
         if (!EditMessageRepository.isEnabled(context.hostContext())) return
-        val args = param.args ?: return
+        val args = param.args.toTypedArray() ?: return
         if (args.size < 3) return
         val menu = args[0] ?: return
         val view = args.getOrNull(1) as? View ?: return
@@ -616,9 +617,9 @@ private class EditMessageHooker(
         }
     }
 
-    private fun handleEditClick(param: XC_MethodHook.MethodHookParam) {
+    private fun handleEditClick(param: XposedInterface.Chain) {
         if (!EditMessageRepository.isEnabled(context.hostContext())) return
-        val args = param.args ?: return
+        val args = param.args.toTypedArray() ?: return
         val menuItem = findMenuItem(args) ?: return
         if (menuItem.itemId != MENU_EDIT_ID) return
         val activity = resolveActivity(param.thisObject)

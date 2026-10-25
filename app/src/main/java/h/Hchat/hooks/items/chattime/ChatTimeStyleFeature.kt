@@ -4,7 +4,7 @@ import android.content.SharedPreferences
 import android.view.View
 import android.widget.AbsListView
 import android.widget.TextView
-import de.robv.android.xposed.XC_MethodHook
+import io.github.libxposed.api.XposedInterface
 import h.Hchat.dexkit.DexMethodCache
 import h.Hchat.event.Events
 import h.Hchat.hooks.core.BaseFeature
@@ -115,25 +115,27 @@ private class ChatTimeStyleRuntime(
             return false
         }
         return runCatching {
-            HookRegistry.get().hook(method, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    val active = isEnabled() && currentMode() != ChatTimeStyleSettings.MODE_ORIGINAL
-                    if (!active && bindings.isEmpty()) return
-                    val state = BindState(captureTimeHolder(param.args))
-                    restoreBoundTime(param.args, state.timeHolder)
-                    if (active) {
-                        val stack = bindStates.get() ?: ArrayDeque<BindState>().also(bindStates::set)
-                        stack.addLast(state)
+            HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                val args = chain.args.toTypedArray()
+                val active = isEnabled() && currentMode() != ChatTimeStyleSettings.MODE_ORIGINAL
+                if (!active && bindings.isEmpty()) return@Hooker chain.proceed()
+                val state = BindState(captureTimeHolder(args))
+                restoreBoundTime(args, state.timeHolder)
+                val stack = if (active) bindStates.get()
+                ?: ArrayDeque<BindState>().also(bindStates::set) else null
+                stack?.addLast(state)
+                val result = try {
+                    chain.proceed()
+                } finally {
+                    if (stack != null) {
+                        if (stack.peekLast() === state) stack.removeLast() else stack.removeLastOccurrence(state)
+                        if (stack.isEmpty()) bindStates.remove()
                     }
                 }
-
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    val stack = bindStates.get()
-                    val state = stack?.pollLast() ?: return
-                    if (stack.isEmpty()) bindStates.remove()
-                    if (!isEnabled() || currentMode() == ChatTimeStyleSettings.MODE_ORIGINAL) return
-                    bindTime(param.thisObject, param.args, state.timeHolder)
+                if (active && isEnabled() && currentMode() != ChatTimeStyleSettings.MODE_ORIGINAL) {
+                    bindTime(chain.thisObject, args, state.timeHolder)
                 }
+                result
             })
             installed = true
             true

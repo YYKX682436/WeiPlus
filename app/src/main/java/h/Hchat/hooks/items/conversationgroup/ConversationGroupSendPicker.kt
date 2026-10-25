@@ -19,7 +19,7 @@ internal object ConversationGroupSendPicker {
     private val nextRequestCode = AtomicInteger(REQUEST_CODE_START)
     private val pending = ConcurrentHashMap<Int, ConversationGroupFileRequest<PickedFile?>>()
     private val requests = ConcurrentHashMap<Int, ConversationGroupFileRequest<PickedFile?>>()
-    private val hooks = ConversationGroupFileResultHooks(::onResult)
+    private val hooks = ConversationGroupFileResultHooks(::onResult, ::onHostFailure)
 
     @Synchronized
     fun launch(activity: Activity, mimeType: String, chooserTitle: String, callback: (PickedFile?) -> Unit) {
@@ -33,6 +33,7 @@ internal object ConversationGroupSendPicker {
         val request = ConversationGroupFileRequest.create(activity, callback) {
             pending.remove(requestCode)
             requests.remove(requestCode)
+            if (pending.isEmpty()) hooks.clear()
         }
         if (request == null) {
             callback(null)
@@ -66,6 +67,11 @@ internal object ConversationGroupSendPicker {
         requests.values.toList().forEach { it.cancel() }
         pending.clear()
         hooks.clear()
+    }
+
+    private fun onHostFailure(activity: Activity, code: Int) {
+        val request = pending[code] ?: return
+        if (request.activity.get() === activity && pending.remove(code, request)) request.cancel()
     }
 
     private fun onResult(activity: Activity, code: Int, resultCode: Int, data: Intent?) {

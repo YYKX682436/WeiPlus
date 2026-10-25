@@ -3,7 +3,7 @@ package h.Hchat.hooks.items.autooriginal
 import android.app.Activity
 import android.content.Intent
 import android.os.Bundle
-import de.robv.android.xposed.XC_MethodHook
+import io.github.libxposed.api.XposedInterface
 import h.Hchat.hooks.core.BaseFeature
 import h.Hchat.hooks.core.FeatureContext
 import h.Hchat.hooks.core.HookRegistry
@@ -71,21 +71,24 @@ private class AutoOriginalImageRuntime(
             return false
         }
         return runCatching {
-            HookRegistry.get().hook(method, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
+            HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                val receiver = chain.thisObject
+                run before@ {
                     if (!prefs.getBoolean(
-                            AutoOriginalImageSettings.KEY_ENABLE,
-                            AutoOriginalImageSettings.DEFAULT_ENABLE
+                        AutoOriginalImageSettings.KEY_ENABLE,
+                        AutoOriginalImageSettings.DEFAULT_ENABLE
                         )
                     ) {
-                        return
+                        return@before
                     }
-                    val activity = param.thisObject as? Activity ?: return
+                    val activity = receiver as? Activity ?: return@before
                     val intent = activity.intent
-                    if (!isChatImageSend(intent)) return
+                    if (!isChatImageSend(intent)) return@before
                     intent.putExtra("key_send_raw_image", true)
                     intent.putExtra("send_raw_img", true)
                 }
+                val value = chain.proceed()
+                value
             })
             hookedMethods.add(method)
             true

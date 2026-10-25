@@ -1,7 +1,7 @@
 package h.Hchat.hooks.items.miniprogramvideoad
 
 import android.content.Context
-import de.robv.android.xposed.XC_MethodHook
+import io.github.libxposed.api.XposedInterface
 import h.Hchat.hooks.core.BaseFeature
 import h.Hchat.hooks.core.FeatureContext
 import h.Hchat.hooks.core.HookRegistry
@@ -68,16 +68,19 @@ class SkipMiniProgramVideoAdsFeature : BaseFeature() {
                     return false
                 }
                 return runCatching {
-                    HookRegistry.get().hook(subscribeHandler, object : XC_MethodHook() {
-                        override fun beforeHookedMethod(param: MethodHookParam) {
-                            if (param.args.getOrNull(0) != EVENT_VIDEO_TIME_UPDATE) return
-                            if (!isEnabled(context)) return
-                            val payload = param.args.getOrNull(1) as? String ?: return
-                            val json = runCatching { JSONObject(payload) }.getOrNull() ?: return
+                    HookRegistry.get().hook(subscribeHandler, XposedInterface.Hooker { chain ->
+                        val args = chain.args.toTypedArray()
+                        run before@ {
+                            if (args.getOrNull(0) != EVENT_VIDEO_TIME_UPDATE) return@before
+                            if (!isEnabled(context)) return@before
+                            val payload = args.getOrNull(1) as? String ?: return@before
+                            val json = runCatching { JSONObject(payload) }.getOrNull() ?: return@before
                             json.put("position", 60)
                             json.put("duration", 1)
-                            param.args[1] = json.toString()
+                            args[1] = json.toString()
                         }
+                        val value = chain.proceed(args)
+                        value
                     })
                     installedLoaders.add(loaderKey)
                     true

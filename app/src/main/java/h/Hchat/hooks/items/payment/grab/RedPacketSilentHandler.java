@@ -21,7 +21,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
-import de.robv.android.xposed.XC_MethodHook;
+import io.github.libxposed.api.XposedInterface;
 
 /**
  * 静默抢红包链路。
@@ -282,132 +282,135 @@ public class RedPacketSilentHandler {
             }
             if (onGYNetEnd == null) return false;
 
-            HookRegistry.get().hook(onGYNetEnd, new XC_MethodHook() {
-                @Override
-                protected void beforeHookedMethod(MethodHookParam param) {
-                    if (!settings.isEnabled()) return;
-                    try {
-                        Object jsonObj = param.args != null && param.args.length > 2 ? param.args[2] : null;
-                        Map<String, Object> info = state.silentReceiveRequestInfoMap.get(param.thisObject);
-                        boolean unionCallback = dexFinder.receiveLuckyMoneyUnionClass != null
-                                && dexFinder.receiveLuckyMoneyUnionClass.isAssignableFrom(param.thisObject.getClass());
-                        String callbackSendId = RedPacketReflector.readJsonString(jsonObj, "sendId");
-                        if (TextUtils.isEmpty(callbackSendId)) {
-                            callbackSendId = RedPacketReflector.readJsonString(jsonObj, "sendid");
-                        }
-                        if (info == null && unionCallback && !TextUtils.isEmpty(callbackSendId)) {
-                            info = state.silentRedPacketMap.get(callbackSendId);
-                        }
-                        if (info == null) return;
-                        String sendId = (String) info.get("sendid");
-                        if (TextUtils.isEmpty(sendId)) sendId = callbackSendId;
-                        if (TextUtils.isEmpty(sendId) || !state.silentReceivingSet.contains(sendId)) return;
+            HookRegistry.get().hook(onGYNetEnd, chain -> {
+                Object[] hookArgs = chain.getArgs().toArray();
+                Object receiver = chain.getThisObject();
+                observe: {
+                    if (!settings.isEnabled()) break observe;
+        try {
+            Object jsonObj = hookArgs != null && hookArgs.length > 2 ? hookArgs[2] : null;
+            Map<String, Object> info = state.silentReceiveRequestInfoMap.get(receiver);
+            boolean unionCallback = dexFinder.receiveLuckyMoneyUnionClass != null
+                    && dexFinder.receiveLuckyMoneyUnionClass.isAssignableFrom(receiver.getClass());
+            String callbackSendId = RedPacketReflector.readJsonString(jsonObj, "sendId");
+            if (TextUtils.isEmpty(callbackSendId)) {
+                callbackSendId = RedPacketReflector.readJsonString(jsonObj, "sendid");
+            }
+            if (info == null && unionCallback && !TextUtils.isEmpty(callbackSendId)) {
+                info = state.silentRedPacketMap.get(callbackSendId);
+            }
+            if (info == null) break observe;
+            String sendId = (String) info.get("sendid");
+            if (TextUtils.isEmpty(sendId)) sendId = callbackSendId;
+            if (TextUtils.isEmpty(sendId) || !state.silentReceivingSet.contains(sendId)) break observe;
 
-                        if (jsonObj == null || !matchesRequestSendId(jsonObj, sendId)) return;
-                        if (param.args[0] instanceof Number && ((Number) param.args[0]).intValue() != 0) {
-                            HLog.e("[Hchat:RedPacket] 收红包响应失败: sendid=" + sendId
-                                    + " errorCode=" + param.args[0]);
-                            return;
-                        }
+            if (jsonObj == null || !matchesRequestSendId(jsonObj, sendId)) break observe;
+            if (hookArgs[0] instanceof Number && ((Number) hookArgs[0]).intValue() != 0) {
+                HLog.e("[Hchat:RedPacket] 收红包响应失败: sendid=" + sendId
+                        + " errorCode=" + hookArgs[0]);
+                break observe;
+            }
 
-                        String timingIdentifier = RedPacketReflector.readJsonString(jsonObj, "timingIdentifier");
-                        log("收红包响应: sendid=" + sendId + " timingId=" + timingIdentifier);
-                        if (TextUtils.isEmpty(timingIdentifier)) return;
+            String timingIdentifier = RedPacketReflector.readJsonString(jsonObj, "timingIdentifier");
+            log("收红包响应: sendid=" + sendId + " timingId=" + timingIdentifier);
+            if (TextUtils.isEmpty(timingIdentifier)) break observe;
 
-                        Map<String, Object> ownedInfo = state.silentReceiveRequestInfoMap.remove(param.thisObject);
-                        if (ownedInfo != null && ownedInfo != info) return;
-                        if (!state.silentOpeningSet.add(sendId)) return;
-                        state.silentReceivingSet.remove(sendId);
-                        cancelTask(receiveTimeoutKey(sendId));
+            Map<String, Object> ownedInfo = state.silentReceiveRequestInfoMap.remove(receiver);
+            if (ownedInfo != null && ownedInfo != info) break observe;
+            if (!state.silentOpeningSet.add(sendId)) break observe;
+            state.silentReceivingSet.remove(sendId);
+            cancelTask(receiveTimeoutKey(sendId));
 
-                        String requestNativeUrl = (String) info.get("requestNativeUrl");
-                        if (TextUtils.isEmpty(requestNativeUrl)) requestNativeUrl = (String) info.get("nativeurl");
-                        String requestTalker = (String) info.get("requestTalker");
-                        if (TextUtils.isEmpty(requestTalker)) requestTalker = (String) info.get("talker");
-                        boolean useUnionOpen = Boolean.TRUE.equals(info.get("isUnion"));
-                        if (useUnionOpen && dexFinder.openLuckyMoneyUnionClass == null) {
-                            log("拆红包失败: 企业红包 Union 开包类缺失");
-                            notifyFailure(info, sendId, "企业红包 Union 开包类缺失");
-                            cleanup(sendId);
-                            return;
-                        }
+            String requestNativeUrl = (String) info.get("requestNativeUrl");
+            if (TextUtils.isEmpty(requestNativeUrl)) requestNativeUrl = (String) info.get("nativeurl");
+            String requestTalker = (String) info.get("requestTalker");
+            if (TextUtils.isEmpty(requestTalker)) requestTalker = (String) info.get("talker");
+            boolean useUnionOpen = Boolean.TRUE.equals(info.get("isUnion"));
+            if (useUnionOpen && dexFinder.openLuckyMoneyUnionClass == null) {
+                log("拆红包失败: 企业红包 Union 开包类缺失");
+                notifyFailure(info, sendId, "企业红包 Union 开包类缺失");
+                cleanup(sendId);
+                break observe;
+            }
 
-                        int msgType = info.get("msgtype") instanceof Integer ? (int) info.get("msgtype") : 1;
-                        int channelId = info.get("channelid") instanceof Integer ? (int) info.get("channelid") : 1;
-                        String headImg = info.get("headimg") != null ? String.valueOf(info.get("headimg")) : "";
-                        String nickName = info.get("nickname") != null ? String.valueOf(info.get("nickname")) : "";
+            int msgType = info.get("msgtype") instanceof Integer ? (int) info.get("msgtype") : 1;
+            int channelId = info.get("channelid") instanceof Integer ? (int) info.get("channelid") : 1;
+            String headImg = info.get("headimg") != null ? String.valueOf(info.get("headimg")) : "";
+            String nickName = info.get("nickname") != null ? String.valueOf(info.get("nickname")) : "";
 
-                        Object openRequest = null;
-                        if (useUnionOpen && dexFinder.unionOpenCtor10 != null) {
-                            try {
-                                openRequest = KavaReflector.newInstance(dexFinder.unionOpenCtor10,
-                                        msgType, channelId, sendId, requestNativeUrl,
-                                        headImg, nickName, requestTalker, "v1.0", timingIdentifier, "");
-                            } catch (Throwable ignored) {}
-                        }
-                        if (openRequest == null && useUnionOpen && dexFinder.unionOpenCtor9 != null) {
-                            try {
-                                openRequest = KavaReflector.newInstance(dexFinder.unionOpenCtor9,
-                                        msgType, channelId, sendId, requestNativeUrl,
-                                        headImg, nickName, requestTalker, "v1.0", timingIdentifier);
-                            } catch (Throwable ignored) {}
-                        }
-                        if (openRequest == null && useUnionOpen) {
-                            Object[] openArgs = {msgType, channelId, sendId, requestNativeUrl,
-                                    headImg, nickName, requestTalker, "v1.0", timingIdentifier, ""};
-                            openRequest = RedPacketReflector.newInstanceByArgs(
-                                    dexFinder.openLuckyMoneyUnionClass, openArgs);
-                        }
-                        if (openRequest == null && !useUnionOpen && dexFinder.openCtor10 != null) {
-                            try {
-                                openRequest = KavaReflector.newInstance(dexFinder.openCtor10,
-                                        msgType, channelId, sendId, requestNativeUrl,
-                                        headImg, nickName, requestTalker, "v1.0", timingIdentifier, "");
-                            } catch (Throwable ignored) {}
-                        }
-                        if (openRequest == null && !useUnionOpen && dexFinder.openCtor8 != null) {
-                            try {
-                                openRequest = KavaReflector.newInstance(dexFinder.openCtor8,
-                                        msgType, channelId, sendId, requestNativeUrl,
-                                        headImg, nickName, requestTalker, timingIdentifier);
-                            } catch (Throwable ignored) {}
-                        }
-                        if (openRequest == null && !useUnionOpen && dexFinder.openCtor9 != null) {
-                            try {
-                                openRequest = KavaReflector.newInstance(dexFinder.openCtor9,
-                                        msgType, channelId, sendId, requestNativeUrl,
-                                        headImg, nickName, requestTalker, "v1.0", timingIdentifier);
-                            } catch (Throwable ignored) {}
-                        }
-                        if (openRequest == null && !useUnionOpen) {
-                            Object[] openArgs = {msgType, channelId, sendId, requestNativeUrl,
-                                    headImg, nickName, requestTalker, "v1.0", timingIdentifier, ""};
-                            openRequest = RedPacketReflector.newInstanceByArgs(dexFinder.openLuckyMoneyClass, openArgs);
-                        }
+            Object openRequest = null;
+            if (useUnionOpen && dexFinder.unionOpenCtor10 != null) {
+                try {
+                    openRequest = KavaReflector.newInstance(dexFinder.unionOpenCtor10,
+                            msgType, channelId, sendId, requestNativeUrl,
+                            headImg, nickName, requestTalker, "v1.0", timingIdentifier, "");
+                } catch (Throwable ignored) {}
+            }
+            if (openRequest == null && useUnionOpen && dexFinder.unionOpenCtor9 != null) {
+                try {
+                    openRequest = KavaReflector.newInstance(dexFinder.unionOpenCtor9,
+                            msgType, channelId, sendId, requestNativeUrl,
+                            headImg, nickName, requestTalker, "v1.0", timingIdentifier);
+                } catch (Throwable ignored) {}
+            }
+            if (openRequest == null && useUnionOpen) {
+                Object[] openArgs = {msgType, channelId, sendId, requestNativeUrl,
+                        headImg, nickName, requestTalker, "v1.0", timingIdentifier, ""};
+                openRequest = RedPacketReflector.newInstanceByArgs(
+                        dexFinder.openLuckyMoneyUnionClass, openArgs);
+            }
+            if (openRequest == null && !useUnionOpen && dexFinder.openCtor10 != null) {
+                try {
+                    openRequest = KavaReflector.newInstance(dexFinder.openCtor10,
+                            msgType, channelId, sendId, requestNativeUrl,
+                            headImg, nickName, requestTalker, "v1.0", timingIdentifier, "");
+                } catch (Throwable ignored) {}
+            }
+            if (openRequest == null && !useUnionOpen && dexFinder.openCtor8 != null) {
+                try {
+                    openRequest = KavaReflector.newInstance(dexFinder.openCtor8,
+                            msgType, channelId, sendId, requestNativeUrl,
+                            headImg, nickName, requestTalker, timingIdentifier);
+                } catch (Throwable ignored) {}
+            }
+            if (openRequest == null && !useUnionOpen && dexFinder.openCtor9 != null) {
+                try {
+                    openRequest = KavaReflector.newInstance(dexFinder.openCtor9,
+                            msgType, channelId, sendId, requestNativeUrl,
+                            headImg, nickName, requestTalker, "v1.0", timingIdentifier);
+                } catch (Throwable ignored) {}
+            }
+            if (openRequest == null && !useUnionOpen) {
+                Object[] openArgs = {msgType, channelId, sendId, requestNativeUrl,
+                        headImg, nickName, requestTalker, "v1.0", timingIdentifier, ""};
+                openRequest = RedPacketReflector.newInstanceByArgs(dexFinder.openLuckyMoneyClass, openArgs);
+            }
 
-                        if (openRequest == null) {
-                            log("拆红包请求构造失败");
-                            notifyFailure(info, sendId, "拆红包请求构造失败");
-                            cleanup(sendId);
-                            return;
-                        }
+            if (openRequest == null) {
+                log("拆红包请求构造失败");
+                notifyFailure(info, sendId, "拆红包请求构造失败");
+                cleanup(sendId);
+                break observe;
+            }
 
-                        info.put("openReq", openRequest);
-                        state.silentRedPacketMap.put(sendId, info);
-                        if (sendOpenRequest(openRequest, sendId)) {
-                            log("拆红包请求已发送: " + sendId);
-                            scheduleOpenTimeout(sendId);
-                        } else {
-                            log("拆红包发包失败: " + sendId);
-                            if (!retryOpenLater(info, sendId, "拆红包发包失败")) {
-                                notifyFailure(info, sendId, "拆红包发包失败");
-                                cleanup(sendId);
-                            }
-                        }
-                    } catch (Throwable e) {
-                        log("ERROR receiveCallback: " + e.getMessage());
-                    }
+            info.put("openReq", openRequest);
+            state.silentRedPacketMap.put(sendId, info);
+            if (sendOpenRequest(openRequest, sendId)) {
+                log("拆红包请求已发送: " + sendId);
+                scheduleOpenTimeout(sendId);
+            } else {
+                log("拆红包发包失败: " + sendId);
+                if (!retryOpenLater(info, sendId, "拆红包发包失败")) {
+                    notifyFailure(info, sendId, "拆红包发包失败");
+                    cleanup(sendId);
                 }
+            }
+        } catch (Throwable e) {
+            log("ERROR receiveCallback: " + e.getMessage());
+        }
+                }
+                Object value = chain.proceed(hookArgs);
+                return value;
             });
             log("Hook收红包回调成功: " + label + " -> " + receiveClass.getName());
             return true;
@@ -437,80 +440,83 @@ public class RedPacketSilentHandler {
             }
             if (onGYNetEnd == null) return false;
 
-            HookRegistry.get().hook(onGYNetEnd, new XC_MethodHook() {
-                @Override
-                protected void afterHookedMethod(MethodHookParam param) {
-                    if (!settings.isEnabled()) return;
-                    try {
-                        String sendId = state.silentOpenRequestSendIdMap.get(param.thisObject);
-                        boolean unionCallback = dexFinder.openLuckyMoneyUnionClass != null
-                                && dexFinder.openLuckyMoneyUnionClass.isAssignableFrom(param.thisObject.getClass());
-                        Object jsonObj = (param.args != null && param.args.length > 2) ? param.args[2] : null;
-                        if (TextUtils.isEmpty(sendId)) {
-                            if (!unionCallback) return;
-                            sendId = RedPacketReflector.readJsonString(jsonObj, "sendId");
-                            if (TextUtils.isEmpty(sendId)) {
-                                sendId = RedPacketReflector.readJsonString(jsonObj, "sendid");
-                            }
-                        }
-                        if (TextUtils.isEmpty(sendId) && unionCallback && state.silentOpeningSet.size() == 1) {
-                            sendId = state.silentOpeningSet.iterator().next();
-                        }
-                        if (TextUtils.isEmpty(sendId) || !state.silentOpeningSet.contains(sendId)) return;
-                        if (!matchesRequestSendId(jsonObj, sendId)) return;
-                        String ownedSendId = state.silentOpenRequestSendIdMap.remove(param.thisObject);
-                        if (ownedSendId != null && !sendId.equals(ownedSendId)) return;
-                        cancelTask(openTimeoutKey(sendId));
-
-                        int errCode = 0;
-                        try {
-                            if (param.args != null && param.args.length > 0 && param.args[0] instanceof Number) {
-                                errCode = ((Number) param.args[0]).intValue();
-                            }
-                        } catch (Throwable ignored) {}
-
-                        String amount = RedPacketReflector.extractReceivedAmount(jsonObj, errCode);
-                        Map<String, Object> info = state.silentRedPacketMap.get(sendId);
-                        if (!RedPacketReflector.isPositiveAmount(amount)) {
-                            log("拆红包完成但未取到本人实收金额: sendid=" + sendId
-                                    + " json=" + String.valueOf(jsonObj));
-                            notifyFailure(info, sendId, "未抢到本人实收金额");
-                            cleanup(sendId);
-                            return;
-                        }
-
-                        String talker = null;
-                        if (info != null) talker = (String) info.get("talker");
-
-                        if (!state.silentOpeningSet.remove(sendId)) return;
-                        state.silentFinishedSet.add(sendId);
-                        if (info != null) info.remove("openReq");
-                        cancelTask(receiveRetryKey(sendId));
-                        cancelTask(openRetryKey(sendId));
-
-                        log("拆红包完成: sendid=" + sendId + " amount=" + amount + " talker=" + talker);
-
-                        // 通知、回复模板和祝福语先读取本红包快照，完成后只保留轻量去重ID。
-                        try {
-                            String nativeUrl = info != null ? (String) info.get("nativeurl") : null;
-                            if (!TextUtils.isEmpty(nativeUrl) && statsCallback != null) {
-                                statsCallback.incrementStats(nativeUrl);
-                            }
-                            if (notifyCallback != null) {
-                                notifyCallback.onReceived(
-                                        amount,
-                                        talker != null ? talker : "",
-                                        nativeUrl,
-                                        sendId,
-                                        jsonObj);
-                            }
-                        } finally {
-                            cleanup(sendId);
-                        }
-                    } catch (Throwable e) {
-                        log("ERROR openCallback: " + e.getMessage());
-                    }
+            HookRegistry.get().hook(onGYNetEnd, chain -> {
+                Object[] hookArgs = chain.getArgs().toArray();
+                Object receiver = chain.getThisObject();
+                Object value = chain.proceed(hookArgs);
+                observe: {
+                    if (!settings.isEnabled()) break observe;
+        try {
+            String sendId = state.silentOpenRequestSendIdMap.get(receiver);
+            boolean unionCallback = dexFinder.openLuckyMoneyUnionClass != null
+                    && dexFinder.openLuckyMoneyUnionClass.isAssignableFrom(receiver.getClass());
+            Object jsonObj = (hookArgs != null && hookArgs.length > 2) ? hookArgs[2] : null;
+            if (TextUtils.isEmpty(sendId)) {
+                if (!unionCallback) break observe;
+                sendId = RedPacketReflector.readJsonString(jsonObj, "sendId");
+                if (TextUtils.isEmpty(sendId)) {
+                    sendId = RedPacketReflector.readJsonString(jsonObj, "sendid");
                 }
+            }
+            if (TextUtils.isEmpty(sendId) && unionCallback && state.silentOpeningSet.size() == 1) {
+                sendId = state.silentOpeningSet.iterator().next();
+            }
+            if (TextUtils.isEmpty(sendId) || !state.silentOpeningSet.contains(sendId)) break observe;
+            if (!matchesRequestSendId(jsonObj, sendId)) break observe;
+            String ownedSendId = state.silentOpenRequestSendIdMap.remove(receiver);
+            if (ownedSendId != null && !sendId.equals(ownedSendId)) break observe;
+            cancelTask(openTimeoutKey(sendId));
+
+            int errCode = 0;
+            try {
+                if (hookArgs != null && hookArgs.length > 0 && hookArgs[0] instanceof Number) {
+                    errCode = ((Number) hookArgs[0]).intValue();
+                }
+            } catch (Throwable ignored) {}
+
+            String amount = RedPacketReflector.extractReceivedAmount(jsonObj, errCode);
+            Map<String, Object> info = state.silentRedPacketMap.get(sendId);
+            if (!RedPacketReflector.isPositiveAmount(amount)) {
+                log("拆红包完成但未取到本人实收金额: sendid=" + sendId
+                        + " json=" + String.valueOf(jsonObj));
+                notifyFailure(info, sendId, "未抢到本人实收金额");
+                cleanup(sendId);
+                break observe;
+            }
+
+            String talker = null;
+            if (info != null) talker = (String) info.get("talker");
+
+            if (!state.silentOpeningSet.remove(sendId)) break observe;
+            state.silentFinishedSet.add(sendId);
+            if (info != null) info.remove("openReq");
+            cancelTask(receiveRetryKey(sendId));
+            cancelTask(openRetryKey(sendId));
+
+            log("拆红包完成: sendid=" + sendId + " amount=" + amount + " talker=" + talker);
+
+            // 通知、回复模板和祝福语先读取本红包快照，完成后只保留轻量去重ID。
+            try {
+                String nativeUrl = info != null ? (String) info.get("nativeurl") : null;
+                if (!TextUtils.isEmpty(nativeUrl) && statsCallback != null) {
+                    statsCallback.incrementStats(nativeUrl);
+                }
+                if (notifyCallback != null) {
+                    notifyCallback.onReceived(
+                            amount,
+                            talker != null ? talker : "",
+                            nativeUrl,
+                            sendId,
+                            jsonObj);
+                }
+            } finally {
+                cleanup(sendId);
+            }
+        } catch (Throwable e) {
+            log("ERROR openCallback: " + e.getMessage());
+        }
+                }
+                return value;
             });
             log("Hook拆红包回调成功: " + label + " -> " + openClass.getName());
             return true;

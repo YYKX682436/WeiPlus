@@ -7,7 +7,7 @@ import android.os.Handler
 import android.os.Looper
 import android.view.MenuItem
 import android.widget.Toast
-import de.robv.android.xposed.XC_MethodHook
+import io.github.libxposed.api.XposedInterface
 import h.Hchat.dexkit.DexMethodCache
 import h.Hchat.event.Events
 import h.Hchat.hooks.api.core.WeChatApis
@@ -96,23 +96,34 @@ private class SelectedMessagesHooker(
         val menuCreate = MultiSelectMessageMenuLocator.menuCreateMethod(context, logger)
         val menuClick = MultiSelectMessageMenuLocator.menuClickMethod(context, logger)
         val exitMethod = menuClick?.let { MultiSelectMessageMenuLocator.multiSelectExitMethod(context, it, logger) }
-        val createHooked = menuCreate != null && exitMethod != null && hook(menuCreate, object : XC_MethodHook() {
-            override fun afterHookedMethod(param: MethodHookParam) {
-                addMenu(param)
+        val createHooked = menuCreate != null && exitMethod != null && hook(menuCreate, XposedInterface.Hooker { chain ->
+            val value = chain.proceed()
+            run after@ {
+                addMenu(chain)
             }
+            value
         })
-        val clickHooked = menuClick != null && exitMethod != null && hook(menuClick, object : XC_MethodHook() {
-            override fun beforeHookedMethod(param: MethodHookParam) {
-                handleMenuClick(param, exitMethod)
+        val clickHooked = menuClick != null && exitMethod != null && hook(menuClick, XposedInterface.Hooker { chain ->
+            var value: Any? = null
+            var intercepted = false
+            run before@ {
+                if (handleMenuClick(chain, exitMethod)) { intercepted = true; value = null }
             }
+            if (!intercepted) value = chain.proceed()
+            value
         })
         val doneMethods = locateRetransmitDoneMethods()
         val doneHooked = doneMethods.isNotEmpty() && doneMethods.all { method ->
-            hook(method, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    val activity = param.thisObject as? Activity ?: return
-                    if (moduleSender.handleRetransmitDone(activity)) param.result = null
+            hook(method, XposedInterface.Hooker { chain ->
+                val receiver = chain.thisObject
+                var value: Any? = null
+                var intercepted = false
+                run before@ {
+                    val activity = receiver as? Activity ?: return@before
+                    if (moduleSender.handleRetransmitDone(activity)) run { intercepted = true; value = null }
                 }
+                if (!intercepted) value = chain.proceed()
+                value
             })
         }
         val officialHooked = officialSender.install()
@@ -123,10 +134,10 @@ private class SelectedMessagesHooker(
         return createHooked && clickHooked && doneHooked && officialHooked
     }
 
-    private fun addMenu(param: XC_MethodHook.MethodHookParam) {
+    private fun addMenu(param: XposedInterface.Chain) {
         if (!isEnabled()) return
         if (MultiSelectMessageResolver.resolve(param.thisObject).isEmpty()) return
-        val menu = param.args?.getOrNull(0) ?: return
+        val menu = param.args.toTypedArray()?.getOrNull(0) ?: return
         addMenuItem(menu, MENU_MASS_SEND_ID, MENU_MASS_SEND_TITLE)
         addMenuItem(menu, MENU_SCHEDULE_ID, MENU_SCHEDULE_TITLE)
     }
@@ -139,36 +150,40 @@ private class SelectedMessagesHooker(
             ?: KavaReflector.invokeMethod(menu, "f", itemId, title as CharSequence)
     }
 
-    private fun handleMenuClick(param: XC_MethodHook.MethodHookParam, exitMethod: Method) {
-        if (!isEnabled()) return
-        val item = param.args?.getOrNull(0) as? MenuItem ?: return
-        val action = when (item.itemId) {
-            MENU_MASS_SEND_ID -> MenuAction.MASS_SEND
-            MENU_SCHEDULE_ID -> MenuAction.SCHEDULE
-            else -> return
-        }
-        param.result = null
-        val activity = currentActivity()
-        if (activity == null) return
-        val selected = MultiSelectMessageResolver.resolve(param.thisObject)
-        val snapshots = selected.mapNotNull { SelectedMessageSnapshot.fromNative(it) }
-            .sortedWith(compareBy<SelectedMessageSnapshot> { it.createTime }.thenBy { it.msgId })
-        if (selected.isEmpty() || snapshots.size != selected.size) {
-            toast(activity, "部分选中消息暂不支持发送")
-            return
-        }
-        val exitTarget = MultiSelectMessageUi.resolveExitTarget(param.thisObject, exitMethod, logger)
-        if (exitTarget == null) {
-            toast(activity, "无法退出多选状态，请稍后重试")
-            return
-        }
-        main.post {
-            if (activity.isFinishing) return@post
-            when (action) {
-                MenuAction.MASS_SEND -> chooseMassSendChannel(activity, snapshots, exitTarget)
-                MenuAction.SCHEDULE -> chooseScheduleChannel(activity, snapshots, exitTarget)
+    private fun handleMenuClick(param: XposedInterface.Chain, exitMethod: Method) : Boolean {
+        var consumed = false
+        run action@ {
+            if (!isEnabled()) return@action
+            val item = param.args.toTypedArray()?.getOrNull(0) as? MenuItem ?: return@action
+            val action = when (item.itemId) {
+                MENU_MASS_SEND_ID -> MenuAction.MASS_SEND
+                MENU_SCHEDULE_ID -> MenuAction.SCHEDULE
+                else -> return@action
+            }
+            consumed = true
+            val activity = currentActivity()
+            if (activity == null) return@action
+            val selected = MultiSelectMessageResolver.resolve(param.thisObject)
+            val snapshots = selected.mapNotNull { SelectedMessageSnapshot.fromNative(it) }
+                .sortedWith(compareBy<SelectedMessageSnapshot> { it.createTime }.thenBy { it.msgId })
+            if (selected.isEmpty() || snapshots.size != selected.size) {
+                toast(activity, "部分选中消息暂不支持发送")
+                return@action
+            }
+            val exitTarget = MultiSelectMessageUi.resolveExitTarget(param.thisObject, exitMethod, logger)
+            if (exitTarget == null) {
+                toast(activity, "无法退出多选状态，请稍后重试")
+                return@action
+            }
+            main.post {
+                if (activity.isFinishing) return@post
+                when (action) {
+                    MenuAction.MASS_SEND -> chooseMassSendChannel(activity, snapshots, exitTarget)
+                    MenuAction.SCHEDULE -> chooseScheduleChannel(activity, snapshots, exitTarget)
+                }
             }
         }
+        return consumed
     }
 
     private fun chooseScheduleChannel(
@@ -585,7 +600,7 @@ private class SelectedMessagesHooker(
             method.parameterTypes.contentEquals(arrayOf(String::class.java))
     }
 
-    private fun hook(method: Method, callback: XC_MethodHook): Boolean {
+    private fun hook(method: Method, callback: XposedInterface.Hooker): Boolean {
         if (!hookedMethods.add(method)) return true
         return runCatching {
             HookRegistry.get().hook(KavaReflector.accessible(method) ?: method, callback)

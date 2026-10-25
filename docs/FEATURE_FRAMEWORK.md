@@ -2,6 +2,15 @@
 
 ## 当前运行边界
 
+- 框架编译依赖固定为 `compileOnly("io.github.libxposed:api:102.0.0")`，最低与目标 API 均为 102。API 类由框架提供，不打入 APK；没有旧框架入口、桥接层或 API 100/101 路径。
+- `ModuleEntry` 是无参 `XposedModule`。`onModuleLoaded` 绑定本进程框架及进程名，`onPackageReady` 使用官方包信息与实际 ClassLoader，在 Application 创建前安装 Tinker attach 和 Application 生命周期 Hook。attach 前安装禁用热更新、平板逻辑，成功 attach 后重新取得宿主 ClassLoader；完整功能初始化只执行一次。
+- 注册文件位于 `app/src/main/resources/META-INF/xposed/`：`java_init.list`、`module.prop`、`scope.list`。静态 scope 仅两个微信包，关闭自动热重载。名称/描述来自 Android 标准应用属性。Release R8 使用官方入口保留及资源内容重写规则，验收必须核对混淆后的入口清单和 DEX 类。
+- `XposedRuntime` 只保存框架身份并提供官方 HookBuilder 的安装/批量回滚原语；`HookRegistry` 保存 `Executable`、`Hooker`、`HookHandle`，保留共享键去重、租约、安装代次和撤销语义。没有 before/after 参数仿制层。
+- 拦截器直接调用 `chain.proceed()`；参数修改复制数组后 `proceed(args)`，短路直接返回。调用内状态使用局部变量，异常清理放 `finally`，成功后的业务放在 proceed 后。必须绕过 Hook 的重放使用官方 `Invoker.Type.ORIGIN`，不能通过反射重进 Hook，也不能捕获宿主异常后再次 proceed。Chain 不进入异步任务。
+- 日志统一使用现代框架 `log` 接口，`HLog.i/e` 传递明确等级。Hook 使用 PASSTHROUGH，宿主异常保持原样；模块可恢复的 UI/观测错误在本地记录，不能触发第二次宿主操作。
+- Native 加载只使用 `getModuleApplicationInfo().sourceDir` 标识当前模块 APK；保留宿主私有缓存、CRC 验证、进程锁、原子提取及损坏恢复，不扫描安装目录或挑选历史 so。DexKit 管理入口继续按需加载、空闲释放。
+- 设置继续保存在当前宿主，不新增 Service、remote preferences、双写或热重载体系。
+
 - 模块只接受 `com.tencent.mm` 与 `com.tencent.mm.wx`；微信内部 Java 类名仍使用微信原有的 `com.tencent.mm.*` 命名空间。主进程加载普通功能，小程序进程只安装明确需要的轻量 Hook。
 - 原生功能由 `FeatureRegistry` 注册，`FeatureManager` 先初始化设置，再预装轻量 Hook。Hook 回调读取当前设置并快速返回；只有无法在运行中补装的早期功能才显式声明 `ENABLED_ONLY` 或重启要求。
 - `DexInstallScheduler` 串行安排昂贵定位工作；`HookRegistry` 负责 Hook 去重和安装代次。销毁时先使旧代次失效，再清理异步任务与资源。
@@ -419,11 +428,9 @@ Release 输出为 `dist/Hchat-release-signed.apk`。构建后验证 APK、SHA-25
 - 通过 `subscribe` 注册的 EventBus 订阅
 - 传给 `trackSubscription` 的 API 订阅
 
-原始 Xposed Hook 应使用 `HookRegistry.get().hook(...)`，单独解除时使用 `HookRegistry.get().unhook(handle)`，同时释放 Xposed 注册和模块注册表中的强引用。脚本手动解除、关闭及加载失败清理均走该入口，避免反复重载保留旧回调及解释器。
+官方 Hooker 应使用 `HookRegistry.get().hook(...)`，单独解除时使用 `HookRegistry.get().unhook(handle)`，同时释放框架注册和模块注册表中的强引用。页面或请求的临时 Hook 由对应拥有者保存并及时撤销，批量部分失败必须回滚。
 
-普通功能的延迟任务、去重和限频统一使用 `WeChatApis.runtime().tasks()`，不要在功能内自建 timer。脚本 `delay()` 因需要按每次加载实例取消，使用独立的生命周期管理：主进程仍在主线程回调，小程序进程使用共享的两线程调度器，关闭、重载及加载失败取消该实例尚未执行的任务。每实例最多等待 128 项、每进程最多等待 512 项，超限跳过并限频记录；已开始执行的用户脚本不能被强制终止，旧实例不能继续追加延迟任务。
-
-脚本普通消息分发使用容量 128 的单线程 FIFO 队列。满载丢弃新脚本事件并限频计数，不得使用 CallerRunsPolicy 将用户脚本转移到微信调用线程。无消费者时跳过包装和去重；最后消费者卸载时清空队列。入队时固定目标插件实例，执行及取得解释器锁后均检查实例身份，避免旧消息进入重载后的新解释器。
+普通功能的延迟任务、去重和限频统一使用 `WeChatApis.runtime().tasks()`，并在功能销毁时取消旧任务。
 
 ## 运行时设置
 
@@ -470,7 +477,7 @@ sFastMyWxid
 - DexKit 成功命中日志必须放在 `VERBOSE=false` 或冒烟/调试开关后面。
 - 启动兼容性检查可以自动运行，但只能打印缺失项。
 - 数据库变更等高频事件必须按表过滤并限频。
-- 除非相关调试设置已开启，功能代码不要为普通业务流程调用 `XposedBridge.log(...)`。
+- 除非相关调试设置已开启，功能代码不要为普通业务流程调用 `HLog.i(...)`。
 
 ## 群昵称自定义颜色
 
@@ -838,10 +845,10 @@ WeChatApis.runtime().tasks().runThrottled("example_rate:$talker", 3000) {
 安装 Xposed Hook：
 
 ```kotlin
-HookRegistry.get().hook(method, object : XC_MethodHook() {
-    override fun afterHookedMethod(param: MethodHookParam) {
-        // hook body
-    }
+HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+    val result = chain.proceed()
+    // Only successful host calls reach this point.
+    result
 })
 ```
 
@@ -930,7 +937,7 @@ fun onEvent() {
 
 DexFinder 将 Protobuf 基类描述与其它类一起保存到现有版本/热更新/加载器指纹限定的缓存；旧缓存没有该项时补定位一次，之后复用。公共 API 缓存命中后的其它补定位保持执行。
 
-NativeLibraryLoader 只记录同一模块 ClassLoader 下已经成功加载的库；后续调用跳过 APK 路径查找、ZIP 打开、跨进程文件锁和目录清理，失败及异常不缓存，仍可重试。ARM 32/64 位选择与原提取校验流程保持一致。
+NativeLibraryLoader 只记录同一模块 ClassLoader 下已经成功加载的库；后续调用跳过模块身份读取、ZIP 打开、跨进程文件锁和目录清理，失败及异常不缓存，仍可重试。ARM 32/64 位选择与原提取校验流程保持一致。
 
 
 平板模式的缓存 Hook 不使用 DexKit，先在共享 DexKit 串行门外尝试安装，命中即返回；缓存缺失时仍进入原串行门并复查，再按原阶段定位，保留早期安装时序。详见 STARTUP_REVIEW_2026-09-11.md。

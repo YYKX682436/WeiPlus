@@ -8,7 +8,6 @@ import h.Hchat.utils.KavaReflector;
 import java.lang.reflect.Method;
 import java.util.concurrent.CopyOnWriteArrayList;
 
-import de.robv.android.xposed.XC_MethodHook;
 
 /**
  * 微信 Activity 生命周期监听 API。
@@ -114,13 +113,16 @@ public final class WeChatLifecycleApi {
     private int hookLifecycleMethod(String methodName, String event) {
         try {
             Method method = KavaReflector.findDeclaredMethod(Activity.class, methodName);
-            HookRegistry.get().hook(method, new XC_MethodHook() {
-                @Override
-                protected void afterHookedMethod(MethodHookParam param) {
-                    if (param.thisObject instanceof Activity) {
-                        dispatch(new ActivityEvent(event, (Activity) param.thisObject));
-                    }
+            HookRegistry.get().hook(method, chain -> {
+                boolean cleanup = ActivityEvent.PAUSE.equals(event) || ActivityEvent.DESTROY.equals(event);
+                Object result;
+                try {
+                    result = chain.proceed();
+                } finally {
+                    if (cleanup) dispatchLifecycleEvent(event, chain.getThisObject());
                 }
+                if (!cleanup) dispatchLifecycleEvent(event, chain.getThisObject());
+                return result;
             });
             return 1;
         } catch (Throwable e) {
@@ -129,12 +131,33 @@ public final class WeChatLifecycleApi {
         }
     }
 
+    private void dispatchLifecycleEvent(String event, Object receiver) {
+        if (!(receiver instanceof Activity)) return;
+        try {
+            dispatch(new ActivityEvent(event, (Activity) receiver));
+        } catch (Throwable error) {
+            // This observer must never replace a result or exception from the host callback.
+            try {
+                h.Hchat.utils.HLog.e("[WeChatLifecycleApi] 生命周期派发失败: " + event, error);
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
     private void dispatch(ActivityEvent event) {
         for (Listener listener : listeners) {
             try {
                 listener.onActivityEvent(event);
             } catch (Throwable e) {
-                log("生命周期回调失败: " + e.getMessage());
+                try {
+                    log("生命周期回调失败: " + e.getMessage());
+                } catch (Throwable logFailure) {
+                    // A broken logger cannot prevent the remaining cleanup subscribers.
+                    try {
+                        h.Hchat.utils.HLog.e("[WeChatLifecycleApi] 回调错误日志失败", logFailure);
+                    } catch (Throwable ignored) {
+                    }
+                }
             }
         }
     }

@@ -19,8 +19,7 @@ import android.widget.Button
 import android.widget.CompoundButton
 import android.widget.EditText
 import android.widget.TextView
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.callbacks.XCallback
+import io.github.libxposed.api.XposedInterface
 import h.Hchat.R
 import h.Hchat.dexkit.DexMethodCache
 import h.Hchat.event.Events
@@ -345,21 +344,23 @@ private class HomeTextColorRuntime(
     private fun installAdapterHook(method: Method?, kind: RowKind): Boolean {
         if (method == null) return false
         return runCatching {
-            HookRegistry.get().hook(method, object : XC_MethodHook(XCallback.PRIORITY_HIGHEST) {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    (param.args?.getOrNull(1) as? View)?.let {
+            HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                val args = chain.args
+                run before@ {
+                    (args?.getOrNull(1) as? View)?.let {
                         deferredConversationRows.remove(it)
                         restoreRow(it)
                     }
                 }
-
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    if (destroyed || param.hasThrowable()) return
-                    val row = param.result as? View ?: return
-                    if (row !== param.args?.getOrNull(1)) restoreRow(row)
+                val value = chain.proceed()
+                run after@ {
+                    if (destroyed) return@after
+                    val row = value as? View ?: return@after
+                    if (row !== args?.getOrNull(1)) restoreRow(row)
                     applyBoundRow(row, kind)
                 }
-            })
+                value
+            }, XposedInterface.PRIORITY_HIGHEST)
             true
         }.getOrElse {
             HLog.e("$TAG 安装${kind.label}列表绑定 Hook 失败: ${it.message}", it)
@@ -386,14 +387,17 @@ private class HomeTextColorRuntime(
             modernConversationHolderInstalled = runCatching {
                 HookRegistry.get().hook(
                     methods.holder,
-                    object : XC_MethodHook(XCallback.PRIORITY_HIGHEST) {
-                        override fun afterHookedMethod(param: MethodHookParam) {
-                            if (destroyed || param.hasThrowable()) return
-                            val holder = param.args?.getOrNull(0) ?: return
-                            val row = param.args?.getOrNull(1) as? View ?: return
+                    XposedInterface.Hooker { chain ->
+                        val args = chain.args
+                        val value = chain.proceed()
+                        run after@ {
+                            if (destroyed) return@after
+                            val holder = args?.getOrNull(0) ?: return@after
+                            val row = args?.getOrNull(1) as? View ?: return@after
                             modernConversationRows[holder] = WeakReference(row)
                         }
-                    }
+                        value
+                    }, XposedInterface.PRIORITY_HIGHEST
                 )
                 true
             }.getOrElse {
@@ -409,21 +413,23 @@ private class HomeTextColorRuntime(
             modernConversationBindInstalled = runCatching {
                 HookRegistry.get().hook(
                     methods.bind,
-                    object : XC_MethodHook(XCallback.PRIORITY_HIGHEST) {
-                        override fun beforeHookedMethod(param: MethodHookParam) {
-                            val holder = param.args?.getOrNull(1) ?: return
-                            val row = modernConversationRows[holder]?.get() ?: return
+                    XposedInterface.Hooker { chain ->
+                        val args = chain.args
+                        run before@ {
+                            val holder = args?.getOrNull(1) ?: return@before
+                            val row = modernConversationRows[holder]?.get() ?: return@before
                             deferredConversationRows.remove(row)
                             restoreRow(row)
                         }
-
-                        override fun afterHookedMethod(param: MethodHookParam) {
-                            if (destroyed || param.hasThrowable()) return
-                            val holder = param.args?.getOrNull(1) ?: return
-                            val row = modernConversationRows[holder]?.get() ?: return
+                        val value = chain.proceed()
+                        run after@ {
+                            if (destroyed) return@after
+                            val holder = args?.getOrNull(1) ?: return@after
+                            val row = modernConversationRows[holder]?.get() ?: return@after
                             applyBoundRow(row, RowKind.CONVERSATION)
                         }
-                    }
+                        value
+                    }, XposedInterface.PRIORITY_HIGHEST
                 )
                 true
             }.getOrElse {
@@ -598,18 +604,21 @@ private class HomeTextColorRuntime(
     private fun installLayoutInflaterHook(method: Method?): Boolean {
         if (method == null) return false
         return runCatching {
-            HookRegistry.get().hook(method, object : XC_MethodHook(XCallback.PRIORITY_HIGHEST) {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    if (destroyed || param.hasThrowable()) return
-                    val view = param.result as? View ?: return
-                    if (viewAnchor(view) !in FIXED_CONTACT_ENTRY_ANCHORS) return
-                    val creationContext = param.args?.getOrNull(1) as? Context
+            HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                val args = chain.args
+                val value = chain.proceed()
+                run after@ {
+                    if (destroyed) return@after
+                    val view = value as? View ?: return@after
+                    if (viewAnchor(view) !in FIXED_CONTACT_ENTRY_ANCHORS) return@after
+                    val creationContext = args?.getOrNull(1) as? Context
                     if (!isContactsPage(view.context) && !isContactsPage(creationContext) &&
                         !isLauncherPage(view.context) && !isLauncherPage(creationContext)
-                    ) return
+                    ) return@after
                     applyFixedContactEntry(view)
                 }
-            })
+                value
+            }, XposedInterface.PRIORITY_HIGHEST)
             true
         }.getOrElse {
             HLog.e("$TAG 安装微信布局创建 Hook 失败: ${it.message}", it)
@@ -756,24 +765,26 @@ private class HomeTextColorRuntime(
     private fun installRecyclerAdapterHook(method: Method?, label: String): Boolean {
         if (method == null) return false
         return runCatching {
-            HookRegistry.get().hook(method, object : XC_MethodHook(XCallback.PRIORITY_HIGHEST) {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    findRootView(param.args?.getOrNull(0))?.let {
+            HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                val args = chain.args
+                run before@ {
+                    findRootView(args?.getOrNull(0))?.let {
                         deferredConversationRows.remove(it)
                         restoreRow(it)
                     }
                 }
-
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    if (destroyed || param.hasThrowable()) return
-                    val root = findRootView(param.args?.getOrNull(0)) ?: return
+                val value = chain.proceed()
+                run after@ {
+                    if (destroyed) return@after
+                    val root = findRootView(args?.getOrNull(0)) ?: return@after
                     val kind = resolveRecyclerRowKind(root) ?: run {
                         trackedRows.remove(root)
-                        return
+                        return@after
                     }
                     applyBoundRow(root, kind)
                 }
-            })
+                value
+            }, XposedInterface.PRIORITY_HIGHEST)
             true
         }.getOrElse {
             HLog.e("$TAG 安装 WxRecyclerAdapter $label 绑定 Hook 失败: ${it.message}", it)

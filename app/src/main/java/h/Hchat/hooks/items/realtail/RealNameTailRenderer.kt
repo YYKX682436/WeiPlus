@@ -4,7 +4,7 @@ import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.view.View
 import android.widget.TextView
-import de.robv.android.xposed.XC_MethodHook
+import io.github.libxposed.api.XposedInterface
 import h.Hchat.dexkit.DexMethodCache
 import h.Hchat.hooks.api.core.WeChatApis
 import h.Hchat.hooks.core.FeatureContext
@@ -43,10 +43,12 @@ class RealNameTailRenderer(
         if (installed) return true
         val method = locateUsernameBindMethod() ?: return false
         return try {
-            HookRegistry.get().hook(method, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    handleUsernameBind(param)
+            HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                val value = chain.proceed()
+                run after@ {
+                    handleUsernameBind(chain)
                 }
+                value
             })
             installed = true
             true
@@ -69,8 +71,8 @@ class RealNameTailRenderer(
         }
     }
 
-    private fun handleUsernameBind(param: XC_MethodHook.MethodHookParam) {
-        val args = param.args ?: return
+    private fun handleUsernameBind(param: XposedInterface.Chain) {
+        val args = param.args.toTypedArray() ?: return
         val holder = args.firstOrNull() ?: return
         val tv = findUserTextView(holder) ?: return
         val tailEnabled = store.isEnabled()

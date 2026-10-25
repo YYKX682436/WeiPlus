@@ -11,7 +11,7 @@ import android.text.style.ClickableSpan
 import android.view.View
 import android.view.ViewGroup
 import android.widget.TextView
-import de.robv.android.xposed.XC_MethodHook
+import io.github.libxposed.api.XposedInterface
 import h.Hchat.R
 import h.Hchat.dexkit.DexMethodCache
 import h.Hchat.hooks.api.core.WeChatApis
@@ -96,10 +96,12 @@ private class MessageTextColorRenderer(
             return false
         }
         return runCatching {
-            HookRegistry.get().hook(method, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    applyTextColor(param)
+            HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                val value = chain.proceed()
+                run after@ {
+                    applyTextColor(chain)
                 }
+                value
             })
             adapterBindInstalled = true
             true
@@ -109,8 +111,8 @@ private class MessageTextColorRenderer(
         }
     }
 
-    private fun applyTextColor(param: XC_MethodHook.MethodHookParam) {
-        val args = param.args ?: return
+    private fun applyTextColor(param: XposedInterface.Chain) {
+        val args = param.args.toTypedArray() ?: return
         if (args.size < 2) return
         val holder = args[0] ?: return
         val position = args[1] as? Int ?: return
