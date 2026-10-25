@@ -1,0 +1,56 @@
+import io.github.libxposed.api.XposedInterface
+import h.Hchat.tests.api102.ChainFixture
+import h.Hchat.tests.api102.FrameworkFixture
+import h.Hchat.hooks.core.XposedRuntime
+import h.Hchat.hooks.core.HookRegistry
+private class Targets {fun read()=1;fun read(value:Int)=value}
+private class KeyEvent(val keyCode:Int,val action:Int){companion object{const val KEYCODE_BACK=4;const val ACTION_UP=1}}
+private class PageView {val parent:Any?=Any()}
+private class Page {
+ val activity=Any();val page=PageView();var backs=0
+ val activityBackHooks=ArrayList<XposedInterface.HookHandle>()
+ fun handleBack(){backs++}
+ fun hooker()=XposedInterface.Hooker @BACK_HOOK@
+ @BACK_CLEANUP@
+}
+fun main(){
+ val framework=FrameworkFixture();XposedRuntime.initialize(framework.create());val registry=HookRegistry.get()
+ var failures=0
+ fun case(name:String,body:()->Unit){try{body();println("PASS R1 $name")}catch(error:Throwable){failures++;println("FAIL R1 $name: $error")}}
+ val methods=Targets::class.java.declaredMethods.filter{it.name=="read"};check(methods.size==2)
+ val first=methods.first();var observed=0
+ val observer=XposedInterface.Hooker{chain->val result=chain.proceed();observed++;result}
+ framework.failOn=methods.last()
+ framework.afterRegistration=Runnable{framework.handles.last().fail=true}
+ val failed=runCatching{XposedRuntime.hookAllMethods(Targets::class.java,"read",observer)}.exceptionOrNull()
+ check(failed!=null&&failed.suppressed.isNotEmpty())
+ val residual=framework.handles.filter{it.active};check(residual.size==1)
+ println("REPRO failed batch returned 0 handles; framework active=${residual.size}")
+ framework.afterRegistration=null;framework.failOn=null
+ val retry=XposedRuntime.hookAllMethods(Targets::class.java,"read",observer)
+ val active=framework.handles.filter{it.active&&it.executable==first}
+ var hostCalls=0
+ fun invoke(index:Int,receiver:Any?,args:Array<Any?>):Any? {
+  if(index==active.size){hostCalls++;return "host result"}
+  return ChainFixture(first,receiver,args){owner,next->invoke(index+1,owner,next)}.run(active[index].hooker)
+ }
+ case("failed batch callbacks inert during reinstall"){
+  check(invoke(0,Targets(),if(first.parameterCount==0)emptyArray()else arrayOf(1))=="host result")
+  println("REPRO retry observer callbacks=$observed host calls=$hostCalls")
+  check(observed==1&&hostCalls==1)
+ }
+ residual.forEach{it.fail=false};retry.forEach{it.unhook()};registry.unhookAll()
+ case("explicit registry teardown recovers failed batch handles"){check(framework.handles.none{it.active})}
+ // Discard baseline orphan state after checking, so the independent page ownership failure also runs.
+ framework.handles.filter{it.active}.forEach{it.unhook()}
+ val page=Page();val wrapped=XposedRuntime.hook(first,page.hooker());val raw=FrameworkFixture.handle(wrapped)
+ page.activityBackHooks+=wrapped;raw.fail=true;page.unhookActivityBack()
+ case("page teardown retains failed back handle"){check(page.activityBackHooks.size==1)}
+ case("failed page back callback cannot consume event"){
+  val chain=ChainFixture(first,page.activity,arrayOf(KeyEvent(4,1))){_,_->"native key result"}
+  check(chain.run(raw.hooker)=="native key result"&&chain.proceeds==1&&page.backs==0)
+ }
+ raw.fail=false;page.unhookActivityBack();registry.unhookAll()
+ case("page cleanup retry clears all framework handles"){check(page.activityBackHooks.isEmpty()&&framework.handles.none{it.active})}
+ check(failures==0){"$failures ownership cases failed"}
+}

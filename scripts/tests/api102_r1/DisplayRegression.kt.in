@@ -1,0 +1,102 @@
+import io.github.libxposed.api.XposedInterface
+import h.Hchat.tests.api102.ChainFixture
+import h.Hchat.tests.api102.FrameworkFixture
+import h.Hchat.hooks.core.XposedRuntime
+import h.Hchat.hooks.api.model.WeChatMessage
+import java.lang.ref.WeakReference
+import java.util.ArrayDeque
+@BOUNDARY_IMPORT@
+private const val TAG="display regression"
+private open class View(val context:Any=Any()) {
+ var lookups=0
+ fun <T:View> findViewById(id:Int):T? {lookups++;return null}
+}
+private class ViewGroup(val children:List<View>):View(){val childCount get()=children.size;fun getChildAt(i:Int)=children[i]}
+private class TextView(val text:CharSequence):View(){val textSize=16f}
+private object WeChatApis {fun chatPage()=this;fun currentTalker()="filehelper"}
+private data class TextTarget(val view:View,val textView:TextView)
+private data class TextCandidate(val text:String,val priority:Int)
+private data class TextMatch(val target:TextTarget,val candidate:TextCandidate,val exact:Boolean)
+private data class ColorSpec(val color:Int=1)
+private data class AppliedBindingState(val messageKey:Long,val spec:ColorSpec,val overrideSpanColors:Boolean,val targetViews:List<WeakReference<View>>)
+private class Renderer(val message:WeChatMessage,val root:ViewGroup) {
+ val messageBodyViewId=1
+ val appliedBindingStates=mutableMapOf<View,AppliedBindingState>()
+ var applied=0;var postFailure:Throwable?=null;var enabled=true
+ fun interceptor()=XposedInterface.Hooker @HOOK@
+ fun decode(value:String)=decodeMessageText(value)
+ fun findRootView(holder:Any)=root
+ fun isEnabled()=enabled
+ fun adapterItem(adapter:Any,position:Int):Any=message
+ fun resolveNativeMessage(item:Any)=item
+ fun messageId(native:Any)=message.msgId
+ fun messageFromNative(native:Any,talker:String,id:Long)=message
+ fun colorSpec(outgoing:Boolean,darkMode:Boolean)=ColorSpec()
+ fun isDarkMode(context:Any)=false
+ fun isBindingApplied(state:AppliedBindingState)=false
+ fun clearBinding(root:View){appliedBindingStates.remove(root)}
+ fun hasClickableSpan(target:TextTarget)=false
+ fun applyColorSpec(target:TextTarget,spec:ColorSpec,overrideSpanColors:Boolean){postFailure?.let{throw it};applied++}
+ fun voipTextTargets(root:View)=emptyList<TextTarget>()
+ fun chatRecordTextTargets(root:View)=emptyList<TextTarget>()
+ fun visibleMessageTextTarget(root:View,message:WeChatMessage):TextTarget?=null
+ fun findOriginalMessageTextTarget(root:View,body:String):TextTarget?=null
+ fun isMessageNeatTextView(view:View)=false
+ fun invokeNeatMethod(view:View,name:String):Any?=null
+ fun neatText(view:View,tv:TextView)=tv.text.toString()
+ companion object {const val CHAT_RECORD_APP_MSG_TYPE=19}
+ @METHODS@
+}
+private object ChatTimeStyleSettings {const val MODE_ORIGINAL=0}
+private class TimeRenderer {
+ private data class BindState(val timeHolder:Any?)
+ val bindings=mutableMapOf<Int,Int>();private val bindStates=ThreadLocal<java.util.ArrayDeque<BindState>>()
+ var postFailure:Throwable?=null;var binds=0
+ fun isEnabled()=true;fun currentMode()=1
+ fun captureTimeHolder(args:Array<Any?>):Any=Any()
+ fun restoreBoundTime(args:Array<Any?>,holder:Any?)=Unit
+ fun bindTime(owner:Any?,args:Array<Any?>,holder:Any?){postFailure?.let{throw it};binds++}
+ fun interceptor()=XposedInterface.Hooker @TIME_HOOK@
+ fun clean()=bindStates.get()==null
+}
+private fun message(type:Int,title:String)=WeChatMessage(1L,0L,49,0,1,1L,"filehelper","<msg><appmsg><type>$type</type><title><![CDATA[$title]]></title></appmsg></msg>",null,null,null,0)
+fun main(){
+ val framework=FrameworkFixture();XposedRuntime.initialize(framework.create())
+ var failures=0
+ fun case(name:String,body:()->Unit){try{body();println("PASS R1 $name")}catch(error:Throwable){failures++;println("FAIL R1 $name: $error")}}
+ val executable=String::class.java.getMethod("length")
+ fun renderer(title:String,shown:String=title,type:Int=57)=Renderer(message(type,title),ViewGroup(listOf(TextView(shown))))
+ case("actual parser valid Chinese emoji supplementary"){
+  val r=renderer("ok");check(r.decode("中文&#20013;&#x6587;&#x1F600;&#128512;&#x20000;")=="中文中文😀😀𠀀")
+ }
+ for (invalid in listOf("&#x110000;","&#1114112;","&#xD800;","&#55296;","&#9999999999999999999;","&#xFFFFFFFF;")) case("actual parser preserves $invalid"){
+  check(renderer("ok").decode(invalid)==invalid)
+ }
+ for(type in listOf(57,53)) for(title in listOf("引用 &#x110000;","笔记 &#1114112;","中文 &#x1F600;")) case("real fallback match type=$type title=$title"){
+  val shown=title.replace("&#x1F600;","😀");val r=renderer(title,shown,type)
+  val original=Any();val chain=ChainFixture(executable,Any(),arrayOf(Any(),0)){_,_->original}
+  check(chain.run(r.interceptor())===original&&chain.proceeds==1)
+  check(r.root.lookups==1&&r.applied==1){"Preferred body absent must match real title fallback"}
+ }
+ case("host success survives module rendering failure"){
+  val r=renderer("正常标题").apply{postFailure=IllegalArgumentException("module paint failed")}
+  val original=Any();val chain=ChainFixture(executable,Any(),arrayOf(Any(),0)){_,_->original}
+  check(chain.run(r.interceptor())===original&&chain.proceeds==1)
+ }
+ case("host failure keeps identity and skips render"){
+  val r=renderer("&#x110000;");val failure=IllegalStateException("host bind failed")
+  val chain=ChainFixture(executable,Any(),arrayOf(Any(),0)){_,_->throw failure}
+  check(runCatching{chain.run(r.interceptor())}.exceptionOrNull()===failure&&chain.proceeds==1&&r.applied==0)
+ }
+ case("time observer post failure preserves result and clears nested state"){
+  val r=TimeRenderer().apply{postFailure=IllegalArgumentException("module time failed")};val original=Any()
+  val chain=ChainFixture(executable,Any(),arrayOf(Any(),0)){_,_->original}
+  check(chain.run(r.interceptor())===original&&chain.proceeds==1&&r.clean())
+ }
+ case("time observer host failure keeps identity and finally clears state"){
+  val r=TimeRenderer();val failure=IllegalStateException("host bind failed")
+  val chain=ChainFixture(executable,Any(),arrayOf(Any(),0)){_,_->throw failure}
+  check(runCatching{chain.run(r.interceptor())}.exceptionOrNull()===failure&&chain.proceeds==1&&r.clean()&&r.binds==0)
+ }
+ check(failures==0){"$failures production display cases failed"}
+}

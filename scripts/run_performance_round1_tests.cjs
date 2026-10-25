@@ -51,7 +51,7 @@ const fixtures = {
 for (const [file, data] of Object.entries(fixtures)) { const p=path.join(output,file);fs.mkdirSync(path.dirname(p),{recursive:true});fs.writeFileSync(p,data); }
 fs.mkdirSync(path.join(output, 'android/text'), {recursive:true});
 fs.copyFileSync(path.join(root,'scripts/tests/message_parser/TextUtils.java'), path.join(output,'android/text/TextUtils.java'));
-run(process.env.JAVAC || 'javac', ['-d', output, '-cp',api.classpath,...['android/content/ContentValues.java','android/text/TextUtils.java','android/database/Cursor.java'].map(x=>path.join(output,x)), 'scripts/tests/api102/ChainFixture.java']);
+run(process.env.JAVAC || 'javac', ['-d', output, '-cp',api.classpath,...['android/content/ContentValues.java','android/text/TextUtils.java','android/database/Cursor.java'].map(x=>path.join(output,x)), 'scripts/tests/api102/ChainFixture.java','app/src/main/java/h/Hchat/hooks/core/XposedRuntime.java','app/src/main/java/h/Hchat/hooks/core/HookErrorBoundary.java']);
 function kotlinHook(file, anchor) {
  const input=fs.readFileSync(path.join(root,source+file),'utf8');
  const start=input.indexOf('XposedInterface.Hooker {',input.indexOf(anchor));

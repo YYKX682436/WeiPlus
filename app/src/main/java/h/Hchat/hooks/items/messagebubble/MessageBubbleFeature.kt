@@ -25,6 +25,7 @@ import h.Hchat.hooks.core.BaseFeature
 import h.Hchat.hooks.core.DexInstallScheduler
 import h.Hchat.hooks.core.FeatureContext
 import h.Hchat.hooks.core.HookRegistry
+import h.Hchat.hooks.core.HookErrorBoundary
 import h.Hchat.hooks.items.messagetextcolor.MessageTextColorSettings
 import h.Hchat.preferences.HchatStorage
 import h.Hchat.utils.HLog
@@ -156,12 +157,18 @@ private class MessageBubbleRenderer(
                 if (!enabled && boundRoots.isEmpty()) return@Hooker chain.proceed()
                 val args = chain.args.toTypedArray()
                 // A recycled row must be reset before WeChat binds even when the toggle just turned off.
-                val state = captureBindState(args)
-                state.root?.let(::restoreBoundBubble)
+                var state: BindState? = null
+                HookErrorBoundary.run("$TAG 恢复复用行气泡失败") {
+                    state = captureBindState(args)
+                    state?.root?.let(::restoreBoundBubble)
+                }
                 val result = chain.proceed()
-                if (enabled) {
-                    val boundHolder = state.root?.tag?.takeIf(::isNativeMessageHolder) ?: state.nativeHolder
-                    applyBubble(args, state.copy(nativeHolder = boundHolder))
+                HookErrorBoundary.run("$TAG 气泡渲染失败") {
+                    val binding = state ?: return@run
+                    if (enabled) {
+                        val boundHolder = binding.root?.tag?.takeIf(::isNativeMessageHolder) ?: binding.nativeHolder
+                        applyBubble(args, binding.copy(nativeHolder = boundHolder))
+                    }
                 }
                 result
             })

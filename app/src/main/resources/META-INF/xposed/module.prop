@@ -2,4 +2,5 @@ minApiVersion=102
 targetApiVersion=102
 staticScope=true
 autoHotReload=false
+# Side-effecting hooks fail closed; optional observers isolate only module work locally.
 exceptionMode=passthrough

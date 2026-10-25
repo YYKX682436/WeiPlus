@@ -232,6 +232,7 @@ internal class ConversationGroupFileResultHooks(
     }
 
     private fun retryRetiredHooks() {
+        XposedRuntime.retryFailedUnhooks()
         val iterator = retiredHooks.iterator()
         while (iterator.hasNext()) {
             val handle = iterator.next()

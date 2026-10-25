@@ -8,6 +8,7 @@ import android.text.TextUtils;
 import h.Hchat.dexkit.DexFinder;
 import h.Hchat.hooks.api.core.WeChatApis;
 import h.Hchat.hooks.core.HookRegistry;
+import h.Hchat.hooks.core.HookErrorBoundary;
 import h.Hchat.utils.KavaReflector;
 
 import java.io.File;
@@ -341,7 +342,8 @@ public final class WeChatImageApi {
                             Object[] args = chain.getArgs().toArray();
                             Object hookResult = chain.proceed();
                             Object receiver = chain.getThisObject();
-                            rememberMarsCdnManager(managerClass, receiver);
+                            HookErrorBoundary.run("Mars CDN实例捕获失败",
+                                    () -> rememberMarsCdnManager(managerClass, receiver));
 
                             return hookResult;
                         }

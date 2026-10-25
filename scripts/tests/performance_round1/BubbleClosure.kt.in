@@ -1,3 +1,4 @@
+import h.Hchat.hooks.core.HookErrorBoundary
 import io.github.libxposed.api.XposedInterface
 import h.Hchat.tests.api102.ChainFixture
 import java.util.Collections
@@ -52,6 +53,7 @@ class MessageBubbleSlot
 object MessageBubbleStore {fun recommendedTextColor(c:Any,s:MessageBubbleSlot)=999}
 object KavaReflector {fun invokeMethod(o:Any,m:String,arg:Int) {error("Unexpected neat text")}}
 private class BubbleHarness {
+    private val TAG="bubble fixture"
     val prefs=Prefs()
     @CONFIG@
     @DATA@

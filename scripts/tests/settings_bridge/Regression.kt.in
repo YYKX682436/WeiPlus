@@ -45,6 +45,21 @@ fun main(){
  ConfigImportExportBridge.launchExport(partial)
  framework.failOn=null
  cleared();check(partial.requests.isEmpty()&&partial.application.callbacks.isEmpty())
+ framework.failOn=resultMethod
+ framework.afterRegistration=Runnable { framework.handles.last().fail=true }
+ val combined=SubActivity();ConfigImportExportBridge.launchExport(combined)
+ framework.afterRegistration=null;framework.failOn=null
+ val residual=active().single()
+ check(combined.requests.isEmpty()&&combined.application.callbacks.isEmpty()&&XposedRuntime.failedUnhookCount()==1)
+ val recovered=Activity();var unexpected=0
+ ConfigImportExportBridge.launchImport(recovered){unexpected++}
+ val recoveryData=Intent().apply{this.data=Uri()}
+ invoke(residual,recovered,CONFIG_IMPORT_REQUEST_CODE,Activity.RESULT_OK,recoveryData)
+ check(unexpected==0&&HchatConfigBackup.imports==0)
+ residual.fail=false
+ invoke(active().single{it!==residual},recovered,CONFIG_IMPORT_REQUEST_CODE,Activity.RESULT_CANCELED,null)
+ cleared();check(XposedRuntime.failedUnhookCount()==0)
+ println("PASS: settings owner combined registration/removal failure is inert on replacement and explicit close recovers all handles")
  var closed=0
  val hooks=SettingsActivityResultHooks{closed++};val owner=Activity()
  hooks.attach(owner)

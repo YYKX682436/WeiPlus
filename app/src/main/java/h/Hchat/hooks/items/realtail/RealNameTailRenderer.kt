@@ -9,6 +9,7 @@ import h.Hchat.dexkit.DexMethodCache
 import h.Hchat.hooks.api.core.WeChatApis
 import h.Hchat.hooks.core.FeatureContext
 import h.Hchat.hooks.core.HookRegistry
+import h.Hchat.hooks.core.HookErrorBoundary
 import h.Hchat.hooks.items.chatname.ChatNameDecorationLayout
 import h.Hchat.hooks.items.groupnicknamecolor.GroupNicknameColorStore
 import h.Hchat.hooks.items.membertitle.MemberTitleStore
@@ -45,7 +46,7 @@ class RealNameTailRenderer(
         return try {
             HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
                 val value = chain.proceed()
-                run after@ {
+                HookErrorBoundary.run("实名尾字绑定失败") {
                     handleUsernameBind(chain)
                 }
                 value

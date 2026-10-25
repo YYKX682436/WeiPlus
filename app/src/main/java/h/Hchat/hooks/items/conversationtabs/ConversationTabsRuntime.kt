@@ -1,5 +1,6 @@
 package h.Hchat.hooks.items.conversationtabs
 
+import h.Hchat.hooks.core.HookErrorBoundary
 import android.content.SharedPreferences
 import android.content.res.Configuration
 import android.graphics.Bitmap
@@ -131,7 +132,7 @@ internal object ConversationTabsRuntime {
             hooks += HookRegistry.get().hook(layout, XposedInterface.Hooker { chain ->
                 val receiver = chain.thisObject
                 val value = chain.proceed()
-                run after@ {
+                HookErrorBoundary.run("会话标签视图更新失败") after@ {
                     if (!clazz.isInstance(receiver)) return@after
                     val original = value as? View ?: return@after
                     clearChangedAccount()
@@ -143,7 +144,7 @@ internal object ConversationTabsRuntime {
             hooks += HookRegistry.get().hook(resume, XposedInterface.Hooker { chain ->
                 val receiver = chain.thisObject
                 val value = chain.proceed()
-                run after@ {
+                HookErrorBoundary.run("会话标签视图更新失败") after@ {
                     if (!clazz.isInstance(receiver)) return@after
                     clearChangedAccount()
                     // getLayoutView inflates a NEW root. Read the existing native root instead.

@@ -119,6 +119,7 @@ class HookRegistry private constructor() {
     }
 
     fun unhookAll() {
+        XposedRuntime.retryFailedUnhooks()
         val previous = synchronized(lock) {
             generation++
             unhooks.toList()

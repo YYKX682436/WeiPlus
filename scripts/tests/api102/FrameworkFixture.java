@@ -56,5 +56,12 @@ public final class FrameworkFixture {
             }
         });
     }
-    public static Handle handle(XposedInterface.HookHandle value) {return (Handle)value;}
+    public static Handle handle(XposedInterface.HookHandle value) {
+        if (value instanceof Handle) return (Handle)value;
+        try {
+            java.lang.reflect.Field field=value.getClass().getDeclaredField("delegate");
+            field.setAccessible(true);
+            return handle((XposedInterface.HookHandle)field.get(value));
+        } catch (ReflectiveOperationException error) { throw new AssertionError(error); }
+    }
 }

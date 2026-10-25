@@ -610,16 +610,22 @@ object MiuixSettingsPage {
         var consumingBack = false
         var closed = false
         fun unhookActivityBack() {
-            activityBackHooks.forEach {
+            XposedRuntime.retryFailedUnhooks()
+            val iterator = activityBackHooks.iterator()
+            while (iterator.hasNext()) {
                 try {
-                    it.unhook()
+                    iterator.next().unhook()
+                    iterator.remove()
                 } catch (_: Throwable) {
+                    // The page and XposedRuntime retain failed, already inert handles for retry.
                 }
             }
-            activityBackHooks.clear()
         }
         fun closePage() {
-            if (closed) return
+            if (closed) {
+                unhookActivityBack()
+                return
+            }
             closed = true
             hostTag.close = null
             settingsBackHandlers.clear()
@@ -652,6 +658,7 @@ object MiuixSettingsPage {
         }
         hostTag.close = { closePage() }
         fun installActivityBackHooks() {
+            XposedRuntime.retryFailedUnhooks()
             if (activityBackHooks.isNotEmpty()) return
             val keyHook =
                 XposedInterface.Hooker { chain ->
@@ -990,6 +997,7 @@ private class SettingsActivityResultHooks(private val onClosed: () -> Unit) {
     }
 
     private fun retryRetiredHooks() {
+        XposedRuntime.retryFailedUnhooks()
         val previous = retiredHandles.toList()
         retiredHandles.clear()
         previous.forEach { handle ->

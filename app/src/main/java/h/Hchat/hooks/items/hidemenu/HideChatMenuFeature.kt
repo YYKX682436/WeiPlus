@@ -1,5 +1,6 @@
 package h.Hchat.hooks.items.hidemenu
 
+import h.Hchat.hooks.core.HookErrorBoundary
 import android.view.MenuItem
 import io.github.libxposed.api.XposedInterface
 import h.Hchat.event.Events
@@ -82,7 +83,7 @@ private class HideChatMenuRuntime(
             HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
                 val args = chain.args
                 val value = chain.proceed()
-                run after@ {
+                HookErrorBoundary.run("聊天菜单显示过滤失败") after@ {
                     hideConfiguredItems(args?.getOrNull(0))
                 }
                 value

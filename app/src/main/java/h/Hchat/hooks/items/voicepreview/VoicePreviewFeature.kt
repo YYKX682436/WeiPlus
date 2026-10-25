@@ -1,5 +1,6 @@
 package h.Hchat.hooks.items.voicepreview
 
+import h.Hchat.hooks.core.HookErrorBoundary
 import android.app.Activity
 import android.os.Handler
 import android.os.Looper
@@ -95,7 +96,7 @@ private class VoicePreviewRuntime(
         val createHooked = SingleMessageMenuLocator.menuCreateMethods(context, logger).count { method ->
             hook(method, XposedInterface.Hooker { chain ->
                 val value = chain.proceed()
-                run after@ {
+                HookErrorBoundary.run("语音预览菜单显示失败") after@ {
                     addPreviewMenu(chain)
                 }
                 value

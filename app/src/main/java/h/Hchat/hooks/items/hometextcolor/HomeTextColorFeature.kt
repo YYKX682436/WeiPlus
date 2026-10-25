@@ -27,6 +27,7 @@ import h.Hchat.hooks.core.BaseFeature
 import h.Hchat.hooks.core.DexInstallScheduler
 import h.Hchat.hooks.core.FeatureContext
 import h.Hchat.hooks.core.HookRegistry
+import h.Hchat.hooks.core.HookErrorBoundary
 import h.Hchat.hooks.items.membertitle.MemberTitleStore
 import h.Hchat.preferences.HchatStorage
 import h.Hchat.utils.HLog
@@ -346,14 +347,14 @@ private class HomeTextColorRuntime(
         return runCatching {
             HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
                 val args = chain.args
-                run before@ {
+                HookErrorBoundary.run("$TAG 恢复复用行颜色失败") before@ {
                     (args?.getOrNull(1) as? View)?.let {
                         deferredConversationRows.remove(it)
                         restoreRow(it)
                     }
                 }
                 val value = chain.proceed()
-                run after@ {
+                HookErrorBoundary.run("$TAG 列表颜色渲染失败") after@ {
                     if (destroyed) return@after
                     val row = value as? View ?: return@after
                     if (row !== args?.getOrNull(1)) restoreRow(row)
@@ -390,7 +391,7 @@ private class HomeTextColorRuntime(
                     XposedInterface.Hooker { chain ->
                         val args = chain.args
                         val value = chain.proceed()
-                        run after@ {
+                        HookErrorBoundary.run("$TAG 列表颜色渲染失败") after@ {
                             if (destroyed) return@after
                             val holder = args?.getOrNull(0) ?: return@after
                             val row = args?.getOrNull(1) as? View ?: return@after
@@ -415,14 +416,14 @@ private class HomeTextColorRuntime(
                     methods.bind,
                     XposedInterface.Hooker { chain ->
                         val args = chain.args
-                        run before@ {
+                        HookErrorBoundary.run("$TAG 恢复复用行颜色失败") before@ {
                             val holder = args?.getOrNull(1) ?: return@before
                             val row = modernConversationRows[holder]?.get() ?: return@before
                             deferredConversationRows.remove(row)
                             restoreRow(row)
                         }
                         val value = chain.proceed()
-                        run after@ {
+                        HookErrorBoundary.run("$TAG 列表颜色渲染失败") after@ {
                             if (destroyed) return@after
                             val holder = args?.getOrNull(1) ?: return@after
                             val row = modernConversationRows[holder]?.get() ?: return@after
@@ -607,7 +608,7 @@ private class HomeTextColorRuntime(
             HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
                 val args = chain.args
                 val value = chain.proceed()
-                run after@ {
+                HookErrorBoundary.run("$TAG 列表颜色渲染失败") after@ {
                     if (destroyed) return@after
                     val view = value as? View ?: return@after
                     if (viewAnchor(view) !in FIXED_CONTACT_ENTRY_ANCHORS) return@after
@@ -767,14 +768,14 @@ private class HomeTextColorRuntime(
         return runCatching {
             HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
                 val args = chain.args
-                run before@ {
+                HookErrorBoundary.run("$TAG 恢复复用行颜色失败") before@ {
                     findRootView(args?.getOrNull(0))?.let {
                         deferredConversationRows.remove(it)
                         restoreRow(it)
                     }
                 }
                 val value = chain.proceed()
-                run after@ {
+                HookErrorBoundary.run("$TAG 列表颜色渲染失败") after@ {
                     if (destroyed) return@after
                     val root = findRootView(args?.getOrNull(0)) ?: return@after
                     val kind = resolveRecyclerRowKind(root) ?: run {

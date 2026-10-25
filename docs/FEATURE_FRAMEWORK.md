@@ -5,9 +5,9 @@
 - 框架编译依赖固定为 `compileOnly("io.github.libxposed:api:102.0.0")`，最低与目标 API 均为 102。API 类由框架提供，不打入 APK；没有旧框架入口、桥接层或 API 100/101 路径。
 - `ModuleEntry` 是无参 `XposedModule`。`onModuleLoaded` 绑定本进程框架及进程名，`onPackageReady` 使用官方包信息与实际 ClassLoader，在 Application 创建前安装 Tinker attach 和 Application 生命周期 Hook。attach 前安装禁用热更新、平板逻辑，成功 attach 后重新取得宿主 ClassLoader；完整功能初始化只执行一次。
 - 注册文件位于 `app/src/main/resources/META-INF/xposed/`：`java_init.list`、`module.prop`、`scope.list`。静态 scope 仅两个微信包，关闭自动热重载。名称/描述来自 Android 标准应用属性。Release R8 使用官方入口保留及资源内容重写规则，验收必须核对混淆后的入口清单和 DEX 类。
-- `XposedRuntime` 只保存框架身份并提供官方 HookBuilder 的安装/批量回滚原语；`HookRegistry` 保存 `Executable`、`Hooker`、`HookHandle`，保留共享键去重、租约、安装代次和撤销语义。没有 before/after 参数仿制层。
+- `XposedRuntime` 保存框架身份，使用官方 HookBuilder 安装，并以官方 HookHandle 管理可失效的回调；批量安装完成前不激活业务，回滚/撤销前先使回调失效，撤销失败的句柄继续由运行时持有，等待页面/请求关闭、重新安装或注册表销毁时显式重试；`HookRegistry` 保存 `Executable`、`Hooker`、`HookHandle`，保留共享键去重、租约、安装代次和撤销语义。没有 before/after 参数仿制层。
 - 拦截器直接调用 `chain.proceed()`；参数修改复制数组后 `proceed(args)`，短路直接返回。调用内状态使用局部变量，异常清理放 `finally`，成功后的业务放在 proceed 后。必须绕过 Hook 的重放使用官方 `Invoker.Type.ORIGIN`，不能通过反射重进 Hook，也不能捕获宿主异常后再次 proceed。Chain 不进入异步任务。
-- 日志统一使用现代框架 `log` 接口，`HLog.i/e` 传递明确等级。Hook 使用 PASSTHROUGH，宿主异常保持原样；模块可恢复的 UI/观测错误在本地记录，不能触发第二次宿主操作。
+- 日志统一使用现代框架 `log` 接口，`HLog.i/e` 传递明确等级。`module.prop` 与 HookBuilder 保留 PASSTHROUGH，使已经接管发送或产生副作用的调用不会因模块异常自动落入宿主。可恢复的显示/观测工作用 `HookErrorBoundary` 做局部隔离，`chain.proceed()` 必须位于边界外；宿主成功则保留原结果，宿主异常保持原对象，不能捕获后再次 proceed。安装外层的 runCatching 和普通 run 标签均不提供运行时异常隔离。
 - Native 加载只使用 `getModuleApplicationInfo().sourceDir` 标识当前模块 APK；保留宿主私有缓存、CRC 验证、进程锁、原子提取及损坏恢复，不扫描安装目录或挑选历史 so。DexKit 管理入口继续按需加载、空闲释放。
 - 设置继续保存在当前宿主，不新增 Service、remote preferences、双写或热重载体系。
 

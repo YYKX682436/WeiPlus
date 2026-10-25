@@ -1,5 +1,6 @@
 package h.Hchat.hooks.items.conversationtabs
 
+import h.Hchat.hooks.core.HookErrorBoundary
 import android.content.SharedPreferences
 import android.view.Gravity
 import android.view.View

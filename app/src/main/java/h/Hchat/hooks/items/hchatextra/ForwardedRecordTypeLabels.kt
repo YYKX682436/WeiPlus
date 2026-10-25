@@ -1,5 +1,6 @@
 package h.Hchat.hooks.items.hchatextra
 
+import h.Hchat.hooks.core.HookErrorBoundary
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
@@ -53,12 +54,12 @@ internal class ForwardedRecordTypeLabels(
             unhook = HookRegistry.get().hook(targets.bind, XposedInterface.Hooker { chain ->
                 val args = chain.args
                 val receiver = chain.thisObject
-                run before@ {
+                HookErrorBoundary.run("聊天记录类型复用行恢复失败") before@ {
                     if (Looper.myLooper() != Looper.getMainLooper()) return@before
                     (args.getOrNull(1) as? View)?.let(::clearRow)
                 }
                 val value = chain.proceed()
-                run after@ {
+                HookErrorBoundary.run("聊天记录类型显示失败") after@ {
                     if (destroyed || Looper.myLooper() != Looper.getMainLooper()) return@after
                     val row = value as? View ?: return@after
                     clearRow(row)

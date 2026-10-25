@@ -11,6 +11,7 @@ import h.Hchat.hooks.core.BaseFeature
 import h.Hchat.hooks.core.DexInstallScheduler
 import h.Hchat.hooks.core.FeatureContext
 import h.Hchat.hooks.core.HookRegistry
+import h.Hchat.hooks.core.HookErrorBoundary
 import h.Hchat.preferences.HchatStorage
 import h.Hchat.utils.HLog
 import h.Hchat.utils.KavaReflector
@@ -117,10 +118,16 @@ private class ChatTimeStyleRuntime(
         return runCatching {
             HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
                 val args = chain.args.toTypedArray()
-                val active = isEnabled() && currentMode() != ChatTimeStyleSettings.MODE_ORIGINAL
+                var active = false
+                HookErrorBoundary.run("$TAG 时间显示配置读取失败") {
+                    active = isEnabled() && currentMode() != ChatTimeStyleSettings.MODE_ORIGINAL
+                }
                 if (!active && bindings.isEmpty()) return@Hooker chain.proceed()
-                val state = BindState(captureTimeHolder(args))
-                restoreBoundTime(args, state.timeHolder)
+                var state = BindState(null)
+                HookErrorBoundary.run("$TAG 恢复复用行时间失败") {
+                    state = BindState(captureTimeHolder(args))
+                    restoreBoundTime(args, state.timeHolder)
+                }
                 val stack = if (active) bindStates.get()
                 ?: ArrayDeque<BindState>().also(bindStates::set) else null
                 stack?.addLast(state)
@@ -132,8 +139,10 @@ private class ChatTimeStyleRuntime(
                         if (stack.isEmpty()) bindStates.remove()
                     }
                 }
-                if (active && isEnabled() && currentMode() != ChatTimeStyleSettings.MODE_ORIGINAL) {
-                    bindTime(chain.thisObject, args, state.timeHolder)
+                HookErrorBoundary.run("$TAG 时间渲染失败") {
+                    if (active && isEnabled() && currentMode() != ChatTimeStyleSettings.MODE_ORIGINAL) {
+                        bindTime(chain.thisObject, args, state.timeHolder)
+                    }
                 }
                 result
             })

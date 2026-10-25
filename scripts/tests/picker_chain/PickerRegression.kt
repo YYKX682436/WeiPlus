@@ -24,6 +24,24 @@ fun main(){
  CustomBottomBarIconPicker.launch(failed,"tab",failedCallbacks::add)
  check(failedCallbacks==listOf(CustomBottomBarIconPickResult.FAILED)&&failed.requestCodes.isEmpty()&&active().isEmpty())
  framework.failOn=null
+ // A later registration fails while removal of the already installed result hook also fails.
+ framework.failOn=destroyMethod
+ framework.afterRegistration=Runnable { framework.handles.last().fail=true }
+ val combined=Activity();val combinedCallbacks=ArrayList<CustomBottomBarIconPickResult>()
+ CustomBottomBarIconPicker.launch(combined,"tab",combinedCallbacks::add)
+ framework.afterRegistration=null;framework.failOn=null
+ check(combinedCallbacks==listOf(CustomBottomBarIconPickResult.FAILED)&&combined.requestCodes.isEmpty())
+ val residual=active().single();check(XposedRuntime.failedUnhookCount()==1)
+ val recovery=Activity();val recoveryCallbacks=ArrayList<CustomBottomBarIconPickResult>()
+ CustomBottomBarIconPicker.launch(recovery,"tab",recoveryCallbacks::add)
+ val inert=ChainFixture(resultMethod,recovery,arrayOf(recovery.requestCodes.last(),Activity.RESULT_CANCELED,null)){_,_->"native"}
+ check(inert.run(residual.hooker)=="native"&&inert.proceeds==1&&recoveryCallbacks.isEmpty())
+ residual.fail=false
+ val currentResult=active().single{it!==residual&&it.executable==resultMethod}
+ val canceled=ChainFixture(resultMethod,recovery,arrayOf(recovery.requestCodes.last(),Activity.RESULT_CANCELED,null)){_,_->null}
+ canceled.run(currentResult.hooker)
+ check(canceled.proceeds==1&&recoveryCallbacks==listOf(CustomBottomBarIconPickResult.CANCELLED)&&active().isEmpty()&&XposedRuntime.failedUnhookCount()==0)
+ println("PASS: picker combined installation/removal failure retains inert handle across retry and cancellation removes every callback")
  val unavailable=Activity().apply{failLaunch=true};val unavailableCallbacks=ArrayList<CustomBottomBarIconPickResult>()
  CustomBottomBarIconPicker.launch(unavailable,"tab",unavailableCallbacks::add)
  check(unavailableCallbacks==listOf(CustomBottomBarIconPickResult.FAILED)&&active().isEmpty())

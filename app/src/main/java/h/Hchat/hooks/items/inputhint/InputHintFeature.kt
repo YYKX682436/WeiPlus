@@ -1,5 +1,6 @@
 package h.Hchat.hooks.items.inputhint
 
+import h.Hchat.hooks.core.HookErrorBoundary
 import android.content.Context
 import android.content.SharedPreferences
 import android.os.Handler
@@ -106,7 +107,7 @@ private class InputHintRuntime(
             HookRegistry.get().hook(attachMethod, XposedInterface.Hooker { chain ->
                 val receiver = chain.thisObject
                 val value = chain.proceed()
-                run after@ {
+                HookErrorBoundary.run("输入提示绑定失败") after@ {
                     bindFooter(receiver)
                 }
                 value

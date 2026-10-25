@@ -26,7 +26,7 @@ const output = fs.mkdtempSync(path.join(os.tmpdir(), 'hchat-conversation-tabs-li
 const artifact = path.join(output, 'tabs-lifecycle.jar');
 process.once('exit',()=>fs.rmSync(output,{recursive:true,force:true}));
 const api=require('./lib/api102.cjs').prepare(output);
-const precompile=spawnSync(process.env.JAVAC||'javac',['-cp',api.classpath,'-d',output,'scripts/tests/api102/ChainFixture.java'],{cwd:root,encoding:'utf8'});
+const precompile=spawnSync(process.env.JAVAC||'javac',['-cp',api.classpath,'-d',output,'scripts/tests/api102/ChainFixture.java','app/src/main/java/h/Hchat/hooks/core/XposedRuntime.java','app/src/main/java/h/Hchat/hooks/core/HookErrorBoundary.java'],{cwd:root,encoding:'utf8'});
 if(precompile.status!==0)throw Error(precompile.stdout+precompile.stderr);
 const source = fs.readFileSync(path.join(root,
     'app/src/main/java/h/Hchat/hooks/items/conversationtabs/ConversationTabsRuntime.kt'), 'utf8');

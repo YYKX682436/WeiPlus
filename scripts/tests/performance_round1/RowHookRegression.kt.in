@@ -1,3 +1,4 @@
+import h.Hchat.hooks.core.HookErrorBoundary
 import java.util.ArrayDeque
 
 import io.github.libxposed.api.XposedInterface
@@ -27,16 +28,19 @@ private class DetailsHarness {
     val hook = XposedInterface.Hooker @DETAILS_HOOK@
 }
 private class BubbleHarness {
+    private val TAG="bubble fixture"
     data class BindState(val root: Row?, val nativeHolder: Any?)
     var enabled = false
     val boundRoots = HashSet<Row>()
     var captures = 0
     var restores = 0
     var applies = 0
+    var failRestore = false
+    var failApply = false
     fun captureBindState(args: Array<Any?>?): BindState { captures++; return BindState(args?.getOrNull(0) as? Row, null) }
-    fun restoreBoundBubble(root: Row) { restores++;boundRoots.remove(root) }
+    fun restoreBoundBubble(root: Row) { restores++;if(failRestore)error("module restore");boundRoots.remove(root) }
     fun isNativeMessageHolder(value: Any) = true
-    fun applyBubble(args: Array<Any?>?, state: BindState) { applies++;state.root?.let(boundRoots::add) }
+    fun applyBubble(args: Array<Any?>?, state: BindState) { applies++;if(failApply)error("module paint");state.root?.let(boundRoots::add) }
     val hook = XposedInterface.Hooker @BUBBLE_HOOK@
 }
 private fun invoke(hook: XposedInterface.Hooker, row: Row, message: String = "message", owner: Any = Adapter(), native: () -> Any? = { "native-result" }): Any? {
@@ -81,5 +85,10 @@ fun main() {
     check(b.applies==2)
     check(runCatching {invoke(b.hook,row) {throw nativeFailure}}.exceptionOrNull()===nativeFailure)
     check(b.applies==2 && b.restores==4)
+    b.failRestore=true;b.failApply=true
+    var nativeCalls=0
+    check(invoke(b.hook,row){nativeCalls++;"original"}=="original"&&nativeCalls==1)
+    check(runCatching{invoke(b.hook,row){nativeCalls++;throw nativeFailure}}.exceptionOrNull()===nativeFailure&&nativeCalls==2)
+    println("PASS: production bubble module restore/paint failures preserve single native success and original host exception")
     println("PASS: production bubble interceptor restores before native bind, draws only after success while enabled, and preserves native exception identity")
 }

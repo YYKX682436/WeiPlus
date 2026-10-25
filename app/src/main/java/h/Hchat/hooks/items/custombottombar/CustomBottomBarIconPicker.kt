@@ -206,6 +206,7 @@ object CustomBottomBarIconPicker {
     @Synchronized
     private fun releaseHooksIfIdle() {
         if (pending.isNotEmpty()) return
+        XposedRuntime.retryFailedUnhooks()
         hookGeneration++
         val iterator = ownedHooks.iterator()
         while (iterator.hasNext()) {

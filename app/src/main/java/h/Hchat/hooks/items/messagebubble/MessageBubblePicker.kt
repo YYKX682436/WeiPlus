@@ -165,6 +165,7 @@ object MessageBubblePicker {
     @Synchronized
     private fun releaseHooksIfIdle() {
         if (pending.isNotEmpty()) return
+        XposedRuntime.retryFailedUnhooks()
         hookGeneration++
         ownedDestroyHook = false
         val iterator = ownedHooks.iterator()

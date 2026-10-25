@@ -1,0 +1,72 @@
+import h.Hchat.hooks.core.XposedRuntime;
+import h.Hchat.hooks.core.HookRegistry;
+import h.Hchat.tests.api102.FrameworkFixture;
+import h.Hchat.tests.api102.ChainFixture;
+import io.github.libxposed.api.XposedInterface;
+import java.util.*;
+import java.lang.reflect.*;
+@BOUNDARY_IMPORT@
+final class ImageOwner {
+    interface Logger { void log(String value); }
+    static final Map<Class<?>,Boolean> marsHookedManagerClasses=new java.util.concurrent.ConcurrentHashMap<>();
+    static int remembered;
+    static Throwable observerFailure;
+    static void rememberMarsCdnManager(Class<?> type,Object receiver) {
+        if(observerFailure!=null)throw (RuntimeException)observerFailure;
+        remembered++;
+    }
+    static Object resolveMarsCdnManager(Class<?> type){return null;}
+    static void logStatic(Logger logger,String value){logger.log(value);}
+    @INSTALL@
+}
+class ImageOwnerRegression {
+    static class Manager {
+        Manager(){} Manager(int value){}
+        void startC2CDownload(){}
+    }
+    static int hostCalls;
+    static Object invoke(List<FrameworkFixture.Handle> handles,int at,Executable method,Object receiver,Object[] args)throws Throwable {
+        if(at==handles.size()){hostCalls++;return null;}
+        return new ChainFixture(method,receiver,args,(owner,next)->invoke(handles,at+1,method,owner,next)).run(handles.get(at).hooker);
+    }
+    public static void main(String[]args)throws Throwable {
+        FrameworkFixture f=new FrameworkFixture();XposedRuntime.initialize(f.create());
+        List<String> errors=new ArrayList<>();int failures=0;
+        Constructor<?> first=Manager.class.getDeclaredConstructors()[0];
+        for(int phase=0;phase<2;phase++) {
+            HookRegistry.get().unhookAll();ImageOwner.marsHookedManagerClasses.clear();
+            f.failOn=phase==0?Manager.class.getDeclaredConstructors()[1]:Manager.class.getDeclaredMethod("startC2CDownload");
+            f.afterRegistration=()->f.handles.get(f.handles.size()-1).fail=true;
+            ImageOwner.installMarsCdnManagerHook(Manager.class,errors::add);
+            if(errors.isEmpty())throw new AssertionError("Production caller did not observe installation failure");
+            f.failOn=null;f.afterRegistration=null;
+            ImageOwner.installMarsCdnManagerHook(Manager.class,errors::add);
+            List<FrameworkFixture.Handle> installed=new ArrayList<>();
+            for(var handle:f.handles)if(handle.active&&handle.getExecutable().equals(first))installed.add(handle);
+            ImageOwner.remembered=0;hostCalls=0;
+            invoke(installed,0,first,new Manager(),new Object[first.getParameterCount()]);
+            if(ImageOwner.remembered!=1||hostCalls!=1){failures++;System.out.println("FAIL R1 actual WeChatImageApi phase="+phase+" captures="+ImageOwner.remembered+" native="+hostCalls);}
+            else System.out.println("PASS R1 actual WeChatImageApi partial install rollback phase="+phase+" inert on retry");
+            for(var handle:f.handles)handle.fail=false;
+            HookRegistry.get().unhookAll();
+            if(f.handles.stream().anyMatch(h->h.active)){failures++;System.out.println("FAIL R1 actual WeChatImageApi cleanup orphan retained phase="+phase);}
+            // Leave later scenarios independent, even when running against the known-bad baseline.
+            for(var handle:f.handles)handle.unhook();
+        }
+        ImageOwner.marsHookedManagerClasses.clear();ImageOwner.installMarsCdnManagerHook(Manager.class,errors::add);
+        var current=f.handles.stream().filter(h->h.active&&h.getExecutable().equals(first)).findFirst().orElseThrow();
+        ImageOwner.observerFailure=new IllegalArgumentException("module constructor observer");hostCalls=0;
+        try {
+            invoke(List.of(current),0,first,new Manager(),new Object[first.getParameterCount()]);
+            if(hostCalls!=1)throw new AssertionError("Constructor proceeded more than once");
+            System.out.println("PASS R1 actual image constructor observer failure preserves host success");
+        } catch(Throwable error) {failures++;System.out.println("FAIL R1 actual image constructor observer escaped: "+error);}
+        Throwable hostFailure=new IllegalStateException("host constructor failure");
+        var chain=new ChainFixture(first,new Manager(),new Object[first.getParameterCount()],(owner,next)->{throw hostFailure;});
+        try {chain.run(current.hooker);throw new AssertionError("Host constructor failure lost");}
+        catch(Throwable error) {if(error!=hostFailure||chain.proceeds!=1)throw new AssertionError("Host constructor identity/call count",error);}
+        ImageOwner.observerFailure=null;HookRegistry.get().unhookAll();
+        if(f.handles.stream().anyMatch(h->h.active))throw new AssertionError("Constructor cleanup retained callbacks");
+        if(failures!=0)throw new AssertionError(failures+" production image owner scenarios failed");
+    }
+}

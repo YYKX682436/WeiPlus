@@ -9,6 +9,7 @@ import h.Hchat.hooks.core.BaseFeature
 import h.Hchat.hooks.core.DexInstallScheduler
 import h.Hchat.hooks.core.FeatureContext
 import h.Hchat.hooks.core.HookRegistry
+import h.Hchat.hooks.core.HookErrorBoundary
 import h.Hchat.preferences.HchatStorage
 import h.Hchat.utils.HLog
 import h.Hchat.utils.KavaReflector
@@ -74,7 +75,7 @@ private class HideChatAvatarRuntime(
             HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
                 val args = chain.args.toTypedArray()
                 val value = chain.proceed()
-                run after@ {
+                HookErrorBoundary.run("聊天头像显示失败") {
                     applyVisibility(args)
                 }
                 value

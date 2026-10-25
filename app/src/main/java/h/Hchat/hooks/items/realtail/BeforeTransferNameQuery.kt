@@ -1,5 +1,6 @@
 package h.Hchat.hooks.items.realtail
 
+import h.Hchat.hooks.core.HookErrorBoundary
 import io.github.libxposed.api.XposedInterface
 import h.Hchat.hooks.api.core.WeChatApis
 import h.Hchat.hooks.core.FeatureContext
@@ -124,7 +125,7 @@ class BeforeTransferNameQuery(
         HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
             val receiver = chain.thisObject
             val value = chain.proceed()
-            run after@ {
+            HookErrorBoundary.run("实名查询结果观察失败") after@ {
                 val scene = receiver ?: return@after
                 val callback = pending.remove(scene) ?: return@after
                 val maskedName = extractMaskedName(scene)

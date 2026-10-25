@@ -20,6 +20,7 @@ import h.Hchat.hooks.core.BaseFeature
 import h.Hchat.hooks.core.DexInstallScheduler
 import h.Hchat.hooks.core.FeatureContext
 import h.Hchat.hooks.core.HookRegistry
+import h.Hchat.hooks.core.HookErrorBoundary
 import h.Hchat.preferences.HchatStorage
 import h.Hchat.utils.HLog
 import h.Hchat.utils.KavaReflector
@@ -98,7 +99,7 @@ private class MessageTextColorRenderer(
         return runCatching {
             HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
                 val value = chain.proceed()
-                run after@ {
+                HookErrorBoundary.run("$TAG 消息字色渲染失败") {
                     applyTextColor(chain)
                 }
                 value
@@ -755,12 +756,17 @@ private class MessageTextColorRenderer(
                 .replace("&quot;", "\"")
                 .replace("&apos;", "'")
                 .replace("&amp;", "&")
-            result = Regex("&#(x[0-9a-fA-F]+|[0-9]+);").replace(result) { match ->
+            result = Regex("&#([xX][0-9a-fA-F]+|[0-9]+);").replace(result) { match ->
                 val raw = match.groupValues[1]
-                val codePoint = runCatching {
-                    if (raw.startsWith("x", ignoreCase = true)) raw.substring(1).toInt(16) else raw.toInt()
-                }.getOrNull()
-                codePoint?.let { String(Character.toChars(it)) } ?: match.value
+                val codePoint = if (raw.startsWith("x", ignoreCase = true)) {
+                    raw.substring(1).toIntOrNull(16)
+                } else {
+                    raw.toIntOrNull()
+                }
+                // Numeric references must denote a Unicode scalar, not an unpaired UTF-16 surrogate.
+                if (codePoint != null && Character.isValidCodePoint(codePoint) &&
+                    codePoint !in 0xD800..0xDFFF
+                ) String(Character.toChars(codePoint)) else match.value
             }
         }
         return result

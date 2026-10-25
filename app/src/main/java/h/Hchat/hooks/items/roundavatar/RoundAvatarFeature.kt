@@ -1,5 +1,6 @@
 package h.Hchat.hooks.items.roundavatar
 
+import h.Hchat.hooks.core.HookErrorBoundary
 import android.app.Notification
 import android.app.NotificationManager
 import android.graphics.Bitmap
@@ -116,7 +117,7 @@ private class RoundAvatarRuntime(
         return runCatching {
             HookRegistry.get().hook(member, XposedInterface.Hooker { chain ->
                 val args = chain.args.toTypedArray()
-                run before@ {
+                HookErrorBoundary.run("头像显示参数转换失败") before@ {
                     if (!RoundAvatarSettings.enabled(context.hostContext())) return@before
                     if (radiusIndex !in args.indices) return@before
                     args[radiusIndex] = RoundAvatarSettings.radiusFactor(context.hostContext())
@@ -146,7 +147,7 @@ private class RoundAvatarRuntime(
         runCatching {
             HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
                 val args = chain.args.toTypedArray()
-                run before@ {
+                HookErrorBoundary.run("头像显示参数转换失败") before@ {
                     if (!RoundAvatarSettings.enabled(context.hostContext())) return@before
                     val source = args.firstOrNull() as? Bitmap ?: return@before
                     args[0] = RoundAvatarBitmapProcessor.round(
@@ -173,7 +174,7 @@ private class RoundAvatarRuntime(
         runCatching {
             HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
                 val args = chain.args.toTypedArray()
-                run before@ {
+                HookErrorBoundary.run("头像显示参数转换失败") before@ {
                     if (!RoundAvatarSettings.enabled(context.hostContext())) return@before
                     val icon = args.firstOrNull() as? Icon ?: return@before
                     val source = KavaReflector.invokeMethod(icon, "getBitmap") as? Bitmap ?: return@before
@@ -197,7 +198,7 @@ private class RoundAvatarRuntime(
         runCatching {
             HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
                 val args = chain.args
-                run before@ {
+                HookErrorBoundary.run("头像显示参数转换失败") before@ {
                     if (!RoundAvatarSettings.enabled(context.hostContext())) return@before
                     val notification = args.firstOrNull { it is Notification } as? Notification ?: return@before
                     val source = notification.largeIcon ?: return@before

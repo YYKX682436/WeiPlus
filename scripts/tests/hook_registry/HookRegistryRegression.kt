@@ -144,6 +144,35 @@ fun main() {
     framework.failOn = null
     val partialBatch = framework.handles.drop(batchStart)
     check(partialBatch.isNotEmpty() && partialBatch.none { it.active }) { "A direct multi-method batch retained its installed prefix" }
+    var observations = 0
+    val batchObserver = XposedInterface.Hooker { chain -> observations++; chain.proceed() }
+    framework.failOn = overloads.last()
+    framework.afterRegistration = Runnable { framework.handles.last().fail = true }
+    check(runCatching { XposedRuntime.hookAllMethods(String::class.java, "substring", batchObserver) }.isFailure)
+    framework.afterRegistration = null
+    framework.failOn = null
+    val stranded = framework.handles.last()
+    check(stranded.active && XposedRuntime.failedUnhookCount() == 1) { "Rollback failure lost ownership" }
+    val retried = XposedRuntime.hookAllMethods(String::class.java, "substring", batchObserver)
+    val callbacks = framework.handles.filter { it.active && it.executable == stranded.executable }
+    var calls = 0
+    fun invokeBatch(index: Int): Any? = if (index == callbacks.size) { calls++; "host" } else {
+        ChainFixture(stranded.executable, "abcd", arrayOf(1)) { _, _ -> invokeBatch(index + 1) }.run(callbacks[index].hooker)
+    }
+    check(invokeBatch(0) == "host" && calls == 1 && observations == 1) { "A failed batch still executed module work" }
+    stranded.fail = false
+    retried.forEach { it.unhook() }
+    registry.unhookAll()
+    check(XposedRuntime.failedUnhookCount() == 0 && framework.handles.none { it.active })
+    val original = XposedRuntime.hook(method, XposedInterface.Hooker { "old" })
+    val snapshot = FrameworkFixture.handle(original).hooker
+    val replacement = original.replaceHook(XposedInterface.Hooker { "new" })
+    check(ChainFixture(method,"abcd",emptyArray()) { _, _ -> 4 }.run(snapshot) == "old")
+    original.unhook()
+    check(ChainFixture(method,"abcd",emptyArray()) { _, _ -> 4 }.run(FrameworkFixture.handle(replacement).hooker) == "new")
+    replacement.unhook()
+    check(framework.handles.none { it.active })
+    println("PASS: combined batch install/unhook failure remains owned and inert on retry, explicit teardown clears all; replacement preserves old snapshots and handle ownership")
     println("PASS: API102 immutable arguments, copied argument replacement, return replacement, short circuit, priority nesting, host exception identity and expired Chain rejection")
     println("PASS: 1000 removal cycles, shared-key dedupe, key release, individual and bulk failed-unhook retry, canceled-task rollback, stale-generation rejection")
 }
