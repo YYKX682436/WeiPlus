@@ -123,3 +123,34 @@ R4 收口日期：2026-10-26
 - Debug：`dist/Hchat-debug.apk`
 - 正式签名 R8 Release：`dist/Hchat-release-signed.apk`
 - Release SHA-256：`b291a530f3800be3bd045a72f38a60ee9da278825e5d33cd474f02625e09f783`
+
+## R4 最后一轮精准收口（2026-10-26）
+
+基线：`7b24fb19015c686f288856d35a23f76e23ed4245`。本节修正上一节对结构行证据、Hook 安装缓存和 ScrollView 支持范围的判断；保留既有测量与尾部修正机制。
+
+- **结构行识别**：`!isMessageDetailsHolder()` 只能说明没有找到直接的 `timeTV`，不能证明它是 footer。删除该反向推断及从它学习的 adapter viewType 集合。生产只接受 Android `ListView`/`HeaderViewListAdapter` 明确登记的 footer 范围，并核对当前 adapter 身份、header/content/footer 数量。RecyclerView 没有通用 footer 契约；未知后续行（包括无法解析的真实 B）安全跳过修正，不凭 holder 字段、tag 或 viewType 猜测。
+- **Hook 存活**：删除独立的永久 class/method“已安装”集合。生产直接调用 `HookRegistry.hookOnce()`，由其现有有效句柄、安装代次和失败回滚管理去重/重装。反射类型与方法解析缓存保留；64 次重复调用生产安装方法没有新增 framework 注册。
+- **ScrollView 范围**：普通 ScrollView 没有 adapter 和可靠的最新消息身份，生产观察、Hook 安装、尾部检查和资格确认入口明确跳过自动修正。既有 ScrollView 测量/调度测试仅是独立 helper 测试，不再作为完整生产链路支持证据。
+
+### 修复前失败、修复后通过
+
+新增 `MessageDetailsR4FinalRegressionTest` 直接反射调用投入生产的私有识别/安装方法以及消息解析器，不执行 Hooker 构造中的宿主配置/DexKit 初始化。基线生产源码保持不变时，5 项全部失败：
+
+1. 真实 RecyclerView 已附着 B、adapter 数据暂不可解析、ViewHolder 无直接 `timeTV` 时，A 被错误确认是最新消息。
+2. Android 明确登记的 ListView footer 在尚未附着时无法被确认。
+3. `unhookAll()` 后，同一进程新安装代次没有重新获得有效 Hook。
+4. 外层安装 lease 回滚后，同代次重试被旧安装集合阻止。
+5. 没有 adapter 的普通 ScrollView 仍安装了两条无用滚动触摸 Hook。
+
+修复后原有 24 项及新增 5 项 Robolectric 共 **29/29 PASS**。原 footer 用例已移除测试专属布尔 tag，改用生产识别逻辑；实际 Android ListView 固定 footer 仍可确认，未知 RecyclerView 行不能确认。Hook 用例使用官方 `io.github.libxposed:api:102.0.0`、生产 HookRegistry/XposedRuntime 和既有 API 102 注册 fixture，实际执行重装后的 ManagedHook，验证生产跟随状态改变且宿主执行一次；覆盖成功、撤销、新代次重装、同代次回滚重试、framework 注册失败重试。此 JVM 注册 fixture 不代替真机 ART 故障注入。
+
+- 消息绑定、布局 7 项、预绘制 14 项、消息类型 96 项、性能、Native 回归及提取、API 102 R1/interceptor、HookRegistry 全部 PASS。
+- Debug、正式签名 R8 Release、Debug/Release Lint 构建成功；两种 Lint 均 0 errors、653 warnings、50 hints。正式 APK API 102 检查与 v2 签名检查 PASS，证书保持正式证书。
+
+### 本轮真机与边界
+
+- Redmi K50 Ultra / Android 15 / 微信 `com.tencent.mm` 8.0.76，最终 Release 已覆盖安装。原始配置恢复后键盘关闭发送 **2/2**、键盘打开发送 **2/2**，四条最新时间完整可见，无需补滑。历史位置静置 5 秒，排除边缘滚动条的内容裁切区逐像素一致，没有跳到底部。
+- UI 禁用后无标签、重新启用保存后标签恢复，完成一次禁用/恢复。测试前备份的 `Hchat_extra_config.kva/.kvb` 与 `Hchat_global_config.kva/.kvb` 已逐字节恢复；后续发送及历史验证后再次核对完全一致。extra 两份 SHA-256 均为 `0bfe8245ad949f423f55ecd7d578ae3e720d82e00a4b0da775c25f1d91f2c964`，global 两份均为 `969407ccbaa6b61fb9cfffa7d8e8697c7458dd19708d21c3409cf2c3ae33a87c`。未卸载微信、未清除数据。
+- **NOT_VERIFIED/观察边界**：第一次安装后冷进入聊天，开关为开但旧行标签一度未出现，该次不计 PASS；原始配置恢复后再次冷启动进入已正常显示，本轮未确认首次现象的原因。未在真机注入 `unhookAll()`/安装失败；该恢复路径由生产代码的官方 API 102 注册回归覆盖。`com.tencent.mm.wx`、其他消息类型压力与未知 RecyclerView footer 的正向资格契约未验证；后者保守跳过，普通 ScrollView 不执行自动修正。
+
+最终正式签名 R8 APK：`dist/Hchat-release-signed.apk`，SHA-256：`488a5442d7ae4bba9445ecfca1b2a67722437ef8dfa357fed0b2ade46bfc47b6`。

@@ -1336,6 +1336,7 @@ private class HchatExtraHooker(
                         val currentRoot = rootReference.get() ?: return
                         if (view !== currentRoot) return
                         val container = nearestMessageDetailsScrollContainer(currentRoot) ?: return
+                        if (!MessageDetailsScrollSupport.supportsAutomaticTailCorrection(container)) return
                         MessageDetailsFollowLatestRegistry.observe(container)
                         installMessageDetailsRecyclerScrollHook(container)
                     }
@@ -1400,6 +1401,7 @@ private class HchatExtraHooker(
                 currentLabel.tag != TAG_MESSAGE_DETAILS_VIEW
             ) return@Runnable
             val container = nearestMessageDetailsScrollContainer(currentRoot) ?: return@Runnable
+            if (!MessageDetailsScrollSupport.supportsAutomaticTailCorrection(container)) return@Runnable
             MessageDetailsFollowLatestRegistry.observe(container)
             val followingLatest = MessageDetailsFollowLatestRegistry.isFollowingLatest(container)
             if (!followingLatest) return@Runnable
@@ -1476,6 +1478,7 @@ private class HchatExtraHooker(
         bindPosition: Int,
         bindToken: Any
     ): MessageDetailsTailConfirmation? {
+        if (!MessageDetailsScrollSupport.supportsAutomaticTailCorrection(container)) return null
         val binding = synchronized(messageDetailsBindings) { messageDetailsBindings[label] }
             ?: (label.getTag(R.id.hchat_message_details_binding) as? MessageDetailsBinding)
             ?: return null
@@ -1494,8 +1497,7 @@ private class HchatExtraHooker(
                 resolveNativeMessage(item)?.let { expectedIdentity.sameMessage(messageDetailsIdentity(it)) } == true
             },
             isKnownStructuralRow = { nextPosition, _ ->
-                messageDetailsKnownStructuralRow(container, adapter, nextPosition) ||
-                    MessageDetailsScrollSupport.hasKnownStructuralAdapterViewType(adapter, nextPosition)
+                messageDetailsKnownStructuralRow(container, adapter, nextPosition)
             }
         )
         return MessageDetailsTailConfirmation(
@@ -1512,26 +1514,7 @@ private class HchatExtraHooker(
         container: View,
         adapter: Any,
         position: Int
-    ): Boolean {
-        val isStructural = when (MessageDetailsScrollSupport.containerKind(container)) {
-            MessageDetailsScrollSupport.ContainerKind.RECYCLER -> {
-                val holder = MessageDetailsScrollSupport.invoke(container, "findViewHolderForAdapterPosition", position)
-                    ?: return false
-                val itemView = MessageDetailsScrollSupport.holderItemView(holder) ?: return false
-                !isMessageDetailsHolder(holder, messageRowRoot(itemView))
-            }
-            MessageDetailsScrollSupport.ContainerKind.ABS_LIST -> {
-                val list = container as android.widget.AbsListView
-                val childIndex = position - list.firstVisiblePosition
-                val child = list.getChildAt(childIndex) ?: return false
-                val holder = child.tag ?: return false
-                !isMessageDetailsHolder(holder, messageRowRoot(child))
-            }
-            else -> false
-        }
-        if (isStructural) MessageDetailsScrollSupport.rememberStructuralAdapterViewType(adapter, position)
-        return isStructural
-    }
+    ): Boolean = MessageDetailsScrollSupport.isExplicitFooter(container, adapter, position)
 
     private fun messageDetailsAdapterItemProbe(adapter: Any, position: Int): MessageDetailsScrollSupport.ItemProbe {
         if (position < 0) return MessageDetailsScrollSupport.ItemProbe(false, null)
@@ -1581,19 +1564,15 @@ private class HchatExtraHooker(
             ?.takeIf { it >= 0 } ?: -1
 
     private fun installMessageDetailsRecyclerScrollHook(container: View) {
+        if (!MessageDetailsScrollSupport.supportsAutomaticTailCorrection(container)) return
         val kind = MessageDetailsScrollSupport.containerKind(container)
-        if (kind == MessageDetailsScrollSupport.ContainerKind.UNKNOWN) return
-        if (!MessageDetailsScrollHookInstallState.beginContainer(container)) return
-        var installationFailed = false
 
         fun install(name: String, method: Method?, action: (XposedInterface.Chain) -> Any?) {
-            if (method == null || !MessageDetailsScrollHookInstallState.beginMethod(method)) return
+            if (method == null) return
             val key = "hchat_message_details_${name}_${System.identityHashCode(method.declaringClass.classLoader)}_${method.declaringClass.name}"
             runCatching {
                 HookRegistry.get().hookOnce(key, method, XposedInterface.Hooker(action))
             }.onFailure {
-                MessageDetailsScrollHookInstallState.retryMethod(method)
-                installationFailed = true
                 logger("消息列表跟随状态监听失败: $name", it)
             }
         }
@@ -1654,7 +1633,6 @@ private class HchatExtraHooker(
                 }
             }
         }
-        if (installationFailed) MessageDetailsScrollHookInstallState.retryContainer(container)
     }
 
     private fun messageDetailsBindToken(root: View): Any = synchronized(messageDetailsBindTokens) {

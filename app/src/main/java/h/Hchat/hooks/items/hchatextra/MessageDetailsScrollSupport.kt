@@ -2,12 +2,12 @@ package h.Hchat.hooks.items.hchatextra
 
 import android.view.View
 import android.widget.AbsListView
+import android.widget.HeaderViewListAdapter
+import android.widget.ListView
 import android.widget.ScrollView
 import java.lang.reflect.Method
-import java.lang.reflect.Field
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.ConcurrentHashMap
-import java.util.WeakHashMap
 
 /** Runtime type and reflection helpers for supported vertical chat viewports. */
 internal object MessageDetailsScrollSupport {
@@ -18,13 +18,10 @@ internal object MessageDetailsScrollSupport {
 
     private data class MethodKey(val name: String, val parameterTypes: List<Class<*>>)
     private data class CachedMethod(val method: Method?)
-    private data class CachedField(val field: Field?)
     private val methods = ConcurrentHashMap<Class<*>, ConcurrentHashMap<MethodKey, CachedMethod>>()
     private val containerTypeResolutions = AtomicLong()
     private val methodResolutions = AtomicLong()
     private val containerKinds = ConcurrentHashMap<Class<*>, ContainerKind>()
-    private val holderItemViewFields = ConcurrentHashMap<Class<*>, CachedField>()
-    private val structuralViewTypes = WeakHashMap<Any, MutableSet<Int>>()
 
     private fun resolveContainerKind(type: Class<*>): ContainerKind {
         containerTypeResolutions.incrementAndGet()
@@ -36,15 +33,15 @@ internal object MessageDetailsScrollSupport {
         }
     }
 
-    private fun resolveHolderItemViewField(type: Class<*>): CachedField = CachedField(
-            generateSequence(type as Class<*>?) { it.superclass }
-                .mapNotNull { current -> runCatching { current.getDeclaredField("itemView").apply { isAccessible = true } }.getOrNull() }
-                .firstOrNull()
-    )
-
     fun containerKind(view: View): ContainerKind = containerKinds.computeIfAbsent(view.javaClass, ::resolveContainerKind)
 
     fun isRecyclerView(view: View): Boolean = containerKind(view) == ContainerKind.RECYCLER
+
+    /** Ordinary ScrollView has geometry, but no adapter identity/latest-message contract. */
+    fun supportsAutomaticTailCorrection(view: View): Boolean = when (containerKind(view)) {
+        ContainerKind.RECYCLER, ContainerKind.ABS_LIST -> true
+        ContainerKind.SCROLL, ContainerKind.UNKNOWN -> false
+    }
 
     fun hostMethod(view: View, name: String, vararg parameterTypes: Class<*>): Method? =
         findCompatibleMethod(view.javaClass, name, parameterTypes.toList())
@@ -65,23 +62,16 @@ internal object MessageDetailsScrollSupport {
         else -> null
     }
 
-    fun rememberStructuralAdapterViewType(adapter: Any, position: Int) {
-        val viewType = adapterViewType(adapter, position) ?: return
-        synchronized(structuralViewTypes) {
-            structuralViewTypes.getOrPut(adapter) { mutableSetOf() }.add(viewType)
-        }
+    /** Positive framework metadata only. RecyclerView has no standard footer contract. */
+    fun isExplicitFooter(container: View, adapter: Any, position: Int): Boolean {
+        val list = container as? ListView ?: return false
+        val fixed = adapter as? HeaderViewListAdapter ?: return false
+        if (list.adapter !== fixed || list.footerViewsCount <= 0) return false
+        val contentCount = fixed.wrappedAdapter?.count ?: 0
+        val footerStart = fixed.headersCount + contentCount
+        if (footerStart + list.footerViewsCount != fixed.count) return false
+        return position in footerStart until fixed.count
     }
-
-    fun hasKnownStructuralAdapterViewType(adapter: Any, otherPosition: Int): Boolean {
-        if (otherPosition < 0) return false
-        val otherType = adapterViewType(adapter, otherPosition) ?: return false
-        return synchronized(structuralViewTypes) {
-            structuralViewTypes[adapter]?.contains(otherType) == true
-        }
-    }
-
-    private fun adapterViewType(adapter: Any, position: Int): Int? =
-        (invoke(adapter, "getItemViewType", position) as? Number)?.toInt()
 
     fun childAdapterPosition(container: View, row: View): Int? {
         return when (containerKind(container)) {
@@ -112,10 +102,6 @@ internal object MessageDetailsScrollSupport {
     }
 
     fun invokeNoArg(target: Any, name: String): Any? = invokeMethod(target, name, emptyArray())
-
-    fun holderItemView(holder: Any): View? = runCatching {
-        (holderItemViewFields.computeIfAbsent(holder.javaClass, ::resolveHolderItemViewField).field?.get(holder) as? View)
-    }.getOrNull()
 
     fun invoke(target: Any, name: String, vararg args: Any): Any? = invokeMethod(target, name, args)
 
@@ -239,15 +225,4 @@ internal object MessageDetailsScrollSupport {
             ContainerKind.UNKNOWN -> false
         }
     }
-}
-
-/** Hook registrations survive feature/page teardown, so cache them for the host class-loader lifetime. */
-internal object MessageDetailsScrollHookInstallState {
-    private val containerClasses = ConcurrentHashMap.newKeySet<Class<*>>()
-    private val hookedMethods = ConcurrentHashMap.newKeySet<Method>()
-
-    fun beginContainer(container: View): Boolean = containerClasses.add(container.javaClass)
-    fun retryContainer(container: View) { containerClasses.remove(container.javaClass) }
-    fun beginMethod(method: Method): Boolean = hookedMethods.add(method)
-    fun retryMethod(method: Method) { hookedMethods.remove(method) }
 }

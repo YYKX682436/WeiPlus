@@ -135,7 +135,8 @@ class MessageDetailsR4GapRegressionTest {
         measureAndLayout(recycler, 320, 170)
         assertTrue("the real RecyclerView attached its structural footer",
             recycler.findViewHolderForAdapterPosition(1) != null)
-        assertTrue("an attached non-message holder confirms a real footer after the latest message",
+        val production = ProductionMessageDetailsHarness()
+        assertFalse("an attached RecyclerView row without explicit footer metadata is ambiguous",
             MessageDetailsScrollSupport.isConfirmedLatestMessage(
                 0,
                 attachedFooter.itemCount,
@@ -143,14 +144,7 @@ class MessageDetailsR4GapRegressionTest {
                 isMessageItem = { it is String && it.startsWith("message:") },
                 candidateMatchesIdentity = { it == "message:A" },
                 isKnownStructuralRow = { position, _ ->
-                val isAttachedStructural = recycler.findViewHolderForAdapterPosition(position)
-                    ?.itemView?.tag == false
-                if (isAttachedStructural) {
-                    MessageDetailsScrollSupport.rememberStructuralAdapterViewType(attachedFooter, position)
-                }
-                isAttachedStructural || MessageDetailsScrollSupport.hasKnownStructuralAdapterViewType(
-                    attachedFooter, position
-                )
+                    production.structural(recycler, attachedFooter, position)
                 }
             ))
         recycler.scrollToPosition(0)
@@ -165,10 +159,10 @@ class MessageDetailsR4GapRegressionTest {
             isMessageItem = { it is String && it.startsWith("message:") },
             candidateMatchesIdentity = { it == "message:A" },
             isKnownStructuralRow = { position, _ ->
-                MessageDetailsScrollSupport.hasKnownStructuralAdapterViewType(detachedFooterAdapter, position)
+                production.structural(recycler, detachedFooterAdapter, position)
             }
         )
-        assertTrue("a previously confirmed footer type remains recognized after it leaves the viewport",
+        assertFalse("detachment cannot turn unknown RecyclerView data into a proven footer",
             footerLatestConfirmed)
 
         val history = MessageFixtureAdapter(mutableListOf("message:A", "message:B", "message:C"))
@@ -259,7 +253,7 @@ class MessageDetailsR4GapRegressionTest {
     }
 
     @Test
-    fun `container method resolution and hook installation are cached per host class`() {
+    fun `container and method resolution are cached per host class including missing methods`() {
         val list = CacheProbeList(context)
         val beforeType = MessageDetailsScrollSupport.cacheStats().containerTypeResolutions
         repeat(64) { assertEquals(MessageDetailsScrollSupport.ContainerKind.ABS_LIST,
@@ -275,12 +269,10 @@ class MessageDetailsR4GapRegressionTest {
         assertEquals("method reflection occurs once for a class and signature",
             beforeMethod + 1, MessageDetailsScrollSupport.cacheStats().methodResolutions)
 
-        assertTrue("the first attachment installs this class's shared scroll hooks",
-            MessageDetailsScrollHookInstallState.beginContainer(list))
-        repeat(64) { assertFalse(MessageDetailsScrollHookInstallState.beginContainer(list)) }
-        MessageDetailsScrollHookInstallState.retryContainer(list)
-        assertTrue("only a failed installation can authorize one retry",
-            MessageDetailsScrollHookInstallState.beginContainer(list))
+        val beforeMissing = MessageDetailsScrollSupport.cacheStats().methodResolutions
+        repeat(64) { assertEquals(null, MessageDetailsScrollSupport.hostMethod(list, "missingAcceptanceMethod")) }
+        assertEquals("negative reflection results are cached without pretending a Hook was installed",
+            beforeMissing + 1, MessageDetailsScrollSupport.cacheStats().methodResolutions)
     }
 
     @Test
@@ -301,7 +293,7 @@ class MessageDetailsR4GapRegressionTest {
     }
 
     @Test
-    fun `actual ScrollView row growth corrects only after delayed identity and tail revalidation`() {
+    fun `isolated ScrollView geometry fixture exercises delayed validation without production tail authorization`() {
         MessageDetailsFollowLatestRegistry.clear()
         val stale = overflowFixture()
         try {
@@ -484,7 +476,6 @@ class MessageDetailsR4GapRegressionTest {
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int) = Row(TextView(parent.context))
         override fun onBindViewHolder(holder: Row, position: Int) {
             holder.label.text = values[position] ?: "footer"
-            holder.itemView.tag = values[position]?.startsWith("message:") == true
             holder.label.layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 40)
         }
         override fun getItemCount(): Int = values.size
