@@ -224,6 +224,9 @@ private class HchatExtraHooker(
     private val adapterItemAccessCache = ConcurrentHashMap<Class<*>, CachedAdapterItemAccess>()
     private val messageDetailsConfigHandler = Handler(Looper.getMainLooper())
     private val messageDetailsPageReadyGate = MessageDetailsPageReadyGate()
+    private val messageDetailsInitialRefreshLock = Any()
+    private var messageDetailsInitialRefreshTask: Runnable? = null
+    private var messageDetailsInitialRefreshTaskGeneration: Long? = null
     @Volatile private var messageDetailsConfig = readMessageDetailsConfig()
     private var appliedMessageDetailsConfig = messageDetailsConfig
     @Volatile private var messageDetailsTimeFormatter: TimeFormatterCache? = null
@@ -396,6 +399,7 @@ private class HchatExtraHooker(
 
         if (previous.enabled && !next.enabled) {
             messageDetailsPageGeneration++
+            cancelPendingMessageDetailsInitialRefresh()
             messageDetailsPageReadyGate.cancel()
             clearMessageDetailsRows()
             unregisterMessageDetailsClockReceiver()
@@ -454,56 +458,97 @@ private class HchatExtraHooker(
 
     private fun scheduleMessageDetailsInitialPageRefresh() {
         if (!messageDetailsConfig.enabled || !messageDetailsHooksInstalled) return
-        val activity = ChatRowRefresh.activityForReadiness() ?: return
-        val decor = activity.window?.decorView ?: return
-        val activityReference = WeakReference(activity)
-        val decorReference = WeakReference(decor)
-        val adapterClass = chattingDataAdapterClass ?: locateChattingDataAdapterClass() ?: return
         val generation = messageDetailsPageGeneration
-        messageDetailsPageReadyGate.schedule(
-            decor,
-            isCurrent = {
-                messageDetailsConfig.enabled && messageDetailsHooksInstalled &&
-                    messageDetailsPageGeneration == generation
-            },
-            tryBackfill = {
-                val currentActivity = activityReference.get() ?: return@schedule false
-                val currentDecor = decorReference.get() ?: return@schedule false
-                if (currentActivity.isFinishing || currentActivity.isDestroyed ||
-                    !currentActivity.hasWindowFocus() || !currentDecor.isAttachedToWindow
-                ) return@schedule false
-                val talker = WeChatApis.chatPage()?.currentTalker().orEmpty()
-                if (talker.isBlank()) return@schedule false
-                val recycler = findReadyMessageDetailsRecycler(currentDecor, adapterClass) ?: return@schedule false
-                val adapter = MessageDetailsScrollSupport.adapter(recycler) ?: return@schedule false
-                val container = recycler as? ViewGroup ?: return@schedule false
-                val visiblePositions = (0 until container.childCount).asSequence()
-                    .map { index -> container.getChildAt(index) }
-                    .filter { child -> child.isShown && child.getGlobalVisibleRect(Rect()) }
-                    .mapNotNull { child ->
-                        MessageDetailsScrollSupport.childAdapterPosition(recycler, child)
-                    }
-                    .toList()
-                val visibleRange = if (visiblePositions.isNotEmpty()) {
-                    (visiblePositions.minOrNull()!!)..(visiblePositions.maxOrNull()!!)
+        lateinit var task: Runnable
+        task = Runnable {
+            val ownsRequest = synchronized(messageDetailsInitialRefreshLock) {
+                if (messageDetailsInitialRefreshTask !== task) {
+                    false
                 } else {
-                    MessageDetailsScrollSupport.visibleAdapterRange(recycler)
+                    messageDetailsInitialRefreshTask = null
+                    messageDetailsInitialRefreshTaskGeneration = null
+                    true
                 }
-                if (visibleRange == null) {
-                    return@schedule false
-                }
-                if (!messageDetailsPageActive) {
-                    messageDetailsPageActive = true
-                    registerMessageDetailsClockReceiver()
-                    scheduleMessageDetailsRelativeTimeRefresh()
-                }
-                ChatAdapterRefresh.notifyRangeChanged(
-                    adapter,
-                    visibleRange.first,
-                    visibleRange.last - visibleRange.first + 1
-                )
             }
-        )
+            if (!ownsRequest || !isCurrentMessageDetailsInitialRefresh(generation)) return@Runnable
+
+            // Activity, Window, decor, and the host adapter are all resolved on Android main.
+            val activity = ChatRowRefresh.activityForReadiness() ?: return@Runnable
+            val decor = activity.window?.decorView ?: return@Runnable
+            val activityReference = WeakReference(activity)
+            val decorReference = WeakReference(decor)
+            val adapterClass = chattingDataAdapterClass ?: locateChattingDataAdapterClass() ?: return@Runnable
+            messageDetailsPageReadyGate.schedule(
+                decor,
+                isCurrent = { isCurrentMessageDetailsInitialRefresh(generation) },
+                tryBackfill = {
+                    val currentActivity = activityReference.get() ?: return@schedule false
+                    val currentDecor = decorReference.get() ?: return@schedule false
+                    if (!isCurrentMessageDetailsInitialRefresh(generation) ||
+                        currentActivity.isFinishing || currentActivity.isDestroyed ||
+                        !currentActivity.hasWindowFocus() || !currentDecor.isAttachedToWindow
+                    ) return@schedule false
+                    val talker = WeChatApis.chatPage()?.currentTalker().orEmpty()
+                    if (talker.isBlank()) return@schedule false
+                    val recycler = findReadyMessageDetailsRecycler(currentDecor, adapterClass) ?: return@schedule false
+                    val adapter = MessageDetailsScrollSupport.adapter(recycler) ?: return@schedule false
+                    val container = recycler as? ViewGroup ?: return@schedule false
+                    val visiblePositions = (0 until container.childCount).asSequence()
+                        .map { index -> container.getChildAt(index) }
+                        .filter { child -> child.isShown && child.getGlobalVisibleRect(Rect()) }
+                        .mapNotNull { child ->
+                            MessageDetailsScrollSupport.childAdapterPosition(recycler, child)
+                        }
+                        .toList()
+                    val visibleRange = if (visiblePositions.isNotEmpty()) {
+                        (visiblePositions.minOrNull()!!)..(visiblePositions.maxOrNull()!!)
+                    } else {
+                        MessageDetailsScrollSupport.visibleAdapterRange(recycler)
+                    }
+                    if (visibleRange == null || !isCurrentMessageDetailsInitialRefresh(generation)) {
+                        return@schedule false
+                    }
+                    if (!messageDetailsPageActive) {
+                        messageDetailsPageActive = true
+                        registerMessageDetailsClockReceiver()
+                        scheduleMessageDetailsRelativeTimeRefresh()
+                    }
+                    ChatAdapterRefresh.notifyRangeChanged(
+                        adapter,
+                        visibleRange.first,
+                        visibleRange.last - visibleRange.first + 1
+                    )
+                }
+            )
+        }
+        synchronized(messageDetailsInitialRefreshLock) {
+            if (messageDetailsInitialRefreshTask != null &&
+                messageDetailsInitialRefreshTaskGeneration == generation
+            ) return
+            messageDetailsInitialRefreshTask?.let(messageDetailsConfigHandler::removeCallbacks)
+            messageDetailsInitialRefreshTask = task
+            messageDetailsInitialRefreshTaskGeneration = generation
+        }
+        if (!messageDetailsConfigHandler.post(task)) {
+            synchronized(messageDetailsInitialRefreshLock) {
+                if (messageDetailsInitialRefreshTask === task) {
+                    messageDetailsInitialRefreshTask = null
+                    messageDetailsInitialRefreshTaskGeneration = null
+                }
+            }
+        }
+    }
+
+    private fun isCurrentMessageDetailsInitialRefresh(generation: Long): Boolean =
+        messageDetailsConfig.enabled && messageDetailsHooksInstalled &&
+            messageDetailsPageGeneration == generation
+
+    private fun cancelPendingMessageDetailsInitialRefresh() {
+        synchronized(messageDetailsInitialRefreshLock) {
+            messageDetailsInitialRefreshTask?.let(messageDetailsConfigHandler::removeCallbacks)
+            messageDetailsInitialRefreshTask = null
+            messageDetailsInitialRefreshTaskGeneration = null
+        }
     }
 
     private fun findReadyMessageDetailsRecycler(root: View, adapterClass: Class<*>): View? {
@@ -528,6 +573,7 @@ private class HchatExtraHooker(
         messageDetailsConfigHandler.removeCallbacks(messageDetailsConfigRefresh)
         messageDetailsConfigHandler.removeCallbacks(messageDetailsRelativeTimeRefresh)
         messageDetailsPageGeneration++
+        cancelPendingMessageDetailsInitialRefresh()
         messageDetailsPageReadyGate.cancel()
         pageSubscription?.unsubscribe()
         forwardedRecordTypes.destroy()
@@ -747,6 +793,7 @@ private class HchatExtraHooker(
                 if (event.isExit) {
                     messageDetailsPageActive = false
                     messageDetailsPageGeneration++
+                    cancelPendingMessageDetailsInitialRefresh()
                     messageDetailsPageReadyGate.cancel()
                     messageDetailsConfigHandler.removeCallbacks(messageDetailsRelativeTimeRefresh)
                     clearMessageDetailsRows()

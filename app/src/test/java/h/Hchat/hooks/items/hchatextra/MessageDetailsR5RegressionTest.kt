@@ -3,6 +3,7 @@ package h.Hchat.hooks.items.hchatextra
 import android.app.Activity
 import android.content.Context
 import android.graphics.Rect
+import android.os.Handler
 import android.os.Looper
 import android.view.View
 import android.view.ViewGroup
@@ -255,6 +256,66 @@ class MessageDetailsR5RegressionTest {
     }
 
     @Test
+    fun `production cold-entry scheduling accesses Activity Window and adapter only on main and drops stale generation`() {
+        val activity = Robolectric.buildActivity(ThreadTrackingActivity::class.java).setup().get()
+        val recycler = RecyclerView(context).apply {
+            layoutManager = LinearLayoutManager(context)
+            layoutParams = FrameLayout.LayoutParams(320, 180)
+        }
+        val adapter = CountingAdapter()
+        recycler.adapter = adapter
+        activity.setContentView(FrameLayout(context).apply { addView(recycler) })
+        layout(activity)
+        assertTrue("the real RecyclerView has visible Android children", recycler.childCount > 0)
+
+        val oldActivityApi = staticField("currentActivityApi").get(null)
+        val oldChatPageApi = staticField("chatPageApi").get(null)
+        try {
+            val activityApi = WeChatCurrentActivityApi(null).apply { updateCurrentActivity(activity) }
+            val chatPageApi = WeChatChatPageApi(null, null, null, null, null, null)
+            WeChatChatPageApi::class.java.getDeclaredMethod("dispatchEnter", String::class.java, String::class.java)
+                .apply { isAccessible = true }.invoke(chatPageApi, "filehelper", "thread-test")
+            staticField("currentActivityApi").set(null, activityApi)
+            staticField("chatPageApi").set(null, chatPageApi)
+
+            val harness = ProductionAvatarBindHarness()
+            harness.prepareBackfill(CountingAdapter::class.java)
+            activity.clearAccessThreads()
+            val staleInstaller = Thread { harness.scheduleInitialBackfill() }
+            staleInstaller.start()
+            staleInstaller.join()
+            assertTrue("background production entry must not touch Activity or Window before main runs",
+                activity.accessThreads().isEmpty())
+
+            harness.advancePageGeneration()
+            shadowOf(Looper.getMainLooper()).idle()
+            assertTrue("a queued request from an old page generation must be discarded before Activity/Window access",
+                activity.accessThreads().isEmpty())
+            assertEquals("the stale request must not notify the adapter", 0, adapter.rangeChangeCount)
+
+            activity.clearAccessThreads()
+            val currentInstaller = Thread { harness.scheduleInitialBackfill() }
+            currentInstaller.start()
+            currentInstaller.join()
+            assertTrue("the valid background request only queues main-thread work",
+                activity.accessThreads().isEmpty())
+            shadowOf(Looper.getMainLooper()).idle()
+
+            assertTrue("Activity/Window access occurs after dispatch on the main thread",
+                activity.accessThreads().isNotEmpty() && activity.accessThreads().all {
+                    it === Looper.getMainLooper().thread
+                })
+            assertEquals("the valid page gets one visible-range adapter notification", 1,
+                adapter.rangeChangeCount)
+            assertSame("the final RecyclerView adapter notification runs on main",
+                Looper.getMainLooper().thread, adapter.lastRangeChangeThread)
+        } finally {
+            staticField("currentActivityApi").set(null, oldActivityApi)
+            staticField("chatPageApi").set(null, oldChatPageApi)
+        }
+    }
+
+    @Test
     fun `wrapped host adapter is recognized by runtime adapter identity`() {
         val harness = ProductionAvatarBindHarness()
         val dataAdapter = CountingAdapter()
@@ -334,15 +395,32 @@ class MessageDetailsR5RegressionTest {
         override fun hasWindowFocus(): Boolean = focused
     }
 
+    private class ThreadTrackingActivity : Activity() {
+        private val accessed = Collections.synchronizedList(mutableListOf<Thread>())
+        var focused = true
+        override fun getWindow(): android.view.Window {
+            accessed.add(Thread.currentThread())
+            return super.getWindow()
+        }
+        override fun hasWindowFocus(): Boolean {
+            accessed.add(Thread.currentThread())
+            return focused
+        }
+        fun accessThreads(): List<Thread> = synchronized(accessed) { accessed.toList() }
+        fun clearAccessThreads() = accessed.clear()
+    }
+
     private class CountingAdapter : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
         private val rows = MutableList(12) { it }
         var rangeChangeCount = 0
         var lastRangeCount = 0
+        var lastRangeChangeThread: Thread? = null
         init {
             registerAdapterDataObserver(object : RecyclerView.AdapterDataObserver() {
                 override fun onItemRangeChanged(positionStart: Int, itemCount: Int) {
                     rangeChangeCount++
                     lastRangeCount = itemCount
+                    lastRangeChangeThread = Thread.currentThread()
                 }
             })
         }
@@ -408,6 +486,8 @@ class MessageDetailsR5RegressionTest {
             field("messageDetailsConfig").set(target, config)
             field("appliedMessageDetailsConfig").set(target, config)
             field("messageDetailsPageReadyGate").set(target, MessageDetailsPageReadyGate())
+            field("messageDetailsConfigHandler").set(target, Handler(Looper.getMainLooper()))
+            field("messageDetailsInitialRefreshLock").set(target, Any())
         }
 
         fun details(id: Long): Any = detailsType.declaredConstructors.single().apply { isAccessible = true }
