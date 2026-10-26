@@ -139,6 +139,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.robolectric:robolectric:4.17")
+    testImplementation("androidx.recyclerview:recyclerview:1.4.0")
     implementation(files("libs/miuix-blur-android-0.9.4.aar"))
     implementation(files("libs/miuix-shader-android-0.9.4.aar"))
 }

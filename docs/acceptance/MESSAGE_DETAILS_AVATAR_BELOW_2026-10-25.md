@@ -86,3 +86,40 @@
 
 - `com.tencent.mm.wx` 未安装，未实测。
 - 本轮未在真机覆盖隐藏头像、卡片消息、头像上方不足空间、大字号和长自定义格式；这些分支由本轮实际 Android 布局回归及既有验收证据覆盖，但不计为本轮真机通过。
+
+## R3/R4 通用滚动验收收口
+
+R4 收口日期：2026-10-26
+审查基线：`7fbea8a86c2b9893ca166619732ab4a00babac0f`。保留 R3 对“旧底部滚动位置先于消息行增长”的修复。本轮发现的 R4 是通用列表识别、历史跟随状态、最新消息确认和热路径缓存缺口，不改变 R3 的已确认根因。
+
+### R3 根因与 R1/R2 覆盖边界
+
+- R3 真机诊断显示，时间标签已经在消息行内并参与消息行原生测量；遮挡发生在微信先按旧消息行高度定位到底部，随后发送状态/`createTime` 补齐或 payload bind 使行高增长。行高增长后的最新行下边界越过当时的实际聊天列表视口，旧位置没有随高度变化补足。键盘开关会改变视口，但不是触发该时序的必要条件。
+- R1/R2 的主要回归覆盖消息身份与显示缓存、标签复用和真实行布局；未覆盖 `ListView` 的可见 adapter 范围变化、未附着的新 adapter 消息、非消息 footer、列表子类的真实继承识别，以及延迟修正执行时消息身份/适配器尾部变化。因此它们通过不能证明尾部跟随状态和最新消息资格正确。
+
+### R4 修复前复现与实现
+
+- R3 基线的四项定向红测均复现：实际继承 RecyclerView 但类名不含该字符串时无法识别；`scrollY == 0` 但可见行向历史移动的 ListView 仍被误认为跟随最新；适配器已有未附着 B 时旧 A 仍可通过尾部候选检查；同一位置 A→B 复用后排队的 A 回调仍可能修正。
+- 容器现在按实际继承关系识别 `RecyclerView`、`AbsListView`/`ListView`、`ScrollView` 及子类；未知结构不进入修正。ListView 根据 first/last visible adapter position、滚动方向和用户触摸意图更新状态。用户已进入历史阅读后，微信自己的程序化滚动到底部不会清除该意图；手动返回真实尾部后才恢复跟随。Hook 在 `proceed()` 后观察，不替换微信监听器。
+- 尾部资格以当前 adapter item、消息身份和 adapter position 为准。消息之后的行只有在当前 attached holder 被确认不是消息行，或其 viewType 曾在同一 adapter 中由实际 attached 非消息 holder 确认后，才作为 footer/结构行接受；null 数据、未知 item 或单纯不同 viewType 都不再作为证据。延迟回调执行时重新验证位置、消息身份、绑定代次、附着、功能开关、最新消息资格及跟随状态；未知或过期状态跳过，不强制滚动。
+- 容器类型、反射方法、adapter item 访问和 Hook 安装状态按宿主 class/method/adapter 生命周期缓存。先排除非跟随和无时间溢出的情况；suffix 检查在发现更新消息后立即停止。未知结构不扫描整张列表。初版 `ClassValue` 因不兼容 minSdk 27 已换为并发类缓存。
+
+### R4 自动回归与构建
+
+- R4 红测在当前 R3 实现上先失败，修复后完整 Robolectric：R1 原有 15 项 PASS，R4 新增 9 项 PASS，0 failures / 0 errors。新增用例使用真实 AndroidX `RecyclerView`、Android `ListView`/`AbsListView`、`ScrollView` 与名称不含容器类名的自定义子类；覆盖实际行高和裁切测量、尾部单次修正、ListView 可见范围变化、未附着 B、真实附着 footer 被确认后脱附仍能识别、未知 footer 安全拒绝、历史可见行不跳动、同位置 A→B、过期资格、detach/reattach、关闭清理、缓存计数与提前停止 suffix 检查。
+- `run_message_details_binding_tests.cjs`（并以 R1 审查基线 `3eb6b345` 验证旧实现被拒绝）、消息详情布局 7 项、预绘制/回调生命周期 14 项、Native 提取与回归、性能、API 102 R1/interceptor、消息类型标签 96 项：PASS。缓存回归确认同类和同签名方法只解析一次；性能 runner 未报告退化。
+- `:app:testDebugUnitTest :app:assembleDebug :app:assembleRelease :app:lint :app:lintRelease`：BUILD SUCCESSFUL。Debug/Release Lint 均 0 errors、653 warnings、50 hints；现有 `firstOrNull()` 非唯一结果提示位于 `HchatExtraFeature.kt` 与 `WeChatTabletFeature.kt`。
+- `scripts/verify_api102_apk.py`：正式 R8 APK PASS，单一 API 102 入口、framework API 外置；`apksigner` v2 验签通过，证书 SHA-256 与现有正式证书一致：`5de821feb8cf9dc1be4f1a656664f5d4d88755465d390b0a32a4050d0922a3fd`。
+
+### 最终 Release 真机结果
+
+- 设备：Redmi K50 Ultra（22081212C），Android 15 / API 35，微信 `com.tencent.mm` 8.0.76 / versionCode 3140。最终正式签名 Release 通过 `adb install -r` 覆盖安装并重启微信进程加载；未卸载微信、未清除微信数据或改动用户配置。
+- 最终 R4 Release 覆盖安装后，文件传输助手连续短文字发送：键盘关闭 3/3、键盘打开 3/3；六条时间都完整显示，无需手动补滑。发送时分别确认 IME 隐藏/显示，键盘打开时最新时间仍在实际缩短的聊天视口内完整可见。此前 R4 构建的 5/5 + 5/5 是前一 APK 的结果，不计入最终 SHA 对应的轮次。
+- 手动滑入历史后，长文字和较早短消息仍在原可视区域；静置 5 秒期间聊天内容裁切区逐像素一致，没有自动回到底部。历史位置直接聚焦输入框会触发微信自己的尾部定位；该宿主行为无法与模块修正完全归因，直接从历史发送列为 **NOT_VERIFIED**。Robolectric 已验证 `followingLatest=false` 时，即使最新行标签溢出也不会移动列表。
+- 本轮真机 PASS：最终 Release 键盘开/关各 3 次短文字发送、历史滚动静置 5 秒。模拟测试 PASS：三类 Android 滚动 View、footer 最新消息资格、延迟身份/代次/生命周期与历史跟随。NOT_VERIFIED：`com.tencent.mm.wx`（设备上未安装）、历史位置聚焦输入框后宿主/模块的滚动归因，以及其他消息类型的本轮真机压力覆盖。本轮最终 Release 未观察到时间遮挡。
+
+## R4 APK
+
+- Debug：`dist/Hchat-debug.apk`
+- 正式签名 R8 Release：`dist/Hchat-release-signed.apk`
+- Release SHA-256：`b291a530f3800be3bd045a72f38a60ee9da278825e5d33cd474f02625e09f783`

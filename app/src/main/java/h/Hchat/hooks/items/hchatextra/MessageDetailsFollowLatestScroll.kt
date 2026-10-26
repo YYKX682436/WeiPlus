@@ -3,26 +3,33 @@ package h.Hchat.hooks.items.hchatextra
 import android.graphics.Rect
 import android.view.MotionEvent
 import android.view.View
-import android.view.ViewGroup
 import android.view.ViewConfiguration
 import android.view.ViewTreeObserver
+import android.widget.AbsListView
+import android.widget.ScrollView
 import android.widget.TextView
 import java.lang.ref.WeakReference
 import java.util.WeakHashMap
 
-/** Keeps the user's tail-follow intent across list content growth. */
+/** Keeps the user's tail-follow intent across native list growth and layout changes. */
 internal class MessageDetailsFollowLatestState(initiallyFollowingLatest: Boolean) {
     @Volatile private var followingLatest = initiallyFollowingLatest
     @Volatile private var userMovedIntoHistory = false
+    @Volatile private var userRequestedLatest = false
 
     fun onScrolled(verticalDelta: Int, atLatestEdge: Boolean) {
         if (atLatestEdge) {
-            followingLatest = true
-            userMovedIntoHistory = false
+            if (!userMovedIntoHistory || userRequestedLatest) {
+                followingLatest = true
+                userMovedIntoHistory = false
+                userRequestedLatest = false
+            } else {
+                followingLatest = false
+            }
         } else if (verticalDelta < 0) {
-            // A negative RecyclerView delta is movement back into message history.
             followingLatest = false
             userMovedIntoHistory = true
+            userRequestedLatest = false
         }
     }
 
@@ -30,39 +37,85 @@ internal class MessageDetailsFollowLatestState(initiallyFollowingLatest: Boolean
         if (!targetsLatestRow) {
             followingLatest = false
         } else if (!userMovedIntoHistory) {
-            // Initial chat positioning may happen without a physical scroll callback.
             followingLatest = true
         }
     }
 
-    fun onUserTouch(fingerDeltaY: Float, touchSlop: Int, canScrollTowardHistory: Boolean, atLatestEdge: Boolean) {
+    fun onUserTouch(
+        fingerDeltaY: Float,
+        touchSlop: Int,
+        canScrollTowardHistory: Boolean,
+        atLatestEdge: Boolean
+    ) {
         if (atLatestEdge) {
             followingLatest = true
             userMovedIntoHistory = false
+            userRequestedLatest = false
         } else if (fingerDeltaY > touchSlop && canScrollTowardHistory) {
-            // A downward finger drag moves the chat content toward older messages.
             followingLatest = false
             userMovedIntoHistory = true
+            userRequestedLatest = false
+        } else if (fingerDeltaY < -touchSlop && canScrollTowardHistory) {
+            userRequestedLatest = true
         }
+    }
+
+    fun onAbsListVisiblePositions(
+        previousFirst: Int,
+        previousLast: Int,
+        firstVisible: Int,
+        lastVisible: Int,
+        atLatestEdge: Boolean
+    ) {
+        val movedTowardHistory = firstVisible < previousFirst || lastVisible < previousLast
+        val movedTowardLatest = firstVisible > previousFirst || lastVisible > previousLast
+        onScrolled(
+            verticalDelta = when {
+                movedTowardHistory -> -1
+                movedTowardLatest -> 1
+                else -> 0
+            },
+            atLatestEdge = atLatestEdge
+        )
     }
 
     fun isFollowingLatest(): Boolean = followingLatest
 }
 
-/** One measured, bounded correction for the newest row after its height changes. */
+internal data class MessageDetailsTailConfirmation(
+    val position: Int,
+    val identity: MessageDetailsIdentity,
+    val bindIsCurrent: Boolean,
+    val rowIsAttached: Boolean,
+    val featureEnabled: Boolean,
+    val latestMessageConfirmed: Boolean
+)
+
+/** One measured, bounded correction for a confirmed latest row after viewport or row growth. */
 internal object MessageDetailsFollowLatestScroll {
-    fun hasNewerAttachedMessage(
-        container: ViewGroup,
-        adapterPosition: Int,
-        childAdapterPosition: (View) -> Int?,
-        isMessageRow: (View) -> Boolean
-    ): Boolean {
-        for (index in 0 until container.childCount) {
-            val child = container.getChildAt(index)
-            val childPosition = childAdapterPosition(child) ?: continue
-            if (childPosition > adapterPosition && isMessageRow(child)) return true
+    fun overflowDistance(container: View, row: View, label: View): Int {
+        val kind = MessageDetailsScrollSupport.containerKind(container)
+        if (kind == MessageDetailsScrollSupport.ContainerKind.UNKNOWN ||
+            label.visibility != View.VISIBLE || label.width <= 0 || label.height <= 0 ||
+            !MessageDetailsScrollSupport.isWithin(label, row) ||
+            !MessageDetailsScrollSupport.isWithin(row, container)
+        ) return 0
+        val parent = container as? android.view.ViewGroup ?: return 0
+        val labelBounds = Rect(0, 0, label.width, label.height)
+        runCatching { parent.offsetDescendantRectToMyCoords(label, labelBounds) }.getOrElse { return 0 }
+
+        val clippedBottomPadding = if (parent.clipToPadding) parent.paddingBottom else 0
+        var visibleBottom = (container.height - clippedBottomPadding).coerceAtLeast(container.paddingTop)
+        val visibleContainer = Rect()
+        if (container.getGlobalVisibleRect(visibleContainer)) {
+            val location = IntArray(2)
+            container.getLocationOnScreen(location)
+            visibleBottom = minOf(visibleBottom, visibleContainer.bottom - location[1])
         }
-        return false
+        // ScrollView descendants keep content coordinates. RecyclerView and AbsListView children
+        // are already expressed in viewport coordinates and must not be adjusted by scrollY.
+        if (container is ScrollView) visibleBottom += container.scrollY
+        return (labelBounds.bottom - visibleBottom).coerceAtLeast(0)
     }
 
     fun correctTailOverflow(
@@ -72,51 +125,9 @@ internal object MessageDetailsFollowLatestScroll {
         followingLatest: Boolean,
         isLatestRow: Boolean
     ): Int {
-        if (!followingLatest || !isLatestRow || label.visibility != View.VISIBLE ||
-            label.width <= 0 || label.height <= 0 || !contains(row, label) || !contains(container, row)
-        ) return 0
-
-        val labelBounds = Rect(0, 0, label.width, label.height)
-        if (container !is ViewGroup) return 0
-        runCatching { container.offsetDescendantRectToMyCoords(label, labelBounds) }.getOrElse { return 0 }
-
-        val scrollContainer = container
-        val clippedBottomPadding = if (scrollContainer.clipToPadding) scrollContainer.paddingBottom else 0
-        var visibleBottom = (container.height - clippedBottomPadding).coerceAtLeast(container.paddingTop)
-        val visibleContainer = Rect()
-        if (container.getGlobalVisibleRect(visibleContainer)) {
-            // Convert the clipped screen-space edge back to the container's local coordinates.
-            val location = IntArray(2)
-            container.getLocationOnScreen(location)
-            visibleBottom = minOf(visibleBottom, visibleContainer.bottom - location[1])
-        }
-        // ScrollView descendants are reported in content coordinates; its visible viewport
-        // therefore ends at scrollY + height. RecyclerView children already move with scrolling.
-        visibleBottom += container.scrollY
-        val overflow = (labelBounds.bottom - visibleBottom).coerceAtLeast(0)
-        if (overflow == 0 || !container.canScrollVertically(1)) return 0
-
-        if (container.javaClass.name.contains("ListView")) {
-            val scrollListBy = container.javaClass.methods.firstOrNull { method ->
-                method.name == "scrollListBy" && method.parameterTypes.contentEquals(arrayOf(Int::class.javaPrimitiveType))
-            } ?: return 0
-            return runCatching {
-                scrollListBy.invoke(container, overflow)
-                overflow
-            }.getOrDefault(0)
-        }
-
-        container.scrollBy(0, overflow)
-        return overflow
-    }
-
-    private fun contains(ancestor: View, descendant: View): Boolean {
-        var current: View? = descendant
-        while (current != null) {
-            if (current === ancestor) return true
-            current = current.parent as? View
-        }
-        return false
+        if (!followingLatest || !isLatestRow) return 0
+        val overflow = overflowDistance(container, row, label)
+        return if (MessageDetailsScrollSupport.correctBy(container, overflow)) overflow else 0
     }
 }
 
@@ -127,9 +138,9 @@ internal object MessageDetailsFollowLatestRegistry {
     fun observe(container: View) {
         synchronized(entries) {
             if (entries.containsKey(container)) return
-            val entry = Entry(container, MessageDetailsFollowLatestState(!container.canScrollVertically(1)))
-            entries[container] = entry
-            entry.attach()
+            entries[container] = Entry(container, MessageDetailsFollowLatestState(!container.canScrollVertically(1))).also {
+                it.attach()
+            }
         }
     }
 
@@ -138,9 +149,14 @@ internal object MessageDetailsFollowLatestRegistry {
     }
 
     fun onRecyclerScrolled(container: View, verticalDelta: Int) {
-        if (verticalDelta == 0) return
         val entry = synchronized(entries) { entries[container] } ?: return
-        entry.recordScroll(verticalDelta)
+        entry.recordRecyclerScroll(verticalDelta)
+    }
+
+    fun onAbsListLaidOut(container: View) {
+        val list = container as? AbsListView ?: return
+        val entry = synchronized(entries) { entries[list] } ?: return
+        entry.onAbsListLaidOut(list)
     }
 
     fun onRecyclerTouch(container: View, event: MotionEvent) {
@@ -148,15 +164,21 @@ internal object MessageDetailsFollowLatestRegistry {
         entry.onTouch(event)
     }
 
-    fun onRecyclerPositionRequested(container: View, adapterPosition: Int) {
+    fun onPositionRequested(container: View, adapterPosition: Int) {
         val entry = synchronized(entries) { entries[container] } ?: return
-        val count = entry.adapterCount(container) ?: return
+        val count = MessageDetailsScrollSupport.adapterItemCount(container) ?: return
         entry.state.onPositionRequested(adapterPosition >= 0 && adapterPosition == count - 1)
     }
 
-    fun rememberTailRow(container: View, row: View, label: TextView, adapterPosition: Int) {
+    fun rememberTailRow(
+        container: View,
+        row: View,
+        label: TextView,
+        confirmation: MessageDetailsTailConfirmation,
+        validator: () -> MessageDetailsTailConfirmation?
+    ) {
         val entry = synchronized(entries) { entries[container] } ?: return
-        entry.rememberTailRow(row, label, adapterPosition)
+        entry.rememberTailRow(row, label, confirmation, validator)
     }
 
     fun clear() {
@@ -171,12 +193,17 @@ internal object MessageDetailsFollowLatestRegistry {
         private val container = WeakReference(container)
         private var observer = WeakReference<ViewTreeObserver>(null)
         private var lastScrollY = container.scrollY
+        private var lastAbsFirst = (container as? AbsListView)?.firstVisiblePosition ?: -1
+        private var lastAbsLast = (container as? AbsListView)?.lastVisiblePosition ?: -1
         private var row = WeakReference<View>(null)
         private var label = WeakReference<TextView>(null)
-        private var adapterPosition = -1
+        private var expectedPosition = -1
+        private var expectedIdentity = WeakReference<MessageDetailsIdentity>(null)
+        private var validator: (() -> MessageDetailsTailConfirmation?)? = null
         private var targetGeneration = 0L
         private var pendingCorrection: Runnable? = null
         private var active = true
+        private var attached = false
         private var gesturePointerId = MotionEvent.INVALID_POINTER_ID
         private var gestureStartY = Float.NaN
 
@@ -184,19 +211,48 @@ internal object MessageDetailsFollowLatestRegistry {
             val view = container.get() ?: return
             view.addOnLayoutChangeListener(this)
             view.addOnAttachStateChangeListener(this)
-            if (view.isAttachedToWindow) attachScrollObserver(view)
+            if (view.isAttachedToWindow) onViewAttachedToWindow(view)
         }
 
-        fun rememberTailRow(row: View, label: TextView, adapterPosition: Int) {
+        fun rememberTailRow(
+            row: View,
+            label: TextView,
+            confirmation: MessageDetailsTailConfirmation,
+            validator: () -> MessageDetailsTailConfirmation?
+        ) {
             this.row = WeakReference(row)
             this.label = WeakReference(label)
-            this.adapterPosition = adapterPosition
+            expectedPosition = confirmation.position
+            expectedIdentity = WeakReference(confirmation.identity)
+            this.validator = validator
             targetGeneration++
+            val view = container.get() ?: return
+            pendingCorrection?.let(view::removeCallbacks)
+            pendingCorrection = null
+            scheduleCorrection(view)
         }
 
-        fun recordScroll(verticalDelta: Int) {
+        fun recordRecyclerScroll(verticalDelta: Int) {
             val view = container.get() ?: return
             state.onScrolled(verticalDelta, !view.canScrollVertically(1))
+        }
+
+        fun recordAbsListLayout(view: AbsListView) {
+            val first = view.firstVisiblePosition
+            val last = view.lastVisiblePosition
+            val previousFirst = lastAbsFirst
+            val previousLast = lastAbsLast
+            lastAbsFirst = first
+            lastAbsLast = last
+            if (previousFirst < 0 || previousLast < previousFirst) return
+            state.onAbsListVisiblePositions(
+                previousFirst, previousLast, first, last, atLatestEdge = !view.canScrollVertically(1)
+            )
+        }
+
+        fun onAbsListLaidOut(view: AbsListView) {
+            recordAbsListLayout(view)
+            scheduleCorrection(view)
         }
 
         fun onTouch(event: MotionEvent) {
@@ -205,12 +261,7 @@ internal object MessageDetailsFollowLatestRegistry {
                 MotionEvent.ACTION_DOWN -> {
                     gesturePointerId = event.getPointerId(0)
                     gestureStartY = event.getY(0)
-                    state.onUserTouch(
-                        fingerDeltaY = 0f,
-                        touchSlop = ViewConfiguration.get(view.context).scaledTouchSlop,
-                        canScrollTowardHistory = view.canScrollVertically(-1),
-                        atLatestEdge = !view.canScrollVertically(1)
-                    )
+                    recordTouchIntent(view, 0f)
                 }
                 MotionEvent.ACTION_POINTER_UP -> {
                     val liftedIndex = event.actionIndex
@@ -228,20 +279,26 @@ internal object MessageDetailsFollowLatestRegistry {
                 MotionEvent.ACTION_MOVE -> {
                     val index = event.findPointerIndex(gesturePointerId)
                     if (index >= 0 && !gestureStartY.isNaN()) {
-                        state.onUserTouch(
-                            fingerDeltaY = event.getY(index) - gestureStartY,
-                            touchSlop = ViewConfiguration.get(view.context).scaledTouchSlop,
-                            canScrollTowardHistory = view.canScrollVertically(-1),
-                            atLatestEdge = !view.canScrollVertically(1)
-                        )
+                        recordTouchIntent(view, event.getY(index) - gestureStartY)
                     }
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     gesturePointerId = MotionEvent.INVALID_POINTER_ID
                     gestureStartY = Float.NaN
-                    if (!view.canScrollVertically(1)) state.onUserTouch(0f, 0, false, atLatestEdge = true)
+                    if (!view.canScrollVertically(1)) {
+                        state.onUserTouch(0f, 0, false, atLatestEdge = true)
+                    }
                 }
             }
+        }
+
+        private fun recordTouchIntent(view: View, fingerDeltaY: Float) {
+            state.onUserTouch(
+                fingerDeltaY = fingerDeltaY,
+                touchSlop = ViewConfiguration.get(view.context).scaledTouchSlop,
+                canScrollTowardHistory = MessageDetailsScrollSupport.canScrollTowardHistory(view),
+                atLatestEdge = !view.canScrollVertically(1)
+            )
         }
 
         override fun onLayoutChange(
@@ -255,27 +312,46 @@ internal object MessageDetailsFollowLatestRegistry {
             oldRight: Int,
             oldBottom: Int
         ) {
-            if (right - left != oldRight - oldLeft || bottom - top != oldBottom - oldTop) {
+            if (view is AbsListView) recordAbsListLayout(view)
+            if (right != oldRight || bottom != oldBottom || left != oldLeft || top != oldTop) {
                 scheduleCorrection(view)
             }
         }
 
-        override fun onViewAttachedToWindow(view: View) = attachScrollObserver(view)
+        override fun onViewAttachedToWindow(view: View) {
+            attached = true
+            if (view is AbsListView) {
+                lastAbsFirst = view.firstVisiblePosition
+                lastAbsLast = view.lastVisiblePosition
+            }
+            attachScrollObserver(view)
+            scheduleCorrection(view)
+        }
 
-        override fun onViewDetachedFromWindow(view: View) = removeScrollObserver(view)
+        override fun onViewDetachedFromWindow(view: View) {
+            attached = false
+            targetGeneration++
+            pendingCorrection?.let(view::removeCallbacks)
+            pendingCorrection = null
+            removeScrollObserver(view)
+        }
 
         override fun onScrollChanged() {
             val view = container.get() ?: return
+            if (view is AbsListView) {
+                recordAbsListLayout(view)
+                return
+            }
             val nextY = view.scrollY
             val delta = nextY - lastScrollY
             lastScrollY = nextY
-            if (delta != 0) recordScroll(delta)
+            if (delta != 0) recordRecyclerScroll(delta)
         }
 
         private fun attachScrollObserver(view: View) {
             removeScrollObserver(view)
             lastScrollY = view.scrollY
-            if (view.javaClass.name.contains("RecyclerView")) return
+            if (MessageDetailsScrollSupport.containerKind(view) != MessageDetailsScrollSupport.ContainerKind.SCROLL) return
             val current = view.viewTreeObserver
             if (!current.isAlive) return
             current.addOnScrollChangedListener(this)
@@ -291,19 +367,36 @@ internal object MessageDetailsFollowLatestRegistry {
         }
 
         private fun scheduleCorrection(view: View) {
-            if (!active || pendingCorrection != null || !state.isFollowingLatest()) return
-            val generationRow = row
-            val generationLabel = label
-            val generationPosition = adapterPosition
+            if (!active || !attached || pendingCorrection != null || !state.isFollowingLatest()) return
+            val rowReference = row
+            val labelReference = label
+            val expectedPosition = this.expectedPosition
+            val expectedIdentity = this.expectedIdentity.get() ?: return
+            val validate = validator ?: return
             val generation = targetGeneration
             val callback = Runnable {
                 pendingCorrection = null
-                if (!active || container.get() !== view || generation != targetGeneration ||
-                    !state.isFollowingLatest()
+                if (!active || !attached || container.get() !== view || generation != targetGeneration ||
+                    !state.isFollowingLatest() || !view.isAttachedToWindow
                 ) return@Runnable
-                val currentRow = generationRow.get() ?: return@Runnable
-                val currentLabel = generationLabel.get() ?: return@Runnable
-                if (generationPosition < 0 || adapterPosition(view, currentRow) != generationPosition) return@Runnable
+                val currentRow = rowReference.get() ?: return@Runnable
+                val currentLabel = labelReference.get() ?: return@Runnable
+                if (MessageDetailsFollowLatestScroll.overflowDistance(view, currentRow, currentLabel) <= 0) {
+                    return@Runnable
+                }
+                val latest = validate() ?: return@Runnable
+                val valid = MessageDetailsScrollSupport.delayedRowStillMatches(
+                    expectedPosition = expectedPosition,
+                    actualPosition = latest.position,
+                    expectedIdentity = expectedIdentity,
+                    currentIdentity = latest.identity,
+                    bindIsCurrent = latest.bindIsCurrent,
+                    rowIsAttached = latest.rowIsAttached,
+                    featureEnabled = latest.featureEnabled,
+                    latestMessageConfirmed = latest.latestMessageConfirmed,
+                    followingLatest = state.isFollowingLatest()
+                )
+                if (!valid || !MessageDetailsScrollSupport.isWithin(currentRow, view)) return@Runnable
                 MessageDetailsFollowLatestScroll.correctTailOverflow(
                     view, currentRow, currentLabel, state.isFollowingLatest(), isLatestRow = true
                 )
@@ -315,6 +408,7 @@ internal object MessageDetailsFollowLatestRegistry {
         fun dispose() {
             if (!active) return
             active = false
+            targetGeneration++
             val view = container.get() ?: return
             pendingCorrection?.let(view::removeCallbacks)
             pendingCorrection = null
@@ -323,38 +417,11 @@ internal object MessageDetailsFollowLatestRegistry {
             view.removeOnAttachStateChangeListener(this)
             row.clear()
             label.clear()
-            adapterPosition = -1
+            expectedPosition = -1
+            expectedIdentity.clear()
+            validator = null
             gesturePointerId = MotionEvent.INVALID_POINTER_ID
             gestureStartY = Float.NaN
         }
-
-        fun adapterCount(view: View): Int? = runCatching {
-            val adapter = view.javaClass.methods.firstOrNull {
-                it.name == "getAdapter" && it.parameterTypes.isEmpty()
-            }?.invoke(view) ?: return null
-            val countMethod = adapter.javaClass.methods.firstOrNull {
-                (it.name == "getItemCount" || it.name == "getCount") && it.parameterTypes.isEmpty()
-            } ?: return null
-            (countMethod.invoke(adapter) as? Number)?.toInt()
-        }.getOrNull()
-
-        private fun adapterPosition(container: View, row: View): Int? {
-            var current: View? = row
-            while (current != null && current !== container) {
-                val position = invokeAdapterPosition(container, "getChildAdapterPosition", current)
-                    ?: invokeAdapterPosition(container, "getPositionForView", current)
-                if (position != null && position >= 0) return position
-                current = current.parent as? View
-            }
-            return null
-        }
-
-        private fun invokeAdapterPosition(container: View, name: String, child: View): Int? = runCatching {
-            val method = container.javaClass.methods.firstOrNull {
-                it.name == name && it.parameterTypes.size == 1 &&
-                    it.parameterTypes[0].isAssignableFrom(child.javaClass)
-            } ?: return null
-            (method.invoke(container, child) as? Number)?.toInt()
-        }.getOrNull()
     }
 }

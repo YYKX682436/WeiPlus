@@ -135,6 +135,8 @@ private class HchatExtraHooker(
         var message: Any? = null
     )
 
+    private data class CachedAdapterItemAccess(val method: Method?, val field: Field?)
+
     private data class AvatarDetailsAnchor(
         val parent: RelativeLayout,
         val positionView: View,
@@ -192,7 +194,6 @@ private class HchatExtraHooker(
     private val hookedMethods = Collections.newSetFromMap(ConcurrentHashMap<Method, Boolean>())
     private val hookedClasses = Collections.newSetFromMap(ConcurrentHashMap<Class<*>, Boolean>())
     private val holderRootFieldCache = ConcurrentHashMap<Class<*>, Field>()
-    private val itemMethodCache = ConcurrentHashMap<Class<*>, Method>()
     private val itemListFieldCache = ConcurrentHashMap<Class<*>, Field>()
     private val holderTimeFieldCache = ConcurrentHashMap<Class<*>, Field>()
     private val holderAvatarFieldCache = ConcurrentHashMap<Class<*>, Field>()
@@ -218,6 +219,7 @@ private class HchatExtraHooker(
     private val messageDetailsScrollAttachListeners = WeakHashMap<View, View.OnAttachStateChangeListener>()
     private val messageDetailsRowGrowthListeners = WeakHashMap<View, View.OnLayoutChangeListener>()
     private val messageDetailsTailCheckCallbacks = WeakHashMap<View, Runnable>()
+    private val adapterItemAccessCache = ConcurrentHashMap<Class<*>, CachedAdapterItemAccess>()
     private val messageDetailsConfigHandler = Handler(Looper.getMainLooper())
     @Volatile private var messageDetailsConfig = readMessageDetailsConfig()
     private var appliedMessageDetailsConfig = messageDetailsConfig
@@ -1399,19 +1401,20 @@ private class HchatExtraHooker(
             ) return@Runnable
             val container = nearestMessageDetailsScrollContainer(currentRoot) ?: return@Runnable
             MessageDetailsFollowLatestRegistry.observe(container)
-            installMessageDetailsRecyclerScrollHook(container)
-            val itemCount = messageDetailsAdapterItemCount(container) ?: return@Runnable
-            val position = messageDetailsAdapterPosition(container, currentRoot, bindPosition) ?: return@Runnable
-            val hasNewerAttachedMessage = messageDetailsHasNewerAttachedMessage(container, position)
-            if (position != itemCount - 1 && hasNewerAttachedMessage) return@Runnable
-            MessageDetailsFollowLatestRegistry.rememberTailRow(container, currentRoot, currentLabel, position)
             val followingLatest = MessageDetailsFollowLatestRegistry.isFollowingLatest(container)
-            MessageDetailsFollowLatestScroll.correctTailOverflow(
-                container,
-                currentRoot,
-                currentLabel,
-                followingLatest,
-                isLatestRow = true
+            if (!followingLatest) return@Runnable
+            if (MessageDetailsFollowLatestScroll.overflowDistance(container, currentRoot, currentLabel) <= 0) {
+                return@Runnable
+            }
+            val confirmation = currentMessageDetailsTailConfirmation(
+                container, currentRoot, currentLabel, bindPosition, bindToken
+            ) ?: return@Runnable
+            if (!confirmation.latestMessageConfirmed) return@Runnable
+            val validator = messageDetailsTailValidator(
+                container, currentRoot, currentLabel, bindPosition, bindToken
+            )
+            MessageDetailsFollowLatestRegistry.rememberTailRow(
+                container, currentRoot, currentLabel, confirmation, validator
             )
         }
         val previous = synchronized(messageDetailsTailCheckCallbacks) {
@@ -1445,136 +1448,213 @@ private class HchatExtraHooker(
         return null
     }
 
-    private fun messageDetailsAdapterItemCount(container: View): Int? {
-        val adapter = invokeMessageDetailsNoArg(container, "getAdapter") ?: return null
-        return invokeMessageDetailsInt(adapter, "getItemCount") ?: invokeMessageDetailsInt(adapter, "getCount")
-    }
-
-    private fun messageDetailsAdapterPosition(
+    private fun messageDetailsTailValidator(
         container: View,
         row: View,
-        bindPosition: Int
-    ): Int? {
-        var current = row
-        while (current !== container) {
-            (invokeMessageDetailsInt(container, "getChildAdapterPosition", current)
-                ?: invokeMessageDetailsInt(container, "getPositionForView", current))
-                ?.takeIf { it >= 0 }?.let { return it }
-            current = current.parent as? View ?: break
+        label: TextView,
+        bindPosition: Int,
+        bindToken: Any
+    ): () -> MessageDetailsTailConfirmation? {
+        val containerReference = WeakReference(container)
+        val rowReference = WeakReference(row)
+        val labelReference = WeakReference(label)
+        return {
+            val currentContainer = containerReference.get()
+            val currentRow = rowReference.get()
+            val currentLabel = labelReference.get()
+            if (currentContainer == null || currentRow == null || currentLabel == null) null
+            else currentMessageDetailsTailConfirmation(
+                currentContainer, currentRow, currentLabel, bindPosition, bindToken
+            )
         }
-        return bindPosition.takeIf { it >= 0 }
     }
 
-    private fun messageDetailsHasNewerAttachedMessage(container: View, adapterPosition: Int): Boolean {
-        val parent = container as? ViewGroup ?: return false
-        return MessageDetailsFollowLatestScroll.hasNewerAttachedMessage(
-            parent,
-            adapterPosition,
-            childAdapterPosition = { child ->
-                invokeMessageDetailsInt(container, "getChildAdapterPosition", child)
-                    ?: invokeMessageDetailsInt(container, "getPositionForView", child)
+    private fun currentMessageDetailsTailConfirmation(
+        container: View,
+        row: View,
+        label: TextView,
+        bindPosition: Int,
+        bindToken: Any
+    ): MessageDetailsTailConfirmation? {
+        val binding = synchronized(messageDetailsBindings) { messageDetailsBindings[label] }
+            ?: (label.getTag(R.id.hchat_message_details_binding) as? MessageDetailsBinding)
+            ?: return null
+        val expectedIdentity = binding.identity ?: return null
+        if (binding.root !== row) return null
+        val adapter = MessageDetailsScrollSupport.adapter(container) ?: return null
+        val itemCount = MessageDetailsScrollSupport.adapterItemCount(container) ?: return null
+        val position = MessageDetailsScrollSupport.childAdapterPosition(container, row) ?: return null
+        if (position !in 0 until itemCount || (bindPosition >= 0 && position != bindPosition)) return null
+        val latest = MessageDetailsScrollSupport.isConfirmedLatestMessage(
+            position = position,
+            itemCount = itemCount,
+            itemAt = { nextPosition -> messageDetailsAdapterItemProbe(adapter, nextPosition) },
+            isMessageItem = { item -> resolveNativeMessage(item) != null },
+            candidateMatchesIdentity = { item ->
+                resolveNativeMessage(item)?.let { expectedIdentity.sameMessage(messageDetailsIdentity(it)) } == true
             },
-            isMessageRow = { child ->
-                if (findTaggedMessageDetailsLabel(child) != null) {
-                    true
-                } else {
-                    val holder = invokeMessageDetailsViewArgument(container, "findContainingViewHolder", child)
-                    holder != null && isMessageDetailsHolder(holder, messageRowRoot(child))
-                }
+            isKnownStructuralRow = { nextPosition, _ ->
+                messageDetailsKnownStructuralRow(container, adapter, nextPosition) ||
+                    MessageDetailsScrollSupport.hasKnownStructuralAdapterViewType(adapter, nextPosition)
             }
+        )
+        return MessageDetailsTailConfirmation(
+            position = position,
+            identity = expectedIdentity,
+            bindIsCurrent = isCurrentMessageDetailsBind(row, bindToken),
+            rowIsAttached = row.isAttachedToWindow && label.parent != null && isViewWithinRoot(label, row),
+            featureEnabled = messageDetailsConfig.enabled,
+            latestMessageConfirmed = latest
         )
     }
 
+    private fun messageDetailsKnownStructuralRow(
+        container: View,
+        adapter: Any,
+        position: Int
+    ): Boolean {
+        val isStructural = when (MessageDetailsScrollSupport.containerKind(container)) {
+            MessageDetailsScrollSupport.ContainerKind.RECYCLER -> {
+                val holder = MessageDetailsScrollSupport.invoke(container, "findViewHolderForAdapterPosition", position)
+                    ?: return false
+                val itemView = MessageDetailsScrollSupport.holderItemView(holder) ?: return false
+                !isMessageDetailsHolder(holder, messageRowRoot(itemView))
+            }
+            MessageDetailsScrollSupport.ContainerKind.ABS_LIST -> {
+                val list = container as android.widget.AbsListView
+                val childIndex = position - list.firstVisiblePosition
+                val child = list.getChildAt(childIndex) ?: return false
+                val holder = child.tag ?: return false
+                !isMessageDetailsHolder(holder, messageRowRoot(child))
+            }
+            else -> false
+        }
+        if (isStructural) MessageDetailsScrollSupport.rememberStructuralAdapterViewType(adapter, position)
+        return isStructural
+    }
+
+    private fun messageDetailsAdapterItemProbe(adapter: Any, position: Int): MessageDetailsScrollSupport.ItemProbe {
+        if (position < 0) return MessageDetailsScrollSupport.ItemProbe(false, null)
+        val access = adapterItemAccessCache.computeIfAbsent(adapter.javaClass, ::resolveAdapterItemAccess)
+        access.method?.let { method ->
+            val value = runCatching { method.invoke(adapter, position) }
+                .getOrElse { return MessageDetailsScrollSupport.ItemProbe(false, null) }
+            return MessageDetailsScrollSupport.ItemProbe(true, value)
+        }
+        access.field?.let { field ->
+            val list = runCatching { field.get(adapter) }.getOrNull()
+                ?: return MessageDetailsScrollSupport.ItemProbe(false, null)
+            if (list is List<*> && position < list.size) {
+                return MessageDetailsScrollSupport.ItemProbe(true, list[position])
+            }
+            val value = listItem(list, position)
+            return MessageDetailsScrollSupport.ItemProbe(value != null, value)
+        }
+        val nested = adapterItem(adapter, position)
+        return MessageDetailsScrollSupport.ItemProbe(nested != null, nested)
+    }
+
+    private fun resolveAdapterItemAccess(type: Class<*>): CachedAdapterItemAccess {
+        var current: Class<*>? = type
+        while (current != null && current != Any::class.java) {
+            val method = runCatching {
+                current.declaredMethods.firstOrNull { candidate ->
+                    candidate.parameterTypes.size == 1 &&
+                        (candidate.parameterTypes[0] == Integer.TYPE || candidate.parameterTypes[0] == Int::class.java) &&
+                        (candidate.name == "J0" || candidate.name == "getItem" || candidate.name == "get")
+                }?.apply { isAccessible = true }
+            }.getOrNull()
+            if (method != null) return CachedAdapterItemAccess(method, null)
+            val field = runCatching {
+                current.declaredFields.firstOrNull { it.name == "K" || it.name == "items" || it.name == "data" || it.name == "list" }
+                    ?.apply { isAccessible = true }
+            }.getOrNull()
+            if (field != null) return CachedAdapterItemAccess(null, field)
+            current = current.superclass
+        }
+        return CachedAdapterItemAccess(null, null)
+    }
+
     private fun messageDetailsHolderPosition(holder: Any): Int =
-        ((invokeMessageDetailsNoArg(holder, "getBindingAdapterPosition") as? Number)?.toInt()
-            ?: (invokeMessageDetailsNoArg(holder, "getAdapterPosition") as? Number)?.toInt())
+        ((MessageDetailsScrollSupport.invokeNoArg(holder, "getBindingAdapterPosition") as? Number)?.toInt()
+            ?: (MessageDetailsScrollSupport.invokeNoArg(holder, "getAdapterPosition") as? Number)?.toInt())
             ?.takeIf { it >= 0 } ?: -1
 
-    private fun invokeMessageDetailsNoArg(target: Any, name: String): Any? = runCatching {
-        target.javaClass.methods.firstOrNull { it.name == name && it.parameterTypes.isEmpty() }?.invoke(target)
-    }.getOrNull()
-
-    private fun invokeMessageDetailsViewArgument(target: Any, name: String, argument: View): Any? = runCatching {
-        target.javaClass.methods.firstOrNull { method ->
-            method.name == name && method.parameterTypes.size == 1 &&
-                method.parameterTypes[0].isAssignableFrom(argument.javaClass)
-        }?.invoke(target, argument)
-    }.getOrNull()
-
-    private fun invokeMessageDetailsInt(target: Any, name: String, vararg args: Any): Int? = runCatching {
-        val method = target.javaClass.methods.firstOrNull { candidate ->
-            candidate.name == name && candidate.parameterTypes.size == args.size &&
-                candidate.parameterTypes.zip(args).all { (parameter, argument) -> parameter.isAssignableFrom(argument.javaClass) }
-        } ?: generateSequence(target.javaClass) { it.superclass }
-            .mapNotNull { type ->
-                type.declaredMethods.firstOrNull { candidate ->
-                    candidate.name == name && candidate.parameterTypes.size == args.size &&
-                        candidate.parameterTypes.zip(args).all { (parameter, argument) -> parameter.isAssignableFrom(argument.javaClass) }
-                }?.apply { isAccessible = true }
-            }.firstOrNull()
-        (method?.invoke(target, *args) as? Number)?.toInt()
-    }.getOrNull()
-
     private fun installMessageDetailsRecyclerScrollHook(container: View) {
-        if (!container.javaClass.name.contains("RecyclerView")) return
-        val findMethod = { name: String, parameters: Array<Class<*>> ->
-            // RecyclerView dispatches scroll callbacks virtually. Hook the concrete host override
-            // when present; hooking only RecyclerView.onScrolled misses subclasses that override it.
-            generateSequence(container.javaClass as Class<*>?) { it.superclass }
-                .mapNotNull { type -> runCatching { type.getDeclaredMethod(name, *parameters) }.getOrNull() }
-                .firstOrNull()
-        }
-        val scrollDispatch = findMethod(
-            "dispatchOnScrolled",
-            arrayOf(Int::class.javaPrimitiveType!!, Int::class.javaPrimitiveType!!)
-        ) ?: findMethod("onScrolled", arrayOf(Int::class.javaPrimitiveType!!, Int::class.javaPrimitiveType!!))
-        if (scrollDispatch != null) {
-            val hookKey = "hchat_message_details_scroll_${scrollDispatch.name}_${System.identityHashCode(scrollDispatch.declaringClass.classLoader)}_${scrollDispatch.declaringClass.name}"
+        val kind = MessageDetailsScrollSupport.containerKind(container)
+        if (kind == MessageDetailsScrollSupport.ContainerKind.UNKNOWN) return
+        if (!MessageDetailsScrollHookInstallState.beginContainer(container)) return
+        var installationFailed = false
+
+        fun install(name: String, method: Method?, action: (XposedInterface.Chain) -> Any?) {
+            if (method == null || !MessageDetailsScrollHookInstallState.beginMethod(method)) return
+            val key = "hchat_message_details_${name}_${System.identityHashCode(method.declaringClass.classLoader)}_${method.declaringClass.name}"
             runCatching {
-                HookRegistry.get().hookOnce(hookKey, scrollDispatch, XposedInterface.Hooker { chain ->
+                HookRegistry.get().hookOnce(key, method, XposedInterface.Hooker(action))
+            }.onFailure {
+                MessageDetailsScrollHookInstallState.retryMethod(method)
+                installationFailed = true
+                logger("消息列表跟随状态监听失败: $name", it)
+            }
+        }
+
+        val intType = Integer.TYPE
+        val touchType = android.view.MotionEvent::class.java
+        if (kind == MessageDetailsScrollSupport.ContainerKind.RECYCLER) {
+            val scrollMethod = MessageDetailsScrollSupport.hostMethod(container, "dispatchOnScrolled", intType, intType)
+                ?: MessageDetailsScrollSupport.hostMethod(container, "onScrolled", intType, intType)
+            install("scroll", scrollMethod) { chain ->
                 val verticalDelta = (chain.args.getOrNull(1) as? Number)?.toInt() ?: 0
                 chain.proceed().also {
                     if (verticalDelta != 0) {
-                        (chain.thisObject as? View)?.let { list ->
-                            MessageDetailsFollowLatestRegistry.onRecyclerScrolled(list, verticalDelta)
+                        (chain.thisObject as? View)?.let { view ->
+                            MessageDetailsFollowLatestRegistry.onRecyclerScrolled(view, verticalDelta)
                         }
                     }
                 }
-                })
-            }.onFailure { logger("消息列表跟随状态监听失败", it) }
+            }
+        } else if (kind == MessageDetailsScrollSupport.ContainerKind.ABS_LIST) {
+            val layoutMethod = MessageDetailsScrollSupport.hostMethod(container, "layoutChildren")
+            install("abs_list_layout", layoutMethod) { chain ->
+                chain.proceed().also {
+                    (chain.thisObject as? View)?.let(MessageDetailsFollowLatestRegistry::onAbsListLaidOut)
+                }
+            }
         }
+
         for (methodName in arrayOf("onInterceptTouchEvent", "onTouchEvent")) {
-            val touchMethod = findMethod(methodName, arrayOf(android.view.MotionEvent::class.java)) ?: continue
-            val hookKey = "hchat_message_details_${methodName}_${System.identityHashCode(touchMethod.declaringClass.classLoader)}_${touchMethod.declaringClass.name}"
-            runCatching {
-                HookRegistry.get().hookOnce(hookKey, touchMethod, XposedInterface.Hooker { chain ->
-                    val event = chain.args.firstOrNull() as? android.view.MotionEvent
-                    chain.proceed().also {
-                        if (event != null) {
-                            (chain.thisObject as? View)?.let { list ->
-                                MessageDetailsFollowLatestRegistry.onRecyclerTouch(list, event)
-                            }
+            val touchMethod = MessageDetailsScrollSupport.hostMethod(container, methodName, touchType) ?: continue
+            install(methodName, touchMethod) { chain ->
+                val event = chain.args.firstOrNull() as? android.view.MotionEvent
+                chain.proceed().also {
+                    if (event != null) {
+                        (chain.thisObject as? View)?.let { view ->
+                            MessageDetailsFollowLatestRegistry.onRecyclerTouch(view, event)
                         }
                     }
-                })
-            }.onFailure { logger("消息列表手势跟随状态监听失败: $methodName", it) }
+                }
+            }
         }
-        for (methodName in arrayOf("scrollToPosition", "smoothScrollToPosition")) {
-            val method = findMethod(methodName, arrayOf(Int::class.javaPrimitiveType!!)) ?: continue
-            val hookKey = "hchat_message_details_${methodName}_${System.identityHashCode(method.declaringClass.classLoader)}_${method.declaringClass.name}"
-            runCatching {
-                HookRegistry.get().hookOnce(hookKey, method, XposedInterface.Hooker { chain ->
-                    val position = (chain.args.firstOrNull() as? Number)?.toInt() ?: -1
-                    chain.proceed().also {
-                        if (position >= 0) {
-                            (chain.thisObject as? View)?.let { list ->
-                                MessageDetailsFollowLatestRegistry.onRecyclerPositionRequested(list, position)
-                            }
+
+        val positionMethods = when (kind) {
+            MessageDetailsScrollSupport.ContainerKind.RECYCLER -> arrayOf("scrollToPosition", "smoothScrollToPosition")
+            MessageDetailsScrollSupport.ContainerKind.ABS_LIST -> arrayOf("setSelection", "setSelectionFromTop", "smoothScrollToPosition")
+            else -> emptyArray()
+        }
+        for (methodName in positionMethods) {
+            val method = MessageDetailsScrollSupport.hostMethod(container, methodName, intType) ?: continue
+            install(methodName, method) { chain ->
+                val position = (chain.args.firstOrNull() as? Number)?.toInt() ?: -1
+                chain.proceed().also {
+                    if (position >= 0) {
+                        (chain.thisObject as? View)?.let { view ->
+                            MessageDetailsFollowLatestRegistry.onPositionRequested(view, position)
                         }
                     }
-                })
-            }.onFailure { logger("消息列表定位监听失败: $methodName", it) }
+                }
+            }
         }
+        if (installationFailed) MessageDetailsScrollHookInstallState.retryContainer(container)
     }
 
     private fun messageDetailsBindToken(root: View): Any = synchronized(messageDetailsBindTokens) {
@@ -2560,8 +2640,7 @@ private class HchatExtraHooker(
     }
 
     private fun isScrollingContainer(view: View): Boolean {
-        val name = view.javaClass.name
-        return name.contains("RecyclerView") || name.contains("ListView") || name.contains("ScrollView")
+        return MessageDetailsScrollSupport.containerKind(view) != MessageDetailsScrollSupport.ContainerKind.UNKNOWN
     }
 
     private fun clearExcludedMessageDetails(root: View) {
@@ -2603,37 +2682,14 @@ private class HchatExtraHooker(
 
     private fun adapterItem(adapter: Any, position: Int): Any? {
         if (position < 0) return null
-        itemMethodCache[adapter.javaClass]?.let { return KavaReflector.invoke(it, adapter, position) }
-        var current: Class<*>? = adapter.javaClass
-        while (current != null && current != Any::class.java) {
-            val method = KavaReflector.declaredMethods(current).firstOrNull {
-                it.parameterTypes.size == 1 &&
-                    (it.parameterTypes[0] == Integer.TYPE || it.parameterTypes[0] == Int::class.java) &&
-                    (it.name == "J0" || it.name == "getItem" || it.name == "get")
-            }
-            if (method != null) {
-                itemMethodCache[adapter.javaClass] = method
-                KavaReflector.invoke(method, adapter, position)?.let { return it }
-            }
-            current = current.superclass
+        val access = adapterItemAccessCache.computeIfAbsent(adapter.javaClass, ::resolveAdapterItemAccess)
+        access.method?.let { method ->
+            return runCatching { method.invoke(adapter, position) }.getOrNull()
         }
-        return adapterListItem(adapter, position)
-    }
-
-    private fun adapterListItem(adapter: Any, position: Int): Any? {
-        itemListFieldCache[adapter.javaClass]?.let { field ->
-            listItem(KavaReflector.readField(field, adapter), position)?.let { return it }
-        }
-        var current: Class<*>? = adapter.javaClass
-        while (current != null && current != Any::class.java) {
-            val field = KavaReflector.declaredFields(current).firstOrNull {
-                it.name == "K" || it.name == "items" || it.name == "data" || it.name == "list"
-            }
-            if (field != null) {
-                itemListFieldCache[adapter.javaClass] = field
-                return listItem(KavaReflector.readField(field, adapter), position)
-            }
-            current = current.superclass
+        access.field?.let { field ->
+            val list = runCatching { field.get(adapter) }.getOrNull()
+            if (list is List<*> && position < list.size) return list[position]
+            return listItem(list, position)
         }
         return findNestedListItem(
             adapter,

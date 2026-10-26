@@ -388,6 +388,19 @@ class MessageDetailsR1RegressionTest {
         state.onScrolled(verticalDelta = 18, atLatestEdge = false)
         assertFalse("partial movement toward the newest row does not claim the tail", state.isFollowingLatest())
 
+        val sendFromHistory = MessageDetailsFollowLatestState(initiallyFollowingLatest = true)
+        sendFromHistory.onScrolled(verticalDelta = -12, atLatestEdge = false)
+        sendFromHistory.onPositionRequested(targetsLatestRow = true)
+        sendFromHistory.onScrolled(verticalDelta = 50, atLatestEdge = true)
+        assertFalse("WeChat's programmatic send-to-tail cannot erase a user's history-reading intent",
+            sendFromHistory.isFollowingLatest())
+
+        state.onUserTouch(
+            fingerDeltaY = -30f,
+            touchSlop = 12,
+            canScrollTowardHistory = true,
+            atLatestEdge = false
+        )
         state.onScrolled(verticalDelta = 5, atLatestEdge = true)
         assertTrue("reaching the real list edge resumes tail following", state.isFollowingLatest())
 
@@ -427,33 +440,37 @@ class MessageDetailsR1RegressionTest {
     }
 
     @Test
-    fun `tail row detection ignores attached structural footer but rejects a newer message row`() {
-        data class AttachedItem(val adapterPosition: Int, val messageRow: Boolean)
-        val container = FrameLayout(RuntimeEnvironment.getApplication())
-        fun add(position: Int, messageRow: Boolean): View = View(container.context).apply {
-            tag = AttachedItem(position, messageRow)
-            container.addView(this, FrameLayout.LayoutParams(20, 20))
+    fun `latest row requires adapter identity and confirms only explicit structural footer`() {
+        val items = listOf("message:A", null)
+        val lookup: (Int) -> MessageDetailsScrollSupport.ItemProbe = { position ->
+            if (position in items.indices) MessageDetailsScrollSupport.ItemProbe(true, items[position])
+            else MessageDetailsScrollSupport.ItemProbe(false, null)
         }
-        val candidate = add(position = 7, messageRow = true)
-        add(position = 8, messageRow = false) // A list footer follows the newest message.
-        val childPosition: (View) -> Int? = { (it.tag as? AttachedItem)?.adapterPosition }
-        val isMessageRow: (View) -> Boolean = { (it.tag as? AttachedItem)?.messageRow == true }
-
-        assertFalse(
-            "a structural footer after the newest message does not hide the tail row",
-            MessageDetailsFollowLatestScroll.hasNewerAttachedMessage(container, 7, childPosition, isMessageRow)
-        )
-        val newerMessage = add(position = 9, messageRow = true)
         assertTrue(
-            "an actually newer attached message prevents correcting the older row",
-            MessageDetailsFollowLatestScroll.hasNewerAttachedMessage(container, 7, childPosition, isMessageRow)
+            "a null adapter item is accepted only when its structural role is confirmed",
+            MessageDetailsScrollSupport.isConfirmedLatestMessage(
+                0, items.size, lookup,
+                isMessageItem = { it is String && it.startsWith("message:") },
+                candidateMatchesIdentity = { it == "message:A" },
+                isKnownStructuralRow = { position, item -> position == 1 && item == null }
+            )
         )
-        container.removeView(newerMessage)
         assertFalse(
-            "the candidate becomes the newest message once later message content is gone",
-            MessageDetailsFollowLatestScroll.hasNewerAttachedMessage(container, 7, childPosition, isMessageRow)
+            "null adapter data by itself is not proof of a footer",
+            MessageDetailsScrollSupport.isConfirmedLatestMessage(
+                0, items.size, lookup,
+                isMessageItem = { it is String && it.startsWith("message:") },
+                candidateMatchesIdentity = { it == "message:A" }
+            )
         )
-        assertSame("the Android ViewGroup contains the candidate row", container, candidate.parent)
+        assertFalse(
+            "the candidate's position alone cannot authorize a newer message",
+            MessageDetailsScrollSupport.isConfirmedLatestMessage(
+                0, 2, { position -> MessageDetailsScrollSupport.ItemProbe(true, if (position == 0) "message:A" else "message:B") },
+                isMessageItem = { it is String && it.startsWith("message:") },
+                candidateMatchesIdentity = { it == "message:A" }
+            )
+        )
     }
 
     @Test
