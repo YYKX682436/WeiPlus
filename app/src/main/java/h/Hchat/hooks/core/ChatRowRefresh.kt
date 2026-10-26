@@ -19,6 +19,25 @@ internal object ChatRowRefresh {
         mainHandler.postDelayed(afterTransition, 300L)
     }
 
+    /** Current Activity without requiring focus; readiness observers wait for focus themselves. */
+    fun activityForReadiness(): Activity? {
+        val tracker = WeChatApis.currentActivity()
+        val tracked = tracker?.currentActivity()
+            ?.takeIf { !it.isFinishing && !it.isDestroyed }
+        if (tracked?.hasWindowFocus() == true) return tracked
+        val thread = KavaReflector.invokeStaticMethod(
+            KavaReflector.loadClass("android.app.ActivityThread", null), "currentActivityThread"
+        )
+        val records = KavaReflector.readField(thread, "mActivities") as? Map<*, *>
+        val activities = records?.values.orEmpty().mapNotNull {
+            (KavaReflector.readField(it, "activity") as? Activity)
+                ?.takeIf { activity -> !activity.isFinishing && !activity.isDestroyed }
+        }
+        val active = activities.firstOrNull { it.hasWindowFocus() } ?: tracked ?: activities.firstOrNull()
+        if (active != null) tracker?.updateCurrentActivity(active)
+        return active
+    }
+
     private fun visibleActivity(): Activity? {
         val tracker = WeChatApis.currentActivity()
         tracker?.currentActivity()?.takeIf { it.hasWindowFocus() && !it.isFinishing && !it.isDestroyed }

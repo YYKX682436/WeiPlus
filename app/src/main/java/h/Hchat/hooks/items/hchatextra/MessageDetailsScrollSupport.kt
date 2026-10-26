@@ -77,9 +77,32 @@ internal object MessageDetailsScrollSupport {
         return when (containerKind(container)) {
             ContainerKind.RECYCLER -> {
                 var current: View? = row
+                var layoutManager: Any? = null
+                var layoutManagerResolved = false
                 while (current != null && current !== container) {
-                    val position = invoke(container, "getChildAdapterPosition", current)
-                    (position as? Number)?.toInt()?.takeIf { it >= 0 }?.let { return it }
+                    val position = sequenceOf(
+                        invoke(container, "getChildAdapterPosition", current),
+                        invoke(container, "getChildLayoutPosition", current)
+                    ).mapNotNull { (it as? Number)?.toInt()?.takeIf { value -> value >= 0 } }
+                        .firstOrNull()
+                    position?.let { return it }
+                    if (!layoutManagerResolved) {
+                        layoutManager = invokeNoArg(container, "getLayoutManager")
+                        layoutManagerResolved = true
+                    }
+                    val managerPosition = layoutManager?.let { manager ->
+                        (invoke(manager, "getPosition", current) as? Number)?.toInt()?.takeIf { it >= 0 }
+                    }
+                    managerPosition?.let { return it }
+                    val holder = invoke(container, "getChildViewHolder", current)
+                    val holderPosition = sequenceOf(
+                        holder?.let { invokeNoArg(it, "getBindingAdapterPosition") },
+                        holder?.let { invokeNoArg(it, "getAbsoluteAdapterPosition") },
+                        holder?.let { invokeNoArg(it, "getAdapterPosition") },
+                        holder?.let { invokeNoArg(it, "getLayoutPosition") }
+                    ).mapNotNull { (it as? Number)?.toInt()?.takeIf { value -> value >= 0 } }
+                        .firstOrNull()
+                    holderPosition?.let { return it }
                     current = current.parent as? View
                 }
                 null
@@ -195,10 +218,21 @@ internal object MessageDetailsScrollSupport {
         return false
     }
 
-    fun visibleAdapterRange(container: AbsListView): IntRange? {
-        val first = container.firstVisiblePosition
-        val last = container.lastVisiblePosition
-        return (first..last).takeIf { first >= 0 && last >= first }
+    fun visibleAdapterRange(container: View): IntRange? = when (containerKind(container)) {
+        ContainerKind.ABS_LIST -> {
+            val list = container as AbsListView
+            val first = list.firstVisiblePosition
+            val last = list.lastVisiblePosition
+            (first..last).takeIf { first >= 0 && last >= first }
+        }
+        ContainerKind.RECYCLER -> {
+            val manager = invokeNoArg(container, "getLayoutManager") ?: return null
+            val first = (invokeNoArg(manager, "findFirstVisibleItemPosition") as? Number)?.toInt() ?: return null
+            val last = (invokeNoArg(manager, "findLastVisibleItemPosition") as? Number)?.toInt() ?: return null
+            val count = adapterItemCount(container) ?: return null
+            (first..last).takeIf { first >= 0 && last >= first && last < count }
+        }
+        ContainerKind.SCROLL, ContainerKind.UNKNOWN -> null
     }
 
     fun canScrollTowardHistory(container: View): Boolean = when (container) {

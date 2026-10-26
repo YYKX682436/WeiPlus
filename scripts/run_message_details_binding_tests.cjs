@@ -72,9 +72,17 @@ function assertRenderer(source, layoutSource, modelSource) {
   if (!source.includes('Intent.ACTION_TIMEZONE_CHANGED') || !source.includes('Intent.ACTION_LOCALE_CHANGED') || !source.includes('Intent.ACTION_TIME_CHANGED')) throw new Error('active chat must refresh cached labels when clock inputs change');
   const page = body(source, 'installMessageDetails', 'hookOnce');
   if (!page.includes('unregisterMessageDetailsClockReceiver()') || !page.includes('registerMessageDetailsClockReceiver()')) throw new Error('clock refresh receiver must follow the chat page lifecycle');
-  if (!page.includes('if (messageDetailsPageActive)') || !page.includes('ChatRowRefresh.requestAfterTransition()')) throw new Error('a chat already open before hook installation must get one coalesced current-chat refresh');
+  if (!page.includes('if (messageDetailsPageActive)') || !page.includes('scheduleMessageDetailsInitialPageRefresh()') ||
+      !page.includes('messageDetailsPageReadyGate.cancel()') || !page.includes('messageDetailsPageGeneration++')) {
+    throw new Error('late hook installation must schedule a page-scoped, lifecycle-cancelled readiness backfill');
+  }
   const initialRefresh = body(source, 'scheduleMessageDetailsInitialPageRefresh', 'destroy');
-  if (!initialRefresh.includes('postDelayed') || !source.includes('MESSAGE_DETAILS_INITIAL_PAGE_REFRESH_DELAY_MS = 500L') || !source.includes('removeCallbacks(messageDetailsInitialPageRefresh)')) throw new Error('late page state must use one bounded refresh and cancel it on lifecycle changes');
+  if (!initialRefresh.includes('messageDetailsPageReadyGate.schedule') ||
+      !initialRefresh.includes('hasWindowFocus()') || !initialRefresh.includes('isAttachedToWindow') ||
+      !initialRefresh.includes('ChatAdapterRefresh.notifyRangeChanged') ||
+      initialRefresh.includes('postDelayed') || initialRefresh.includes('notifyChanged')) {
+    throw new Error('late page state must await real readiness events and rebind only visible rows once');
+  }
   const timeFormat = body(source, 'formatMessageDetailsLabel', 'relativeMessageTime');
   if (!timeFormat.includes('createTime?.let') || !timeFormat.includes('}.orEmpty()') || !timeFormat.includes('.atZone(ZoneId.systemDefault())')) throw new Error('missing createTime must remain empty, while long patterns receive zone-aware date fields');
   const insert = body(source, 'insertMessageDetailsLabel', 'invalidateMessageDetailsBinding');

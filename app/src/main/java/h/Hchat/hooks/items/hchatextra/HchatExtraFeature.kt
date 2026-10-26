@@ -40,6 +40,7 @@ import h.Hchat.hooks.api.model.WeChatMessage
 import h.Hchat.hooks.api.model.WeChatMessageTypes
 import h.Hchat.hooks.api.core.WeChatApis
 import h.Hchat.hooks.core.BaseFeature
+import h.Hchat.hooks.core.ChatAdapterRefresh
 import h.Hchat.hooks.core.DexInstallScheduler
 import h.Hchat.hooks.core.FeatureContext
 import h.Hchat.hooks.core.HookRegistry
@@ -211,6 +212,7 @@ private class HchatExtraHooker(
     private val messageDetailsRowLabels = MessageDetailsRowLabelIndex<View, TextView>()
     private val messageDetailsAttachCallbacks = MessageDetailsAttachQueue()
     private val messageDetailsLayoutCallbacks = MessageDetailsLayoutObserver()
+    private val messageDetailsAvatarGeometryCallbacks = MessageDetailsAvatarGeometryObserver()
     private val messageDetailsRetryListeners = MessageDetailsPreDrawQueue()
     private val messageDetailsPositionListeners = MessageDetailsPreDrawQueue()
     private val messageDetailsColorListeners = MessageDetailsPreDrawQueue()
@@ -221,26 +223,19 @@ private class HchatExtraHooker(
     private val messageDetailsTailCheckCallbacks = WeakHashMap<View, Runnable>()
     private val adapterItemAccessCache = ConcurrentHashMap<Class<*>, CachedAdapterItemAccess>()
     private val messageDetailsConfigHandler = Handler(Looper.getMainLooper())
+    private val messageDetailsPageReadyGate = MessageDetailsPageReadyGate()
     @Volatile private var messageDetailsConfig = readMessageDetailsConfig()
     private var appliedMessageDetailsConfig = messageDetailsConfig
     @Volatile private var messageDetailsTimeFormatter: TimeFormatterCache? = null
     @Volatile private var messageDetailsPageActive = false
+    @Volatile private var messageDetailsPageGeneration = 0L
+    @Volatile private var messageDetailsHooksInstalled = false
     private val messageDetailsConfigRefresh = Runnable(::applyPendingMessageDetailsConfig)
     private val messageDetailsRelativeTimeRefresh = Runnable {
         if (messageDetailsPageActive && messageDetailsConfig.enabled &&
             "relativeTime" in messageDetailsConfig.tokens
         ) {
             refreshAttachedMessageDetailsLayouts()
-            scheduleMessageDetailsRelativeTimeRefresh()
-        }
-    }
-    private val messageDetailsInitialPageRefresh = Runnable {
-        if (!messageDetailsPageActive && messageDetailsConfig.enabled &&
-            WeChatApis.chatPage()?.currentTalker()?.isNotBlank() == true
-        ) {
-            messageDetailsPageActive = true
-            registerMessageDetailsClockReceiver()
-            ChatRowRefresh.requestAfterTransition()
             scheduleMessageDetailsRelativeTimeRefresh()
         }
     }
@@ -400,12 +395,13 @@ private class HchatExtraHooker(
         appliedMessageDetailsConfig = next
 
         if (previous.enabled && !next.enabled) {
-            messageDetailsConfigHandler.removeCallbacks(messageDetailsInitialPageRefresh)
+            messageDetailsPageGeneration++
+            messageDetailsPageReadyGate.cancel()
             clearMessageDetailsRows()
             unregisterMessageDetailsClockReceiver()
         } else if (!previous.enabled && next.enabled && messageDetailsPageActive) {
             registerMessageDetailsClockReceiver()
-            ChatRowRefresh.request()
+            scheduleMessageDetailsInitialPageRefresh()
         } else if (!previous.enabled && next.enabled) {
             scheduleMessageDetailsInitialPageRefresh()
         }
@@ -457,13 +453,73 @@ private class HchatExtraHooker(
     }
 
     private fun scheduleMessageDetailsInitialPageRefresh() {
-        messageDetailsConfigHandler.removeCallbacks(messageDetailsInitialPageRefresh)
-        if (messageDetailsConfig.enabled) {
-            messageDetailsConfigHandler.postDelayed(
-                messageDetailsInitialPageRefresh,
-                MESSAGE_DETAILS_INITIAL_PAGE_REFRESH_DELAY_MS
-            )
+        if (!messageDetailsConfig.enabled || !messageDetailsHooksInstalled) return
+        val activity = ChatRowRefresh.activityForReadiness() ?: return
+        val decor = activity.window?.decorView ?: return
+        val activityReference = WeakReference(activity)
+        val decorReference = WeakReference(decor)
+        val adapterClass = chattingDataAdapterClass ?: locateChattingDataAdapterClass() ?: return
+        val generation = messageDetailsPageGeneration
+        messageDetailsPageReadyGate.schedule(
+            decor,
+            isCurrent = {
+                messageDetailsConfig.enabled && messageDetailsHooksInstalled &&
+                    messageDetailsPageGeneration == generation
+            },
+            tryBackfill = {
+                val currentActivity = activityReference.get() ?: return@schedule false
+                val currentDecor = decorReference.get() ?: return@schedule false
+                if (currentActivity.isFinishing || currentActivity.isDestroyed ||
+                    !currentActivity.hasWindowFocus() || !currentDecor.isAttachedToWindow
+                ) return@schedule false
+                val talker = WeChatApis.chatPage()?.currentTalker().orEmpty()
+                if (talker.isBlank()) return@schedule false
+                val recycler = findReadyMessageDetailsRecycler(currentDecor, adapterClass) ?: return@schedule false
+                val adapter = MessageDetailsScrollSupport.adapter(recycler) ?: return@schedule false
+                val container = recycler as? ViewGroup ?: return@schedule false
+                val visiblePositions = (0 until container.childCount).asSequence()
+                    .map { index -> container.getChildAt(index) }
+                    .filter { child -> child.isShown && child.getGlobalVisibleRect(Rect()) }
+                    .mapNotNull { child ->
+                        MessageDetailsScrollSupport.childAdapterPosition(recycler, child)
+                    }
+                    .toList()
+                val visibleRange = if (visiblePositions.isNotEmpty()) {
+                    (visiblePositions.minOrNull()!!)..(visiblePositions.maxOrNull()!!)
+                } else {
+                    MessageDetailsScrollSupport.visibleAdapterRange(recycler)
+                }
+                if (visibleRange == null) {
+                    return@schedule false
+                }
+                if (!messageDetailsPageActive) {
+                    messageDetailsPageActive = true
+                    registerMessageDetailsClockReceiver()
+                    scheduleMessageDetailsRelativeTimeRefresh()
+                }
+                ChatAdapterRefresh.notifyRangeChanged(
+                    adapter,
+                    visibleRange.first,
+                    visibleRange.last - visibleRange.first + 1
+                )
+            }
+        )
+    }
+
+    private fun findReadyMessageDetailsRecycler(root: View, adapterClass: Class<*>): View? {
+        if (MessageDetailsScrollSupport.containerKind(root) == MessageDetailsScrollSupport.ContainerKind.RECYCLER) {
+            val container = root as? ViewGroup
+            val adapter = MessageDetailsScrollSupport.adapter(root)
+            val hostAdapter = adapter?.let(::chattingAdapterFromBindObject)
+            val adapterMatch = adapter != null &&
+                (adapterClass.isInstance(adapter) || hostAdapter != null)
+            if (adapterMatch && root.isAttachedToWindow && (container?.childCount ?: 0) > 0) return root
         }
+        if (root !is ViewGroup) return null
+        for (index in 0 until root.childCount) {
+            findReadyMessageDetailsRecycler(root.getChildAt(index), adapterClass)?.let { return it }
+        }
+        return null
     }
 
     fun destroy() {
@@ -471,7 +527,8 @@ private class HchatExtraHooker(
         unregisterMessageDetailsClockReceiver()
         messageDetailsConfigHandler.removeCallbacks(messageDetailsConfigRefresh)
         messageDetailsConfigHandler.removeCallbacks(messageDetailsRelativeTimeRefresh)
-        messageDetailsConfigHandler.removeCallbacks(messageDetailsInitialPageRefresh)
+        messageDetailsPageGeneration++
+        messageDetailsPageReadyGate.cancel()
         pageSubscription?.unsubscribe()
         forwardedRecordTypes.destroy()
         prefs.unregisterOnSharedPreferenceChangeListener(messageDetailsPrefsListener)
@@ -484,6 +541,7 @@ private class HchatExtraHooker(
         }
         messageDetailsAttachCallbacks.clear()
         messageDetailsLayoutCallbacks.clear()
+        messageDetailsAvatarGeometryCallbacks.clear()
         messageDetailsRetryListeners.clear()
         messageDetailsPositionListeners.clear()
         messageDetailsColorListeners.clear()
@@ -688,16 +746,18 @@ private class HchatExtraHooker(
             pageSubscription = chatPage?.subscribe { event ->
                 if (event.isExit) {
                     messageDetailsPageActive = false
+                    messageDetailsPageGeneration++
+                    messageDetailsPageReadyGate.cancel()
                     messageDetailsConfigHandler.removeCallbacks(messageDetailsRelativeTimeRefresh)
-                    messageDetailsConfigHandler.removeCallbacks(messageDetailsInitialPageRefresh)
                     clearMessageDetailsRows()
                     unregisterMessageDetailsClockReceiver()
                 } else if (event.isEnter) {
                     messageDetailsPageActive = true
-                    messageDetailsConfigHandler.removeCallbacks(messageDetailsInitialPageRefresh)
+                    messageDetailsPageGeneration++
+                    messageDetailsPageReadyGate.cancel()
                     if (messageDetailsConfig.enabled) {
                         registerMessageDetailsClockReceiver()
-                        ChatRowRefresh.requestAfterTransition()
+                        scheduleMessageDetailsInitialPageRefresh()
                     }
                     scheduleMessageDetailsRelativeTimeRefresh()
                 }
@@ -705,11 +765,8 @@ private class HchatExtraHooker(
             if (messageDetailsPageActive) {
                 if (messageDetailsConfig.enabled) {
                     registerMessageDetailsClockReceiver()
-                    ChatRowRefresh.requestAfterTransition()
                 }
                 scheduleMessageDetailsRelativeTimeRefresh()
-            } else {
-                scheduleMessageDetailsInitialPageRefresh()
             }
         }
         val itemBind = locateMessageViewBindMethod()
@@ -759,6 +816,10 @@ private class HchatExtraHooker(
                 false
             }
             complete = installed && complete
+        }
+        messageDetailsHooksInstalled = complete
+        if (complete && messageDetailsConfig.enabled) {
+            scheduleMessageDetailsInitialPageRefresh()
         }
         return complete
     }
@@ -1792,9 +1853,15 @@ private class HchatExtraHooker(
                 ?: messageDetailsHolderPosition(holder)
             observeMessageDetailsRowLayout(root, label, resolvedPosition)
             updateMessageDetailsClickBehavior(label)
-            if (cardMessage && avatarAnchor == null) {
+            if (avatarAnchor != null) {
+                messageDetailsLayoutCallbacks.cancel(root)
+                observeMessageDetailsAvatarLayout(root, label, avatarAnchor)
+            } else if (cardMessage) {
+                messageDetailsAvatarGeometryCallbacks.cancel(root)
                 observeCardDetailsLayout(root, label)
-            } else if (avatarAnchor == null) {
+            } else {
+                messageDetailsLayoutCallbacks.cancel(root)
+                messageDetailsAvatarGeometryCallbacks.cancel(root)
                 observeMessageDetailsAttachment(root, label)
             }
         } else if (label.parent == null) {
@@ -1806,6 +1873,7 @@ private class HchatExtraHooker(
     private fun invalidateMessageDetailsBinding(root: View) {
         messageDetailsAttachCallbacks.cancel(root)
         messageDetailsLayoutCallbacks.cancel(root)
+        messageDetailsAvatarGeometryCallbacks.cancel(root)
         messageDetailsRetryListeners.cancel(root)
         cancelMessageDetailsRowGrowth(root)
         synchronized(messageDetailsBindTokens) {
@@ -1839,6 +1907,36 @@ private class HchatExtraHooker(
                     preferredLabel = currentLabel, nativeMessage = binding.nativeMessage
                 )
             }.onFailure { logger("消息卡片布局恢复失败", it) }
+        }
+    }
+
+    private fun observeMessageDetailsAvatarLayout(
+        root: View,
+        label: TextView,
+        anchor: AvatarDetailsAnchor
+    ) {
+        val observedViews = listOfNotNull(
+            anchor.parent,
+            directChildOf(anchor.parent, anchor.positionView),
+            anchor.positionView
+        )
+        messageDetailsAvatarGeometryCallbacks.observe(root, label, observedViews) { currentRoot, currentLabel ->
+            if (!messageDetailsConfig.enabled) return@observe
+            val binding = synchronized(messageDetailsBindings) { messageDetailsBindings[currentLabel] }
+                ?: (currentLabel.getTag(R.id.hchat_message_details_binding) as? MessageDetailsBinding)
+                ?: return@observe
+            if (binding.root !== currentRoot || currentLabel.tag != TAG_MESSAGE_DETAILS_VIEW) return@observe
+            runCatching {
+                val currentDetails = binding.nativeMessage?.let { messageDetails(it) } ?: binding.details
+                insertMessageDetailsLabel(
+                    currentRoot,
+                    binding.nativeTimeLabel,
+                    binding.holder,
+                    currentDetails,
+                    preferredLabel = currentLabel,
+                    nativeMessage = binding.nativeMessage
+                )
+            }.onFailure { logger("消息头像时间位置同步失败", it) }
         }
     }
 
@@ -2021,6 +2119,7 @@ private class HchatExtraHooker(
         labels.forEach(::removeMessageDetailsLabel)
         messageDetailsAttachCallbacks.clear()
         messageDetailsLayoutCallbacks.clear()
+        messageDetailsAvatarGeometryCallbacks.clear()
         messageDetailsRetryListeners.clear()
         messageDetailsPositionListeners.clear()
         messageDetailsColorListeners.clear()
@@ -2074,6 +2173,7 @@ private class HchatExtraHooker(
                 if (!messageDetailsConfig.enabled) {
                     messageDetailsAttachCallbacks.cancel(binding.root)
                     messageDetailsLayoutCallbacks.cancel(binding.root)
+                    messageDetailsAvatarGeometryCallbacks.cancel(binding.root)
                     messageDetailsRetryListeners.cancel(binding.root)
                     removeMessageDetailsLabel(label)
                     return@post
@@ -2338,13 +2438,20 @@ private class HchatExtraHooker(
         val adapterClass = locateChattingDataAdapterClass()
         if (adapterClass?.isInstance(source) == true) return source
         itemListFieldCache[source.javaClass]?.let { field ->
-            KavaReflector.readField(field, source)?.let { return it }
+            KavaReflector.readField(field, source)?.let { cached ->
+                if (adapterClass?.isInstance(cached) == true || hasGetItemMethod(cached.javaClass)) return cached
+            }
+            itemListFieldCache.remove(source.javaClass, field)
         }
         var current: Class<*>? = source.javaClass
         while (current != null && current != Any::class.java) {
             for (field in KavaReflector.declaredFields(current)) {
-                if (adapterClass != null && !adapterClass.isAssignableFrom(field.type)) continue
                 val value = KavaReflector.readField(field, source) ?: continue
+                if (adapterClass?.isInstance(value) == true) {
+                    itemListFieldCache[source.javaClass] = field
+                    return value
+                }
+                if (adapterClass != null && !adapterClass.isAssignableFrom(field.type)) continue
                 if (hasGetItemMethod(value.javaClass)) {
                     itemListFieldCache[source.javaClass] = field
                     return value
@@ -2624,6 +2731,7 @@ private class HchatExtraHooker(
     private fun clearExcludedMessageDetails(root: View) {
         messageDetailsAttachCallbacks.cancel(root)
         messageDetailsLayoutCallbacks.cancel(root)
+        messageDetailsAvatarGeometryCallbacks.cancel(root)
         messageDetailsRetryListeners.cancel(root)
         synchronized(messageDetailsBindTokens) {
             messageDetailsBindTokens.getOrPut(root) { MessageDetailsBindingGeneration() }.invalidate()
@@ -4170,7 +4278,6 @@ private class HchatExtraHooker(
         private const val PREF_PROFILE_ID = "hchat_profile_id"
         private const val MESSAGE_DETAILS_MAX_RETRY = 2
         private const val MESSAGE_DETAILS_CONFIG_DEBOUNCE_MS = 24L
-        private const val MESSAGE_DETAILS_INITIAL_PAGE_REFRESH_DELAY_MS = 500L
         private const val MESSAGE_DETAILS_ALIGNMENT_MAX_RETRY = 2
         private val MESSAGE_DETAILS_CONFIG_KEYS = setOf(
             HchatExtraSettings.KEY_MESSAGE_DETAILS,

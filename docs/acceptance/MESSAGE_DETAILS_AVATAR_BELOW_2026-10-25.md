@@ -154,3 +154,32 @@ R4 收口日期：2026-10-26
 - **NOT_VERIFIED/观察边界**：第一次安装后冷进入聊天，开关为开但旧行标签一度未出现，该次不计 PASS；原始配置恢复后再次冷启动进入已正常显示，本轮未确认首次现象的原因。未在真机注入 `unhookAll()`/安装失败；该恢复路径由生产代码的官方 API 102 注册回归覆盖。`com.tencent.mm.wx`、其他消息类型压力与未知 RecyclerView footer 的正向资格契约未验证；后者保守跳过，普通 ScrollView 不执行自动修正。
 
 最终正式签名 R8 APK：`dist/Hchat-release-signed.apk`，SHA-256：`488a5442d7ae4bba9445ecfca1b2a67722437ef8dfa357fed0b2ade46bfc47b6`。
+
+## R5 冷进入补绑线程竞态与头像锚点收口（2026-10-26）
+
+基线：`41faa0afade0d16901b02a8a470146a3bbb92d9f`。保留 R1～R4 的消息身份缓存、原生行测量、尾部跟随、Hook 生命周期和安全滚动资格；本轮只收口初次冷进入补绑与头像几何同步。
+
+### 问题 A：首次冷进入旧消息标签缺失
+
+- **根因已由真机日志确认。** Dex/Hook 安装可运行在后台线程；原 R5 的 readiness gate 在 `schedule()` 发现 decor 已附着时，同步调用 `attempt()`，继而在该安装线程调用 RecyclerView adapter 的 `notifyItemRangeChanged()`。Redmi K50 Ultra / Android 15 / 微信 8.0.76 的实际日志记录了可见范围 `6..17`，随后出现 `CalledFromWrongThreadException`；约 2 秒后另一次主线程布局事件再次尝试，范围稳定为 `6..16` 并成功。失败期间刚进入页面的截图没有旧消息标签，后续布局回调成功后标签出现。该时序解释了为何再次进入或刷新会恢复，也说明 R5 原先的事件门闩仍把首次尝试放在了错误线程。
+- R5 修复前新增的真实 Activity/View 回归失败：从后台 Hook 安装线程调度时，生产 gate 的补绑 callback 在后台线程运行。修复后安装/撤销、attach/focus/layout 监听和实际补绑均经主线程 Handler 串行；就绪事件后再排队一次主线程任务，避免在 RecyclerView 计算布局或 Dex 安装线程内通知。一次待处理任务合并重复事件；成功后清理，失败则只等下一次真实 attach、window-focus 或 global-layout 事件。页面代次、功能状态、焦点、附着、会话和 adapter/可见范围仍在执行时复核；仅刷新可见行，不做延时轮询、整表刷新或滚动。
+
+### 问题 B：个别消息头像与时间间距异常
+
+- **代码根因是一次性使用绑定时头像坐标。** 微信后续 payload/full bind 或原生 LayoutParams、头像分支、行宽高变化可移动当前头像，而既有标签仍保留旧的 topMargin/位置；同一条消息就会出现与邻行不同的间隔。真实 Android 嵌套及 padding 布局回归在旧实现中先绑定标签、再将头像分支下移 28px，标签相对当前头像的零间距变成 `-28px`；扩大行高后旧标签也不会跟随当前锚点。该失败由测试直接驱动生产插入逻辑得到，和“视觉上最近的消息”无关。
+- 现在 `MessageDetailsAvatarGeometryObserver` 只观察当前行父布局、头像分支和真实头像的 bounds 变化；发生实际几何变化时合并一次回调，并从当前 row binding/native message 重新读取头像锚点和显示字段。回调受附着、绑定代次和标签归属校验；detach、回收、清理时移除。它不复用上一轮坐标，也不使用固定像素、负 margin、无限 pre-draw 或手动 layout。
+- 同一真实布局回归验证头像移动 28px、消息行随后增长 24px 后，零间距仍为 0；还覆盖嵌套父布局与 padding、头像上方 5dp、相邻消息重复绑定 20 次及 A→B 复用。真机抽样可见旧行中，头像与标签使用同一父布局坐标系，记录的间距为 0；相邻 `R4F_OFF2/R4F_OFF3` 样例正常。最终复测没有再次出现约 200px 空白。**原截图所指历史消息在本轮没有以相同原始 view tree 再现**，因此不把它写成对那条历史消息身份的逐行实机复现。
+
+### 自动回归、构建与 APK
+
+- R5 新增 6 项 Robolectric，使用实际 Android Activity、RecyclerView 和原生嵌套布局。新线程回归在 R5 修复前失败，主线程排队修复后通过；其余覆盖头像同步、相邻行与重复绑定、A→B、可见范围补绑、焦点/退出/重入/禁用和 wrapper adapter 识别。最终 R1 15 + R4 9 + R4 最后收口 5 + R5 6，共 **35/35 PASS，0 failures / 0 errors**。
+- 绑定 runner 拒绝审查基线 `41faa0afade0d16901b02a8a470146a3bbb92d9f`；布局观察 7 项、预绘制/生命周期 14 项、消息类型 96 项、性能、Native 和 API 102 回归全部 PASS。
+- `:app:testDebugUnitTest :app:assembleDebug :app:assembleRelease :app:lint :app:lintRelease`：BUILD SUCCESSFUL。Debug/Release Lint 均 0 errors、653 warnings、50 hints。API 102 APK 检查通过；`apksigner` v2 验签通过，证书 SHA-256 仍为 `5de821feb8cf9dc1be4f1a656664f5d4d88755465d390b0a32a4050d0922a3fd`。
+
+### 最终 Release 真机结果及边界
+
+- Redmi K50 Ultra（22081212C，Android 15/API 35），微信 `com.tencent.mm` 8.0.76 / versionCode 3140。最终正式 Release 已 `adb install -r` 覆盖安装。5 次 force-stop 后重新启动并进入文件传输助手，页面稳定后 **5/5** 次可见旧消息时间完整显示，不需手动滑动或重新进入；连续发送短消息时，键盘打开 **4/4**、发送时键盘关闭 **1/1** 均能看到完整时间。末尾消息样例 `R5_ON_01`、`R5_OFF_01` 及连续 `R5_BURST_01..03` 的时间完整，头像下方间隔一致。
+- 历史位置手势滚动后静置 5 秒，前后可见消息位置相同，没有自动跳回底部；键盘开合时列表视口按系统实际变化。微信 extra 配置文件安装前后 SHA-256 均为 `0bfe8245ad949f423f55ecd7d578ae3e720d82e00a4b0da775c25f1d91f2c964`，未卸载微信、未清数据、未更改偏好。
+- **真机 PASS**：5/5 冷进入旧消息显示、键盘开 4/4 和关 1/1 短消息、5 秒历史静置无跳动；本轮没有再观察到标签缺失或异常大间距。**模拟 PASS**：35 项 Robolectric 与上述辅助回归。**NOT_VERIFIED**：指定历史截图中的 R4OFF02 原始消息行本轮未能再现并逐行追踪；`com.tencent.mm.wx` 未安装；长文字、大字号、详情点击开关和所有非文字消息类型未做本轮真机压力覆盖（布局、绑定及既有生命周期回归覆盖了相应通用机制）。
+
+最终正式签名 R8 APK：`dist/Hchat-release-signed.apk`，SHA-256：`5114e2413fc895b182031fefc97cf2a0f8468fa4359c692d05fb21f0b09586d2`。
