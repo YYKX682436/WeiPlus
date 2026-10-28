@@ -66,7 +66,10 @@ public final class WeChatVersionGate {
         if (versionCode <= 0L) return false; // versionCode is corroborating evidence only.
         boolean version076 = version[0] == 8 && version[1] == 0 && version[2] == 76;
         boolean version080 = version[0] == 8 && version[1] == 0 && version[2] == 80;
-        return (version076 && versionCode != 3140L) || (version080 && versionCode != 3220L);
+        // Only reject cross-release values already observed to identify another release.
+        // Build numbers are not one-to-one version identities: 8.0.76 has at least 3140/3141.
+        return (version076 && versionCode == 3220L)
+                || (version080 && (versionCode == 3140L || versionCode == 3141L));
     }
 
     public static final class Decision {

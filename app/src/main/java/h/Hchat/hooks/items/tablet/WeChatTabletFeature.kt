@@ -169,16 +169,7 @@ class WeChatTabletFeature : BaseFeature() {
         }
 
         private fun cacheKey(context: Context, classLoader: ClassLoader): String {
-            val info = WeChatVersionApi.build(context, classLoader)
-            return listOf(
-                info.packageName,
-                info.versionName,
-                info.versionCode.toString(),
-                info.clientVersion,
-                info.tinkerId,
-                info.patchId,
-                info.sourceLastModified.toString()
-            ).joinToString("|")
+            return WeChatVersionApi.build(context, classLoader).cacheKey
         }
 
         private fun findMethod(

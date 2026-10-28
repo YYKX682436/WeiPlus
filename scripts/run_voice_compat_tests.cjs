@@ -55,7 +55,7 @@ const stubs = {
                 }
             }
             private final ClassLoader classLoader = getClass().getClassLoader();
-            public String runtimeCacheKey = "version-77";
+            public String runtimeCacheKey = "com.tencent.mm|8.0.80|3220|client|tinker|patch|1700000000|dex-crc|patch-files|stable";
             public Cache cachePrefs = new Cache();
             public final DexKit dexKit = new DexKit();
             public boolean acceptsFinish(Method value) { return isVoiceFinishRecordMethod(value); }

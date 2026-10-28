@@ -3,14 +3,19 @@ import h.Hchat.hooks.api.runtime.WeChatVersionGate;
 public final class WeChatVersionGateRegression {
     public static void main(String[] args) {
         expect(true, "com.tencent.mm", "com.tencent.mm", "8.0.76", 3140L, true, "official main .76");
+        expect(true, "com.tencent.mm", "com.tencent.mm", "8.0.76", 3141L, true, "official main .76 build 3141");
+        expect(true, "com.tencent.mm", "com.tencent.mm", "8.0.76", 3142L, true, "unknown .76 build is corroborating only");
         expect(true, "com.tencent.mm", "com.tencent.mm:appbrand0", "8.0.80", 3220L, true, "official appbrand .80");
         expect(true, "com.tencent.mm.wx", "com.tencent.mm.wx", "8.0.76", 3140L, true, "modified main .76");
+        expect(true, "com.tencent.mm.wx", "com.tencent.mm.wx", "8.0.76", 3141L, true, "repackaged .76 build 3141");
         expect(true, "com.tencent.mm.wx", "com.tencent.mm.wx:tools", "8.0.80", 3220L, true, "modified subprocess .80");
         expect(false, "com.tencent.mm", "com.tencent.mm", "8.0.75", 3130L, true, "below minimum");
         expect(false, "com.tencent.mm.wx", "com.tencent.mm.wx2", "8.0.80", 3220L, true, "package prefix collision");
         expect(false, "com.tencent.mm", "com.tencent.mm", "", 3220L, true, "missing name");
         expect(false, "com.tencent.mm", "com.tencent.mm", "8.0.80-beta", 3220L, true, "non-numeric suffix");
         expect(false, "com.tencent.mm", "com.tencent.mm", "8.0.80", 3140L, true, "contradictory identity");
+        expect(false, "com.tencent.mm", "com.tencent.mm", "8.0.76", 3220L, true, "cross-release build identity");
+        expect(false, "com.tencent.mm", "com.tencent.mm", "8.0.80", 3141L, true, "known .76 build contradicts .80");
         expect(false, "com.tencent.mm.wx", "com.tencent.mm.wx:appbrand0", "8.0.80", 3220L, false, "package metadata conflict");
         System.out.println("WeChatVersionGate production regression tests passed");
     }

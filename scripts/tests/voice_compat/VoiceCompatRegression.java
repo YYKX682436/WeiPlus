@@ -188,10 +188,10 @@ public final class VoiceCompatRegression {
         same(messagePath, broken.voiceMessagePathMethod, "invalid descriptor is replaced");
 
         DexFinder upgrade = new DexFinder();
-        upgrade.runtimeCacheKey = "version-78-new-loader";
+        upgrade.runtimeCacheKey = "com.tencent.mm|8.0.81|3221|client|tinker|patch|1700000001|dex-crc-v2|patch-files|stable";
         upgrade.cachePrefs = absent.cachePrefs;
         check(!upgrade.loadMessagePathCache(), "version/loader change invalidates negative cache");
-        same("version-78-new-loader", upgrade.cachePrefs.getString("cache.key", ""), "invalidation saves current runtime key");
+        same(upgrade.runtimeCacheKey, upgrade.cachePrefs.getString("cache.key", ""), "invalidation saves current runtime key");
         upgrade.dexKit.candidates.add(new DexFinder.MethodData(messagePath));
         upgrade.resolveMessagePath();
         same(1, upgrade.dexKit.queries, "new runtime searches again");

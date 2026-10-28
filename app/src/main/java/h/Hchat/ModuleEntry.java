@@ -14,6 +14,7 @@ import h.Hchat.hooks.api.media.WeChatImageApi;
 import h.Hchat.hooks.api.model.WeChatVersionInfo;
 import h.Hchat.hooks.api.runtime.WeChatVersionApi;
 import h.Hchat.hooks.api.runtime.WeChatVersionGate;
+import h.Hchat.hooks.api.runtime.HostRuntimeIdentityDecision;
 import h.Hchat.hooks.core.DexInstallScheduler;
 import h.Hchat.hooks.core.FeatureContext;
 import h.Hchat.hooks.core.FeatureManager;
@@ -60,7 +61,7 @@ public class ModuleEntry extends XposedModule {
   private UIRegistry uiRegistry;
   private String processName;
   private boolean packageReady;
-  private volatile String approvedPackageIdentity = "";
+  private final HostRuntimeIdentityDecision runtimeIdentity = new HostRuntimeIdentityDecision();
   private volatile boolean hostIdentityInvalidated;
   private final java.util.concurrent.atomic.AtomicBoolean applicationReady =
       new java.util.concurrent.atomic.AtomicBoolean();
@@ -140,7 +141,10 @@ public class ModuleEntry extends XposedModule {
             + info.versionName + " source=" + source);
         return false;
       }
-      approvedPackageIdentity = packageIdentity(info);
+      if (!runtimeIdentity.approve(packageIdentity(info), info.classLoaderHash)) {
+        HLog.e(TAG + " version_gate=reject reason=runtime_identity_incomplete source=" + source);
+        return false;
+      }
       HLog.i(TAG + " version_gate=accept package=" + packageName + " version="
           + decision.versionString() + " process=" + processName);
       return true;
@@ -166,7 +170,7 @@ public class ModuleEntry extends XposedModule {
   }
 
   private boolean verifyRuntimeIdentity(Context context, ClassLoader loader, PackageReadyParam param,
-                                       String source, boolean checkLoader) {
+                                       String source) {
     if (hostIdentityInvalidated || context == null || param == null) return false;
     try {
       PackageManager pm = context.getPackageManager();
@@ -181,12 +185,19 @@ public class ModuleEntry extends XposedModule {
           loader != null ? loader : param.getClassLoader());
       WeChatVersionGate.Decision decision = WeChatVersionGate.evaluate(
           current.packageName, current.versionName, current.versionCode);
-      String accepted = approvedPackageIdentity;
-      boolean same = decision.accepted && packageIdentity(current).equals(accepted)
-          && (!checkLoader || current.classLoaderHash.equals(
-              WeChatVersionApi.classLoaderIdentity(param.getClassLoader())));
-      if (!same) invalidateHostIdentity(source + ":runtime_identity_changed");
-      return same;
+      HostRuntimeIdentityDecision.Result identity = runtimeIdentity.verify(
+          decision.accepted ? packageIdentity(current) : "", current.classLoaderHash,
+          () -> invalidateHostIdentity(source + ":runtime_identity_changed"));
+      if (identity == HostRuntimeIdentityDecision.Result.HOST_IDENTITY_CHANGED
+          || identity == HostRuntimeIdentityDecision.Result.INCOMPLETE
+          || identity == HostRuntimeIdentityDecision.Result.ALREADY_INVALIDATED) {
+        invalidateHostIdentity(source + ":runtime_identity_changed");
+        return false;
+      }
+      if (identity == HostRuntimeIdentityDecision.Result.CLASS_LOADER_GENERATION_CHANGED) {
+        HLog.i(TAG + " host_identity=classloader_generation_accepted source=" + source);
+      }
+      return true;
     } catch (Throwable failure) {
       invalidateHostIdentity(source + ":identity_read_failed");
       return false;
@@ -216,6 +227,7 @@ public class ModuleEntry extends XposedModule {
   private void invalidateHostIdentity(String reason) {
     if (hostIdentityInvalidated) return;
     hostIdentityInvalidated = true;
+    runtimeIdentity.invalidate();
     HLog.e(TAG + " host_identity=invalidated reason=" + reason);
     DexInstallScheduler.INSTANCE.cancelAll();
     HookRegistry.get().unhookAll();
@@ -264,7 +276,7 @@ public class ModuleEntry extends XposedModule {
           Application app = (Application) chain.getThisObject();
           if (!lpparam.getPackageName().equals(app.getPackageName())
               || !verifyRuntimeIdentity(app, app.getClassLoader(), lpparam,
-                  "application_on_create", false)
+                  "application_on_create")
               || !applicationReady.compareAndSet(false, true)) return result;
           try {
             FirstUseAgreementRuntime.install(app);
@@ -323,7 +335,7 @@ public class ModuleEntry extends XposedModule {
             if (loader == null) {
               loader = resolveHostClassLoader(context, lpparam);
             }
-            if (!verifyRuntimeIdentity(context, loader, lpparam, "appbrand_tinker_attach", false)) {
+            if (!verifyRuntimeIdentity(context, loader, lpparam, "appbrand_tinker_attach")) {
               return result;
             }
             installAppBrandProcessHook(context, loader, lpparam, false);
@@ -347,7 +359,7 @@ public class ModuleEntry extends XposedModule {
             Application app = (Application) chain.getThisObject();
             if (!lpparam.getPackageName().equals(app.getPackageName())
                 || !verifyRuntimeIdentity(app, app.getClassLoader(), lpparam,
-                    "appbrand_application_on_create", false)
+                    "appbrand_application_on_create")
                 || !applicationReady.compareAndSet(false, true)) return result;
             ClassLoader loader = resolveHostClassLoader(app, lpparam);
             installAppBrandProcessHook(app, loader, lpparam, true);
@@ -364,7 +376,7 @@ public class ModuleEntry extends XposedModule {
       ClassLoader classLoader,
       PackageReadyParam lpparam,
       boolean applicationReady) {
-    if (!verifyRuntimeIdentity(context, classLoader, lpparam, "appbrand_hook_install", false)) return;
+    if (!verifyRuntimeIdentity(context, classLoader, lpparam, "appbrand_hook_install")) return;
     boolean failed = false;
     if (FakeMiniProgramBaseLibFeature.isEnabled(context)
         && !FakeMiniProgramBaseLibFeature.installAppBrandProcessHook(context, classLoader)) {
@@ -402,13 +414,13 @@ public class ModuleEntry extends XposedModule {
             if (hostIdentityInvalidated) return chain.proceed();
             Context context = (Context) chain.getArg(0);
             if (!verifyRuntimeIdentity(context, lpparam.getClassLoader(), lpparam,
-                "tinker_attach_before", false)) return chain.proceed();
+                "tinker_attach_before")) return chain.proceed();
             installHotUpdateForAttach(lpparam, chain, "before");
 
             Object result = chain.proceed();
             ClassLoader runtimeLoader = resolveTinkerClassLoader(chain.getThisObject());
             if (!verifyRuntimeIdentity(context, runtimeLoader, lpparam,
-                "tinker_attach_after", true)) return result;
+                "tinker_attach_after")) return result;
             installHotUpdateForAttach(lpparam, chain, "after");
 
             return result;
@@ -497,7 +509,7 @@ public class ModuleEntry extends XposedModule {
               classLoader = resolveHostClassLoader(context, lpparam);
             }
             if (!verifyRuntimeIdentity(context, classLoader, lpparam,
-                "custom_bottom_bar_tinker_attach", false)) return result;
+                "custom_bottom_bar_tinker_attach")) return result;
             installCustomBottomBarEarly(context, classLoader);
 
             return result;
@@ -524,7 +536,7 @@ public class ModuleEntry extends XposedModule {
       ClassLoader runtimeLoader = resolveTinkerClassLoader(chain.getThisObject());
       if (runtimeLoader == null) runtimeLoader = resolveHostClassLoader(context, lpparam);
       if (!verifyRuntimeIdentity(context, runtimeLoader, lpparam,
-          "tablet_tinker_attach_" + stage, false)) return;
+          "tablet_tinker_attach_" + stage)) return;
       if (!WeChatTabletFeature.isEnabled(context)) return;
       ClassLoader resolvedClassLoader = runtimeLoader;
       if (resolvedClassLoader == null) {

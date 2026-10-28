@@ -597,23 +597,6 @@ public class DexFinder {
                 && addMsgClasses.contains(addMsgPreProcessMethod.getDeclaringClass());
     }
 
-    private boolean isAddMsgApiAnchored() {
-        if (!isAddMsgApiValid()) return false;
-        boolean processAnchored = false;
-        try {
-            for (MethodData data : dexKit.findMethod(mkMethodUsingStrings(ADDMSG_PROCESS_LOG_ANCHOR))) {
-                if (addMsgObserverMethod.equals(data.getMethodInstance(classLoader))) {
-                    processAnchored = true;
-                    break;
-                }
-            }
-        } catch (Throwable ignored) {}
-        if (!processAnchored) return false;
-        List<Method> callers = findAddMsgPreProcessCallers(
-                addMsgObserverMethod, addMsgRequestPayloadField.getType());
-        return callers.size() == 1 && addMsgPreProcessMethod.equals(callers.get(0));
-    }
-
     private void restoreAddMsgApiFields() {
         addMsgRequestPayloadField = null;
         addMsgResultMessageField = null;
@@ -1003,30 +986,6 @@ public class DexFinder {
         return sendTextMsgClass != null
                 && (isSendTextConstructorValid(sendTextMsgCtorLong, long.class)
                 || isSendTextConstructorValid(sendTextMsgCtorObject, Object.class));
-    }
-
-    private boolean isSendTextOwnerAnchored(Class<?> owner) {
-        if (owner == null) return false;
-        List<Class<?>> candidates = new ArrayList<>();
-        collectSendTextClassCandidates(candidates, 20, new String[][]{
-                {"/cgi-bin/micromsg-bin/newsendmsg"},
-                {"MicroMsg.NetSceneSendMsg"},
-                {"NetSceneSendMsg"},
-                {"newsendmsg"}
-        });
-        collectSendTextMethodOwnerCandidates(candidates, 20, new String[][]{
-                {"/cgi-bin/micromsg-bin/newsendmsg"},
-                {"MicroMsg.NetSceneSendMsg"},
-                {"NetSceneSendMsg"}
-        });
-        LinkedHashSet<Class<?>> validOwners = new LinkedHashSet<>();
-        for (Class<?> candidate : candidates) {
-            if (findSendTextConstructor(candidate, long.class) != null
-                    || findSendTextConstructor(candidate, Object.class) != null) {
-                validOwners.add(candidate);
-            }
-        }
-        return validOwners.size() == 1 && validOwners.contains(owner);
     }
 
     private boolean isSendTextConstructorValid(Constructor<?> constructor, Class<?> sourceArgsType) {
@@ -3628,47 +3587,8 @@ public class DexFinder {
                 return;
             }
 
-            if (!isSnsUploadPackHelperClass(snsUploadPackHelperClass)) {
-                List<Class<?>> candidates = new ArrayList<>();
-                collectSendTextClassCandidates(candidates, 20,
-                        new String[][]{
-                                {"MicroMsg.UploadPackHelper", "setContentDes"},
-                                {"addImageMediaObjByPath", "setUploadList"},
-                                {"setSdkId", "setSdkAppName"}
-                        });
-                collectSendTextMethodOwnerCandidates(candidates, 20,
-                        new String[][]{
-                                {"MicroMsg.UploadPackHelper", "setContentDes"},
-                                {"addImageMediaObjByPath", "setUploadList"},
-                                {"setSdkId", "setSdkAppName"}
-                        });
-                for (Class<?> candidate : candidates) {
-                    if (!isSnsUploadPackHelperClass(candidate)) continue;
-                    snsUploadPackHelperClass = candidate;
-                    break;
-                }
-            }
-
-            if (!isSnsUploadManagerClass(snsUploadManagerClass)) {
-                List<Class<?>> candidates = new ArrayList<>();
-                collectSendTextClassCandidates(candidates, 20,
-                        new String[][]{
-                                {"MicroMsg.UploadManager", "checkPostInUI"},
-                                {"checkTLE snsinfo localId it time limit"},
-                                {"getSnsUploadManager"}
-                        });
-                collectSendTextMethodOwnerCandidates(candidates, 20,
-                        new String[][]{
-                                {"MicroMsg.UploadManager", "checkPostInUI"},
-                                {"checkTLE snsinfo localId it time limit"},
-                                {"getSnsUploadManager"}
-                        });
-                for (Class<?> candidate : candidates) {
-                    if (!isSnsUploadManagerClass(candidate)) continue;
-                    snsUploadManagerClass = candidate;
-                    break;
-                }
-            }
+            resolveSnsUploadHelperClass();
+            resolveSnsUploadManagerClass();
 
             resolveSnsUploadMethods();
             snsVideoLocatorResolved = isSnsAddVideoMethod(snsUploadPackHelperClass, snsAddVideoMethod);
@@ -3687,6 +3607,50 @@ public class DexFinder {
                     + " check=" + methodName(snsUploadCheckMethod));
         } catch (Throwable e) {
             h.Hchat.utils.HLog.e(TAG + " resolveSnsUploadApi 失败: " + e.getMessage(), e);
+        }
+    }
+
+    private void resolveSnsUploadHelperClass() {
+        if (isSnsUploadPackHelperClass(snsUploadPackHelperClass)) return;
+        List<Class<?>> candidates = new ArrayList<>();
+        collectSendTextClassCandidates(candidates, 20,
+                new String[][]{
+                        {"MicroMsg.UploadPackHelper", "setContentDes"},
+                        {"addImageMediaObjByPath", "setUploadList"},
+                        {"setSdkId", "setSdkAppName"}
+                });
+        collectSendTextMethodOwnerCandidates(candidates, 20,
+                new String[][]{
+                        {"MicroMsg.UploadPackHelper", "setContentDes"},
+                        {"addImageMediaObjByPath", "setUploadList"},
+                        {"setSdkId", "setSdkAppName"}
+                });
+        for (Class<?> candidate : candidates) {
+            if (!isSnsUploadPackHelperClass(candidate)) continue;
+            snsUploadPackHelperClass = candidate;
+            return;
+        }
+    }
+
+    private void resolveSnsUploadManagerClass() {
+        if (isSnsUploadManagerClass(snsUploadManagerClass)) return;
+        List<Class<?>> candidates = new ArrayList<>();
+        collectSendTextClassCandidates(candidates, 20,
+                new String[][]{
+                        {"MicroMsg.UploadManager", "checkPostInUI"},
+                        {"checkTLE snsinfo localId it time limit"},
+                        {"getSnsUploadManager"}
+                });
+        collectSendTextMethodOwnerCandidates(candidates, 20,
+                new String[][]{
+                        {"MicroMsg.UploadManager", "checkPostInUI"},
+                        {"checkTLE snsinfo localId it time limit"},
+                        {"getSnsUploadManager"}
+                });
+        for (Class<?> candidate : candidates) {
+            if (!isSnsUploadManagerClass(candidate)) continue;
+            snsUploadManagerClass = candidate;
+            return;
         }
     }
 
@@ -3837,8 +3801,7 @@ public class DexFinder {
         if (cachePrefs == null || runtimeCacheKey.length() == 0) return false;
         try {
             String savedKey = cachePrefs.getString(CACHE_KEY, "");
-            boolean runtimeMatches = runtimeCacheKey.equals(savedKey)
-                    || DexCacheIdentity.sameRuntime(runtimeCacheKey, savedKey);
+            boolean runtimeMatches = DexCacheIdentity.sameRuntime(runtimeCacheKey, savedKey);
             if (!runtimeMatches) {
                 resetCacheForRuntimeKey();
                 return false;
@@ -3857,10 +3820,14 @@ public class DexFinder {
             addMsgPreProcessMethod = loadMethodSoft("addMsgPreProcessMethod");
             restoreAddMsgApiFields();
             boolean savedAddMsgResolved = cachePrefs.getBoolean(CACHE_ADDMSG_LOCATOR_RESOLVED, false);
-            addMsgLocatorResolved = savedAddMsgResolved && isAddMsgApiValid();
-            if (savedAddMsgResolved && addMsgLocatorResolved && !isAddMsgApiAnchored()) {
-                addMsgLocatorResolved = false;
-            }
+            addMsgLocatorResolved = Boolean.TRUE.equals(DexCacheRestorePolicy.restore(
+                    runtimeMatches, savedAddMsgResolved,
+                    isAddMsgApiValid() ? Boolean.TRUE : null,
+                    Boolean.TRUE::equals,
+                    () -> {
+                        resolveAddMsgClasses();
+                        return isAddMsgApiValid() ? Boolean.TRUE : null;
+                    }));
             if (!addMsgLocatorResolved) {
                 addMsgObserverMethod = null;
                 addMsgPreProcessMethod = null;
@@ -3907,8 +3874,14 @@ public class DexFinder {
             sendTextMsgCtorLong = findSendTextConstructor(sendTextMsgClass, long.class);
             sendTextMsgCtorObject = findSendTextConstructor(sendTextMsgClass, Object.class);
             boolean savedSendTextResolved = cachePrefs.getBoolean(CACHE_SEND_TEXT_LOCATOR_RESOLVED, false);
-            sendTextMsgLocatorResolved = savedSendTextResolved && isSendTextRequestApiValid()
-                    && isSendTextOwnerAnchored(sendTextMsgClass);
+            sendTextMsgLocatorResolved = Boolean.TRUE.equals(DexCacheRestorePolicy.restore(
+                    runtimeMatches, savedSendTextResolved,
+                    isSendTextRequestApiValid() ? Boolean.TRUE : null,
+                    Boolean.TRUE::equals,
+                    () -> {
+                        resolveSendTextMsg();
+                        return isSendTextRequestApiValid() ? Boolean.TRUE : null;
+                    }));
             if (!sendTextMsgLocatorResolved) {
                 sendTextMsgClass = null;
                 sendTextMsgCtorLong = null;
@@ -4064,13 +4037,22 @@ public class DexFinder {
             chatPageFragmentExitMethod = loadMethod("chatPageFragmentExitMethod");
             chatFooterSendClickMethod = loadMethod("chatFooterSendClickMethod");
             boolean savedSnsVideoResolved = cachePrefs.getBoolean(CACHE_SNS_VIDEO_LOCATOR_RESOLVED, false);
-            snsVideoLocatorResolved = savedSnsVideoResolved
-                    && isSnsAddVideoMethod(snsUploadPackHelperClass, snsAddVideoMethod)
-                    && snsAddVideoMethod.equals(findSnsAddVideoMethod(snsUploadPackHelperClass));
+            snsAddVideoMethod = DexCacheRestorePolicy.restore(
+                    runtimeMatches, savedSnsVideoResolved,
+                    isSnsAddVideoMethod(snsUploadPackHelperClass, snsAddVideoMethod)
+                            ? snsAddVideoMethod : null,
+                    method -> isSnsAddVideoMethod(snsUploadPackHelperClass, method),
+                    () -> {
+                        resolveSnsUploadHelperClass();
+                        snsAddVideoMethod = isSnsUploadPackHelperClass(snsUploadPackHelperClass)
+                                ? findSnsAddVideoMethod(snsUploadPackHelperClass) : null;
+                        return isSnsAddVideoMethod(snsUploadPackHelperClass, snsAddVideoMethod)
+                                ? snsAddVideoMethod : null;
+                    });
+            snsVideoLocatorResolved = snsAddVideoMethod != null;
             if (!snsVideoLocatorResolved) snsAddVideoMethod = null;
             if (cacheDescriptorInvalid) {
-                resetLoadedCacheDescriptors();
-                return false;
+                logDetail("缓存描述符有损坏项；保留其他有效项并等待对应 locator 定点重试");
             }
             return true;
         } catch (Throwable e) {
@@ -6057,8 +6039,7 @@ public class DexFinder {
     private boolean loadContactProtobufCache() {
         if (contactCachePreferenceView == null || runtimeCacheKey.length() == 0) return false;
         String savedKey = contactCachePreferenceView.getString(DexFinderCacheStore.CONTACT_KEY_KEY, "");
-        boolean runtimeMatches = runtimeCacheKey.equals(savedKey)
-                || DexCacheIdentity.sameRuntime(runtimeCacheKey, savedKey);
+        boolean runtimeMatches = DexCacheIdentity.sameRuntime(runtimeCacheKey, savedKey);
         if (!runtimeMatches) {
             cacheStore.clearContactSnapshot();
             return false;

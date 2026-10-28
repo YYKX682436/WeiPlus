@@ -9,6 +9,8 @@ process.once('exit', () => fs.rmSync(output, { recursive: true, force: true }));
 const compile = spawnSync(process.env.JAVAC || 'javac', [
   '-d', output,
   'app/src/main/java/h/Hchat/hooks/api/runtime/WeChatVersionGate.java',
+  'app/src/main/java/h/Hchat/hooks/api/runtime/HostRuntimeIdentityDecision.java',
+  'scripts/tests/phase_b/HostRuntimeIdentityRegression.java',
   'scripts/tests/phase_b/WeChatVersionGateRegression.java'
 ], { cwd: root, encoding: 'utf8' });
 if (compile.stdout) process.stdout.write(compile.stdout);
@@ -20,6 +22,14 @@ const run = spawnSync(process.env.JAVA || 'java', [
 if (run.stdout) process.stdout.write(run.stdout);
 if (run.stderr) process.stderr.write(run.stderr);
 if (run.error || run.status !== 0) throw run.error || new Error('Version gate regression failed');
+const hostIdentityRun = spawnSync(process.env.JAVA || 'java', [
+  '-cp', output, 'HostRuntimeIdentityRegression'
+], { cwd: root, encoding: 'utf8' });
+if (hostIdentityRun.stdout) process.stdout.write(hostIdentityRun.stdout);
+if (hostIdentityRun.stderr) process.stderr.write(hostIdentityRun.stderr);
+if (hostIdentityRun.error || hostIdentityRun.status !== 0) {
+  throw hostIdentityRun.error || new Error('Host runtime identity regression failed');
+}
 
 function jar(group, name, version) {
   const directory = path.join(os.homedir(), '.gradle/caches/modules-2/files-2.1', group, name, version);

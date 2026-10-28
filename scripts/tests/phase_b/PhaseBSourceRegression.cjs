@@ -23,7 +23,24 @@ const checks = [
     assert.doesNotMatch(source, /take\(7\)/);
     assert.match(source, /cachedKey\s*==\s*runtimeKey/);
     assert.match(source, /cached\.size\s*<\s*10/);
+    assert.match(source, /isCompleteRuntimeIdentity/);
     assert.match(source, /cachedKey\s*==\s*runtimeKey/);
+    const tablet = read('app/src/main/java/h/Hchat/hooks/items/tablet/WeChatTabletFeature.kt');
+    assert.match(tablet, /WeChatVersionApi\.build\(context, classLoader\)\.cacheKey/);
+    for (const file of [
+      'app/src/main/java/h/Hchat/dexkit/SettingsDexFinder.java',
+      'app/src/main/java/h/Hchat/dexkit/DexMethodCache.kt'
+    ]) assert.match(read(file), /DexCacheIdentity\.sameRuntime/);
+  }],
+  ['Tinker lifecycle separates loader rotation from host identity invalidation', () => {
+    const entry = read('app/src/main/java/h/Hchat/ModuleEntry.java');
+    const guard = read('app/src/main/java/h/Hchat/hooks/api/runtime/HostRuntimeIdentityDecision.java');
+    assert.match(entry, /runtimeIdentity\.approve\(/);
+    assert.match(entry, /runtimeIdentity\.verify\([\s\S]*?invalidateHostIdentity\(source \+ ":runtime_identity_changed"\)/);
+    assert.match(entry, /DexInstallScheduler\.INSTANCE\.cancelAll\(\);[\s\S]*?HookRegistry\.get\(\)\.unhookAll\(\)/);
+    assert.match(guard, /CLASS_LOADER_GENERATION_CHANGED/);
+    assert.match(guard, /approvedHostIdentity\.equals\(currentHostIdentity\)/);
+    assert.match(read('app/src/test/java/h/Hchat/hooks/api/runtime/HostRuntimeIdentityLifecycleTest.java'), /legalTinkerLoaderRotationSurvivesAndPatchChangeCancelsGeneration/);
   }],
   ['global Dex cache stores locator state separately from scan completion', () => {
     const finder = read('app/src/main/java/h/Hchat/dexkit/DexFinder.java');
@@ -35,7 +52,11 @@ const checks = [
     assert.match(store, /criticalLocatorsResolved/);
     assert.match(finder, /CACHE_SNAPSHOT_VERSION\s*=\s*"4"/);
     assert.match(finder, /loadMethodSoft\("addMsgObserverMethod"\)/);
-    assert.match(finder, /isSendTextOwnerAnchored\(sendTextMsgClass\)/);
+    const cacheLoad = finder.slice(finder.indexOf('private synchronized boolean loadCache()'), finder.indexOf('private void resetLoadedCacheDescriptors()'));
+    assert.equal((cacheLoad.match(/DexCacheRestorePolicy\.restore\(/g) || []).length, 3);
+    assert.doesNotMatch(cacheLoad, /isAddMsgApiAnchored|isSendTextOwnerAnchored|resolveSnsUploadApi\(|resolveSnsUploadMethods\(/);
+    assert.match(cacheLoad, /findSnsAddVideoMethod\(snsUploadPackHelperClass\)/);
+    assert.match(cacheLoad, /resolveSnsUploadHelperClass\(\)/);
     const methodCache = read('app/src/main/java/h/Hchat/dexkit/DexMethodCache.kt');
     assert.match(methodCache, /it\.toDexDescriptor\(\) == descriptor/);
     assert.match(methodCache, /loadConstructorDescriptor[\s\S]*?getConstructorInstance\(classLoader\)[\s\S]*?toDexDescriptor\(\) == descriptor/);

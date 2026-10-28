@@ -11,7 +11,7 @@ import static org.junit.Assert.*;
 
 public class DexMethodCacheDescriptorRegressionTest {
     private static final String RUNTIME =
-            "com.tencent.mm|8.0.80|3220|client|tinker|patch|mtime|dex-crc|patch-files|stable";
+            "com.tencent.mm|8.0.80|3220|client|tinker|patch|1700000000|dex-crc|patch-files|stable";
 
     public static final class Owner {
         public Owner(String value, int flag) {}
