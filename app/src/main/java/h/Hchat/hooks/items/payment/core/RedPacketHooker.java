@@ -159,7 +159,8 @@ public class RedPacketHooker {
                 + " 拆红包类=" + (dexFinder.openLuckyMoneyClass != null ? dexFinder.openLuckyMoneyClass.getName() : "null"));
 
         if (!installMessageObserver(subscriptions)) {
-            hookAddMsgBeforeDb();
+            Object eventSubscription = messageHook.hook();
+            if (eventSubscription != null) subscriptions.add(eventSubscription);
             databaseHook.hook();
         }
         uiAutomator.hook();
@@ -563,7 +564,4 @@ public class RedPacketHooker {
 
     // ==================== AddMsg 预监听 ====================
 
-    private void hookAddMsgBeforeDb() {
-        messageHook.hook();
-    }
 }

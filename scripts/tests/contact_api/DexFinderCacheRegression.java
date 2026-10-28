@@ -29,11 +29,11 @@ public final class DexFinderCacheRegression {
         MemoryPreferences contact = new MemoryPreferences();
         DexFinderCacheStore store = new DexFinderCacheStore(global, contact);
 
-        check(store.beginGlobalSnapshot(false, true, "runtime", "3") == null,
+        check(store.beginGlobalSnapshot(false, true, false, "runtime", "4") == null,
                 "partial global snapshot is refused");
-        check(store.beginGlobalSnapshot(true, false, "runtime", "3") == null,
+        check(store.beginGlobalSnapshot(true, false, false, "runtime", "4") == null,
                 "invalid global snapshot is refused");
-        DexFinderCacheStore.Editor globalWrite = store.beginGlobalSnapshot(true, true, "runtime", "3");
+        DexFinderCacheStore.Editor globalWrite = store.beginGlobalSnapshot(true, true, false, "runtime", "4");
         globalWrite.putString("packetBaseClasses", "sample.SceneBase").apply();
 
         DexFinderCacheStore.Editor contactWrite = store.beginContactSnapshot(true, "runtime", "1");
@@ -41,9 +41,11 @@ public final class DexFinderCacheRegression {
 
         DexFinderCacheStore reloaded = new DexFinderCacheStore(global, contact);
         check(reloaded.canLoadGlobal(true,
-                        global.getString(DexFinderCacheStore.GLOBAL_VERSION_KEY, ""), "3",
-                        global.getBoolean(DexFinderCacheStore.GLOBAL_COMPLETE_KEY, false)),
-                "complete global cache reloads");
+                        global.getString(DexFinderCacheStore.GLOBAL_VERSION_KEY, ""), "4",
+                        global.getBoolean(DexFinderCacheStore.GLOBAL_SCAN_FINISHED_KEY, false), true),
+                "finished scan snapshot reloads even when a targeted locator needs retry");
+        check(!global.getBoolean(DexFinderCacheStore.GLOBAL_CRITICAL_COMPLETE_KEY, true),
+                "critical locator incompleteness remains separate from scan completion");
         check(reloaded.canLoadContact(true,
                         contact.getString(DexFinderCacheStore.CONTACT_VERSION_KEY, ""), "1",
                         contact.getBoolean(DexFinderCacheStore.CONTACT_COMPLETE_KEY, false)),
@@ -52,7 +54,8 @@ public final class DexFinderCacheRegression {
                 "global cache data survives reload");
         check("sample.Dispatch#send()".equals(contact.getString("protobufStaticDispatchMethod", "")),
                 "contact cache data survives reload");
-        check(!reloaded.canLoadGlobal(true, "2", "3", true), "old global version is rejected");
+        check(!reloaded.canLoadGlobal(true, "3", "4", true, true), "schema 3 migration is rejected");
+        check(!reloaded.canLoadGlobal(true, "4", "4", false, true), "unfinished scan is rejected");
         check(!reloaded.canLoadContact(true, "", "1", false), "incomplete contact cache is rejected");
     }
 
@@ -64,7 +67,7 @@ public final class DexFinderCacheRegression {
         CountDownLatch start = new CountDownLatch(1);
         Thread fullResolve = new Thread(() -> {
             await(start);
-            DexFinderCacheStore.Editor editor = globalWriter.beginGlobalSnapshot(true, true, "runtime", "3");
+            DexFinderCacheStore.Editor editor = globalWriter.beginGlobalSnapshot(true, true, true, "runtime", "3");
             editor.putString("full.global.marker", "complete").apply();
         });
         Thread contactResolve = new Thread(() -> {

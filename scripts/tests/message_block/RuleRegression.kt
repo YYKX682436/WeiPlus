@@ -1,8 +1,16 @@
 package h.Hchat.hooks.items.messageblock
 
 import android.content.Context
+import h.Hchat.hooks.api.core.WeChatApis
+import h.Hchat.hooks.api.message.WeChatMessageParseApi
 import h.Hchat.hooks.api.model.WeChatParsedMessage
+import h.Hchat.hooks.core.EventBus
+import h.Hchat.hooks.core.FeatureContext
+import h.Hchat.hooks.core.Finder
+import h.Hchat.hooks.core.HookRegistry
 import h.Hchat.preferences.HchatStorage
+import h.Hchat.tests.api102.ChainFixture
+import io.github.libxposed.api.XposedInterface
 
 class MessageBlockSettingsProvider
 private var checks = 0
@@ -31,7 +39,104 @@ private fun configure(
         .putString(MessageBlockSettings.KEY_DEFAULT_GROUP, MessageBlockSettings.encodeDefaultRule(defaultRule, group = true))
         .commit()
 }
+
+private class PreProcessFixture {
+    fun process(payload: Any) {}
+}
+
+private fun invokePreProcess(
+    feature: MessageBlockFeature,
+    bus: EventBus,
+    parsed: WeChatParsedMessage?,
+    parserThrows: Boolean = false,
+    install: Boolean = true
+): Triple<Any?, Int, Int> {
+    HookRegistry.clearForTest()
+    val parser = WeChatMessageParseApi().apply {
+        result = parsed
+        throwOnParse = parserThrows
+    }
+    WeChatApis.parser = parser
+    val method = PreProcessFixture::class.java.getDeclaredMethod("process", Any::class.java)
+    val context = FeatureContext(Finder(resolveResult = true, addMsgPreProcessMethod = method), bus)
+    val installMethod = MessageBlockFeature::class.java.getDeclaredMethod(
+        "installBlockHook", FeatureContext::class.java
+    ).apply { isAccessible = true }
+    if (install) check(installMethod.invoke(feature, context) as Boolean) { "前置 Hook 安装失败" }
+    val callback = HookRegistry.callbackFor(method) ?: error("前置 Hook 回调未注册")
+    var hostCalls = 0
+    val chain = ChainFixture(method, PreProcessFixture(), arrayOf("raw-payload")) { _, _ ->
+        hostCalls++
+        "host-result"
+    }
+    val result = chain.run(callback)
+    return Triple(result, chain.proceeds, hostCalls)
+}
+
+private fun enableQuickBlock(talker: String = "room@chatroom") {
+    val quick = MessageBlockBinding(
+        "contact|$talker", MessageBlockSettings.TARGET_CONTACT, talker, talker, true,
+        MessageBlockSettings.ACTION_BLOCK, emptySet(), quickBlockAll = true
+    )
+    configure(listOf(quick))
+    HchatStorage.store.edit().putBoolean(MessageBlockSettings.KEY_ENABLE, true).commit()
+}
+
+private fun verifyPreProcessSemantics() {
+    val parsed = message(1, "ordinary message")
+    enableQuickBlock("another-room")
+    val normal = invokePreProcess(MessageBlockFeature(), EventBus(), parsed)
+    check(normal.first == "host-result" && normal.second == 1 && normal.third == 1) {
+        "非命中消息必须原样进入宿主一次"
+    }; checks++
+
+    enableQuickBlock()
+    val debugSettings = MessageBlockSettings(Context())
+    val debugBlocked = shouldBlock.invoke(MessageBlockFeature(), debugSettings, parsed) as Boolean
+    val blockBus = EventBus()
+    val blocked = invokePreProcess(MessageBlockFeature(), blockBus, parsed)
+    check(blocked.first == null && blocked.second == 0 && blocked.third == 0 && blockBus.events.size == 1) {
+        "命中消息必须在前置入口阻断且只派发一次: result=$blocked events=${blockBus.events.size} enabled=${debugSettings.isEnabled()} rule=$debugBlocked bindings=${debugSettings.bindings()} parsedTalker=${parsed.talker} parsedSender=${parsed.sender}"
+    }; checks++
+
+    enableQuickBlock()
+    val parseFailure = invokePreProcess(MessageBlockFeature(), EventBus(), parsed, parserThrows = true)
+    check(parseFailure.first == "host-result" && parseFailure.second == 1 && parseFailure.third == 1) {
+        "解析异常必须隔离并继续宿主链一次"
+    }; checks++
+
+    enableQuickBlock()
+    val failingBus = EventBus().apply { throwOnPost = true }
+    val isolatedEventFailure = invokePreProcess(MessageBlockFeature(), failingBus, parsed)
+    check(isolatedEventFailure.first == null && isolatedEventFailure.second == 0 && isolatedEventFailure.third == 0) {
+        "内部事件派发异常不得恢复已决定阻断的入库路径"
+    }; checks++
+
+    enableQuickBlock()
+    HookRegistry.clearForTest()
+    val parser = WeChatMessageParseApi().apply { result = parsed }
+    WeChatApis.parser = parser
+    val method = PreProcessFixture::class.java.getDeclaredMethod("process", Any::class.java)
+    val context = FeatureContext(Finder(true, method), EventBus())
+    val installMethod = MessageBlockFeature::class.java.getDeclaredMethod(
+        "installBlockHook", FeatureContext::class.java
+    ).apply { isAccessible = true }
+    check(installMethod.invoke(MessageBlockFeature(), context) as Boolean) { "代次测试 Hook 安装失败" }
+    val oldCallback = HookRegistry.callbackFor(method) ?: error("旧代次 Hook 丢失")
+    HookRegistry.invalidateGeneration()
+    var hostCalls = 0
+    val chain = ChainFixture(method, PreProcessFixture(), arrayOf("raw-payload")) { _, _ ->
+        hostCalls++
+        "host-result"
+    }
+    val staleResult = chain.run(oldCallback)
+    check(staleResult == "host-result" && chain.proceeds == 1 && hostCalls == 1) {
+        "取消安装代次后旧回调只能继续宿主链"
+    }; checks++
+}
+
 fun main() {
+    verifyPreProcessSemantics()
     val template = MessageBlockTemplate("base", "基础模板", true, 0, "", "", "", "", true, emptySet(), "")
     val binding = MessageBlockBinding(
         "contact|room@chatroom", MessageBlockSettings.TARGET_CONTACT, "room@chatroom", "群聊", true,

@@ -27,14 +27,16 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 
+import h.Hchat.hooks.api.message.WeChatMessageParseApi;
 import h.Hchat.utils.HLog;
 
 /**
  * DexFinder - 使用 DexKit 定位微信混淆后的类和方法
- * 适配微信 8.0.49 ~ 8.0.72+
+ * 目标支持微信 8.0.76 及以上；各混淆 locator 仍需独立验证结构和运行时状态。
  */
 public class DexFinder {
 
@@ -44,7 +46,16 @@ public class DexFinder {
     private static final String CACHE_COMPLETE = "cache.complete";
     private static final String CACHE_KEY = "cache.key";
     private static final String CACHE_SNAPSHOT_VERSION_KEY = "cache.snapshot.version";
-    private static final String CACHE_SNAPSHOT_VERSION = "3";
+    private static final String CACHE_SNAPSHOT_VERSION = "4";
+    private static final String CACHE_ADDMSG_LOCATOR_RESOLVED = "locator.addmsg.resolved";
+    private static final String CACHE_SEND_TEXT_LOCATOR_RESOLVED = "locator.send.text.resolved";
+    private static final String CACHE_SNS_VIDEO_LOCATOR_RESOLVED = "locator.sns.video.resolved";
+    // Exact, DEX-confirmed diagnostics in the message processor and its storage caller.
+    // The former short anchors "dkAddMsg" and "processAddMsg" are not literal strings in
+    // either supported sample; DexKit's usingStrings matcher requires the complete constant.
+    private static final String ADDMSG_PROCESS_LOG_ANCHOR =
+            "dkAddMsg from:%s to:%s id:[%d,%d,%d] status:%d type:%d time:[%d %s] diff:%d imgstatus:%d imgbuf:%d src:%d push:%d content:%s flag:%s";
+    private static final String ADDMSG_PREPROCESS_ERROR_ANCHOR = "processAddMsg insert db error";
     private static final String CONTACT_CACHE_VERSION = "1";
     private static final String LOCATOR_WISH_COMPLETE = "locator.wish.complete";
     private static final String LOCATOR_PACKET_COMPLETE = "locator.packet.complete";
@@ -67,9 +78,19 @@ public class DexFinder {
     private final DexFinderCacheStore.Preferences contactCachePreferenceView;
     private final String runtimeCacheKey;
     private final RetryableLocatorState contactSenderLocatorState = new RetryableLocatorState();
-    private boolean resolvedAll;
+    private boolean resolutionFinished;
     private boolean cacheLoadAttempted;
     private boolean cacheDescriptorInvalid;
+    private boolean addMsgLocatorResolved;
+    private boolean sendTextMsgLocatorResolved;
+    private boolean snsVideoLocatorResolved;
+
+    // The protobuf dispatch method observes completed storage results; the caller is the only
+    // verified pre-processing point suitable for a deliberate message block decision.
+    public Method addMsgObserverMethod;
+    public Method addMsgPreProcessMethod;
+    public Field addMsgRequestPayloadField;
+    public Field addMsgResultMessageField;
 
     // AddMsg 处理类
     public List<Class<?>> addMsgClasses = new ArrayList<>();
@@ -294,7 +315,7 @@ public class DexFinder {
     }
 
     public synchronized void resolveAll() {
-        if (resolvedAll) {
+        if (resolutionFinished) {
             logDetail("resolveAll 已完成，跳过重复解析");
             return;
         }
@@ -302,7 +323,7 @@ public class DexFinder {
         openUnionLocatorResolved = false;
         networkQueueLocatorResolved = false;
         if (loadCache()) {
-            resolvedAll = true;
+            resolutionFinished = true;
             logDetail("命中缓存: " + shortKey(runtimeCacheKey));
             return;
         }
@@ -346,15 +367,46 @@ public class DexFinder {
         resolveNativeSendButtonApi();
         resolveWishWxHb();
         resolvePacketCompatClasses();
-        resolveEcsGiftApi();
         logMissingCritical();
-        resolvedAll = true;
+        resolutionFinished = true;
         saveCache();
-        logDetail("解析完成并缓存: " + shortKey(runtimeCacheKey));
+        logDetail("解析流程完成: critical=" + areCriticalLocatorsResolved()
+                + " cache=" + shortKey(runtimeCacheKey));
     }
 
     public synchronized boolean isResolvedAll() {
-        return resolvedAll;
+        return resolutionFinished;
+    }
+
+    public synchronized boolean isResolutionFinished() {
+        return resolutionFinished;
+    }
+
+    public synchronized boolean areCriticalLocatorsResolved() {
+        return addMsgLocatorResolved && sendTextMsgLocatorResolved;
+    }
+
+    public synchronized boolean isAddMsgLocatorResolved() {
+        return addMsgLocatorResolved && isAddMsgApiValid();
+    }
+
+    public synchronized boolean isSendTextMsgLocatorResolved() {
+        return sendTextMsgLocatorResolved && isSendTextRequestApiValid();
+    }
+
+    public synchronized boolean isSnsVideoLocatorResolved() {
+        return snsVideoLocatorResolved && isSnsAddVideoMethod(snsUploadPackHelperClass, snsAddVideoMethod);
+    }
+
+    public synchronized boolean resolveAddMsgApi() {
+        if (isAddMsgApiValid()) {
+            addMsgLocatorResolved = true;
+            return true;
+        }
+        resolveAddMsgClasses();
+        addMsgLocatorResolved = isAddMsgApiValid();
+        if (resolutionFinished) saveCache();
+        return addMsgLocatorResolved;
     }
 
     // ============ Helper: create FindMethod/FindClass ============
@@ -402,22 +454,206 @@ public class DexFinder {
 
     // ============ AddMsg ============
     private void resolveAddMsgClasses() {
+        if (isAddMsgApiValid()) {
+            addMsgLocatorResolved = true;
+            return;
+        }
+        addMsgObserverMethod = null;
+        addMsgPreProcessMethod = null;
+        addMsgRequestPayloadField = null;
+        addMsgResultMessageField = null;
+        addMsgClasses.clear();
         try {
-            // 策略1: 搜索 "dkAddMsg" (OR 搜索，不同时要求两个字符串)
-            List<MethodData> methods1 = dexKit.findMethod(
-                    mkMethodUsingStrings("dkAddMsg"));
-            collectMethodOwnerClass(methods1, addMsgClasses);
-
-            // 策略2: 搜索 "processAddMsg"
-            if (addMsgClasses.isEmpty()) {
-                List<MethodData> methods2 = dexKit.findMethod(
-                        mkMethodUsingStrings("processAddMsg"));
-                collectMethodOwnerClass(methods2, addMsgClasses);
+            LinkedHashSet<Method> processCandidates = new LinkedHashSet<>();
+            for (String anchor : new String[]{ADDMSG_PROCESS_LOG_ANCHOR}) {
+                for (MethodData data : dexKit.findMethod(mkMethodUsingStrings(anchor))) {
+                    try {
+                        Method candidate = data.getMethodInstance(classLoader);
+                        if (isAddMsgCentralProcessMethod(candidate)) processCandidates.add(candidate);
+                    } catch (Throwable ignored) {}
+                }
             }
 
-            logDetail("AddMsg类: " + addMsgClasses.size());
+            List<AddMsgMethodPair> pairs = new ArrayList<>();
+            for (Method process : processCandidates) {
+                Class<?> requestType = process.getParameterTypes()[0];
+                Class<?> resultType = process.getReturnType();
+                Field requestPayload = findUniqueAddMsgPayloadField(requestType);
+                Field resultMessage = findUniqueObjectField(resultType);
+                if (requestPayload == null || resultMessage == null) continue;
+                for (Method preProcess : findAddMsgPreProcessCallers(process, requestPayload.getType())) {
+                    if (preProcess.getDeclaringClass() != process.getDeclaringClass()) continue;
+                    pairs.add(new AddMsgMethodPair(process, preProcess, requestPayload, resultMessage));
+                }
+            }
+            if (pairs.size() != 1) {
+                logDetail("AddMsg定位拒绝: structurallyValidPairs=" + pairs.size());
+                addMsgLocatorResolved = false;
+                return;
+            }
+            AddMsgMethodPair pair = pairs.get(0);
+            addMsgObserverMethod = KavaReflector.accessible(pair.processMethod);
+            addMsgPreProcessMethod = KavaReflector.accessible(pair.preProcessMethod);
+            pair.requestPayloadField.setAccessible(true);
+            pair.resultMessageField.setAccessible(true);
+            addMsgRequestPayloadField = pair.requestPayloadField;
+            addMsgResultMessageField = pair.resultMessageField;
+            addMsgClasses.add(addMsgPreProcessMethod.getDeclaringClass());
+            addMsgLocatorResolved = isAddMsgApiValid();
+            logDetail("AddMsg定位: observer=" + methodName(addMsgObserverMethod)
+                    + " preProcess=" + methodName(addMsgPreProcessMethod)
+                    + " state=" + (addMsgLocatorResolved ? "located" : "rejected"));
         } catch (Throwable e) {
+            addMsgLocatorResolved = false;
             h.Hchat.utils.HLog.e(TAG + " resolveAddMsg 失败: " + e.getMessage(), e);
+        }
+    }
+
+    private boolean isAddMsgCentralProcessMethod(Method method) {
+        if (method == null || !Modifier.isStatic(method.getModifiers())
+                || method.getReturnType() == void.class || method.getReturnType().isPrimitive()) return false;
+        Class<?>[] params = method.getParameterTypes();
+        return params.length == 3 && params[0] != Object.class && !params[0].isPrimitive()
+                && findUniqueAddMsgPayloadField(params[0]) != null
+                && findUniqueObjectField(method.getReturnType()) != null;
+    }
+
+    private Field findUniqueAddMsgPayloadField(Class<?> requestType) {
+        if (requestType == null) return null;
+        List<Field> matches = new ArrayList<>();
+        WeChatMessageParseApi parser = new WeChatMessageParseApi();
+        for (Field field : KavaReflector.declaredFields(requestType)) {
+            Class<?> type = field.getType();
+            if (type == null || type == Object.class || type.isPrimitive() || type.isArray()) continue;
+            if (parser.isLikelyAddMsgClass(type)) matches.add(field);
+        }
+        return matches.size() == 1 ? matches.get(0) : null;
+    }
+
+    private Field findUniqueObjectField(Class<?> resultType) {
+        if (resultType == null) return null;
+        List<Field> matches = new ArrayList<>();
+        for (Field field : KavaReflector.declaredFields(resultType)) {
+            Class<?> type = field.getType();
+            if (type != null && !type.isPrimitive() && type != String.class && type != Object.class
+                    && !type.isArray()) matches.add(field);
+        }
+        return matches.size() == 1 ? matches.get(0) : null;
+    }
+
+    private List<Method> findAddMsgPreProcessCallers(Method processMethod, Class<?> payloadType) {
+        List<Method> result = new ArrayList<>();
+        try {
+            LinkedHashSet<Method> storageErrorCallers = new LinkedHashSet<>();
+            for (MethodData data : dexKit.findMethod(mkMethodUsingStrings(ADDMSG_PREPROCESS_ERROR_ANCHOR))) {
+                try {
+                    Method candidate = data.getMethodInstance(classLoader);
+                    if (candidate.getDeclaringClass() == processMethod.getDeclaringClass()) {
+                        storageErrorCallers.add(candidate);
+                    }
+                } catch (Throwable ignored) {}
+            }
+            if (storageErrorCallers.isEmpty()) return result;
+            MethodMatcher target = new MethodMatcher()
+                    .declaredClass(processMethod.getDeclaringClass().getName())
+                    .name(processMethod.getName())
+                    .paramTypes(processMethod.getParameterTypes())
+                    .returnType(processMethod.getReturnType());
+            MethodMatcher callerMatcher = new MethodMatcher();
+            callerMatcher.invokeMethods(new MethodsMatcher().add(target));
+            for (MethodData data : dexKit.findMethod(new FindMethod().matcher(callerMatcher))) {
+                try {
+                    Method caller = data.getMethodInstance(classLoader);
+                    Class<?>[] params = caller.getParameterTypes();
+                    if (!storageErrorCallers.contains(caller)
+                            || caller.getDeclaringClass() != processMethod.getDeclaringClass()
+                            || caller.getReturnType() != void.class
+                            || Modifier.isStatic(caller.getModifiers())
+                            || params.length < 1 || params[0] != payloadType) continue;
+                    if (!result.contains(caller)) result.add(KavaReflector.accessible(caller));
+                } catch (Throwable ignored) {}
+            }
+        } catch (Throwable e) {
+            logDetail("AddMsg调用关系定位失败: " + e.getMessage());
+        }
+        return result;
+    }
+
+    private boolean isAddMsgApiValid() {
+        if (addMsgObserverMethod == null || addMsgPreProcessMethod == null
+                || addMsgRequestPayloadField == null || addMsgResultMessageField == null) return false;
+        Class<?>[] processParams = addMsgObserverMethod.getParameterTypes();
+        Class<?>[] preParams = addMsgPreProcessMethod.getParameterTypes();
+        return Modifier.isStatic(addMsgObserverMethod.getModifiers())
+                && addMsgObserverMethod.getReturnType() != void.class
+                && processParams.length == 3
+                && addMsgPreProcessMethod.getReturnType() == void.class
+                && !Modifier.isStatic(addMsgPreProcessMethod.getModifiers())
+                && preParams.length > 0
+                && preParams[0] == addMsgRequestPayloadField.getType()
+                && addMsgRequestPayloadField.getDeclaringClass() == processParams[0]
+                && addMsgResultMessageField.getDeclaringClass() == addMsgObserverMethod.getReturnType()
+                && addMsgClasses != null
+                && addMsgClasses.contains(addMsgPreProcessMethod.getDeclaringClass());
+    }
+
+    private boolean isAddMsgApiAnchored() {
+        if (!isAddMsgApiValid()) return false;
+        boolean processAnchored = false;
+        try {
+            for (MethodData data : dexKit.findMethod(mkMethodUsingStrings(ADDMSG_PROCESS_LOG_ANCHOR))) {
+                if (addMsgObserverMethod.equals(data.getMethodInstance(classLoader))) {
+                    processAnchored = true;
+                    break;
+                }
+            }
+        } catch (Throwable ignored) {}
+        if (!processAnchored) return false;
+        List<Method> callers = findAddMsgPreProcessCallers(
+                addMsgObserverMethod, addMsgRequestPayloadField.getType());
+        return callers.size() == 1 && addMsgPreProcessMethod.equals(callers.get(0));
+    }
+
+    private void restoreAddMsgApiFields() {
+        addMsgRequestPayloadField = null;
+        addMsgResultMessageField = null;
+        if (addMsgObserverMethod == null || addMsgPreProcessMethod == null) return;
+        Class<?>[] processParams = addMsgObserverMethod.getParameterTypes();
+        Class<?>[] preParams = addMsgPreProcessMethod.getParameterTypes();
+        if (processParams.length != 3 || preParams.length == 0) return;
+        List<Field> requestFields = new ArrayList<>();
+        for (Field field : KavaReflector.declaredFields(processParams[0])) {
+            if (!Modifier.isStatic(field.getModifiers()) && field.getType() == preParams[0]) {
+                requestFields.add(field);
+            }
+        }
+        if (requestFields.size() == 1) {
+            requestFields.get(0).setAccessible(true);
+            addMsgRequestPayloadField = requestFields.get(0);
+        }
+        Field resultMessage = findUniqueObjectField(addMsgObserverMethod.getReturnType());
+        if (resultMessage != null) {
+            resultMessage.setAccessible(true);
+            addMsgResultMessageField = resultMessage;
+        }
+        if (addMsgClasses == null) addMsgClasses = new ArrayList<>();
+        if (!addMsgClasses.contains(addMsgPreProcessMethod.getDeclaringClass())) {
+            addMsgClasses.add(addMsgPreProcessMethod.getDeclaringClass());
+        }
+    }
+
+    private static final class AddMsgMethodPair {
+        final Method processMethod;
+        final Method preProcessMethod;
+        final Field requestPayloadField;
+        final Field resultMessageField;
+
+        AddMsgMethodPair(Method processMethod, Method preProcessMethod,
+                         Field requestPayloadField, Field resultMessageField) {
+            this.processMethod = processMethod;
+            this.preProcessMethod = preProcessMethod;
+            this.requestPayloadField = requestPayloadField;
+            this.resultMessageField = resultMessageField;
         }
     }
 
@@ -701,48 +937,106 @@ public class DexFinder {
     }
 
     public void resolveSendTextMsg() {
-        if (ensureSnapshotLoaded()) return;
         try {
-            if (sendTextMsgClass != null
-                    && (sendTextMsgCtorLong != null || sendTextMsgCtorObject != null)) {
+            if (isSendTextRequestApiValid()) {
+                sendTextMsgLocatorResolved = true;
+                if (resolutionFinished) saveCache();
                 return;
             }
+            sendTextMsgLocatorResolved = false;
+            sendTextMsgClass = null;
+            sendTextMsgCtorLong = null;
+            sendTextMsgCtorObject = null;
 
-            List<Class<?>> candidates = new ArrayList<>();
-            collectSendTextClassCandidates(candidates, 20,
+            LinkedHashSet<Class<?>> candidates = new LinkedHashSet<>();
+            List<Class<?>> candidateList = new ArrayList<>();
+            collectSendTextClassCandidates(candidateList, 20,
                     new String[][]{
                             {"/cgi-bin/micromsg-bin/newsendmsg"},
                             {"MicroMsg.NetSceneSendMsg"},
                             {"NetSceneSendMsg"},
                             {"newsendmsg"}
                     });
-            collectSendTextMethodOwnerCandidates(candidates, 20,
+            collectSendTextMethodOwnerCandidates(candidateList, 20,
                     new String[][]{
                             {"/cgi-bin/micromsg-bin/newsendmsg"},
                             {"MicroMsg.NetSceneSendMsg"},
                             {"NetSceneSendMsg"}
                     });
 
+            candidates.addAll(candidateList);
+            List<Class<?>> validOwners = new ArrayList<>();
             for (Class<?> cl : candidates) {
-                Constructor<?> longCtor = findCtorByExactTypes(
-                        cl, String.class, String.class, int.class, int.class, long.class);
-                Constructor<?> objectCtor = findCtorByExactTypes(
-                        cl, String.class, String.class, int.class, int.class, Object.class);
-                if (longCtor != null || objectCtor != null) {
-                    sendTextMsgClass = cl;
-                    sendTextMsgCtorLong = longCtor;
-                    sendTextMsgCtorObject = objectCtor;
-                    break;
-                }
+                Constructor<?> longCtor = findSendTextConstructor(cl, long.class);
+                Constructor<?> objectCtor = findSendTextConstructor(cl, Object.class);
+                if (longCtor != null || objectCtor != null) validOwners.add(cl);
             }
+            if (validOwners.size() == 1) {
+                sendTextMsgClass = validOwners.get(0);
+                sendTextMsgCtorLong = findSendTextConstructor(sendTextMsgClass, long.class);
+                sendTextMsgCtorObject = findSendTextConstructor(sendTextMsgClass, Object.class);
+            }
+            sendTextMsgLocatorResolved = isSendTextRequestApiValid();
+            if (resolutionFinished) saveCache();
 
             logDetail("文本发送类: "
                     + (sendTextMsgClass != null ? sendTextMsgClass.getName() : "null")
                     + " longCtor=" + (sendTextMsgCtorLong != null)
-                    + " objectCtor=" + (sendTextMsgCtorObject != null));
+                    + " objectCtor=" + (sendTextMsgCtorObject != null)
+                    + " state=" + (sendTextMsgLocatorResolved ? "located" : "missing_or_ambiguous"));
         } catch (Throwable e) {
+            sendTextMsgLocatorResolved = false;
             h.Hchat.utils.HLog.e(TAG + " resolveSendText 失败: " + e.getMessage(), e);
         }
+    }
+
+    private Constructor<?> findSendTextConstructor(Class<?> owner, Class<?> sourceArgsType) {
+        if (owner == null || (sourceArgsType != long.class && sourceArgsType != Object.class)) return null;
+        Constructor<?> six = findCtorByExactTypes(owner, String.class, String.class,
+                int.class, int.class, sourceArgsType, String.class);
+        if (six != null) return six;
+        return findCtorByExactTypes(owner, String.class, String.class,
+                int.class, int.class, sourceArgsType);
+    }
+
+    private boolean isSendTextRequestApiValid() {
+        return sendTextMsgClass != null
+                && (isSendTextConstructorValid(sendTextMsgCtorLong, long.class)
+                || isSendTextConstructorValid(sendTextMsgCtorObject, Object.class));
+    }
+
+    private boolean isSendTextOwnerAnchored(Class<?> owner) {
+        if (owner == null) return false;
+        List<Class<?>> candidates = new ArrayList<>();
+        collectSendTextClassCandidates(candidates, 20, new String[][]{
+                {"/cgi-bin/micromsg-bin/newsendmsg"},
+                {"MicroMsg.NetSceneSendMsg"},
+                {"NetSceneSendMsg"},
+                {"newsendmsg"}
+        });
+        collectSendTextMethodOwnerCandidates(candidates, 20, new String[][]{
+                {"/cgi-bin/micromsg-bin/newsendmsg"},
+                {"MicroMsg.NetSceneSendMsg"},
+                {"NetSceneSendMsg"}
+        });
+        LinkedHashSet<Class<?>> validOwners = new LinkedHashSet<>();
+        for (Class<?> candidate : candidates) {
+            if (findSendTextConstructor(candidate, long.class) != null
+                    || findSendTextConstructor(candidate, Object.class) != null) {
+                validOwners.add(candidate);
+            }
+        }
+        return validOwners.size() == 1 && validOwners.contains(owner);
+    }
+
+    private boolean isSendTextConstructorValid(Constructor<?> constructor, Class<?> sourceArgsType) {
+        if (constructor == null || constructor.getDeclaringClass() != sendTextMsgClass) return false;
+        Class<?>[] types = constructor.getParameterTypes();
+        return (types.length == 5 || types.length == 6)
+                && types[0] == String.class && types[1] == String.class
+                && types[2] == int.class && types[3] == int.class
+                && types[4] == sourceArgsType
+                && (types.length == 5 || types[5] == String.class);
     }
 
     public void resolveGetContactServiceApi() {
@@ -3327,9 +3621,10 @@ public class DexFinder {
     }
 
     public void resolveSnsUploadApi() {
-        if (ensureSnapshotLoaded()) return;
         try {
             if (hasSnsUploadApi() && snsAddVideoMethod != null && snsShareAppMsgMethod != null) {
+                snsVideoLocatorResolved = isSnsAddVideoMethod(snsUploadPackHelperClass, snsAddVideoMethod);
+                if (resolutionFinished) saveCache();
                 return;
             }
 
@@ -3376,6 +3671,8 @@ public class DexFinder {
             }
 
             resolveSnsUploadMethods();
+            snsVideoLocatorResolved = isSnsAddVideoMethod(snsUploadPackHelperClass, snsAddVideoMethod);
+            if (resolutionFinished) saveCache();
 
             logDetail("朋友圈发布API: helper="
                     + (snsUploadPackHelperClass != null ? snsUploadPackHelperClass.getName() : "null")
@@ -3521,7 +3818,7 @@ public class DexFinder {
                     } catch (Throwable ignored) {}
                 }
             }
-            if (chatFooterSendClickMethod != null && resolvedAll) saveCache();
+            if (chatFooterSendClickMethod != null && resolutionFinished) saveCache();
             logDetail("原生发送按钮API: click=" + methodName(chatFooterSendClickMethod));
         } catch (Throwable e) {
             h.Hchat.utils.HLog.e(TAG + " resolveNativeSendButtonApi 失败: " + e.getMessage(), e);
@@ -3530,7 +3827,7 @@ public class DexFinder {
 
     // ============ DexKit 结果缓存 ============
     private boolean ensureSnapshotLoaded() {
-        if (resolvedAll) return true;
+        if (resolutionFinished) return true;
         if (cacheLoadAttempted) return false;
         return loadCache();
     }
@@ -3550,10 +3847,27 @@ public class DexFinder {
                     runtimeMatches,
                     cachePrefs.getString(CACHE_SNAPSHOT_VERSION_KEY, ""),
                     CACHE_SNAPSHOT_VERSION,
-                    cachePrefs.getBoolean(CACHE_COMPLETE, false))) return false;
+                    cachePrefs.getBoolean(CACHE_COMPLETE, false)
+                            && cachePrefs.getBoolean(DexFinderCacheStore.GLOBAL_SCAN_FINISHED_KEY, false),
+                    true)) return false;
             cacheDescriptorInvalid = false;
 
-            addMsgClasses = loadClassList("addMsgClasses");
+            addMsgClasses = new ArrayList<>();
+            addMsgObserverMethod = loadMethodSoft("addMsgObserverMethod");
+            addMsgPreProcessMethod = loadMethodSoft("addMsgPreProcessMethod");
+            restoreAddMsgApiFields();
+            boolean savedAddMsgResolved = cachePrefs.getBoolean(CACHE_ADDMSG_LOCATOR_RESOLVED, false);
+            addMsgLocatorResolved = savedAddMsgResolved && isAddMsgApiValid();
+            if (savedAddMsgResolved && addMsgLocatorResolved && !isAddMsgApiAnchored()) {
+                addMsgLocatorResolved = false;
+            }
+            if (!addMsgLocatorResolved) {
+                addMsgObserverMethod = null;
+                addMsgPreProcessMethod = null;
+                addMsgRequestPayloadField = null;
+                addMsgResultMessageField = null;
+                addMsgClasses.clear();
+            }
             receiveLuckyMoneyClass = loadClass("receiveLuckyMoneyClass");
             receiveLuckyMoneyUnionClass = loadClass("receiveLuckyMoneyUnionClass");
             openLuckyMoneyClass = loadClass("openLuckyMoneyClass");
@@ -3586,9 +3900,20 @@ public class DexFinder {
             }
             wishLocatorResolved = cachePrefs.getBoolean(LOCATOR_WISH_COMPLETE, false);
             packetCompatLocatorResolved = cachePrefs.getBoolean(LOCATOR_PACKET_COMPLETE, false);
-            ecsGiftLocatorResolved = cachePrefs.getBoolean(LOCATOR_ECS_COMPLETE, false);
+            ecsGiftLocatorResolved = cachePrefs.getBoolean(LOCATOR_ECS_COMPLETE, false)
+                    && isEcsGiftApiLocated();
             msgDescLocatorResolved = cachePrefs.getBoolean(LOCATOR_MSG_DESC_COMPLETE, false);
-            sendTextMsgClass = loadClass("sendTextMsgClass");
+            sendTextMsgClass = loadClassSoft("sendTextMsgClass");
+            sendTextMsgCtorLong = findSendTextConstructor(sendTextMsgClass, long.class);
+            sendTextMsgCtorObject = findSendTextConstructor(sendTextMsgClass, Object.class);
+            boolean savedSendTextResolved = cachePrefs.getBoolean(CACHE_SEND_TEXT_LOCATOR_RESOLVED, false);
+            sendTextMsgLocatorResolved = savedSendTextResolved && isSendTextRequestApiValid()
+                    && isSendTextOwnerAnchored(sendTextMsgClass);
+            if (!sendTextMsgLocatorResolved) {
+                sendTextMsgClass = null;
+                sendTextMsgCtorLong = null;
+                sendTextMsgCtorObject = null;
+            }
             serviceGetterMethod = loadMethod("serviceGetterMethod");
             getContactAddMethods = loadMethodList("getContactAddMethods");
             getContactServiceGetters = loadMethodList("getContactServiceGetters");
@@ -3695,10 +4020,6 @@ public class DexFinder {
             unionOpenCtor10 = findCtorByArgCount(openLuckyMoneyUnionClass, 10);
             unionOpenCtor9 = findCtorByArgCount(openLuckyMoneyUnionClass, 9);
             wishWxHbCtor = findCtorByArgCount(wishWxHbClass, 4);
-            sendTextMsgCtorLong = findCtorByExactTypes(
-                    sendTextMsgClass, String.class, String.class, int.class, int.class, long.class);
-            sendTextMsgCtorObject = findCtorByExactTypes(
-                    sendTextMsgClass, String.class, String.class, int.class, int.class, Object.class);
             if (localMessageClass == null && localMessageInsertMethod != null
                     && localMessageInsertMethod.getParameterTypes().length == 1) {
                 localMessageClass = localMessageInsertMethod.getParameterTypes()[0];
@@ -3727,14 +4048,14 @@ public class DexFinder {
             addContactLabelCtorList = findCtorByExactTypes(addContactLabelClass, List.class);
             modifyContactLabelListClass = loadClass("modifyContactLabelListClass");
             modifyContactLabelListCtor = findCtorByExactTypes(modifyContactLabelListClass, java.util.LinkedList.class);
-            snsUploadPackHelperClass = loadClass("snsUploadPackHelperClass");
+            snsUploadPackHelperClass = loadClassSoft("snsUploadPackHelperClass");
             snsUploadManagerClass = loadClass("snsUploadManagerClass");
             snsUploadManagerGetterMethod = loadMethod("snsUploadManagerGetterMethod");
             snsSetContentMethod = loadMethod("snsSetContentMethod");
             snsSetSdkIdMethod = loadMethod("snsSetSdkIdMethod");
             snsSetSdkAppNameMethod = loadMethod("snsSetSdkAppNameMethod");
             snsAddImageMethod = loadMethod("snsAddImageMethod");
-            snsAddVideoMethod = loadMethod("snsAddVideoMethod");
+            snsAddVideoMethod = loadMethodSoft("snsAddVideoMethod");
             snsCommitMethod = loadMethod("snsCommitMethod");
             snsShareAppMsgMethod = loadMethod("snsShareAppMsgMethod");
             snsUploadCheckMethod = loadMethod("snsUploadCheckMethod");
@@ -3742,6 +4063,11 @@ public class DexFinder {
             chatPageFragmentEnterMethod = loadMethod("chatPageFragmentEnterMethod");
             chatPageFragmentExitMethod = loadMethod("chatPageFragmentExitMethod");
             chatFooterSendClickMethod = loadMethod("chatFooterSendClickMethod");
+            boolean savedSnsVideoResolved = cachePrefs.getBoolean(CACHE_SNS_VIDEO_LOCATOR_RESOLVED, false);
+            snsVideoLocatorResolved = savedSnsVideoResolved
+                    && isSnsAddVideoMethod(snsUploadPackHelperClass, snsAddVideoMethod)
+                    && snsAddVideoMethod.equals(findSnsAddVideoMethod(snsUploadPackHelperClass));
+            if (!snsVideoLocatorResolved) snsAddVideoMethod = null;
             if (cacheDescriptorInvalid) {
                 resetLoadedCacheDescriptors();
                 return false;
@@ -3793,7 +4119,7 @@ public class DexFinder {
             }
         }
         cacheDescriptorInvalid = resetFailed;
-        resolvedAll = false;
+        resolutionFinished = false;
     }
 
     private static final class SharedPreferencesView implements DexFinderCacheStore.Preferences {
@@ -4694,45 +5020,32 @@ public class DexFinder {
 
     private Method findSnsAddVideoMethod(Class<?> helperClass) {
         if (helperClass == null) return null;
-        try {
-            List<MethodData> methods = dexKit.findMethod(
-                    mkMethodUsingStrings("addSightObjectByPath"));
-            for (MethodData methodData : methods) {
-                try {
-                    Method method = methodData.getMethodInstance(classLoader);
-                    if (method.getDeclaringClass() != helperClass) continue;
-                    if (method.getReturnType() != boolean.class) continue;
-                    Class<?>[] params = method.getParameterTypes();
-                    if (params.length == 4
-                            && params[0] == String.class
-                            && params[1] == String.class
-                            && params[2] == String.class
-                            && params[3] == String.class) {
-                        return KavaReflector.accessible(method);
-                    }
-                } catch (Throwable ignored) {}
-            }
-        } catch (Throwable ignored) {}
-        try {
-            List<MethodData> methods = dexKit.findMethod(
-                    mkMethodUsingStrings("produceSightByPath"));
-            for (MethodData methodData : methods) {
-                try {
-                    Method method = methodData.getMethodInstance(classLoader);
-                    if (method.getDeclaringClass() != helperClass) continue;
-                    if (method.getReturnType() != boolean.class) continue;
-                    Class<?>[] params = method.getParameterTypes();
-                    if (params.length == 4
-                            && params[0] == String.class
-                            && params[1] == String.class
-                            && params[2] == String.class
-                            && params[3] == String.class) {
-                        return KavaReflector.accessible(method);
-                    }
-                } catch (Throwable ignored) {}
-            }
-        } catch (Throwable ignored) {}
-        return null;
+        LinkedHashSet<Method> candidates = new LinkedHashSet<>();
+        for (String anchor : new String[]{"addSightObjectByPath", "produceSightByPath"}) {
+            try {
+                for (MethodData data : dexKit.findMethod(mkMethodUsingStrings(anchor))) {
+                    try {
+                        Method method = data.getMethodInstance(classLoader);
+                        if (isSnsAddVideoMethod(helperClass, method)) candidates.add(method);
+                    } catch (Throwable ignored) {}
+                }
+            } catch (Throwable ignored) {}
+        }
+        if (candidates.size() != 1) {
+            snsVideoLocatorResolved = false;
+            logDetail("朋友圈视频helper定位拒绝: uniqueAnchoredCandidates=" + candidates.size());
+            return null;
+        }
+        return KavaReflector.accessible(candidates.iterator().next());
+    }
+
+    private boolean isSnsAddVideoMethod(Class<?> helperClass, Method method) {
+        if (helperClass == null || method == null || method.getDeclaringClass() != helperClass
+                || method.getReturnType() != boolean.class) return false;
+        Class<?>[] params = method.getParameterTypes();
+        if (params.length != 4 && params.length != 5) return false;
+        for (Class<?> param : params) if (param != String.class) return false;
+        return true;
     }
 
     private Method findSnsCommitMethod(Class<?> helperClass) {
@@ -4886,10 +5199,11 @@ public class DexFinder {
 
     private synchronized void saveCache() {
         if (runtimeCacheKey.length() == 0
-                || !cacheStore.canSaveGlobal(resolvedAll, !cacheDescriptorInvalid)) return;
+                || !cacheStore.canSaveGlobal(resolutionFinished, !cacheDescriptorInvalid)) return;
         try {
             DexFinderCacheStore.Editor editor = cacheStore.beginGlobalSnapshot(
-                    resolvedAll, !cacheDescriptorInvalid, runtimeCacheKey, CACHE_SNAPSHOT_VERSION);
+                    resolutionFinished, !cacheDescriptorInvalid, areCriticalLocatorsResolved(),
+                    runtimeCacheKey, CACHE_SNAPSHOT_VERSION);
             if (editor == null) return;
             editor.putString(CACHE_KEY, runtimeCacheKey);
             if (receiveUnionLocatorResolved && openUnionLocatorResolved) {
@@ -4900,7 +5214,13 @@ public class DexFinder {
                 editor.putString(NETWORK_QUEUE_LOCATOR_VERSION_KEY,
                         NETWORK_QUEUE_LOCATOR_VERSION);
             }
-            editor.putString("addMsgClasses", joinClassNames(addMsgClasses));
+            putMethod(editor, "addMsgObserverMethod", addMsgObserverMethod);
+            putMethod(editor, "addMsgPreProcessMethod", addMsgPreProcessMethod);
+            editor.putBoolean(CACHE_ADDMSG_LOCATOR_RESOLVED, addMsgLocatorResolved && isAddMsgApiValid());
+            editor.putBoolean(CACHE_SEND_TEXT_LOCATOR_RESOLVED,
+                    sendTextMsgLocatorResolved && isSendTextRequestApiValid());
+            editor.putBoolean(CACHE_SNS_VIDEO_LOCATOR_RESOLVED,
+                    snsVideoLocatorResolved && isSnsAddVideoMethod(snsUploadPackHelperClass, snsAddVideoMethod));
             putClass(editor, "receiveLuckyMoneyClass", receiveLuckyMoneyClass);
             putClass(editor, "receiveLuckyMoneyUnionClass", receiveLuckyMoneyUnionClass);
             putClass(editor, "openLuckyMoneyClass", openLuckyMoneyClass);
@@ -5056,6 +5376,15 @@ public class DexFinder {
         }
     }
 
+    private Class<?> loadClassSoft(String key) {
+        boolean previousInvalid = cacheDescriptorInvalid;
+        cacheDescriptorInvalid = false;
+        Class<?> value = loadClass(key);
+        boolean invalid = cacheDescriptorInvalid;
+        cacheDescriptorInvalid = previousInvalid;
+        return invalid ? null : value;
+    }
+
     private List<Class<?>> loadClassList(String key) {
         List<Class<?>> result = new ArrayList<>();
         try {
@@ -5097,6 +5426,15 @@ public class DexFinder {
             cacheDescriptorInvalid = true;
             return null;
         }
+    }
+
+    private Method loadMethodSoft(String key) {
+        boolean previousInvalid = cacheDescriptorInvalid;
+        cacheDescriptorInvalid = false;
+        Method value = loadMethod(key);
+        boolean invalid = cacheDescriptorInvalid;
+        cacheDescriptorInvalid = previousInvalid;
+        return invalid ? null : value;
     }
 
     private List<Method> loadMethodList(String key) {
@@ -5579,12 +5917,15 @@ public class DexFinder {
 
     // ============ 联系人业务 Protobuf 发送器 ============
     // ============ ECS 礼物静默处理 ============
-    private void resolveEcsGiftApi() {
-        if (ecsGiftLocatorResolved) return;
-        if (ecsGiftTaskClass != null && ecsGiftServiceClass != null && ecsGiftMsgClass != null) {
+    public synchronized boolean resolveEcsGiftApi() {
+        if (isEcsGiftApiLocated()) {
             ecsGiftLocatorResolved = true;
-            return;
+            return true;
         }
+        ecsGiftTaskClass = null;
+        ecsGiftServiceClass = null;
+        ecsGiftMsgClass = null;
+        ecsGiftLocatorResolved = false;
         try {
             for (MethodData md : dexKit.findMethod(mkMethodUsingStrings("updateGiftMsgByCgi"))) {
                 Class<?> task = KavaReflector.loadClass(md.getClassName(), classLoader);
@@ -5602,15 +5943,21 @@ public class DexFinder {
                     ecsGiftTaskClass = task;
                     ecsGiftServiceClass = svc;
                     ecsGiftMsgClass = msg;
+                    ecsGiftLocatorResolved = isEcsGiftApiLocated();
                     logDetail("ECS礼物静默类: task=" + task.getName() + " svc=" + svc.getName() + " msg=" + msg.getName());
-                    return;
+                    if (resolutionFinished) saveCache();
+                    return ecsGiftLocatorResolved;
                 }
             }
-            logDetail("ECS礼物静默类未定位到");
-            ecsGiftLocatorResolved = true;
+            logDetail("ECS礼物locator=not_ready (updateGiftMsgByCgi无结构候选)");
         } catch (Throwable e) {
             h.Hchat.utils.HLog.e(TAG + " resolveEcsGiftApi 失败: " + e.getMessage(), e);
         }
+        return false;
+    }
+
+    private boolean isEcsGiftApiLocated() {
+        return ecsGiftTaskClass != null && ecsGiftServiceClass != null && ecsGiftMsgClass != null;
     }
 
     public synchronized boolean resolveContactProtobufSenderApi() {

@@ -9,11 +9,24 @@ import java.nio.file.*;
 public class StartupVersionRegression {
  static final class Host extends Context {
   final File files;
+  final ApplicationInfo applicationInfo = new ApplicationInfo();
   int fileReads;
-  Host(Path root) throws Exception { files=Files.createDirectories(root.resolve("files")).toFile(); }
+  Host(Path root) throws Exception {
+   files=Files.createDirectories(root.resolve("files")).toFile();
+   applicationInfo.dataDir=root.toString();
+   Path apk=root.resolve("host.apk");
+   writeArchive(apk, new byte[]{1,2,3,4}, new byte[]{5,6,7});
+   applicationInfo.sourceDir=apk.toString();
+  }
+  static void writeArchive(Path apk, byte[] first, byte[] second) throws Exception {
+   try (java.util.zip.ZipOutputStream zip=new java.util.zip.ZipOutputStream(Files.newOutputStream(apk))) {
+    zip.putNextEntry(new java.util.zip.ZipEntry("classes.dex")); zip.write(first); zip.closeEntry();
+    zip.putNextEntry(new java.util.zip.ZipEntry("classes2.dex")); zip.write(second); zip.closeEntry();
+   }
+  }
   public String getPackageName() { return "com.tencent.mm"; }
   public PackageManager getPackageManager() { return new PackageManager(); }
-  public ApplicationInfo getApplicationInfo() { return new ApplicationInfo(); }
+ public ApplicationInfo getApplicationInfo() { return applicationInfo; }
   public File getFilesDir() { fileReads++; return files; }
  }
  static final class Loader extends ClassLoader {
@@ -43,10 +56,21 @@ public class StartupVersionRegression {
   BuildConfig.CLIENT_VERSION_ARM64="100";
   BuildConfig.CLIENT_VERSION="101";
   WeChatVersionInfo info=WeChatVersionApi.build(host,loader);
+  eq(true,info.apkDexIdentity.contains("classes.dex") && info.apkDexIdentity.contains("classes2.dex"),"base DEX CRC/size identity");
   eq("100",info.clientVersion,"BuildConfig has highest priority");
   eq("loader-id",info.tinkerId,"loader tinker priority");
   eq("loader-patch",info.patchId,"loader patch priority");
   eq(0,host.fileReads,"complete loader metadata does not access Tinker directory");
+  Path split=root.resolve("split.apk");
+  Host.writeArchive(split,new byte[]{8,8},new byte[]{7});
+  host.applicationInfo.splitSourceDirs=new String[]{split.toString()};
+  WeChatVersionInfo splitInfo=WeChatVersionApi.build(host,loader);
+  eq(true,splitInfo.apkDexIdentity.contains("split0{"),"split APK identity included");
+  String priorDexIdentity=splitInfo.apkDexIdentity;
+  Host.writeArchive(host.files.toPath().getParent().resolve("host.apk"),new byte[]{9,2,3,4},new byte[]{5,6,7});
+  WeChatVersionInfo changedDex=WeChatVersionApi.build(host,loader);
+  eq(false,priorDexIdentity.equals(changedDex.apkDexIdentity),"same-size DEX CRC change invalidates identity");
+  info=changedDex;
   BuildConfig.CLIENT_VERSION_ARM64="";
   eq("101",WeChatVersionApi.build(host,loader).clientVersion,"second BuildConfig field");
   BuildConfig.CLIENT_VERSION="";
@@ -78,10 +102,12 @@ public class StartupVersionRegression {
   WeChatVersionApi api=new WeChatVersionApi(host,loader,null);
   eq("402",api.current().clientVersion,"instance initial metadata");
   write(meta,"client.ver=403\nTINKER_ID=latest\n");
-  eq("403",api.current().clientVersion,"instance immediately refreshes metadata");
+  eq("402",api.current().clientVersion,"cheap runtime cache is reused inside refresh interval");
+  eq("403",api.refresh().clientVersion,"explicit runtime transition refresh reads metadata");
   loader.metadata="clientVersion=900 TINKER_ID=runtime-new intent_patch_old_version=runtime-patch";
   int reads=host.fileReads;
-  eq("900",api.current().clientVersion,"loader mutation immediately visible");
+  eq("403",api.current().clientVersion,"cached identity stays stable until refresh boundary");
+  eq("900",api.refresh().clientVersion,"forced runtime refresh observes loader mutation");
   eq(reads,host.fileReads,"runtime loader fallback skips disk");
   System.out.println("StartupVersionRegression: "+checks+" checks passed");
  }

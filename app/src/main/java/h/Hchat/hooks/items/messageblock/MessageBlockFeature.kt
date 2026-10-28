@@ -11,12 +11,12 @@ import h.Hchat.hooks.core.DexInstallScheduler
 import h.Hchat.hooks.core.FeatureContext
 import h.Hchat.hooks.core.HookRegistry
 import h.Hchat.hooks.items.keywordnotify.KeywordNotificationRuntime
-import h.Hchat.utils.KavaReflector
-import java.lang.reflect.Method
+import h.Hchat.utils.HLog
+import io.github.libxposed.api.XposedInterface.HookHandle
 import java.util.Locale
 
 class MessageBlockFeature : BaseFeature() {
-    @Volatile private var installed = false
+    @Volatile private var hookHandle: HookHandle? = null
 
     override fun featureId(): String = ID
 
@@ -33,49 +33,56 @@ class MessageBlockFeature : BaseFeature() {
     }
 
     private fun installBlockHook(context: FeatureContext): Boolean {
-        if (installed) return true
+        val registry = HookRegistry.get()
+        if (registry.isActive(hookHandle)) return true
+        val finder = context.dexFinder()
+        if (!finder.resolveAddMsgApi()) return false
         val parser = WeChatApis.messageParser() ?: return false
-        val classes = context.dexFinder().addMsgClasses
-        if (classes.isNullOrEmpty()) return false
-
-        var count = 0
-        for (clazz in classes) {
-            for (method in KavaReflector.declaredMethods(clazz)) {
-                if (method.returnType != Void.TYPE) continue
-                val addMsgArgIndexes = addMsgArgIndexes(method, parser)
-                if (addMsgArgIndexes.isEmpty()) continue
-                HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
-                    val args = chain.args.toTypedArray()
-                    var value: Any? = null
-                    var intercepted = false
-                    run before@ {
-                        val args = args ?: return@before
+        val method = finder.addMsgPreProcessMethod ?: return false
+        val generation = registry.installationGeneration()
+        return try {
+            hookHandle = registry.hookOnce(
+                "message_block.addmsg_preprocess",
+                method,
+                XposedInterface.Hooker { chain ->
+                    if (!registry.isInstallationGenerationActive(generation)) return@Hooker chain.proceed()
+                    try {
+                        val args = chain.args
+                        val addMsg = args.getOrNull(0)
                         val settings = MessageBlockSettings(context.hostContext())
-                        if (!settings.isEnabled()) return@before
-                        val selfWxId = WeChatApis.account()?.selfWxId().orEmpty()
-                        for (index in addMsgArgIndexes) {
-                            val addMsg = args.getOrNull(index) ?: continue
-                            val parsed = runCatching { parser.parseAddMsg(addMsg, selfWxId) }.getOrNull()
-                            ?: continue
-                            if (shouldBlock(settings, parsed)) {
-                                if (KeywordNotificationRuntime.shouldAllowBlockedMessageIntoDatabase(context.hostContext(), parsed)) {
-                                    return@before
-                                }
-                                postBlockedMessage(context, parsed)
-                                run { intercepted = true; value = null }
-                                return@before
+                        val enabled = settings.isEnabled()
+                        if (addMsg != null && enabled) {
+                            val selfWxId = WeChatApis.account()?.selfWxId().orEmpty()
+                            val parsed = parser.parseAddMsg(addMsg, selfWxId)
+                            val matched = parsed != null && shouldBlock(settings, parsed)
+                            val notificationAllows = matched &&
+                                KeywordNotificationRuntime.shouldAllowBlockedMessageIntoDatabase(context.hostContext(), parsed)
+                            if (MessageBlockDecision.shouldIntercept(
+                                    registry.isInstallationGenerationActive(generation),
+                                    enabled,
+                                    parsed != null,
+                                    matched,
+                                    notificationAllows
+                                )) {
+                                postBlockedMessage(context, parsed ?: return@Hooker chain.proceed())
+                                return@Hooker null
                             }
                         }
+                    } catch (error: Throwable) {
+                        logError("AddMsg 前置判定异常，继续原消息链", error)
                     }
-                    if (!intercepted) value = chain.proceed()
-                    value
-                }, XposedInterface.PRIORITY_HIGHEST)
-                count++
+                    chain.proceed()
+                },
+                XposedInterface.PRIORITY_HIGHEST
+            )
+            registry.isActive(hookHandle).also { active ->
+                HLog.i("[Hchat:${featureId()}] AddMsg 前置屏蔽 Hook=" + if (active) "installed" else "inactive")
             }
+        } catch (error: Throwable) {
+            hookHandle = null
+            logError("AddMsg 前置屏蔽 Hook 安装失败", error)
+            false
         }
-        installed = count > 0
-        if (!installed) logError("AddMsg 屏蔽入口未找到", null)
-        return installed
     }
 
     private fun postBlockedMessage(context: FeatureContext, parsed: WeChatParsedMessage) {
@@ -97,15 +104,6 @@ class MessageBlockFeature : BaseFeature() {
         }.onFailure {
             logError("屏蔽消息派发内部事件失败", it)
         }
-    }
-
-    private fun addMsgArgIndexes(method: Method, parser: h.Hchat.hooks.api.message.WeChatMessageParseApi): List<Int> {
-        val types = method.parameterTypes ?: return emptyList()
-        val result = ArrayList<Int>()
-        for (i in types.indices) {
-            if (parser.isLikelyAddMsgClass(types[i])) result += i
-        }
-        return result
     }
 
     private fun shouldBlock(settings: MessageBlockSettings, parsed: WeChatParsedMessage): Boolean {

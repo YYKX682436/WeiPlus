@@ -91,6 +91,7 @@ object Events {
         @JvmField val dispatcherInstance: Any?
     )
 
+    /** The global Dex scan finished; feature locators and installed hooks keep independent states. */
     class DexReady
 
     class FeatureInstalled(

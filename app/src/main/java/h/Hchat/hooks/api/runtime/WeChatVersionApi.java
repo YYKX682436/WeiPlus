@@ -9,6 +9,9 @@ import android.text.TextUtils;
 import h.Hchat.hooks.api.model.WeChatVersionInfo;
 
 import java.io.File;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -32,6 +35,8 @@ public final class WeChatVersionApi {
     private final ClassLoader classLoader;
     private final Logger logger;
     private volatile WeChatVersionInfo cached;
+    private volatile long cachedAt;
+    private static final long IDENTITY_REFRESH_INTERVAL_MS = 3000L;
 
     public WeChatVersionApi(Context hostContext, ClassLoader classLoader, Logger logger) {
         this.hostContext = hostContext;
@@ -43,22 +48,19 @@ public final class WeChatVersionApi {
         return hostContext != null;
     }
 
-    public WeChatVersionInfo current() {
+    public synchronized WeChatVersionInfo current() {
         WeChatVersionInfo value = cached;
+        long now = System.currentTimeMillis();
+        if (value != null && now - cachedAt < IDENTITY_REFRESH_INTERVAL_MS) return value;
+        return refresh();
+    }
+
+    /** Force a fresh hashless APK/patch identity check after a Tinker or runtime transition. */
+    public synchronized WeChatVersionInfo refresh() {
         WeChatVersionInfo fresh = build(hostContext, classLoader);
-        if (value == null) {
-            cached = fresh;
-            return fresh;
-        }
-        if (shouldRefresh(value)
-                || !TextUtils.equals(value.cacheKey, fresh.cacheKey)
-                || !TextUtils.equals(value.clientVersion, fresh.clientVersion)
-                || !TextUtils.equals(value.tinkerId, fresh.tinkerId)
-                || !TextUtils.equals(value.patchId, fresh.patchId)) {
-            cached = fresh;
-            return fresh;
-        }
-        return value;
+        cached = fresh;
+        cachedAt = System.currentTimeMillis();
+        return fresh;
     }
 
     public String packageName() {
@@ -96,46 +98,78 @@ public final class WeChatVersionApi {
     public static WeChatVersionInfo build(Context context, ClassLoader loader) {
         if (context == null) {
             return new WeChatVersionInfo("", "", 0L, "", "", "", 0L,
-                    loaderHash(loader), "");
+                    "", "", loaderHash(loader), "");
         }
 
         String packageName = context.getPackageName();
-        String versionName = "";
-        long versionCode = 0L;
+        PackageInfo packageInfo = null;
+        ApplicationInfo appInfo = null;
+        try {
+            packageInfo = context.getPackageManager().getPackageInfo(packageName, 0);
+        } catch (Throwable ignored) {}
+        try {
+            appInfo = context.getApplicationInfo();
+        } catch (Throwable ignored) {}
+        return buildForPackage(context, packageName, packageInfo, appInfo, loader);
+    }
+
+    /** Package-ready counterpart; uses the supplied PackageInfo/ApplicationInfo, not Application. */
+    public static WeChatVersionInfo buildForPackageReady(Context metadataContext,
+                                                         String packageName,
+                                                         PackageInfo packageInfo,
+                                                         ApplicationInfo appInfo,
+                                                         ClassLoader loader) {
+        return buildForPackage(metadataContext, packageName, packageInfo, appInfo, loader);
+    }
+
+    private static WeChatVersionInfo buildForPackage(Context metadataContext,
+                                                     String packageName,
+                                                     PackageInfo packageInfo,
+                                                     ApplicationInfo appInfo,
+                                                     ClassLoader loader) {
+        String versionName = packageInfo != null && packageInfo.versionName != null
+                ? packageInfo.versionName : "";
+        long versionCode = packageInfo == null ? 0L
+                : Build.VERSION.SDK_INT >= 28 ? packageInfo.getLongVersionCode() : packageInfo.versionCode;
+        String sourcePath = appInfo != null ? appInfo.sourceDir : "";
         long sourceLastModified = 0L;
-
-        try {
-            PackageInfo pi = context.getPackageManager().getPackageInfo(packageName, 0);
-            versionName = pi.versionName != null ? pi.versionName : "";
-            versionCode = Build.VERSION.SDK_INT >= 28 ? pi.getLongVersionCode() : pi.versionCode;
-        } catch (Throwable ignored) {}
-
-        try {
-            ApplicationInfo info = context.getApplicationInfo();
-            if (info != null && !TextUtils.isEmpty(info.sourceDir)) {
-                sourceLastModified = new File(info.sourceDir).lastModified();
-            }
-        } catch (Throwable ignored) {}
+        if (!TextUtils.isEmpty(sourcePath)) {
+            File source = new File(sourcePath);
+            sourceLastModified = source.lastModified();
+        }
+        String apkDexIdentity = DexArchiveIdentity.forApplication(appInfo);
+        String patchFileIdentity = patchFileIdentity(appInfo);
 
         String loaderText = String.valueOf(loader);
-        // Evaluate fallbacks only when needed; eager varargs scanned Tinker
-        // files even when the running loader already supplied the metadata.
         String clientVersion = readBuildConfigClientVersion(loader);
         if (TextUtils.isEmpty(clientVersion)) clientVersion = match(CLIENT_VER_PATTERN, loaderText);
-        if (TextUtils.isEmpty(clientVersion)) clientVersion = readTinkerValue(context, "patch.client.ver");
-        if (TextUtils.isEmpty(clientVersion)) clientVersion = readTinkerValue(context, "client.ver");
+        if (TextUtils.isEmpty(clientVersion)) clientVersion = readTinkerValue(appInfo, "patch.client.ver");
+        if (TextUtils.isEmpty(clientVersion)) clientVersion = readTinkerValue(appInfo, "client.ver");
         String tinkerId = match(TINKER_ID_PATTERN, loaderText);
-        if (TextUtils.isEmpty(tinkerId)) tinkerId = readTinkerValue(context, "NEW_TINKER_ID");
-        if (TextUtils.isEmpty(tinkerId)) tinkerId = readTinkerValue(context, "TINKER_ID");
+        if (TextUtils.isEmpty(tinkerId)) tinkerId = readTinkerValue(appInfo, "NEW_TINKER_ID");
+        if (TextUtils.isEmpty(tinkerId)) tinkerId = readTinkerValue(appInfo, "TINKER_ID");
         String patchId = match(PATCH_ID_PATTERN, loaderText);
-        if (TextUtils.isEmpty(patchId)) patchId = readPatchDirectoryName(context);
+        if (TextUtils.isEmpty(patchId)) patchId = readPatchDirectoryName(appInfo);
         String classLoaderHash = loaderHash(loader);
 
         String cacheKey = buildCacheKey(packageName, versionName, versionCode,
-                clientVersion, tinkerId, patchId, sourceLastModified, STABLE_CACHE_SCOPE);
+                clientVersion, tinkerId, patchId, sourceLastModified, apkDexIdentity,
+                patchFileIdentity, STABLE_CACHE_SCOPE);
         return new WeChatVersionInfo(packageName, versionName, versionCode,
                 clientVersion, tinkerId, patchId, sourceLastModified,
-                classLoaderHash, cacheKey);
+                apkDexIdentity, patchFileIdentity, classLoaderHash, cacheKey);
+    }
+
+    public static boolean hasCompleteRuntimeIdentity(WeChatVersionInfo info) {
+        return info != null
+                && WeChatVersionGate.isTargetPackage(info.packageName)
+                && WeChatVersionGate.parse(info.versionName) != null
+                && !TextUtils.isEmpty(info.apkDexIdentity)
+                && !TextUtils.isEmpty(info.cacheKey);
+    }
+
+    public static String classLoaderIdentity(ClassLoader loader) {
+        return loaderHash(loader);
     }
 
     public static String buildCacheKey(Context context, ClassLoader loader) {
@@ -149,6 +183,8 @@ public final class WeChatVersionApi {
                                         String tinkerId,
                                         String patchId,
                                         long sourceLastModified,
+                                        String apkDexIdentity,
+                                        String patchFileIdentity,
                                         String classLoaderHash) {
         StringBuilder sb = new StringBuilder();
         sb.append(safe(packageName))
@@ -158,29 +194,27 @@ public final class WeChatVersionApi {
                 .append('|').append(safe(tinkerId))
                 .append('|').append(safe(patchId))
                 .append('|').append(sourceLastModified)
+                .append('|').append(safe(apkDexIdentity))
+                .append('|').append(safe(patchFileIdentity))
                 .append('|').append(safe(classLoaderHash));
         return sb.toString();
     }
 
-    private static String readTinkerValue(Context context, String key) {
-        if (context == null || TextUtils.isEmpty(key)) return "";
-        try {
-            File tinkerDir = new File(context.getFilesDir().getParentFile(), "tinker");
-            String value = scanTextFiles(tinkerDir, key);
-            return value != null ? value : "";
-        } catch (Throwable ignored) {
-            return "";
-        }
+    private static String readTinkerValue(ApplicationInfo appInfo, String key) {
+        if (appInfo == null || TextUtils.isEmpty(appInfo.dataDir) || TextUtils.isEmpty(key)) return "";
+        String value = scanTextFiles(new File(appInfo.dataDir, "tinker"), key, 0, new int[]{0});
+        return value != null ? value : "";
     }
 
-    private static String scanTextFiles(File dir, String key) {
-        if (dir == null || !dir.exists()) return "";
+    private static String scanTextFiles(File dir, String key, int depth, int[] visited) {
+        if (dir == null || !dir.exists() || depth > 4 || visited[0] >= 256) return "";
         File[] files = dir.listFiles();
         if (files == null) return "";
         for (File file : files) {
+            if (++visited[0] > 256) return "";
             if (file == null) continue;
             if (file.isDirectory()) {
-                String value = scanTextFiles(file, key);
+                String value = scanTextFiles(file, key, depth + 1, visited);
                 if (!TextUtils.isEmpty(value)) return value;
                 continue;
             }
@@ -197,6 +231,7 @@ public final class WeChatVersionApi {
     }
 
     private static String readKeyFromFile(File file, String key) {
+        if (file == null || file.length() > 64 * 1024) return "";
         java.io.BufferedReader reader = null;
         try {
             reader = new java.io.BufferedReader(new java.io.FileReader(file));
@@ -220,9 +255,10 @@ public final class WeChatVersionApi {
         return "";
     }
 
-    private static String readPatchDirectoryName(Context context) {
+    private static String readPatchDirectoryName(ApplicationInfo appInfo) {
         try {
-            File tinkerDir = new File(context.getFilesDir().getParentFile(), "tinker");
+            if (appInfo == null || TextUtils.isEmpty(appInfo.dataDir)) return "";
+            File tinkerDir = new File(appInfo.dataDir, "tinker");
             File[] files = tinkerDir.listFiles();
             if (files == null) return "";
             long newestTime = 0L;
@@ -240,6 +276,43 @@ public final class WeChatVersionApi {
             return newest;
         } catch (Throwable ignored) {
             return "";
+        }
+    }
+
+    private static String patchFileIdentity(ApplicationInfo appInfo) {
+        if (appInfo == null || TextUtils.isEmpty(appInfo.dataDir)) return "none";
+        File root = new File(appInfo.dataDir, "tinker");
+        if (!root.exists()) return "none";
+        List<String> entries = new ArrayList<>();
+        collectPatchMetadata(root, root, 0, new int[]{0}, entries);
+        Collections.sort(entries);
+        if (entries.isEmpty()) return "present-empty:" + root.lastModified();
+        StringBuilder value = new StringBuilder();
+        for (String entry : entries) {
+            if (value.length() > 0) value.append(',');
+            value.append(entry);
+        }
+        return value.toString();
+    }
+
+    private static void collectPatchMetadata(File root, File current, int depth, int[] visited,
+                                             List<String> output) {
+        if (current == null || depth > 4 || visited[0] >= 256) return;
+        File[] files = current.listFiles();
+        if (files == null) return;
+        for (File file : files) {
+            if (file == null || ++visited[0] > 256) return;
+            if (file.isDirectory()) {
+                if (current.equals(root) && !file.getName().startsWith("patch-")) continue;
+                collectPatchMetadata(root, file, depth + 1, visited, output);
+                continue;
+            }
+            boolean insidePatch = !current.equals(root);
+            String name = file.getName();
+            if (!insidePatch && !(name.startsWith("patch")
+                    || name.startsWith("intent_patch") || name.startsWith("tinker"))) continue;
+            String relative = file.getAbsolutePath().substring(root.getAbsolutePath().length());
+            output.add(relative + ':' + file.length() + ':' + file.lastModified());
         }
     }
 
@@ -277,13 +350,6 @@ public final class WeChatVersionApi {
         } catch (Throwable ignored) {
             return "";
         }
-    }
-
-    private static boolean shouldRefresh(WeChatVersionInfo info) {
-        if (info == null) return true;
-        if (TextUtils.isEmpty(info.clientVersion)) return true;
-        if (TextUtils.isEmpty(info.versionName)) return true;
-        return info.versionCode <= 0L;
     }
 
     private static String loaderHash(ClassLoader loader) {

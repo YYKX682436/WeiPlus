@@ -107,7 +107,6 @@ public class WechatApiFeature implements Feature {
                 context.hostContext(), context.dexFinder(), context.hostClassLoader(),
                 context.dexKitBridge(), networkApi, accountApi, contactApi, context, this::log);
         networkApi.installNetworkHook(context.dexFinder());
-        messageEventApi.installAddMsgHook();
         installApiHook("databaseChanges", databaseListenerApi::install);
         installApiHook("messageChanges", messageChangeApi::install);
         installApiHook("conversationChanges", conversationChangeApi::install);
@@ -128,13 +127,18 @@ public class WechatApiFeature implements Feature {
                 transferApi, verifyUserApi, snsApi);
         DexInstallScheduler.scheduleTask("wechat_api:warmup", "微信公共API预热",
                 DexInstallScheduler.Stage.BRIDGE, 1000, () -> {
+            boolean resolutionFinished = false;
             try {
                 context.dexFinder().resolveAll();
+                resolutionFinished = context.dexFinder().isResolutionFinished();
+                if (!resolutionFinished) return false;
+                context.dexFinder().resolveSendTextMsg();
+                context.dexFinder().resolveSnsUploadApi();
                 networkApi.installNetworkHook(context.dexFinder());
                 installApiHook("snsInteractionWarmup", snsApi::warmupInteraction);
                 installApiHook("snsCachedPostsWarmup", snsApi::warmupCachedPosts);
                 installApiHook("snsPostObserverWarmup", snsApi::installPostObserver);
-                messageEventApi.installAddMsgHook();
+                log("Dex解析=finished critical=" + context.dexFinder().areCriticalLocatorsResolved());
                 installApiHook("databaseChangesWarmup", databaseListenerApi::install);
                 installApiHook("messageChangesWarmup", messageChangeApi::install);
                 installApiHook("conversationChangesWarmup", conversationChangeApi::install);
@@ -146,14 +150,29 @@ public class WechatApiFeature implements Feature {
                 log("DexKit 预热失败: " + e.getMessage());
             } finally {
                 try {
-                    DexInstallScheduler.markDexWarmupReady();
-                    context.eventBus().post(new Events.DexReady());
+                    if (resolutionFinished && context.dexFinder().isResolutionFinished()) {
+                        DexInstallScheduler.markDexWarmupReady();
+                        context.eventBus().post(new Events.DexReady());
+                    } else {
+                        log("Dex解析=unfinished warmup=retry");
+                    }
                 } catch (Throwable e) {
                     log("DexReady 发布失败: " + e.getMessage());
                 }
             }
-            return true;
+            return resolutionFinished && context.dexFinder().isResolutionFinished();
         });
+        DexInstallScheduler.scheduleTask(
+                "wechat_api:addmsg_observer",
+                "AddMsg消息观察入口",
+                DexInstallScheduler.Stage.WARMUP,
+                -500,
+                () -> {
+                    boolean located = context.dexFinder().resolveAddMsgApi();
+                    boolean installed = located && messageEventApi.installAddMsgHook();
+                    log("AddMsg定位=" + located + " Hook=" + installed);
+                    return installed && messageEventApi.isOperational();
+                });
         DexInstallScheduler.scheduleTask(
                 "wechat_api:database_changes",
                 "数据库变更监听补装",

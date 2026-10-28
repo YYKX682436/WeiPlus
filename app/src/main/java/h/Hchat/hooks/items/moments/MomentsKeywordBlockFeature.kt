@@ -14,7 +14,6 @@ import io.github.libxposed.api.XposedInterface
 import h.Hchat.dexkit.DexMethodCache
 import h.Hchat.event.Events
 import h.Hchat.hooks.api.core.WeChatApis
-import h.Hchat.hooks.api.runtime.WeChatVersionApi
 import h.Hchat.hooks.core.BaseFeature
 import h.Hchat.hooks.core.DexInstallScheduler
 import h.Hchat.hooks.core.FeatureContext
@@ -1188,11 +1187,7 @@ private class MomentsKeywordBlockRuntime(
     }
 
     private fun requiresFlutterProfileSwitch(): Boolean {
-        val versionCode = WeChatVersionApi.build(
-            context.hostContext(),
-            context.hostClassLoader()
-        ).versionCode
-        return versionCode == 0L || versionCode >= IMPROVE_MIN_VERSION_CODE
+        return true
     }
 
     companion object {
@@ -1221,7 +1216,6 @@ private class MomentsKeywordBlockRuntime(
         private const val SNS_SQLITE_RAW_QUERY_ANCHOR = "rawQuery"
         private const val SNS_SQLITE_OWNER_ANCHOR = "com.tencent.mm.plugin.sns.storage.SnsSqliteDB"
         private const val SNS_STORAGE_PACKAGE = "com.tencent.mm.plugin.sns.storage."
-        private const val IMPROVE_MIN_VERSION_CODE = 3020L
         private const val MAX_TIMELINE_OBJECT_SEARCH_DEPTH = 4
         private const val CONTACT_FILTER_REFRESH_DEBOUNCE_MS = 120L
         private val TIMELINE_ACTIVITY_CLASSES = setOf(

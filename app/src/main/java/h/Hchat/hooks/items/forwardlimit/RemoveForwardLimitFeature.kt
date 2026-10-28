@@ -81,7 +81,7 @@ private class RemoveForwardLimitHooker(
             val limitMethod = locateLimitMethodWithDexKit() ?: return false
             if (!installLegacyHooks(limitMethod)) return false
         }
-        if (!requiresUicHook() || uicInstalled) return true
+        if (uicInstalled) return true
         val uicConfigMethod = locateUicConfigMethodWithDexKit() ?: return false
         if (!hookUicConfigMethod(uicConfigMethod)) return false
         uicInstalled = true
@@ -293,11 +293,6 @@ private class RemoveForwardLimitHooker(
             !Modifier.isAbstract(method.modifiers)
     }
 
-    private fun requiresUicHook(): Boolean {
-        val versionCode = WeChatApis.version()?.versionCode() ?: 0L
-        return versionCode == 0L || versionCode >= UIC_FORWARD_MIN_VERSION_CODE
-    }
-
     private fun isEnabled(): Boolean {
         return prefs.getBoolean(
             RemoveForwardLimitSettings.KEY_ENABLE,
@@ -317,7 +312,6 @@ private class RemoveForwardLimitHooker(
         const val FORWARD_LIST_TYPE = 14
         const val WECHAT_DEFAULT_LIMIT = 9
         const val UNLIMITED_COUNT = Int.MAX_VALUE
-        const val UIC_FORWARD_MIN_VERSION_CODE = 2841L
         const val CACHE_PREFS_NAME = "Hchat_remove_forward_limit_method_cache"
         const val CACHE_SCHEMA = "remove_forward_limit_v3"
         const val CACHE_LIMIT_METHOD = "select_conversation_limit"

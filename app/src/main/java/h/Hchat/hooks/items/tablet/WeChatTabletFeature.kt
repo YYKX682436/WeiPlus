@@ -11,6 +11,7 @@ import h.Hchat.hooks.core.Feature
 import h.Hchat.hooks.core.FeatureContext
 import h.Hchat.hooks.core.HookRegistry
 import h.Hchat.hooks.api.runtime.WeChatVersionApi
+import h.Hchat.dexkit.DexCacheIdentity
 import h.Hchat.preferences.HchatStorage
 import h.Hchat.utils.HLog
 import org.luckypray.dexkit.query.FindMethod
@@ -223,9 +224,10 @@ class WeChatTabletFeature : BaseFeature() {
             cacheName: String
         ): Method? {
             if (runtimeKey.isEmpty()) return null
-            if (cache.getString(CACHE_KEY, "") != runtimeKey) return null
+            if (!DexCacheIdentity.sameRuntime(cache.getString(CACHE_KEY, ""), runtimeKey)) return null
             val descriptor = cache.getString(cacheName, "")?.takeIf { it.isNotEmpty() } ?: return null
-            return runCatching { DexMethod(descriptor).getMethodInstance(classLoader) }.getOrNull()
+            return runCatching { DexMethod(descriptor).getMethodInstance(classLoader) }
+                .getOrNull()?.takeIf { runCatching { it.toDexDescriptor() == descriptor }.getOrDefault(false) }
         }
 
         private fun saveCachedMethod(
@@ -237,7 +239,7 @@ class WeChatTabletFeature : BaseFeature() {
             if (runtimeKey.isEmpty() || descriptor.isNullOrEmpty()) return
             runCatching {
                 val editor = cache.edit()
-                if (cache.getString(CACHE_KEY, "") != runtimeKey) {
+                if (!DexCacheIdentity.sameRuntime(cache.getString(CACHE_KEY, ""), runtimeKey)) {
                     editor.clear()
                 }
                 editor

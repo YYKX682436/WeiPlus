@@ -4,19 +4,17 @@ import android.os.Handler;
 import android.os.Looper;
 import android.text.TextUtils;
 
-import java.lang.reflect.Method;
+import h.Hchat.hooks.api.core.WeChatApis;
+import h.Hchat.hooks.api.message.WeChatMessageEventApi;
+
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 
-import io.github.libxposed.api.XposedInterface;
-
 import h.Hchat.dexkit.DexFinder;
-import h.Hchat.hooks.core.HookRegistry;
 import h.Hchat.hooks.items.payment.detect.RedPacketParser;
 import h.Hchat.hooks.items.payment.detect.RedPacketReflector;
-import h.Hchat.utils.KavaReflector;
 
 public class GiftMessageHook {
     private static final int MAX_DEDUP = 300;
@@ -28,6 +26,7 @@ public class GiftMessageHook {
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final Set<String> processedOrders = new LinkedHashSet<>();
     private final List<Object> subscriptions = new ArrayList<>();
+    private WeChatMessageEventApi.RawSubscription rawSubscription;
 
     public GiftMessageHook(DexFinder dexFinder, GiftSettings settings, GiftSilentHandler handler,
                            GiftSilentHandler.Logger logger) {
@@ -38,45 +37,30 @@ public class GiftMessageHook {
     }
 
     public List<Object> hook() {
-        if (dexFinder == null || dexFinder.addMsgClasses == null || dexFinder.addMsgClasses.isEmpty()) {
-            log("未找到消息类，跳过礼物监听");
+        if (rawSubscription != null) return subscriptions;
+        if (dexFinder == null || !dexFinder.resolveAddMsgApi()) {
+            log("AddMsg定位未就绪，跳过礼物监听");
             return subscriptions;
         }
-
-        for (Class<?> clazz : dexFinder.addMsgClasses) {
-            for (Method method : KavaReflector.declaredMethods(clazz)) {
-                Class<?>[] parameterTypes = method.getParameterTypes();
-                if (parameterTypes.length == 0) continue;
-
-                final List<Integer> indexes = new ArrayList<>();
-                for (int i = 0; i < parameterTypes.length; i++) {
-                    if (RedPacketReflector.isLikelyAddMsgClass(parameterTypes[i])) indexes.add(i);
-                }
-                if (indexes.isEmpty()) continue;
-
-                XposedInterface.HookHandle unhook = HookRegistry.get().hook(method, chain -> {
-                    Object[] hookArgs = chain.getArgs().toArray();
-                    Object receiver = chain.getThisObject();
-                    observe: {
-                        Object[] args = hookArgs;
-        if (args == null) break observe;
-        for (Integer index : indexes) {
-            if (index == null || index >= args.length) continue;
-            try {
-                onMessage(args[index]);
-            } catch (Throwable ignored) {
-            }
+        WeChatMessageEventApi api = WeChatApis.messageEvents();
+        if (api == null || !api.isOperational()) {
+            log("AddMsg post-process observer未就绪，跳过礼物监听");
+            return subscriptions;
         }
-                    }
-                    Object value = chain.proceed(hookArgs);
-                    return value;
-                });
-                if (unhook != null) subscriptions.add(unhook);
-            }
-        }
-
-        log("礼物消息监听已安装, 订阅数=" + subscriptions.size());
+        rawSubscription = api.subscribeRawAddMsg(this::onMessage);
+        if (rawSubscription != null) subscriptions.add(rawSubscription);
+        log("礼物消息观察=" + (rawSubscription != null ? "subscribed" : "missing"));
         return subscriptions;
+    }
+
+    public void unsubscribe() {
+        if (rawSubscription != null) rawSubscription.unsubscribe();
+        rawSubscription = null;
+        subscriptions.clear();
+    }
+
+    public boolean isHooked() {
+        return rawSubscription != null;
     }
 
     private void onMessage(Object addMsg) {

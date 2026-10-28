@@ -44,6 +44,10 @@ public class GiftHooker {
 
     public List<Object> hookAll() {
         List<Object> subscriptions = new ArrayList<>();
+        if (!dexFinder.resolveEcsGiftApi() || !handler.isReady()) {
+            logx("ECS礼物链路未就绪，保持安全跳过");
+            return subscriptions;
+        }
         logx("hookAll 开始, 礼物任务类=" + name(dexFinder.ecsGiftTaskClass)
                 + " 礼物服务类=" + name(dexFinder.ecsGiftServiceClass)
                 + " 礼物消息类=" + name(dexFinder.ecsGiftMsgClass));
@@ -53,7 +57,7 @@ public class GiftHooker {
     }
 
     public boolean isReady() {
-        return handler.isReady();
+        return handler.isReady() && messageHook.isHooked();
     }
 
     public String describe() {

@@ -5,6 +5,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const root = path.resolve(__dirname, '..');
 const output = fs.mkdtempSync(path.join(os.tmpdir(), 'hchat-voice-compat-'));
+process.once('exit', () => fs.rmSync(output, { recursive: true, force: true }));
 const source = 'app/src/main/java/h/Hchat/';
 const dexFinder = fs.readFileSync(path.join(root, source, 'dexkit/DexFinder.java'), 'utf8');
 function method(name) {
@@ -45,7 +46,7 @@ const stubs = {
             private static final String CACHE_KEY = "cache.key";
             private static final String CACHE_COMPLETE = "cache.complete";
             private static final String CACHE_SNAPSHOT_VERSION_KEY = "cache.snapshot.version";
-            private static final String CACHE_SNAPSHOT_VERSION = "3";
+            private static final String CACHE_SNAPSHOT_VERSION = "4";
             private boolean cacheDescriptorInvalid;
             private final CacheStore cacheStore = new CacheStore();
             private static final class CacheStore {
@@ -66,7 +67,7 @@ const stubs = {
             }
             public boolean loadMessagePathCache() {
                 ${fragment('            String savedKey = cachePrefs.getString(CACHE_KEY, "");',
-                    '            addMsgClasses = loadClassList(')}
+                    '            if (!cacheStore.canLoadGlobal(')}
                 ${fragment('            voiceMessagePathMethod = loadMethod("voiceMessagePathMethod");',
                     '            voiceFinishRecordMethod = loadMethod("voiceFinishRecordMethod");')}
                 return true;
@@ -113,15 +114,12 @@ const stubs = {
             }
         }`,
     'h/Hchat/dexkit/DexCacheIdentity.java': `package h.Hchat.dexkit;
-        import java.util.Arrays;
         public final class DexCacheIdentity {
             public static boolean sameRuntime(String cachedKey, String runtimeKey) {
                 if (cachedKey == null || cachedKey.trim().isEmpty() || runtimeKey == null || runtimeKey.trim().isEmpty()) return false;
-                if (cachedKey.equals(runtimeKey)) return true;
                 String[] cached = cachedKey.split("\\\\|");
                 String[] runtime = runtimeKey.split("\\\\|");
-                return cached.length >= 7 && runtime.length >= 7
-                    && Arrays.equals(Arrays.copyOf(cached, 7), Arrays.copyOf(runtime, 7));
+                return cached.length >= 10 && runtime.length >= 10 && cachedKey.equals(runtimeKey);
             }
         }`,
     'h/Hchat/hooks/api/core/WeChatApis.java': `package h.Hchat.hooks.api.core;
@@ -207,4 +205,3 @@ run(process.env.JAVAC || 'javac', ['-d', output,
     source + 'hooks/api/media/WeChatVoiceApi.java',
     'scripts/tests/voice_compat/VoiceCompatRegression.java', ...generated]);
 run(process.env.JAVA || 'java', ['-cp', output, 'h.Hchat.hooks.api.media.VoiceCompatRegression']);
-console.log('Test artifacts: ' + output);

@@ -11,9 +11,8 @@ import h.Hchat.hooks.api.model.WeChatParsedMessage;
 import h.Hchat.hooks.core.HookRegistry;
 import h.Hchat.utils.KavaReflector;
 
-import java.lang.reflect.Method;
-import java.util.ArrayList;
-import java.util.List;
+import java.lang.reflect.Field;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ConcurrentHashMap;
 
 
@@ -25,14 +24,21 @@ public final class WeChatMessageEventApi {
         void log(String message);
     }
 
+    public interface RawAddMsgListener {
+        void onRawAddMsg(Object addMsg);
+    }
+
     private final DexFinder dexFinder;
     private final WeChatAccountApi accountApi;
     private final WeChatMessageParseApi parseApi;
     private final EventBus eventBus;
     private final Logger logger;
-    private volatile boolean hooked;
+    private volatile io.github.libxposed.api.XposedInterface.HookHandle addMsgHook;
     private volatile boolean patHooked;
     private final ConcurrentHashMap<String, Long> recentPatEvents = new ConcurrentHashMap<>();
+    private final AddMsgEventDeduplicator addMsgDeduplicator = new AddMsgEventDeduplicator();
+    private final CopyOnWriteArrayList<RawAddMsgListener> rawAddMsgListeners = new CopyOnWriteArrayList<>();
+    private volatile boolean callbackVerified;
 
     public WeChatMessageEventApi(DexFinder dexFinder,
                                  WeChatAccountApi accountApi,
@@ -47,50 +53,86 @@ public final class WeChatMessageEventApi {
     }
 
     public boolean isAvailable() {
-        return dexFinder != null && dexFinder.addMsgClasses != null
-                && !dexFinder.addMsgClasses.isEmpty()
+        return dexFinder != null && dexFinder.isAddMsgLocatorResolved()
                 && parseApi != null && eventBus != null;
     }
 
     public boolean isOperational() {
-        return hooked;
+        return HookRegistry.get().isActive(addMsgHook);
     }
 
-    public void installAddMsgHook() {
-        if (!isAvailable()) return;
-        if (hooked) {
+    public synchronized boolean installAddMsgHook() {
+        if (!isAvailable()) return false;
+        if (isOperational()) {
             installPatMsgHook();
-            return;
+            return true;
         }
-        int count = 0;
-        for (Class<?> clazz : dexFinder.addMsgClasses) {
-            for (Method method : KavaReflector.declaredMethods(clazz)) {
-                Class<?>[] parameterTypes = method.getParameterTypes();
-                if (parameterTypes == null || parameterTypes.length == 0) continue;
-                final List<Integer> addMsgArgIndexes = new ArrayList<>();
-                for (int i = 0; i < parameterTypes.length; i++) {
-                    if (parseApi.isLikelyAddMsgClass(parameterTypes[i])) addMsgArgIndexes.add(i);
-                }
-                if (addMsgArgIndexes.isEmpty()) continue;
-                HookRegistry.get()
-                        .hook(
-                                method,
-                                chain -> {
-                                    for (int index : addMsgArgIndexes) {
-                                        if (index >= 0
-                                                && index < chain.getArgs().size()
-                                                && chain.getArg(index) != null) {
-                                            dispatchAddMsg(chain.getArg(index));
-                                        }
-                                    }
-                                    return chain.proceed();
-                                });
-                count++;
+        final Field payloadField = dexFinder.addMsgRequestPayloadField;
+        final Field storedMessageField = dexFinder.addMsgResultMessageField;
+        if (payloadField == null || storedMessageField == null) return false;
+        try {
+            final HookRegistry registry = HookRegistry.get();
+            final long generation = registry.installationGeneration();
+            addMsgHook = HookRegistry.get().hookOnce(
+                    "wechat.addmsg.observer",
+                    dexFinder.addMsgObserverMethod,
+                    chain -> {
+                        if (!registry.isInstallationGenerationActive(generation)) return chain.proceed();
+                        Object request = chain.getArg(0);
+                        Object result = chain.proceed();
+                        if (!registry.isInstallationGenerationActive(generation)) return result;
+                        try {
+                            Object stored = result != null ? storedMessageField.get(result) : null;
+                            Object addMsg = request != null ? payloadField.get(request) : null;
+                            if (stored != null && addMsg != null) {
+                                boolean fresh = dispatchAddMsg(addMsg);
+                                if (fresh) for (RawAddMsgListener listener : rawAddMsgListeners) {
+                                    try { listener.onRawAddMsg(addMsg); }
+                                    catch (Throwable e) { log("原始消息观察回调异常: " + e.getMessage()); }
+                                }
+                                if (!callbackVerified) {
+                                    callbackVerified = true;
+                                    log("AddMsg callback=verified observer=post_process");
+                                }
+                            }
+                        } catch (Throwable e) {
+                            log("AddMsg观察结果读取失败: " + e.getMessage());
+                        }
+                        return result;
+                    });
+        installPatMsgHook();
+        log("AddMsg定位=" + dexFinder.addMsgObserverMethod.getName() + " Hook="
+                + (isOperational() ? "installed" : "inactive"));
+        return isOperational();
+        } catch (Throwable e) {
+            addMsgHook = null;
+            log("AddMsg Hook安装失败: " + e.getMessage());
+            return false;
+        }
+    }
+
+    public RawSubscription subscribeRawAddMsg(RawAddMsgListener listener) {
+        if (listener == null) return null;
+        rawAddMsgListeners.addIfAbsent(listener);
+        return new RawSubscription(this, listener);
+    }
+
+    public static final class RawSubscription {
+        private final WeChatMessageEventApi owner;
+        private final RawAddMsgListener listener;
+        private volatile boolean active = true;
+
+        private RawSubscription(WeChatMessageEventApi owner, RawAddMsgListener listener) {
+            this.owner = owner;
+            this.listener = listener;
+        }
+
+        public void unsubscribe() {
+            if (active) {
+                active = false;
+                owner.rawAddMsgListeners.remove(listener);
             }
         }
-        hooked = count > 0;
-        log("AddMsg事件Hook: " + count);
-        installPatMsgHook();
     }
 
     public EventBus.Subscription subscribeMessage(EventHandler<Events.MessageReceived> handler) {
@@ -112,11 +154,14 @@ public final class WeChatMessageEventApi {
         if (eventBus != null) eventBus.unsubscribe(subscription);
     }
 
-    private void dispatchAddMsg(Object addMsg) {
+    private boolean dispatchAddMsg(Object addMsg) {
         try {
             String selfWxId = accountApi != null ? accountApi.selfWxId() : "";
             WeChatParsedMessage parsed = parseApi.parseAddMsg(addMsg, selfWxId);
-            if (parsed == null) return;
+            if (parsed == null) return false;
+            long now = System.currentTimeMillis();
+            if (!addMsgDeduplicator.markIfNew(parsed.talker, parsed.sender,
+                    parsed.createTimeSeconds, parsed.msgSvrId, parsed.content, now)) return false;
             eventBus.post(new Events.MessageReceived(
                     parsed.xml, parsed.sender, parsed.talker, parsed.content,
                     String.valueOf(parsed.type), parsed.createTimeSeconds, parsed.msgSvrId,
@@ -130,8 +175,10 @@ public final class WeChatMessageEventApi {
                         parsed.nativeUrl,
                         parsed.exclusiveRecvUser));
             }
+            return true;
         } catch (Throwable e) {
             log("派发消息事件失败: " + e.getMessage());
+            return false;
         }
     }
 

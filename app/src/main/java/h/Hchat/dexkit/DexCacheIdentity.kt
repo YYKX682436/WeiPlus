@@ -5,10 +5,13 @@ object DexCacheIdentity {
     @JvmStatic
     fun sameRuntime(cachedKey: String?, runtimeKey: String?): Boolean {
         if (cachedKey.isNullOrBlank() || runtimeKey.isNullOrBlank()) return false
-        if (cachedKey == runtimeKey) return true
         val cached = cachedKey.split('|')
         val runtime = runtimeKey.split('|')
-        if (cached.size < 7 || runtime.size < 7) return false
-        return cached.take(7) == runtime.take(7)
+        // Ten fields are required, including the APK/DEX and Tinker patch fields added
+        // after the old seven-field identity. The final cache-scope marker is part of it.
+        // Some feature caches append their own schema suffix after the runtime key.
+        // Require the full ten-part runtime identity, then compare the complete key.
+        if (cached.size < 10 || runtime.size < 10) return false
+        return cachedKey == runtimeKey
     }
 }

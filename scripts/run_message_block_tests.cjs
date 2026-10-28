@@ -33,6 +33,14 @@ function run(args) {
     process.stderr.write(result.stderr || '');
     if (result.error || result.status !== 0) throw result.error || new Error('JVM check failed: ' + result.status);
 }
+const javac = process.env.JAVAC || 'javac';
+const chainCompile = spawnSync(javac, ['-cp', api.classpath, '-d', output,
+    'scripts/tests/api102/ChainFixture.java',
+    'app/src/main/java/h/Hchat/hooks/items/messageblock/MessageBlockDecision.java'],
+    {cwd: root, encoding: 'utf8'});
+if (chainCompile.error || chainCompile.status !== 0) {
+    throw chainCompile.error || new Error(chainCompile.stdout + chainCompile.stderr);
+}
 const source = 'app/src/main/java/h/Hchat/';
 const tests = 'scripts/tests/message_block/';
 // Compile the actual UI selection helpers without loading the Compose screen.
@@ -50,9 +58,9 @@ fs.writeFileSync(selection, 'package h.Hchat.hooks.items.messageblock\n' +
     uiSlice('internal fun messageBlockBindingFromContact(', 'internal fun normalizedMessageBlockBinding(') +
     uiSlice('internal fun groupMemberEntry(', '\nsuspend fun loadAvatarBitmap('));
 run(['-Xmx256m', '-cp', compiler.join(path.delimiter), 'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler',
-    '-no-stdlib', '-no-reflect', '-classpath', [stdlib, json, api.classpath].join(path.delimiter), '-d', artifact, selection,
+    '-no-stdlib', '-no-reflect', '-classpath', [output, stdlib, json, api.classpath].join(path.delimiter), '-d', artifact, selection,
     ...['hooks/items/messageblock/MessageBlockFeature.kt', 'hooks/items/messageblock/MessageBlockSettings.kt',
         'hooks/api/model/WeChatMessage.kt', 'hooks/api/model/WeChatMessageTypes.kt',
         'hooks/api/model/WeChatParsedMessage.kt'].map(file => source + file),
     ...fs.readdirSync(path.join(root, tests)).filter(file => file.endsWith('.kt')).map(file => tests + file)]);
-run(['-cp', [artifact, stdlib, json, api.classpath].join(path.delimiter), 'h.Hchat.hooks.items.messageblock.RuleRegressionKt']);
+run(['-cp', [artifact, output, stdlib, json, api.classpath].join(path.delimiter), 'h.Hchat.hooks.items.messageblock.RuleRegressionKt']);

@@ -8,6 +8,8 @@ final class DexFinderCacheStore {
     static final String GLOBAL_COMPLETE_KEY = "cache.complete";
     static final String GLOBAL_KEY_KEY = "cache.key";
     static final String GLOBAL_VERSION_KEY = "cache.snapshot.version";
+    static final String GLOBAL_SCAN_FINISHED_KEY = "cache.scan.finished";
+    static final String GLOBAL_CRITICAL_COMPLETE_KEY = "cache.critical.complete";
     static final String CONTACT_COMPLETE_KEY = "contact.complete";
     static final String CONTACT_KEY_KEY = "contact.cache.key";
     static final String CONTACT_VERSION_KEY = "contact.cache.version";
@@ -34,13 +36,13 @@ final class DexFinderCacheStore {
     }
 
     boolean canLoadGlobal(boolean runtimeMatches, String savedVersion, String expectedVersion,
-                          boolean complete) {
-        return global != null && runtimeMatches && complete
+                          boolean scanFinished, boolean descriptorsValid) {
+        return global != null && runtimeMatches && scanFinished && descriptorsValid
                 && expectedVersion.equals(savedVersion);
     }
 
-    boolean canSaveGlobal(boolean resolutionComplete, boolean descriptorsValid) {
-        return global != null && resolutionComplete && descriptorsValid;
+    boolean canSaveGlobal(boolean scanFinished, boolean descriptorsValid) {
+        return global != null && scanFinished && descriptorsValid;
     }
 
     boolean canLoadContact(boolean runtimeMatches, String savedVersion, String expectedVersion,
@@ -53,13 +55,15 @@ final class DexFinderCacheStore {
         return contact != null && complete;
     }
 
-    Editor beginGlobalSnapshot(boolean resolutionComplete, boolean descriptorsValid,
-                               String runtimeKey, String version) {
-        if (global == null || !resolutionComplete || !descriptorsValid) return null;
+    Editor beginGlobalSnapshot(boolean scanFinished, boolean descriptorsValid,
+                               boolean criticalLocatorsResolved, String runtimeKey, String version) {
+        if (global == null || !scanFinished || !descriptorsValid) return null;
         return global.edit().clear()
                 .putString(GLOBAL_KEY_KEY, runtimeKey)
                 .putString(GLOBAL_VERSION_KEY, version)
-                .putBoolean(GLOBAL_COMPLETE_KEY, true);
+                .putBoolean(GLOBAL_COMPLETE_KEY, true)
+                .putBoolean(GLOBAL_SCAN_FINISHED_KEY, true)
+                .putBoolean(GLOBAL_CRITICAL_COMPLETE_KEY, criticalLocatorsResolved);
     }
 
     Editor beginContactSnapshot(boolean complete, String runtimeKey, String version) {

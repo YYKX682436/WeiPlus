@@ -8,6 +8,8 @@ class WeChatVersionInfo(
     tinkerId: String?,
     patchId: String?,
     @JvmField val sourceLastModified: Long,
+    apkDexIdentity: String?,
+    patchFileIdentity: String?,
     classLoaderHash: String?,
     cacheKey: String?
 ) {
@@ -16,6 +18,8 @@ class WeChatVersionInfo(
     @JvmField val clientVersion: String = clientVersion.orEmpty()
     @JvmField val tinkerId: String = tinkerId.orEmpty()
     @JvmField val patchId: String = patchId.orEmpty()
+    @JvmField val apkDexIdentity: String = apkDexIdentity.orEmpty()
+    @JvmField val patchFileIdentity: String = patchFileIdentity.orEmpty()
     @JvmField val classLoaderHash: String = classLoaderHash.orEmpty()
     @JvmField val cacheKey: String = cacheKey.orEmpty()
 

@@ -1,8 +1,6 @@
 package h.Hchat.hooks.api.media;
 
 import android.content.Context;
-import android.content.pm.PackageInfo;
-import android.os.Build;
 import android.text.TextUtils;
 
 import h.Hchat.dexkit.DexFinder;
@@ -119,7 +117,7 @@ public final class WeChatImageApi {
             return false;
         }
         try {
-            if (!TextUtils.isEmpty(appId) && shouldUseAsyncAppInfo() && canSendAsyncAppInfo()) {
+            if (!TextUtils.isEmpty(appId) && canSendAsyncAppInfo()) {
                 if (sendAsyncAppInfo(talker, imagePath, appId)) {
                     return true;
                 }
@@ -627,12 +625,6 @@ public final class WeChatImageApi {
                 && dexFinder.sendImageAsyncSubmitMethod != null;
     }
 
-    private boolean shouldUseAsyncAppInfo() {
-        if (isWeChatAtLeast(8, 0, 66)) return true;
-        long versionCode = hostVersionCode();
-        return versionCode >= 2980L;
-    }
-
     private boolean sendAsyncAppInfo(String talker, String imagePath, String appId) {
         try {
             Object crossParams = newInstance(dexFinder.sendImageCrossParamsClass);
@@ -682,65 +674,6 @@ public final class WeChatImageApi {
             return WeChatApis.account() != null ? safeString(WeChatApis.account().selfWxId()) : "";
         } catch (Throwable ignored) {
             return "";
-        }
-    }
-
-    private boolean isWeChatAtLeast(int major, int minor, int patch) {
-        String version = hostVersionName();
-        if (TextUtils.isEmpty(version)) return false;
-        String[] parts = version.split("\\.");
-        int[] target = new int[]{major, minor, patch};
-        for (int i = 0; i < target.length; i++) {
-            int value = i < parts.length ? parseLeadingInt(parts[i]) : 0;
-            if (value > target[i]) return true;
-            if (value < target[i]) return false;
-        }
-        return true;
-    }
-
-    private int parseLeadingInt(String value) {
-        if (TextUtils.isEmpty(value)) return 0;
-        int end = 0;
-        while (end < value.length() && Character.isDigit(value.charAt(end))) {
-            end++;
-        }
-        if (end == 0) return 0;
-        try {
-            return Integer.parseInt(value.substring(0, end));
-        } catch (Throwable ignored) {
-            return 0;
-        }
-    }
-
-    private String hostVersionName() {
-        try {
-            if (WeChatApis.version() != null) {
-                String version = WeChatApis.version().versionName();
-                if (!TextUtils.isEmpty(version)) return version;
-            }
-        } catch (Throwable ignored) {}
-        try {
-            PackageInfo info = hostContext != null
-                    ? hostContext.getPackageManager().getPackageInfo(hostContext.getPackageName(), 0)
-                    : null;
-            return info != null && info.versionName != null ? info.versionName : "";
-        } catch (Throwable ignored) {
-            return "";
-        }
-    }
-
-    private long hostVersionCode() {
-        try {
-            if (WeChatApis.version() != null) return WeChatApis.version().versionCode();
-        } catch (Throwable ignored) {}
-        try {
-            PackageInfo info = hostContext != null
-                    ? hostContext.getPackageManager().getPackageInfo(hostContext.getPackageName(), 0)
-                    : null;
-            if (info == null) return 0L;
-            return Build.VERSION.SDK_INT >= 28 ? info.getLongVersionCode() : info.versionCode;
-        } catch (Throwable ignored) {
-            return 0L;
         }
     }
 

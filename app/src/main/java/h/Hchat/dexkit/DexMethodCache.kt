@@ -28,15 +28,10 @@ object DexMethodCache {
         if (runtimeKey.isBlank()) return null
         if (!ensureRuntimeKey(prefs, runtimeKey)) return null
         val descriptor = prefs.getString(name, "")?.takeIf { it.isNotBlank() } ?: return null
-        return runCatching { DexMethod(descriptor).getMethodInstance(classLoader) }.getOrNull()
+        return loadMethodDescriptor(descriptor, classLoader)
     }
 
-    /**
-     * Reuses a descriptor located in another process of the same WeChat runtime.
-     * The final cache-key segment is the process ClassLoader fingerprint; every
-     * package, version, APK and Tinker segment before it must still match. The
-     * descriptor is resolved again against the current process ClassLoader.
-     */
+    /** Reuses a descriptor only when every persisted package/APK/DEX/Tinker identity field matches. */
     fun loadCrossProcess(
         prefs: SharedPreferences,
         runtimeKey: String,
@@ -47,7 +42,7 @@ object DexMethodCache {
         val cachedRuntimeKey = prefs.getString(CACHE_KEY, "").orEmpty()
         if (!sameRuntimeAcrossProcesses(cachedRuntimeKey, runtimeKey)) return null
         val descriptor = prefs.getString(name, "")?.takeIf { it.isNotBlank() } ?: return null
-        return runCatching { DexMethod(descriptor).getMethodInstance(classLoader) }.getOrNull()
+        return loadMethodDescriptor(descriptor, classLoader)
     }
 
     fun save(
@@ -78,7 +73,7 @@ object DexMethodCache {
         if (runtimeKey.isBlank()) return null
         if (!ensureRuntimeKey(prefs, runtimeKey)) return null
         val descriptor = prefs.getString(name, "")?.takeIf { it.isNotBlank() } ?: return null
-        return runCatching { DexMethod(descriptor).getConstructorInstance(classLoader) }.getOrNull()
+        return loadConstructorDescriptor(descriptor, classLoader)
     }
 
     fun saveConstructor(
@@ -113,7 +108,7 @@ object DexMethodCache {
             .split('\n')
             .mapNotNull { descriptor ->
                 descriptor.takeIf { it.isNotBlank() }?.let {
-                    runCatching { DexMethod(it).getMethodInstance(classLoader) }.getOrNull()
+                    loadMethodDescriptor(it, classLoader)
                 }
             }
     }
@@ -132,7 +127,7 @@ object DexMethodCache {
             .split('\n')
             .mapNotNull { descriptor ->
                 descriptor.takeIf { it.isNotBlank() }?.let {
-                    runCatching { DexMethod(it).getMethodInstance(classLoader) }.getOrNull()
+                    loadMethodDescriptor(it, classLoader)
                 }
             }
     }
@@ -192,6 +187,16 @@ object DexMethodCache {
             append(")V")
         }
     }
+
+    private fun loadMethodDescriptor(descriptor: String, classLoader: ClassLoader): Method? =
+        runCatching { DexMethod(descriptor).getMethodInstance(classLoader) }
+            .getOrNull()
+            ?.takeIf { runCatching { it.toDexDescriptor() == descriptor }.getOrDefault(false) }
+
+    private fun loadConstructorDescriptor(descriptor: String, classLoader: ClassLoader): Constructor<*>? =
+        runCatching { DexMethod(descriptor).getConstructorInstance(classLoader) }
+            .getOrNull()
+            ?.takeIf { runCatching { it.toDexDescriptor() == descriptor }.getOrDefault(false) }
 
     private fun Class<*>.toDexType(): String {
         if (isPrimitive) {

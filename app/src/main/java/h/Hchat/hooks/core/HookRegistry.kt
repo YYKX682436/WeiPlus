@@ -111,6 +111,8 @@ class HookRegistry private constructor() {
 
     fun size(): Int = synchronized(lock) { unhooks.size }
 
+    fun isActive(handle: HookHandle?): Boolean = handle != null && XposedRuntime.isHookActive(handle)
+
     fun unhook(unhook: HookHandle?) {
         if (unhook == null) return
         unhook.unhook()

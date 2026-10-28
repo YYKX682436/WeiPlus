@@ -183,8 +183,7 @@ object WeChatRetransmitPayloadFactory {
     }
 
     private fun allowRawImageTokenFallback(): Boolean {
-        val version = WeChatApis.version()?.current()
-        return !version?.versionName.orEmpty().startsWith("8.0.49") && version?.versionCode != 2600L
+        return true
     }
 
     @JvmStatic
