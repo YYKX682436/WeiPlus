@@ -23,6 +23,7 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.Arrangement
@@ -32,6 +33,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
@@ -75,6 +77,7 @@ import h.Hchat.hooks.items.moments.MomentsContactFilterSettings
 import h.Hchat.hooks.items.moments.MomentsKeywordBlockSettings
 import h.Hchat.hooks.items.moments.MomentsPostNotificationSettings
 import h.Hchat.hooks.items.moments.MomentsUploadTailSettings
+import h.Hchat.hooks.items.moments.MomentsUploadTailPresets
 import h.Hchat.hooks.items.moments.RemoveMomentsAdsSettings
 import h.Hchat.hooks.items.moments.SnsAntiRecallSettings
 import h.Hchat.hooks.items.momentsfake.MomentsFakeForwardRuntimeRegistry
@@ -2229,6 +2232,8 @@ internal fun MomentsUploadTailMiuixPage(
             ).orEmpty()
         )
     }
+    var showPresetPicker by remember { mutableStateOf(false) }
+    var presetQuery by remember { mutableStateOf("") }
 
     PageScaffold(
         title = provider.title(),
@@ -2259,6 +2264,14 @@ internal fun MomentsUploadTailMiuixPage(
                     }
                     if (enabled) {
                         InsetDivider()
+                        ActionRow(
+                            "选择内置尾巴",
+                            MomentsUploadTailPresets.matchingPreset(sdkId, sdkAppName)?.name ?: "自定义"
+                        ) {
+                            presetQuery = ""
+                            showPresetPicker = true
+                        }
+                        InsetDivider()
                         InputRow("SDK ID", "输入第三方 SDK 标识", sdkId) {
                             sdkId = it
                             sp.edit().putString(MomentsUploadTailSettings.KEY_SDK_ID, it).apply()
@@ -2274,6 +2287,39 @@ internal fun MomentsUploadTailMiuixPage(
                 }
             }
         }
+    }
+    if (showPresetPicker) {
+        val query = presetQuery.trim().lowercase(Locale.ROOT)
+        val visiblePresets = remember(query) {
+            if (query.isEmpty()) MomentsUploadTailPresets.options
+            else MomentsUploadTailPresets.options.filter { it.name.lowercase(Locale.ROOT).contains(query) }
+        }
+        WindowDialog(
+            show = true,
+            title = "选择内置尾巴",
+            onDismissRequest = { showPresetPicker = false },
+            content = {
+                LazyColumn(
+                    modifier = Modifier.fillMaxWidth().heightIn(max = 480.dp)
+                ) {
+                    item {
+                        InputRow("搜索名称", "", presetQuery) { presetQuery = it }
+                    }
+                    if (visiblePresets.isEmpty()) {
+                        item { EmptyText("没有匹配的名称") }
+                    } else {
+                        items(visiblePresets, key = { it.appId }) { preset ->
+                            SelectRow(preset.name, "") {
+                                sdkId = preset.appId
+                                sdkAppName = preset.name
+                                MomentsUploadTailPresets.saveSelection(sp, preset)
+                                showPresetPicker = false
+                            }
+                        }
+                    }
+                }
+            }
+        )
     }
 }
 
