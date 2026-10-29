@@ -6,11 +6,6 @@ on:
 permissions:
   contents: write
 
-env:
-  HCAT_SINGLE_VERSION_NAME_BASE: "5.5.6"
-  HCAT_SINGLE_VERSION_CODE_BASE: "490"
-  HCAT_SINGLE_RUN_NUMBER_BASE: "294"
-
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -46,67 +41,31 @@ jobs:
           set -e
 
           apk_name="Hchat-release-signed.apk"
-
-          latest_semver="$(
-            {
-              printf 'v%s\n' "$HCAT_SINGLE_VERSION_NAME_BASE"
-              gh api --paginate "repos/${GITHUB_REPOSITORY}/releases" --jq '.[].tag_name' || true
-              git ls-remote --tags origin 'refs/tags/v*' | sed 's#.*refs/tags/##; s#\^{}##' || true
-            } \
-              | sed -n 's/^v\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)$/\1/p' \
-              | sort -V \
-              | tail -n 1
-          )"
-          if [ -z "$latest_semver" ]; then
-            latest_semver="1.0.0"
+          version_name="$(sed -n 's/^HCAT_VERSION_NAME=//p' gradle.properties | tail -n 1)"
+          version_code="$(sed -n 's/^HCAT_VERSION_CODE=//p' gradle.properties | tail -n 1)"
+          if ! printf '%s' "$version_name" | grep -Eq '^[0-9]+\.[0-9]+$'; then
+            echo "正式版本号必须使用 gradle.properties 中的两段格式 x.y: ${version_name}"
+            exit 1
           fi
-
-          bump_version() {
-            current="$1"
-            major="${current%%.*}"
-            rest="${current#*.}"
-            minor="${rest%%.*}"
-            patch="${rest##*.}"
-
-            patch=$((patch + 1))
-            if [ "$patch" -gt 9 ]; then
-              minor=$((minor + patch / 10))
-              patch=$((patch % 10))
-            fi
-            if [ "$minor" -gt 9 ]; then
-              major=$((major + minor / 10))
-              minor=$((minor % 10))
-            fi
-            printf '%s.%s.%s\n' "$major" "$minor" "$patch"
-          }
-
-          version_name="$(bump_version "$latest_semver")"
-          while gh release view "v${version_name}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
-            || git ls-remote --exit-code --tags origin "refs/tags/v${version_name}" >/dev/null 2>&1; do
-            version_name="$(bump_version "$version_name")"
-          done
-
-          version_code=$((
-            HCAT_SINGLE_VERSION_CODE_BASE +
-            GITHUB_RUN_NUMBER -
-            HCAT_SINGLE_RUN_NUMBER_BASE
-          ))
-          if [ "$version_code" -le "$HCAT_SINGLE_VERSION_CODE_BASE" ] \
-            || [ "$version_code" -gt 2147483647 ]; then
-            echo "单频道构建版本 Code 超出有效范围: ${version_code}"
+          if ! printf '%s' "$version_code" | grep -Eq '^[0-9]+$' \
+            || [ "$version_code" -le 0 ] || [ "$version_code" -gt 2147483647 ]; then
+            echo "正式 versionCode 无效: ${version_code}"
+            exit 1
+          fi
+          release_tag="v${version_name}"
+          if git ls-remote --exit-code --tags origin "refs/tags/${release_tag}" >/dev/null 2>&1; then
+            echo "Release Tag 已存在，拒绝重复发布: ${release_tag}"
             exit 1
           fi
 
-          echo "HCAT_VERSION_NAME=${version_name}" >> "$GITHUB_ENV"
-          echo "HCAT_VERSION_CODE=${version_code}" >> "$GITHUB_ENV"
-          echo "HCAT_RELEASE_TAG=v${version_name}" >> "$GITHUB_ENV"
+          echo "HCAT_RELEASE_TAG=${release_tag}" >> "$GITHUB_ENV"
           echo "HCAT_RELEASE_TITLE=${version_name}" >> "$GITHUB_ENV"
           echo "HCAT_APK_NAME=${apk_name}" >> "$GITHUB_ENV"
 
           git fetch --force --tags origin 'refs/tags/v*:refs/tags/v*' >/dev/null 2>&1 || true
           previous_change_tag="$(
             git tag --merged HEAD --list 'v*' \
-              | sed -n 's/^v\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)$/v\1/p' \
+              | grep -E '^v[0-9]+(\.[0-9]+){1,2}$' \
               | sort -V \
               | tail -n 1
           )"
@@ -143,6 +102,7 @@ jobs:
 
       - name: 构建当前频道 APK
         env:
+          HCAT_KEYSTORE_PATH: ${{ github.workspace }}/app/keystore/。。.jks
           HCAT_APK_NAME: ${{ env.HCAT_APK_NAME }}
           HCAT_STORE_PASSWORD: ${{ secrets.HCAT_STORE_PASSWORD }}
           HCAT_KEY_ALIAS: ${{ secrets.HCAT_KEY_ALIAS }}

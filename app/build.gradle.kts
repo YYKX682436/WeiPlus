@@ -10,15 +10,15 @@ android {
     namespace = "h.Hchat"
     compileSdk = 37
 
-    val autoVersionCode = System.getenv("HCAT_VERSION_CODE")?.toIntOrNull() ?: 1
-    val autoVersionName = System.getenv("HCAT_VERSION_NAME")?.takeIf { it.isNotBlank() } ?: "1.0.0"
+    val releaseVersionCode = providers.gradleProperty("HCAT_VERSION_CODE").get().toInt()
+    val releaseVersionName = providers.gradleProperty("HCAT_VERSION_NAME").get()
 
     defaultConfig {
         applicationId = "h.Hchat"
         minSdk = 27
         targetSdk = 37
-        versionCode = autoVersionCode
-        versionName = autoVersionName
+        versionCode = releaseVersionCode
+        versionName = releaseVersionName
 
         ndk {
             abiFilters += listOf("arm64-v8a")

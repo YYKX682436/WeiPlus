@@ -38,8 +38,6 @@ jobs:
 
           apk_name="Hchat-test-signed.apk"
 
-          echo "HCAT_VERSION_NAME=test.${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
-          echo "HCAT_VERSION_CODE=${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
           echo "HCAT_APK_NAME=${apk_name}" >> "$GITHUB_ENV"
 
           sed -i '/android.aapt2FromMavenOverride/d' gradle.properties
@@ -60,6 +58,7 @@ jobs:
 
       - name: 构建无 R8 测试 APK
         env:
+          HCAT_KEYSTORE_PATH: ${{ github.workspace }}/app/keystore/。。.jks
           HCAT_STORE_PASSWORD: ${{ secrets.HCAT_STORE_PASSWORD }}
           HCAT_KEY_ALIAS: ${{ secrets.HCAT_KEY_ALIAS }}
           HCAT_KEY_PASSWORD: ${{ secrets.HCAT_KEY_PASSWORD }}
