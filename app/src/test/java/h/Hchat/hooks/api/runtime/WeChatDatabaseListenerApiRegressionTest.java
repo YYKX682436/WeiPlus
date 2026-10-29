@@ -4,6 +4,7 @@ import android.content.ContentValues;
 
 import h.Hchat.dexkit.DexFinder;
 import h.Hchat.hooks.api.message.WeChatMessageChangeApi;
+import h.Hchat.hooks.api.model.WeChatMessage;
 import h.Hchat.hooks.api.model.DatabaseChange;
 import h.Hchat.hooks.core.HookRegistry;
 import h.Hchat.hooks.core.XposedRuntime;
@@ -170,6 +171,127 @@ public class WeChatDatabaseListenerApiRegressionTest {
         assertTrue("generic WCDB mutation hooks may be installed for fallback observation",
                 databaseApi.hookedMethodCount() > 0);
         assertTrue(registry.size() > before);
+    }
+
+    @Test
+    public void messageEventRecoversMsgSourceFromLvBufferWithoutChangingHostValues() throws Throwable {
+        byte[] originalLvBuffer = "binary-prefix<msgsource><atuserlist><![CDATA[user-a,user-b]]></atuserlist></msgsource>suffix"
+                .getBytes(StandardCharsets.UTF_8);
+        ContentValues values = messageValues();
+        values.put("msgSource", "");
+        values.put("reserved", "");
+        values.put("lvbuffer", originalLvBuffer);
+        Map<String, Object> before = snapshot(values);
+        List<WeChatMessageChangeApi.MessageChange> changes = observeInsert(values, 91L, null);
+
+        assertEquals(1, changes.size());
+        assertEquals("<msgsource><atuserlist><![CDATA[user-a,user-b]]></atuserlist></msgsource>",
+                changes.get(0).message.msgSource);
+        assertEquals("", values.getAsString("msgSource"));
+        assertArrayEquals(originalLvBuffer, values.getAsByteArray("lvbuffer"));
+        assertEquals("", values.getAsString("reserved"));
+        assertContentValuesUnchanged(before, values);
+        assertEquals(Arrays.asList("user-a", "user-b"), changes.get(0).message.getAtUserList());
+    }
+
+    @Test
+    public void structuredLvBufferPreservesAtAllSemanticsAndExistingMsgSourceWins() throws Throwable {
+        String lvSource = "<msgsource><atuserlist><![CDATA[notify@all]]></atuserlist></msgsource>";
+        ContentValues values = messageValues();
+        values.put("msgSource", "<msgsource><atuserlist>user-original</atuserlist></msgsource>");
+        values.put("lvbuffer", structuredLvBuffer(lvSource));
+        Map<String, Object> before = snapshot(values);
+        List<WeChatMessageChangeApi.MessageChange> changes = observeInsert(values, 92L, null);
+        assertEquals(1, changes.size());
+        assertEquals("<msgsource><atuserlist>user-original</atuserlist></msgsource>",
+                changes.get(0).message.msgSource);
+        assertContentValuesUnchanged(before, values);
+
+        values.put("msgSource", "");
+        before = snapshot(values);
+        changes = observeInsert(values, 93L, null);
+        assertEquals(1, changes.size());
+        assertEquals(lvSource, changes.get(0).message.msgSource);
+        assertEquals(WeChatMessage.AtMentionType.AT_ALL,
+                WeChatMessage.classifyAtMention(changes.get(0).message.msgSource, "hello", "self"));
+        assertArrayEquals(structuredLvBuffer(lvSource), values.getAsByteArray("lvbuffer"));
+        assertContentValuesUnchanged(before, values);
+    }
+
+    @Test
+    public void malformedAndOversizedLvBuffersFailClosed() throws Throwable {
+        ContentValues values = messageValues();
+        values.put("lvbuffer", new byte[]{'{', 0, 9, 1, 2});
+        List<WeChatMessageChangeApi.MessageChange> changes = observeInsert(values, 94L, null);
+        assertEquals("", changes.get(0).message.msgSource);
+
+        values.put("lvbuffer", new byte[]{'<', 'm', 's', 'g', 's', 'o', 'u', 'r', 'c', 'e', '>', (byte) 0xff,
+                '<', '/', 'm', 's', 'g', 's', 'o', 'u', 'r', 'c', 'e', '>'});
+        changes = observeInsert(values, 96L, null);
+        assertEquals("invalid UTF-8 is rejected", "", changes.get(0).message.msgSource);
+
+        values.put("lvbuffer", "<msgsource><atuserlist>truncated".getBytes(StandardCharsets.UTF_8));
+        changes = observeInsert(values, 97L, null);
+        assertEquals("truncated XML is rejected", "", changes.get(0).message.msgSource);
+
+        values.put("lvbuffer", new byte[1024 * 1024]);
+        changes = observeInsert(values, 95L, null);
+        assertEquals("", changes.get(0).message.msgSource);
+    }
+
+    private List<WeChatMessageChangeApi.MessageChange> observeInsert(
+            ContentValues values, long result, Throwable failure) throws Throwable {
+        ClassLoader loader = getClass().getClassLoader();
+        DexFinder finder = new DexFinder(null, loader, null);
+        finder.sqliteDbWrapperClass = WrapperFixture.class;
+        WeChatDatabaseListenerApi databaseApi = new WeChatDatabaseListenerApi(finder, loader, ignored -> {});
+        WeChatMessageChangeApi messageApi = new WeChatMessageChangeApi(databaseApi, null, ignored -> {});
+        List<WeChatMessageChangeApi.MessageChange> changes = new ArrayList<>();
+        messageApi.subscribe(changes::add);
+        messageApi.install();
+        Method insert = WrapperFixture.class.getDeclaredMethod(
+                "write", String.class, String.class, ContentValues.class);
+        Method dbInsert = com.tencent.wcdb.database.SQLiteDatabase.class.getDeclaredMethod(
+                "insert", String.class, String.class, ContentValues.class);
+        runNested(databaseApi, insert, dbInsert,
+                new Object[]{"message", null, values}, result, failure);
+        return changes;
+    }
+
+    private byte[] structuredLvBuffer(String source) {
+        byte[] first = "x".getBytes(StandardCharsets.UTF_8);
+        byte[] sourceBytes = source.getBytes(StandardCharsets.UTF_8);
+        byte[] bytes = new byte[1 + 2 + first.length + 4 + 2 + sourceBytes.length + 1];
+        int offset = 0;
+        bytes[offset++] = '{';
+        bytes[offset++] = 0;
+        bytes[offset++] = (byte) first.length;
+        bytes[offset++] = first[0];
+        offset += 4;
+        bytes[offset++] = (byte) (sourceBytes.length >>> 8);
+        bytes[offset++] = (byte) sourceBytes.length;
+        System.arraycopy(sourceBytes, 0, bytes, offset, sourceBytes.length);
+        bytes[bytes.length - 1] = '}';
+        return bytes;
+    }
+
+    private Map<String, Object> snapshot(ContentValues values) {
+        Map<String, Object> snapshot = new java.util.HashMap<>();
+        for (String key : values.keySet()) {
+            Object value = values.get(key);
+            snapshot.put(key, value instanceof byte[] ? ((byte[]) value).clone() : value);
+        }
+        return snapshot;
+    }
+
+    private void assertContentValuesUnchanged(Map<String, Object> before, ContentValues after) {
+        assertEquals(before.keySet(), after.keySet());
+        for (String key : before.keySet()) {
+            Object expected = before.get(key);
+            Object actual = after.get(key);
+            if (expected instanceof byte[]) assertArrayEquals((byte[]) expected, (byte[]) actual);
+            else assertEquals("ContentValues field " + key, expected, actual);
+        }
     }
 
     private Object runNested(WeChatDatabaseListenerApi databaseApi,

@@ -213,8 +213,17 @@ public final class WeChatMessageChangeApi {
                 str(change.values, "reserved"),
                 str(change.values, "transContent"),
                 intValue(change.values, "flag"),
-                str(change.values, "msgSource"),
+                resolveMsgSource(change.values),
                 selfWxId());
+    }
+
+    private static String resolveMsgSource(ContentValues values) {
+        String msgSource = str(values, "msgSource");
+        if (!TextUtils.isEmpty(msgSource)) return msgSource;
+        Object raw = values != null ? values.get("lvbuffer") : null;
+        return raw instanceof byte[]
+                ? WeChatLvBufferMsgSource.extract((byte[]) raw)
+                : "";
     }
 
     private static boolean hasCoreFields(ContentValues values) {

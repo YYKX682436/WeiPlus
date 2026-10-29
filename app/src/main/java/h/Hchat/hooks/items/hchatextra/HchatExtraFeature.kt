@@ -38,6 +38,7 @@ import h.Hchat.dexkit.DexMethodCache
 import h.Hchat.event.Events
 import h.Hchat.hooks.api.model.WeChatMessage
 import h.Hchat.hooks.api.model.WeChatMessageTypes
+import h.Hchat.hooks.api.message.WeChatLvBufferMsgSource
 import h.Hchat.hooks.api.core.WeChatApis
 import h.Hchat.hooks.core.BaseFeature
 import h.Hchat.hooks.core.ChatAdapterRefresh
@@ -57,7 +58,6 @@ import java.lang.ref.WeakReference
 import java.lang.reflect.Field
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier
-import java.nio.ByteBuffer
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -3614,28 +3614,7 @@ private class HchatExtraHooker(
     private fun readMessageSourceFromLvBuffer(message: Any): String {
         val buffer = readMessageValue(message, "getLvBuffer", "field_lvbuffer", "lvbuffer") as? ByteArray
             ?: return ""
-        if (buffer.size < 9 || buffer.first() != '{'.code.toByte() || buffer.last() != '}'.code.toByte()) {
-            return ""
-        }
-        return runCatching {
-            val bytes = ByteBuffer.wrap(buffer).apply { position(1) }
-            val firstLength = readLvBufferLength(bytes) ?: return@runCatching ""
-            if (bytes.remaining() < firstLength) return@runCatching ""
-            bytes.position(bytes.position() + firstLength)
-            if (bytes.remaining() < 4) return@runCatching ""
-            bytes.position(bytes.position() + 4)
-            val sourceLength = readLvBufferLength(bytes) ?: return@runCatching ""
-            if (sourceLength == 0 || bytes.remaining() < sourceLength) return@runCatching ""
-            val sourceBytes = ByteArray(sourceLength)
-            bytes.get(sourceBytes)
-            sourceBytes.toString(Charsets.UTF_8)
-        }.getOrDefault("")
-    }
-
-    private fun readLvBufferLength(buffer: ByteBuffer): Int? {
-        if (buffer.remaining() < 2) return null
-        val length = buffer.short.toInt() and 0xffff
-        return length.takeIf { it <= LV_BUFFER_STRING_MAX_LENGTH }
+        return WeChatLvBufferMsgSource.extract(buffer)
     }
 
     private fun configuredAvatarHidden(isSelf: Boolean): Boolean {
@@ -4311,7 +4290,6 @@ private class HchatExtraHooker(
     companion object {
         private const val PREF_GROUP_MEMBER_HISTORY = "hchat_group_member_history"
         private const val TAG_MESSAGE_DETAILS_VIEW = "hchat_message_details_view"
-        private const val LV_BUFFER_STRING_MAX_LENGTH = 3072
         private val MESSAGE_DETAILS_TOKEN_PATTERN = Regex("\\$\\{([A-Za-z][A-Za-z0-9]*)\\}|\\$([A-Za-z][A-Za-z0-9]*)")
         private val AT_USER_LIST_PATTERN = Regex(
             "<atuserlist><!\\[CDATA\\[(.*?)]]></atuserlist>|<atuserlist>(.*?)</atuserlist>",
