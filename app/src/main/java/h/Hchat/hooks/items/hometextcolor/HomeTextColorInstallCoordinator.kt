@@ -28,11 +28,37 @@ internal object HomeTextColorInstallCoordinator {
     }
 }
 
+internal enum class HomeTextColorInstallAttempt { COMPLETE, RETRY }
+
+/** Tracks primary and optional-page installation independently within one HookRegistry generation. */
+internal class HomeTextColorPageInstallCoordinator {
+    private val installedKeys = HashSet<String>()
+    private var destroyed = false
+
+    @Synchronized
+    fun install(key: String, installer: () -> Boolean): HomeTextColorInstallAttempt {
+        if (destroyed) return HomeTextColorInstallAttempt.COMPLETE
+        if (key in installedKeys) return HomeTextColorInstallAttempt.COMPLETE
+        if (!installer()) return HomeTextColorInstallAttempt.RETRY
+        installedKeys += key
+        return HomeTextColorInstallAttempt.COMPLETE
+    }
+
+    @Synchronized
+    fun destroy() {
+        destroyed = true
+        installedKeys.clear()
+    }
+}
+
 /** Resolves the modern holder/bind pair while preserving retries for transient class-loader misses. */
 internal object HomeTextColorModernConversationResolver {
     fun resolve(
         dexCandidateCount: Int,
         resolvedMethods: List<Method>,
+        querySucceeded: Boolean,
+        warmupReady: Boolean,
+        legacyConversationInstalled: Boolean,
         isBind: (Method) -> Boolean,
         holderCandidates: (Method) -> List<Method>
     ): HomeTextColorModernLookup {
@@ -48,13 +74,18 @@ internal object HomeTextColorModernConversationResolver {
             return HomeTextColorModernLookup.Found(holder, bind)
         }
 
-        // Empty DEX results and candidates that the host loader could not materialize are both
-        // retryable: either can be transient during startup. A fully resolved search with no
-        // matching bind is the structurally absent older-layout case.
-        return if (dexCandidateCount == 0 || resolvedMethods.size < dexCandidateCount) {
+        return if (!querySucceeded || resolvedMethods.size < dexCandidateCount) {
             HomeTextColorModernLookup.Retry
-        } else {
+        } else if (dexCandidateCount == 0) {
+            if (warmupReady && legacyConversationInstalled) {
+                HomeTextColorModernLookup.NotApplicable
+            } else {
+                HomeTextColorModernLookup.Retry
+            }
+        } else if (warmupReady) {
             HomeTextColorModernLookup.NotApplicable
+        } else {
+            HomeTextColorModernLookup.Retry
         }
     }
 }

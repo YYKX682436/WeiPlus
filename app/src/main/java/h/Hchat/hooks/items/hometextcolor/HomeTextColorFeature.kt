@@ -46,6 +46,7 @@ import java.util.concurrent.ConcurrentHashMap
 
 class HomeTextColorFeature : BaseFeature() {
     private var runtime: HomeTextColorRuntime? = null
+    private val pageInstallCoordinator = HomeTextColorPageInstallCoordinator()
 
     override fun featureId(): String = ID
 
@@ -59,23 +60,37 @@ class HomeTextColorFeature : BaseFeature() {
         runtime = HomeTextColorRuntime(context)
         runtime?.install(allowDexSearch = false)
         scheduleInstall()
-        subscribe(Events.DexReady::class.java) { scheduleInstall() }
+        schedulePageInstall()
+        subscribe(Events.DexReady::class.java) {
+            scheduleInstall()
+            schedulePageInstall()
+        }
     }
 
     override fun onFeatureDestroy(context: FeatureContext) {
         DexInstallScheduler.cancel(ID)
+        DexInstallScheduler.cancel(PAGE_INSTALL_ID)
+        pageInstallCoordinator.destroy()
         runtime?.destroy()
         runtime = null
     }
 
     private fun scheduleInstall() {
         DexInstallScheduler.schedule(ID, name(), stage = DexInstallScheduler.Stage.WARMUP) {
-            runtime?.install(allowDexSearch = true) == true
+            runtime?.installPrimary(allowDexSearch = true) == true
+        }
+    }
+
+    private fun schedulePageInstall() {
+        DexInstallScheduler.schedule(PAGE_INSTALL_ID, "${name()} 页面颜色", stage = DexInstallScheduler.Stage.WARMUP) {
+            runtime?.installOptionalPages(pageInstallCoordinator, allowDexSearch = true) ==
+                HomeTextColorInstallAttempt.COMPLETE
         }
     }
 
     companion object {
         const val ID = "home_text_color"
+        private const val PAGE_INSTALL_ID = "home_text_color:optional_pages"
     }
 }
 
@@ -139,14 +154,45 @@ private class HomeTextColorRuntime(
     @Synchronized
     fun install(allowDexSearch: Boolean): Boolean {
         if (destroyed) return false
+        val primaryComplete = installPrimary(allowDexSearch)
+        installOptionalPages(null, allowDexSearch)
+        return primaryComplete
+    }
+
+    @Synchronized
+    fun installPrimary(allowDexSearch: Boolean): Boolean {
+        if (destroyed) return false
         val runtimeKey = DexMethodCache.runtimeKey(context.hostContext(), context.hostClassLoader())
         val legacyConversationInstalled = installConversationAdapterHooks(
             locateConversationGetViews(runtimeKey, allowDexSearch)
         )
-        val modernPath = installModernConversationHooks(runtimeKey, allowDexSearch)
+        val modernPath = installModernConversationHooks(
+            runtimeKey,
+            allowDexSearch,
+            legacyConversationInstalled
+        )
 
-        // These are independent optional page/list paths. Their absence cannot block the home row.
-        installAdapterHook(
+        return HomeTextColorInstallCoordinator.isComplete(legacyConversationInstalled, modernPath)
+    }
+
+    @Synchronized
+    fun installOptionalPages(
+        coordinator: HomeTextColorPageInstallCoordinator?,
+        allowDexSearch: Boolean
+    ): HomeTextColorInstallAttempt {
+        if (destroyed) return HomeTextColorInstallAttempt.COMPLETE
+        val installer = {
+            installOptionalPageHooks(allowDexSearch)
+        }
+        return coordinator?.install("all", installer)
+            ?: if (installer()) HomeTextColorInstallAttempt.COMPLETE else HomeTextColorInstallAttempt.RETRY
+    }
+
+    private fun installOptionalPageHooks(allowDexSearch: Boolean): Boolean {
+        if (destroyed) return true
+        val runtimeKey = DexMethodCache.runtimeKey(context.hostContext(), context.hostClassLoader())
+        var complete = true
+        if (!installAdapterHook(
             locateAdapterGetView(
                 runtimeKey,
                 CACHE_CONTACTS,
@@ -156,8 +202,8 @@ private class HomeTextColorRuntime(
                 allowDexSearch = allowDexSearch
             ),
             RowKind.CONTACTS
-        )
-        installAdapterHook(
+        )) complete = false
+        if (!installAdapterHook(
             locateAdapterGetView(
                 runtimeKey,
                 CACHE_PREFERENCE,
@@ -167,17 +213,17 @@ private class HomeTextColorRuntime(
                 allowDexSearch = allowDexSearch
             ),
             RowKind.PREFERENCE
-        )
-        installLayoutInflaterHook(locateLayoutInflaterFactory(runtimeKey, allowDexSearch))
-        installRecyclerAdapterHook(
+        )) complete = false
+        if (!installLayoutInflaterHook(locateLayoutInflaterFactory(runtimeKey, allowDexSearch))) complete = false
+        if (!installRecyclerAdapterHook(
             locateRecyclerAdapterBind(runtimeKey, CACHE_RECYCLER_BIND, payload = false),
             "完整"
-        )
-        installRecyclerAdapterHook(
+        )) complete = false
+        if (!installRecyclerAdapterHook(
             locateRecyclerAdapterBind(runtimeKey, CACHE_RECYCLER_PAYLOAD_BIND, payload = true),
             "局部"
-        )
-        return HomeTextColorInstallCoordinator.isComplete(legacyConversationInstalled, modernPath)
+        )) complete = false
+        return complete
     }
 
     private fun locateConversationGetViews(
@@ -347,9 +393,10 @@ private class HomeTextColorRuntime(
 
     private fun installModernConversationHooks(
         runtimeKey: String,
-        allowDexSearch: Boolean
+        allowDexSearch: Boolean,
+        legacyConversationInstalled: Boolean
     ): HomeTextColorModernPathResult {
-        val lookup = locateModernConversationMethods(runtimeKey, allowDexSearch)
+        val lookup = locateModernConversationMethods(runtimeKey, allowDexSearch, legacyConversationInstalled)
         if (lookup === HomeTextColorModernLookup.NotApplicable) {
             return HomeTextColorModernPathResult.NOT_APPLICABLE
         }
@@ -404,7 +451,8 @@ private class HomeTextColorRuntime(
 
     private fun locateModernConversationMethods(
         runtimeKey: String,
-        allowDexSearch: Boolean
+        allowDexSearch: Boolean,
+        legacyConversationInstalled: Boolean
     ): HomeTextColorModernLookup {
         val cachedBind = DexMethodCache.load(
             methodPrefs,
@@ -448,6 +496,9 @@ private class HomeTextColorRuntime(
         val lookup = HomeTextColorModernConversationResolver.resolve(
             dexCandidateCount = dexCandidates.size,
             resolvedMethods = resolvedMethods,
+            querySucceeded = true,
+            warmupReady = allowDexSearch,
+            legacyConversationInstalled = legacyConversationInstalled,
             isBind = ::isModernConversationBind,
             holderCandidates = { bind ->
                 KavaReflector.declaredMethods(bind.declaringClass).filter {
