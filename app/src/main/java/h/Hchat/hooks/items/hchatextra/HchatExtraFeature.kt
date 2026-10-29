@@ -1002,8 +1002,8 @@ private class HchatExtraHooker(
         chattingDataAdapterClass?.let { return it }
         val methodCacheKey = methodCacheKey()
         val prefs = DexMethodCache.prefs(context.hostContext(), "Hchat_extra_class_cache")
-        val key = "${methodCacheKey}_chatting_data_adapter"
-        prefs.getString(key, null)?.let { name ->
+        val key = HchatExtraCacheKey.forLookup(methodCacheKey, "chatting_data_adapter")
+        key?.let { prefs.getString(it, null) }?.let { name ->
             KavaReflector.loadClass(name, context.hostClassLoader())?.let {
                 chattingDataAdapterClass = it
                 return it
@@ -1023,8 +1023,8 @@ private class HchatExtraHooker(
         }
         if (clazz != null) {
             chattingDataAdapterClass = clazz
-            prefs.edit().putString(key, clazz.name).apply()
-        } else {
+            key?.let { prefs.edit().putString(it, clazz.name).apply() }
+        } else if (key != null) {
             prefs.edit().remove(key).apply()
         }
         return clazz
@@ -1082,7 +1082,8 @@ private class HchatExtraHooker(
         val classes = linkedSetOf<Class<*>>()
         stringGroups.forEachIndexed { index, strings ->
             val key = "${cacheName}_$index"
-            cached.getString("${methodCacheKey}_$key", null)?.let { name ->
+            val preferenceKey = HchatExtraCacheKey.forLookup(methodCacheKey, key)
+            preferenceKey?.let { cached.getString(it, null) }?.let { name ->
                 KavaReflector.loadClass(name, context.hostClassLoader())?.let { classes += it }
             }
             if (classes.size > index) return@forEachIndexed
@@ -1098,9 +1099,9 @@ private class HchatExtraHooker(
             }
             if (clazz != null) {
                 classes += clazz
-                cached.edit().putString("${methodCacheKey}_$key", clazz.name).apply()
-            } else {
-                cached.edit().remove("${methodCacheKey}_$key").apply()
+                preferenceKey?.let { cached.edit().putString(it, clazz.name).apply() }
+            } else if (preferenceKey != null) {
+                cached.edit().remove(preferenceKey).apply()
             }
         }
         return classes.toList()
