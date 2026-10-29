@@ -57,17 +57,19 @@ class HomeTextColorFeature : BaseFeature() {
 
     override fun onFeatureInstall(context: FeatureContext) {
         runtime = HomeTextColorRuntime(context)
-        if (runtime?.install(allowDexSearch = false) != true) scheduleInstall()
+        runtime?.install(allowDexSearch = false)
+        scheduleInstall()
         subscribe(Events.DexReady::class.java) { scheduleInstall() }
     }
 
     override fun onFeatureDestroy(context: FeatureContext) {
+        DexInstallScheduler.cancel(ID)
         runtime?.destroy()
         runtime = null
     }
 
     private fun scheduleInstall() {
-        DexInstallScheduler.schedule(ID, name()) {
+        DexInstallScheduler.schedule(ID, name(), stage = DexInstallScheduler.Stage.WARMUP) {
             runtime?.install(allowDexSearch = true) == true
         }
     }
@@ -91,7 +93,7 @@ private class HomeTextColorRuntime(
     private val modernConversationRows = Collections.synchronizedMap(
         WeakHashMap<Any, WeakReference<View>>()
     )
-    private val installedConversationMethods = ConcurrentHashMap.newKeySet<Method>()
+    private val hookHandles = ConcurrentHashMap<String, XposedInterface.HookHandle>()
     private val trackedFixedViews = Collections.synchronizedMap(WeakHashMap<View, Boolean>())
     private val neatClassCache = ConcurrentHashMap<Class<*>, Boolean>()
     private val noMeasuredClassCache = ConcurrentHashMap<Class<*>, Boolean>()
@@ -111,15 +113,6 @@ private class HomeTextColorRuntime(
     private val colorStateCache = LruCache<Int, ColorStateList>(COLOR_STATE_CACHE_SIZE)
 
     @Volatile private var config = readConfig()
-    @Volatile private var conversationInstalled = false
-    @Volatile private var modernConversationHolderInstalled = false
-    @Volatile private var modernConversationBindInstalled = false
-    @Volatile private var modernConversationUnavailable = false
-    @Volatile private var contactsInstalled = false
-    @Volatile private var preferenceInstalled = false
-    @Volatile private var layoutInflaterInstalled = false
-    @Volatile private var recyclerInstalled = false
-    @Volatile private var recyclerPayloadInstalled = false
     @Volatile private var destroyed = false
 
     private val settingsRefresh = Runnable {
@@ -147,64 +140,44 @@ private class HomeTextColorRuntime(
     fun install(allowDexSearch: Boolean): Boolean {
         if (destroyed) return false
         val runtimeKey = DexMethodCache.runtimeKey(context.hostContext(), context.hostClassLoader())
-        conversationInstalled = installConversationAdapterHooks(
+        val legacyConversationInstalled = installConversationAdapterHooks(
             locateConversationGetViews(runtimeKey, allowDexSearch)
-        ) || conversationInstalled
-        installModernConversationHooks(runtimeKey, allowDexSearch)
-        if (!contactsInstalled) {
-            contactsInstalled = installAdapterHook(
-                locateAdapterGetView(
-                    runtimeKey,
-                    CACHE_CONTACTS,
-                    ANCHOR_CONTACTS,
-                    OWNER_CONTACTS,
-                    anchorOnMethod = false,
-                    allowDexSearch = allowDexSearch
-                ),
-                RowKind.CONTACTS
-            )
-        }
-        if (!preferenceInstalled) {
-            preferenceInstalled = installAdapterHook(
-                locateAdapterGetView(
-                    runtimeKey,
-                    CACHE_PREFERENCE,
-                    ANCHOR_PREFERENCE,
-                    OWNER_PREFERENCE,
-                    anchorOnMethod = true,
-                    allowDexSearch = allowDexSearch
-                ),
-                RowKind.PREFERENCE
-            )
-        }
-        if (!layoutInflaterInstalled) {
-            layoutInflaterInstalled = installLayoutInflaterHook(
-                locateLayoutInflaterFactory(runtimeKey, allowDexSearch)
-            )
-        }
-        if (!recyclerInstalled) {
-            recyclerInstalled = installRecyclerAdapterHook(
-                locateRecyclerAdapterBind(
-                    runtimeKey,
-                    CACHE_RECYCLER_BIND,
-                    payload = false
-                ),
-                "完整"
-            )
-        }
-        if (!recyclerPayloadInstalled) {
-            recyclerPayloadInstalled = installRecyclerAdapterHook(
-                locateRecyclerAdapterBind(
-                    runtimeKey,
-                    CACHE_RECYCLER_PAYLOAD_BIND,
-                    payload = true
-                ),
-                "局部"
-            )
-        }
-        return conversationInstalled && contactsInstalled && preferenceInstalled &&
-            layoutInflaterInstalled &&
-            recyclerInstalled && recyclerPayloadInstalled
+        )
+        val modernPath = installModernConversationHooks(runtimeKey, allowDexSearch)
+
+        // These are independent optional page/list paths. Their absence cannot block the home row.
+        installAdapterHook(
+            locateAdapterGetView(
+                runtimeKey,
+                CACHE_CONTACTS,
+                ANCHOR_CONTACTS,
+                OWNER_CONTACTS,
+                anchorOnMethod = false,
+                allowDexSearch = allowDexSearch
+            ),
+            RowKind.CONTACTS
+        )
+        installAdapterHook(
+            locateAdapterGetView(
+                runtimeKey,
+                CACHE_PREFERENCE,
+                ANCHOR_PREFERENCE,
+                OWNER_PREFERENCE,
+                anchorOnMethod = true,
+                allowDexSearch = allowDexSearch
+            ),
+            RowKind.PREFERENCE
+        )
+        installLayoutInflaterHook(locateLayoutInflaterFactory(runtimeKey, allowDexSearch))
+        installRecyclerAdapterHook(
+            locateRecyclerAdapterBind(runtimeKey, CACHE_RECYCLER_BIND, payload = false),
+            "完整"
+        )
+        installRecyclerAdapterHook(
+            locateRecyclerAdapterBind(runtimeKey, CACHE_RECYCLER_PAYLOAD_BIND, payload = true),
+            "局部"
+        )
+        return HomeTextColorInstallCoordinator.isComplete(legacyConversationInstalled, modernPath)
     }
 
     private fun locateConversationGetViews(
@@ -344,8 +317,8 @@ private class HomeTextColorRuntime(
 
     private fun installAdapterHook(method: Method?, kind: RowKind): Boolean {
         if (method == null) return false
-        return runCatching {
-            HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+        val key = "adapter:${kind.name}:${methodDescriptor(method)}"
+        return installManagedHook(key, method, XposedInterface.Hooker { chain ->
                 val args = chain.args
                 HookErrorBoundary.run("$TAG 恢复复用行颜色失败") before@ {
                     (args?.getOrNull(1) as? View)?.let {
@@ -361,93 +334,78 @@ private class HomeTextColorRuntime(
                     applyBoundRow(row, kind)
                 }
                 value
-            }, XposedInterface.PRIORITY_HIGHEST)
-            true
-        }.getOrElse {
-            HLog.e("$TAG 安装${kind.label}列表绑定 Hook 失败: ${it.message}", it)
-            false
-        }
+            }, "安装${kind.label}列表绑定 Hook 失败")
     }
 
     private fun installConversationAdapterHooks(methods: List<Method>): Boolean {
+        var installed = false
         methods.forEach { method ->
-            if (method in installedConversationMethods) return@forEach
-            if (installAdapterHook(method, RowKind.CONVERSATION)) {
-                installedConversationMethods += method
-            }
+            if (installAdapterHook(method, RowKind.CONVERSATION)) installed = true
         }
-        return installedConversationMethods.isNotEmpty()
+        return installed
     }
 
-    private fun installModernConversationHooks(runtimeKey: String, allowDexSearch: Boolean) {
-        if (modernConversationUnavailable ||
-            (modernConversationHolderInstalled && modernConversationBindInstalled)
-        ) return
-        val methods = locateModernConversationMethods(runtimeKey, allowDexSearch) ?: return
-        if (!modernConversationHolderInstalled) {
-            modernConversationHolderInstalled = runCatching {
-                HookRegistry.get().hook(
-                    methods.holder,
-                    XposedInterface.Hooker { chain ->
-                        val args = chain.args
-                        val value = chain.proceed()
-                        HookErrorBoundary.run("$TAG 列表颜色渲染失败") after@ {
-                            if (destroyed) return@after
-                            val holder = args?.getOrNull(0) ?: return@after
-                            val row = args?.getOrNull(1) as? View ?: return@after
-                            modernConversationRows[holder] = WeakReference(row)
-                        }
-                        value
-                    }, XposedInterface.PRIORITY_HIGHEST
-                )
-                true
-            }.getOrElse {
-                HLog.e(
-                    "$TAG 安装高版本首页会话 Holder 初始化 Hook 失败: " +
-                        "${methodDescriptor(methods.holder)} ${it.message}",
-                    it
-                )
-                false
-            }
+    private fun installModernConversationHooks(
+        runtimeKey: String,
+        allowDexSearch: Boolean
+    ): HomeTextColorModernPathResult {
+        val lookup = locateModernConversationMethods(runtimeKey, allowDexSearch)
+        if (lookup === HomeTextColorModernLookup.NotApplicable) {
+            return HomeTextColorModernPathResult.NOT_APPLICABLE
         }
-        if (!modernConversationBindInstalled) {
-            modernConversationBindInstalled = runCatching {
-                HookRegistry.get().hook(
-                    methods.bind,
-                    XposedInterface.Hooker { chain ->
-                        val args = chain.args
-                        HookErrorBoundary.run("$TAG 恢复复用行颜色失败") before@ {
-                            val holder = args?.getOrNull(1) ?: return@before
-                            val row = modernConversationRows[holder]?.get() ?: return@before
-                            deferredConversationRows.remove(row)
-                            restoreRow(row)
-                        }
-                        val value = chain.proceed()
-                        HookErrorBoundary.run("$TAG 列表颜色渲染失败") after@ {
-                            if (destroyed) return@after
-                            val holder = args?.getOrNull(1) ?: return@after
-                            val row = modernConversationRows[holder]?.get() ?: return@after
-                            applyBoundRow(row, RowKind.CONVERSATION)
-                        }
-                        value
-                    }, XposedInterface.PRIORITY_HIGHEST
-                )
-                true
-            }.getOrElse {
-                HLog.e(
-                    "$TAG 安装高版本首页会话内容绑定 Hook 失败: " +
-                        "${methodDescriptor(methods.bind)} ${it.message}",
-                    it
-                )
-                false
-            }
+        if (lookup === HomeTextColorModernLookup.Retry) {
+            return HomeTextColorModernPathResult.RETRY
+        }
+        val methods = lookup as HomeTextColorModernLookup.Found
+        val holderInstalled = installManagedHook(
+            "modern-holder:${methodDescriptor(methods.holder)}",
+            methods.holder,
+            XposedInterface.Hooker { chain ->
+                val args = chain.args
+                val value = chain.proceed()
+                HookErrorBoundary.run("$TAG 列表颜色渲染失败") after@ {
+                    if (destroyed) return@after
+                    val holder = args?.getOrNull(0) ?: return@after
+                    val row = args?.getOrNull(1) as? View ?: return@after
+                    modernConversationRows[holder] = WeakReference(row)
+                }
+                value
+            },
+            "安装高版本首页会话 Holder 初始化 Hook 失败"
+        )
+        val bindInstalled = installManagedHook(
+            "modern-bind:${methodDescriptor(methods.bind)}",
+            methods.bind,
+            XposedInterface.Hooker { chain ->
+                val args = chain.args
+                HookErrorBoundary.run("$TAG 恢复复用行颜色失败") before@ {
+                    val holder = args?.getOrNull(1) ?: return@before
+                    val row = modernConversationRows[holder]?.get() ?: return@before
+                    deferredConversationRows.remove(row)
+                    restoreRow(row)
+                }
+                val value = chain.proceed()
+                HookErrorBoundary.run("$TAG 列表颜色渲染失败") after@ {
+                    if (destroyed) return@after
+                    val holder = args?.getOrNull(1) ?: return@after
+                    val row = modernConversationRows[holder]?.get() ?: return@after
+                    applyBoundRow(row, RowKind.CONVERSATION)
+                }
+                value
+            },
+            "安装高版本首页会话内容绑定 Hook 失败"
+        )
+        return if (holderInstalled && bindInstalled) {
+            HomeTextColorModernPathResult.INSTALLED
+        } else {
+            HomeTextColorModernPathResult.RETRY
         }
     }
 
     private fun locateModernConversationMethods(
         runtimeKey: String,
         allowDexSearch: Boolean
-    ): ModernConversationMethods? {
+    ): HomeTextColorModernLookup {
         val cachedBind = DexMethodCache.load(
             methodPrefs,
             runtimeKey,
@@ -463,13 +421,13 @@ private class HomeTextColorRuntime(
             cachedBind != null && isModernConversationHolder(method, cachedBind.parameterTypes[1])
         }
         if (cachedBind != null && cachedHolder != null) {
-            return ModernConversationMethods(cachedHolder, cachedBind)
+            return HomeTextColorModernLookup.Found(cachedHolder, cachedBind)
         }
         DexMethodCache.clear(methodPrefs, runtimeKey, CACHE_MODERN_CONVERSATION_BIND)
         DexMethodCache.clear(methodPrefs, runtimeKey, CACHE_MODERN_CONVERSATION_HOLDER)
-        if (!allowDexSearch) return null
+        if (!allowDexSearch) return HomeTextColorModernLookup.Retry
 
-        val candidates = runCatching {
+        val dexCandidates = runCatching {
             context.dexKitBridge().findMethod(
                 FindMethod().apply {
                     matcher(
@@ -479,64 +437,45 @@ private class HomeTextColorRuntime(
                     )
                 }
             ).asSequence()
-                .mapNotNull { data ->
-                    runCatching { data.getMethodInstance(context.hostClassLoader()) }.getOrNull()
-                }
-                .filter(::isModernConversationBind)
-                .distinctBy(::methodDescriptor)
                 .toList()
         }.getOrElse {
             HLog.e("$TAG 定位高版本首页会话绑定入口失败: ${it.message}", it)
-            return null
+            return HomeTextColorModernLookup.Retry
         }
-        val bind = candidates.singleOrNull()
-        if (bind == null) {
-            if (candidates.size > 1) {
+        val resolvedMethods = dexCandidates.mapNotNull { data ->
+            runCatching { data.getMethodInstance(context.hostClassLoader()) }.getOrNull()
+        }
+        val lookup = HomeTextColorModernConversationResolver.resolve(
+            dexCandidateCount = dexCandidates.size,
+            resolvedMethods = resolvedMethods,
+            isBind = ::isModernConversationBind,
+            holderCandidates = { bind ->
+                KavaReflector.declaredMethods(bind.declaringClass).filter {
+                    isModernConversationHolder(it, bind.parameterTypes[1])
+                }
+            }
+        )
+        if (lookup !is HomeTextColorModernLookup.Found) {
+            if (lookup === HomeTextColorModernLookup.Retry) {
                 HLog.e(
-                    "$TAG 高版本首页会话绑定入口不唯一: count=${candidates.size} " +
-                        "methods=${candidates.joinToString(transform = ::methodDescriptor)}"
+                    "$TAG 高版本首页会话绑定暂不可用，将按有界调度重试: " +
+                        "dex=${dexCandidates.size} resolved=${resolvedMethods.size}"
                 )
             }
-            modernConversationUnavailable = true
-            return null
+            return lookup
         }
-        val declaredMethods = KavaReflector.declaredMethods(bind.declaringClass)
-        val holder = declaredMethods.singleOrNull {
-            isModernConversationHolder(it, bind.parameterTypes[1])
-        }
-        if (holder == null) {
-            HLog.e(
-                "$TAG 未找到高版本首页会话 Holder 初始化入口: class=${bind.declaringClass.name} " +
-                    "holder=${bind.parameterTypes[1].name}"
-            )
-            modernConversationUnavailable = true
-            return null
-        }
+        val bind = lookup.bind
+        val holder = lookup.holder
         DexMethodCache.save(methodPrefs, runtimeKey, CACHE_MODERN_CONVERSATION_BIND, bind)
         DexMethodCache.save(methodPrefs, runtimeKey, CACHE_MODERN_CONVERSATION_HOLDER, holder)
-        return ModernConversationMethods(holder, bind)
+        return lookup
     }
 
-    private fun isModernConversationBind(method: Method): Boolean {
-        val types = method.parameterTypes
-        val ownerPackage = method.declaringClass.name.substringBeforeLast('.', "")
-        return !Modifier.isStatic(method.modifiers) &&
-            !Modifier.isAbstract(method.modifiers) &&
-            method.returnType == Void.TYPE &&
-            types.size == 4 &&
-            types[0] == Int::class.javaPrimitiveType &&
-            types[1].name.substringBeforeLast('.', "") == ownerPackage &&
-            types[2].name.substringBeforeLast('.', "") == ownerPackage &&
-            types[3].name.startsWith(MODERN_CONVERSATION_STORAGE_PREFIX)
-    }
+    private fun isModernConversationBind(method: Method): Boolean =
+        isHomeTextColorModernConversationBind(method)
 
-    private fun isModernConversationHolder(method: Method, holderClass: Class<*>): Boolean {
-        val types = method.parameterTypes
-        return !Modifier.isStatic(method.modifiers) &&
-            !Modifier.isAbstract(method.modifiers) &&
-            method.returnType == Void.TYPE &&
-            types.contentEquals(arrayOf(holderClass, View::class.java))
-    }
+    private fun isModernConversationHolder(method: Method, holderClass: Class<*>): Boolean =
+        isHomeTextColorModernConversationHolder(method, holderClass)
 
     private fun locateLayoutInflaterFactory(
         runtimeKey: String,
@@ -604,8 +543,10 @@ private class HomeTextColorRuntime(
 
     private fun installLayoutInflaterHook(method: Method?): Boolean {
         if (method == null) return false
-        return runCatching {
-            HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+        return installManagedHook(
+            "layout-inflater:${methodDescriptor(method)}",
+            method,
+            XposedInterface.Hooker { chain ->
                 val args = chain.args
                 val value = chain.proceed()
                 HookErrorBoundary.run("$TAG 列表颜色渲染失败") after@ {
@@ -619,12 +560,9 @@ private class HomeTextColorRuntime(
                     applyFixedContactEntry(view)
                 }
                 value
-            }, XposedInterface.PRIORITY_HIGHEST)
-            true
-        }.getOrElse {
-            HLog.e("$TAG 安装微信布局创建 Hook 失败: ${it.message}", it)
-            false
-        }
+            },
+            "安装微信布局创建 Hook 失败"
+        )
     }
 
     private fun applyFixedContactEntry(view: View) {
@@ -765,8 +703,10 @@ private class HomeTextColorRuntime(
 
     private fun installRecyclerAdapterHook(method: Method?, label: String): Boolean {
         if (method == null) return false
-        return runCatching {
-            HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+        return installManagedHook(
+            "recycler:$label:${methodDescriptor(method)}",
+            method,
+            XposedInterface.Hooker { chain ->
                 val args = chain.args
                 HookErrorBoundary.run("$TAG 恢复复用行颜色失败") before@ {
                     findRootView(args?.getOrNull(0))?.let {
@@ -785,12 +725,9 @@ private class HomeTextColorRuntime(
                     applyBoundRow(root, kind)
                 }
                 value
-            }, XposedInterface.PRIORITY_HIGHEST)
-            true
-        }.getOrElse {
-            HLog.e("$TAG 安装 WxRecyclerAdapter $label 绑定 Hook 失败: ${it.message}", it)
-            false
-        }
+            },
+            "安装 WxRecyclerAdapter $label 绑定 Hook 失败"
+        )
     }
 
     private fun findRootView(holder: Any?): View? {
@@ -1523,6 +1460,30 @@ private class HomeTextColorRuntime(
         }
     }
 
+    private fun installManagedHook(
+        key: String,
+        method: Method,
+        callback: XposedInterface.Hooker,
+        failureLabel: String
+    ): Boolean {
+        val registry = HookRegistry.get()
+        val hookKey = "${HomeTextColorFeature.ID}:$key"
+        hookHandles[hookKey]?.takeIf(registry::isActive)?.let { return true }
+        return runCatching {
+            val handle = registry.hookOnce(
+                hookKey,
+                method,
+                callback,
+                XposedInterface.PRIORITY_HIGHEST
+            )
+            hookHandles[hookKey] = handle
+            registry.isActive(handle)
+        }.getOrElse {
+            HLog.e("$TAG $failureLabel: ${it.message}", it)
+            false
+        }
+    }
+
     private fun readConfig(): ColorConfig {
         return ColorConfig(
             enabled = prefs.getBoolean(
@@ -1599,11 +1560,6 @@ private class HomeTextColorRuntime(
         val setTextColorInt: Method?
     )
 
-    private data class ModernConversationMethods(
-        val holder: Method,
-        val bind: Method
-    )
-
     private data class ConversationAdapterSpec(
         val cacheName: String,
         val anchor: String,
@@ -1656,7 +1612,6 @@ private class HomeTextColorRuntime(
             "[getView] position=",
             "handleShowTipCnt"
         )
-        const val MODERN_CONVERSATION_STORAGE_PREFIX = "com.tencent.mm.storage."
         val TITLE_ANCHORS = setOf("nickname_tv", "kbq")
         val SUBTITLE_ANCHORS = setOf("last_msg_tv", "ht5")
         val TIME_ANCHORS = setOf("update_time_tv", "otg")
