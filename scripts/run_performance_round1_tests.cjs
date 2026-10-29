@@ -37,7 +37,13 @@ const fixtures = {
 `,
 'h/Hchat/event/EventBus.java': `package h.Hchat.event; public class EventBus {}`,
 'h/Hchat/hooks/api/contact/WeChatAccountApi.java': `package h.Hchat.hooks.api.contact; public class WeChatAccountApi {public String selfWxId(){return "self";}}`,
-'h/Hchat/hooks/api/runtime/WeChatDatabaseListenerApi.java': `package h.Hchat.hooks.api.runtime; import h.Hchat.hooks.api.model.DatabaseChange; import java.util.function.Consumer; public class WeChatDatabaseListenerApi {public Consumer<DatabaseChange> listener; public boolean isAvailable(){return true;}public boolean isOperational(){return true;}public void install(){}public int hookedMethodCount(){return 1;}public int hookedWrapperMutationMethodCount(){return 1;}public int hookedWrapperInsertMethodCount(){return 1;} public void subscribe(Consumer<DatabaseChange> l){listener=l;}}`,
+'h/Hchat/hooks/api/runtime/WeChatDatabaseListenerApi.java': `package h.Hchat.hooks.api.runtime; import h.Hchat.hooks.api.model.DatabaseChange; import java.util.function.Consumer; public class WeChatDatabaseListenerApi {
+ public interface Listener {void onDatabaseChanged(DatabaseChange change);} public Consumer<DatabaseChange> listener;
+ public final class Subscription {private boolean active=true;public void unsubscribe(){active=false;}public boolean isActive(){return active;}}
+ public boolean isAvailable(){return true;}public boolean isOperational(){return true;}public String operationalDiagnostics(){return "fixture";}public void install(){}
+ public int hookedMethodCount(){return 1;}public int hookedWrapperMutationMethodCount(){return 1;}public int hookedWrapperInsertMethodCount(){return 1;}
+ public Subscription subscribe(Listener l){listener=l::onDatabaseChanged;return new Subscription();}}`,
+'h/Hchat/hooks/core/HookRegistry.java': `package h.Hchat.hooks.core; public class HookRegistry {private static final HookRegistry INSTANCE=new HookRegistry();private long generation;public static HookRegistry get(){return INSTANCE;}public long installationGeneration(){return generation;}public boolean isInstallationGenerationActive(long value){return value==generation;}}`,
 'h/Hchat/hooks/api/runtime/WeChatDatabaseApi.java': `package h.Hchat.hooks.api.runtime; import java.util.*; import android.database.Cursor; public class WeChatDatabaseApi {
  public final List<String> queries=new ArrayList<>();public Map<String,Object> row=new HashMap<>();public boolean isAvailable(){return true;}public List<Map<String,Object>> query(String sql,String[] args){queries.add(sql);return row.isEmpty()?new ArrayList<>():List.of(new HashMap<>(row));}
  public String quoteTable(String t){return t.matches("[a-zA-Z0-9_]+")?'"'+t+'"':"";} public List<String> messageTables(){throw new AssertionError("cross-table probe");}public String messageTableForTalker(String t){return "message";}public String queryFirstString(String s,String[] a,String c){return "";}public Cursor rawQuery(String s,String[] a){return null;}}`,

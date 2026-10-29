@@ -6,6 +6,7 @@ import android.content.pm.PackageInfo;
 import android.os.Build;
 import android.text.TextUtils;
 
+
 import h.Hchat.hooks.api.model.WeChatVersionInfo;
 
 import java.io.File;
@@ -334,7 +335,8 @@ public final class WeChatVersionApi {
             if (!insidePatch && !(name.startsWith("patch")
                     || name.startsWith("intent_patch") || name.startsWith("tinker"))) continue;
             String relative = file.getAbsolutePath().substring(root.getAbsolutePath().length());
-            output.add(relative + ':' + file.length() + ':' + file.lastModified());
+            output.add(relative + ':' + file.length() + ':' + file.lastModified() + ':'
+                    + DexArchiveIdentity.fileChangeToken(file.getAbsolutePath()));
         }
     }
 

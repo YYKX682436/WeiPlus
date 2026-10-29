@@ -11,6 +11,7 @@ import h.Hchat.dexkit.DexFinder;
 import h.Hchat.event.EventBus;
 import h.Hchat.hooks.api.media.WeChatImageApi;
 import h.Hchat.hooks.api.model.WeChatVersionInfo;
+import h.Hchat.hooks.api.runtime.DexArchiveIdentity;
 import h.Hchat.hooks.api.runtime.WeChatVersionApi;
 import h.Hchat.hooks.api.runtime.HostRuntimeIdentityDecision;
 import h.Hchat.hooks.core.DexInstallScheduler;
@@ -98,10 +99,31 @@ public class ModuleEntry extends XposedModule {
         || !WechatPackage.isModuleEntryScope(host, processName)) return;
     packageReady = true;
     try {
+      scheduleArchiveIdentityPrewarm(param);
+    } catch (Throwable failure) {
+      HLog.e(TAG + " APK身份后台预热调度失败", failure);
+    }
+    try {
       installPackageHooks(param);
     } catch (Throwable failure) {
       HLog.e(TAG + " package_ready Hook 安装失败: " + host, failure);
     }
+  }
+
+  /** Queue the process-local ZIP metadata walk before Application.onCreate identity approval. */
+  private void scheduleArchiveIdentityPrewarm(PackageReadyParam param) {
+    ApplicationInfo appInfo = param != null ? param.getApplicationInfo() : null;
+    if (appInfo == null || appInfo.sourceDir == null || appInfo.sourceDir.isEmpty()) return;
+    DexInstallScheduler.scheduleTask(
+        "runtime_identity:apk_archive_prewarm",
+        "APK归档身份预热",
+        DexInstallScheduler.Stage.EARLY,
+        Integer.MIN_VALUE,
+        () -> {
+          String identity = DexArchiveIdentity.forApplication(appInfo);
+          if (identity.isEmpty()) HLog.e(TAG + " APK归档身份后台预热未完成");
+          return true;
+        });
   }
 
   private boolean verifyRuntimeIdentity(Context context, ClassLoader loader, PackageReadyParam param,

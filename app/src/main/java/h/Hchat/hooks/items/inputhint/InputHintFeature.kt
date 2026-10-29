@@ -21,6 +21,8 @@ import java.util.WeakHashMap
 class InputHintFeature : BaseFeature() {
     private var runtime: InputHintRuntime? = null
     private var statisticsInstalled = false
+    private var statisticsGeneration = Long.MIN_VALUE
+    private var statisticsSubscription: OutgoingMessageStatsRepository.Subscription? = null
 
     override fun featureId(): String = ID
 
@@ -43,14 +45,27 @@ class InputHintFeature : BaseFeature() {
     override fun onFeatureDestroy(context: FeatureContext) {
         runtime?.destroy()
         runtime = null
+        statisticsSubscription?.unsubscribe()
+        statisticsSubscription = null
         statisticsInstalled = false
+        statisticsGeneration = Long.MIN_VALUE
     }
 
     private fun installStatistics() {
-        if (statisticsInstalled) return
+        val current = statisticsSubscription
+        if (statisticsInstalled
+            && current?.isActive == true
+            && HookRegistry.get().isInstallationGenerationActive(statisticsGeneration)
+        ) return
+        current?.unsubscribe()
+        statisticsSubscription = null
+        statisticsInstalled = false
         val subscription = runtime?.installStatistics() ?: return
         trackSubscription(subscription)
-        statisticsInstalled = true
+        statisticsSubscription = subscription
+        statisticsGeneration = HookRegistry.get().installationGeneration()
+        statisticsInstalled = subscription.isActive
+            && HookRegistry.get().isInstallationGenerationActive(statisticsGeneration)
     }
 
     companion object {

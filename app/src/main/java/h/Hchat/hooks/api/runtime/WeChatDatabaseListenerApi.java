@@ -9,13 +9,13 @@ import h.Hchat.hooks.api.model.DatabaseChange;
 import h.Hchat.hooks.core.HookRegistry;
 import h.Hchat.utils.KavaReflector;
 
+import io.github.libxposed.api.XposedInterface;
+import io.github.libxposed.api.XposedInterface.HookHandle;
+import java.util.Map;
 import java.lang.reflect.Method;
-import java.nio.charset.StandardCharsets;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
-
-import io.github.libxposed.api.XposedInterface;
 
 /**
  * 微信 SqliteDB wrapper 变更与查询监听 API。
@@ -76,7 +76,7 @@ public final class WeChatDatabaseListenerApi {
     private final Logger logger;
     private final CopyOnWriteArrayList<Listener> listeners = new CopyOnWriteArrayList<>();
     private final CopyOnWriteArrayList<QueryInterceptor> queryInterceptors = new CopyOnWriteArrayList<>();
-    private final Set<Method> hookedMethods = ConcurrentHashMap.newKeySet();
+    private final Map<Method, HookRegistration> hookRegistrations = new ConcurrentHashMap<>();
     private final Set<Method> hookedWrapperMutationMethods = ConcurrentHashMap.newKeySet();
     private final Set<Method> hookedWrapperInsertMethods = ConcurrentHashMap.newKeySet();
     // One logical operation can traverse wrapper, WCDB and Android SQLite hooks.
@@ -101,26 +101,45 @@ public final class WeChatDatabaseListenerApi {
     }
 
     public boolean isInstalled() {
-        return installed;
+        return isOperational();
     }
 
     public int hookedMethodCount() {
+        refreshHookState();
         return hookedMethodCount;
     }
 
     public int hookedWrapperMutationMethodCount() {
+        refreshHookState();
         return hookedWrapperMutationMethods.size();
     }
 
     public int hookedWrapperInsertMethodCount() {
+        refreshHookState();
         return hookedWrapperInsertMethods.size();
     }
 
-    public boolean isOperational() {
+    public synchronized boolean isOperational() {
+        refreshHookState();
         Class<?> wrapperClass = dexFinder != null ? dexFinder.sqliteDbWrapperClass : null;
         return wrapperClass != null
+                && WeChatSqliteWrapperLocator.supportsMessageMutations(wrapperClass)
                 && wrapperClass == hookedWrapperClass
-                && !hookedWrapperInsertMethods.isEmpty();
+                && hasActiveWrapperOperation(DatabaseChange.INSERT)
+                && hasActiveWrapperOperation(DatabaseChange.UPDATE)
+                && hasActiveWrapperOperation(DatabaseChange.DELETE);
+    }
+
+    public synchronized String operationalDiagnostics() {
+        refreshHookState();
+        Class<?> wrapperClass = dexFinder != null ? dexFinder.sqliteDbWrapperClass : null;
+        return "wrapper=" + (wrapperClass != null ? wrapperClass.getName() : "null")
+                + " shape=" + WeChatSqliteWrapperLocator.supportsMessageMutations(wrapperClass)
+                + " insertHooks=" + hookedWrapperOperationCount(DatabaseChange.INSERT)
+                + " updateHooks=" + hookedWrapperOperationCount(DatabaseChange.UPDATE)
+                + " deleteHooks=" + hookedWrapperOperationCount(DatabaseChange.DELETE)
+                + " hookGeneration=" + HookRegistry.get().installationGeneration()
+                + " operational=" + isOperationalWithoutRefresh(wrapperClass);
     }
 
     public Subscription subscribe(Listener listener) {
@@ -144,24 +163,50 @@ public final class WeChatDatabaseListenerApi {
     }
 
     public synchronized void install() {
-        if (!isAvailable()) return;
         Class<?> wrapperClass = dexFinder != null ? dexFinder.sqliteDbWrapperClass : null;
+        refreshHookState();
+        if (wrapperClass == null
+                || !WeChatSqliteWrapperLocator.supportsMessageMutations(wrapperClass)) {
+            if (hookedWrapperClass != null) {
+                removeWrapperHooks();
+                hookedWrapperClass = null;
+            }
+            HookRegistry registry = HookRegistry.get();
+            long generation = registry.installationGeneration();
+            int count = 0;
+            if (registry.isInstallationGenerationActive(generation)) {
+                count += hookNamedDatabaseClass("com.tencent.wcdb.database.SQLiteDatabase", generation);
+                count += hookNamedDatabaseClass("com.tencent.wcdb.compat.SQLiteDatabase", generation);
+                count += hookNamedDatabaseClass("android.database.sqlite.SQLiteDatabase", generation);
+            }
+            refreshHookState();
+            installed = false;
+            log("数据库变更监听等待 wrapper 定位: wrapper="
+                    + (wrapperClass != null ? wrapperClass.getName() : "null")
+                    + " added=" + count + " genericHooks=" + hookedMethodCount
+                    + " operational=false");
+            return;
+        }
         if (isOperational()) return;
         if (wrapperClass != hookedWrapperClass) {
-            hookedWrapperMutationMethods.clear();
-            hookedWrapperInsertMethods.clear();
+            removeWrapperHooks();
+            hookedWrapperClass = wrapperClass;
         }
+        HookRegistry registry = HookRegistry.get();
+        long generation = registry.installationGeneration();
         int count = 0;
         Class<?> cur = wrapperClass;
         while (cur != null && cur != Object.class) {
-            count += hookDatabaseClass(cur, true);
+            if (!registry.isInstallationGenerationActive(generation)) break;
+            count += hookDatabaseClass(cur, true, generation);
             cur = cur.getSuperclass();
         }
-        count += hookNamedDatabaseClass("com.tencent.wcdb.database.SQLiteDatabase");
-        count += hookNamedDatabaseClass("com.tencent.wcdb.compat.SQLiteDatabase");
-        count += hookNamedDatabaseClass("android.database.sqlite.SQLiteDatabase");
-        if (wrapperClass != null) hookedWrapperClass = wrapperClass;
-        hookedMethodCount = hookedMethods.size();
+        if (registry.isInstallationGenerationActive(generation)) {
+            count += hookNamedDatabaseClass("com.tencent.wcdb.database.SQLiteDatabase", generation);
+            count += hookNamedDatabaseClass("com.tencent.wcdb.compat.SQLiteDatabase", generation);
+            count += hookNamedDatabaseClass("android.database.sqlite.SQLiteDatabase", generation);
+        }
+        refreshHookState();
         installed = isOperational();
         log("数据库变更监听Hook: wrapper=" + (wrapperClass != null ? wrapperClass.getName() : "null")
                 + " added=" + count + " total=" + hookedMethodCount
@@ -170,96 +215,124 @@ public final class WeChatDatabaseListenerApi {
                 + " operational=" + installed);
     }
 
-    private String operationOf(Method method, boolean allowObfuscatedWrapperMethod) {
-        if (method == null) return null;
-        Class<?>[] params = method.getParameterTypes();
-        Class<?> returnType = method.getReturnType();
-        String name = method.getName();
-        if (returnType == long.class && hasContentValuesArg(params)
-                && ("insert".equals(name)
-                || "insertWithOnConflict".equals(name)
-                || "replace".equals(name)
-                || "replaceOrThrow".equals(name))) {
-            return DatabaseChange.INSERT;
-        }
-        if (returnType == int.class && hasContentValuesArg(params)
-                && ("update".equals(name) || "updateWithOnConflict".equals(name))) {
-            return DatabaseChange.UPDATE;
-        }
-        if ("delete".equals(method.getName())
-                && returnType == int.class
-                && params.length == 3
-                && params[0] == String.class
-                && params[1] == String.class
-                && params[2] == String[].class) {
-            return DatabaseChange.DELETE;
-        }
-        if (!allowObfuscatedWrapperMethod) return null;
-        if (returnType == long.class && isWrapperInsertSignature(params)) {
-            return DatabaseChange.INSERT;
-        }
-        if (returnType == int.class && isWrapperUpdateSignature(params)) {
-            return DatabaseChange.UPDATE;
-        }
-        if (returnType == int.class && isWrapperDeleteSignature(params)) {
-            return DatabaseChange.DELETE;
-        }
-        return null;
+    public int hookedWrapperUpdateMethodCount() {
+        refreshHookState();
+        return hookedWrapperOperationCount(DatabaseChange.UPDATE);
     }
 
-    private boolean isWrapperInsertSignature(Class<?>[] params) {
-        return params != null
-                && params.length == 3
-                && params[0] == String.class
-                && params[1] == String.class
-                && ContentValues.class.isAssignableFrom(params[2]);
+    public int hookedWrapperDeleteMethodCount() {
+        refreshHookState();
+        return hookedWrapperOperationCount(DatabaseChange.DELETE);
     }
 
-    private boolean isWrapperUpdateSignature(Class<?>[] params) {
-        return params != null
-                && params.length == 4
-                && params[0] == String.class
-                && ContentValues.class.isAssignableFrom(params[1])
-                && params[2] == String.class
-                && params[3] == String[].class;
+    private synchronized void refreshHookState() {
+        for (Map.Entry<Method, HookRegistration> entry : hookRegistrations.entrySet()) {
+            if (!isRegistrationActive(entry.getValue())) {
+                hookRegistrations.remove(entry.getKey(), entry.getValue());
+            }
+        }
+        hookedWrapperMutationMethods.clear();
+        hookedWrapperInsertMethods.clear();
+        for (Map.Entry<Method, HookRegistration> entry : hookRegistrations.entrySet()) {
+            HookRegistration registration = entry.getValue();
+            if (!isRegistrationActive(registration) || !registration.wrapperMethod
+                    || registration.operation == null) continue;
+            hookedWrapperMutationMethods.add(entry.getKey());
+            if (DatabaseChange.INSERT.equals(registration.operation)) {
+                hookedWrapperInsertMethods.add(entry.getKey());
+            }
+        }
+        hookedMethodCount = hookRegistrations.size();
+        Class<?> wrapperClass = dexFinder != null ? dexFinder.sqliteDbWrapperClass : null;
+        installed = isOperationalWithoutRefresh(wrapperClass);
     }
 
-    private boolean isWrapperDeleteSignature(Class<?>[] params) {
-        return params != null
-                && params.length == 3
-                && params[0] == String.class
-                && params[1] == String.class
-                && params[2] == String[].class;
+    private boolean isOperationalWithoutRefresh(Class<?> wrapperClass) {
+        return wrapperClass != null
+                && wrapperClass == hookedWrapperClass
+                && WeChatSqliteWrapperLocator.supportsMessageMutations(wrapperClass)
+                && hasActiveWrapperOperation(DatabaseChange.INSERT)
+                && hasActiveWrapperOperation(DatabaseChange.UPDATE)
+                && hasActiveWrapperOperation(DatabaseChange.DELETE);
     }
 
-    private int hookNamedDatabaseClass(String className) {
+    private boolean hasActiveWrapperOperation(String operation) {
+        return hookedWrapperOperationCount(operation) > 0;
+    }
+
+    private int hookedWrapperOperationCount(String operation) {
+        int count = 0;
+        for (HookRegistration registration : hookRegistrations.values()) {
+            if (registration.wrapperMethod
+                    && operation.equals(registration.operation)
+                    && isRegistrationActive(registration)) count++;
+        }
+        return count;
+    }
+
+    private boolean isRegistrationActive(HookRegistration registration) {
+        return registration != null
+                && HookRegistry.get().isInstallationGenerationActive(registration.generation)
+                && HookRegistry.get().isActive(registration.handle);
+    }
+
+    private void removeWrapperHooks() {
+        HookRegistry registry = HookRegistry.get();
+        for (Map.Entry<Method, HookRegistration> entry : hookRegistrations.entrySet()) {
+            HookRegistration registration = entry.getValue();
+            if (!registration.wrapperMethod) continue;
+            hookRegistrations.remove(entry.getKey(), registration);
+            try {
+                registry.unhook(registration.handle);
+            } catch (Throwable ignored) {}
+        }
+        hookedWrapperMutationMethods.clear();
+        hookedWrapperInsertMethods.clear();
+    }
+
+    private static final class HookRegistration {
+        final HookHandle handle;
+        final long generation;
+        final String operation;
+        final boolean wrapperMethod;
+
+        HookRegistration(HookHandle handle, long generation, String operation, boolean wrapperMethod) {
+            this.handle = handle;
+            this.generation = generation;
+            this.operation = operation;
+            this.wrapperMethod = wrapperMethod;
+        }
+    }
+
+    private int hookNamedDatabaseClass(String className, long generation) {
         if (classLoader == null) return 0;
         try {
-            return hookDatabaseClass(KavaReflector.loadClass(className, classLoader), false);
+            return hookDatabaseClass(KavaReflector.loadClass(className, classLoader), false, generation);
         } catch (Throwable ignored) {
             return 0;
         }
     }
 
-    private int hookDatabaseClass(Class<?> dbClass, boolean allowObfuscatedWrapperMethod) {
+    private int hookDatabaseClass(Class<?> dbClass, boolean allowObfuscatedWrapperMethod,
+                                  long generation) {
         if (dbClass == null) return 0;
         int count = 0;
         for (Method method : KavaReflector.declaredMethods(dbClass)) {
-            String operation = operationOf(method, allowObfuscatedWrapperMethod);
+            if (!HookRegistry.get().isInstallationGenerationActive(generation)) break;
+            String operation = WeChatSqliteWrapperLocator.operationOf(method, allowObfuscatedWrapperMethod);
             boolean query = isRawQueryMethod(method);
             if (operation == null && !query) continue;
-            if (hookedMethods.contains(method)) {
-                if (allowObfuscatedWrapperMethod && operation != null) {
-                    hookedWrapperMutationMethods.add(method);
-                    if (DatabaseChange.INSERT.equals(operation)) {
-                        hookedWrapperInsertMethods.add(method);
-                    }
+            HookRegistration existing = hookRegistrations.get(method);
+            if (isRegistrationActive(existing)) {
+                if (allowObfuscatedWrapperMethod && operation != null && !existing.wrapperMethod) {
+                    hookRegistrations.replace(method, existing,
+                            new HookRegistration(existing.handle, existing.generation, operation, true));
                 }
                 continue;
             }
+            if (existing != null) hookRegistrations.remove(method, existing);
             try {
-                HookRegistry.get()
-                        .hook(
+                HookHandle handle = HookRegistry.get().hook(
                                 method,
                                 chain -> {
                                     Object[] args = chain.getArgs().toArray();
@@ -276,8 +349,6 @@ public final class WeChatDatabaseListenerApi {
                                     Object result;
                                     boolean outerMutation;
                                     try {
-                                        normalizeLegacyMsgSource(
-                                                operation, chain.getThisObject(), args);
                                         result = chain.proceed(args);
                                     } finally {
                                         outerMutation = leaveMutation();
@@ -289,14 +360,16 @@ public final class WeChatDatabaseListenerApi {
                                     return result;
                                 },
                                 XposedInterface.PRIORITY_LOWEST);
-                hookedMethods.add(method);
-                if (allowObfuscatedWrapperMethod && operation != null) {
-                    hookedWrapperMutationMethods.add(method);
-                    if (DatabaseChange.INSERT.equals(operation)) {
-                        hookedWrapperInsertMethods.add(method);
-                    }
+                HookRegistration registration =
+                        new HookRegistration(handle, generation, operation, allowObfuscatedWrapperMethod);
+                if (isRegistrationActive(registration)) {
+                    hookRegistrations.put(method, registration);
+                    count++;
+                } else {
+                    try {
+                        HookRegistry.get().unhook(handle);
+                    } catch (Throwable ignored) {}
                 }
-                count++;
             } catch (Throwable error) {
                 log("数据库方法Hook失败: " + method + " " + error.getMessage());
             }
@@ -364,83 +437,6 @@ public final class WeChatDatabaseListenerApi {
             return true;
         }
         mutationDepth.set(depth - 1);
-        return false;
-    }
-
-    private void normalizeLegacyMsgSource(String operation, Object database, Object[] args) {
-        if (args == null) return;
-        if (!DatabaseChange.INSERT.equals(operation) && !DatabaseChange.UPDATE.equals(operation)) return;
-        ContentValues values = contentValuesArg(args);
-        if (values == null) return;
-        String table = tableArg(args);
-        if (!isMessageTable(table, values)) return;
-        if (!values.containsKey("msgSource")) return;
-        String current = contentValueString(values, "msgSource");
-        if (!TextUtils.isEmpty(current)) return;
-        String source = msgSourceFromLvBuffer(values);
-        if (TextUtils.isEmpty(source)) return;
-        values.put("msgSource", source);
-    }
-
-    private boolean isMessageTable(String table, ContentValues values) {
-        if (TextUtils.isEmpty(table)) return false;
-        String lower = table.toLowerCase();
-        boolean tableLooksLikeMessage = "message".equals(lower)
-                || lower.startsWith("message_")
-                || lower.endsWith("_message");
-        if (!tableLooksLikeMessage) return false;
-        return values != null
-                && (values.containsKey("msgSource")
-                || values.containsKey("lvbuffer")
-                || values.containsKey("msgId")
-                || values.containsKey("msgSvrId"));
-    }
-
-    private String msgSourceFromLvBuffer(ContentValues values) {
-        if (values == null || !values.containsKey("lvbuffer")) return "";
-        try {
-            byte[] bytes = values.getAsByteArray("lvbuffer");
-            if (bytes != null && bytes.length > 0) {
-                String source = extractMsgSource(new String(bytes, StandardCharsets.UTF_8));
-                if (!TextUtils.isEmpty(source)) return source;
-            }
-        } catch (Throwable ignored) {
-        }
-        try {
-            Object raw = values.get("lvbuffer");
-            return raw != null ? extractMsgSource(String.valueOf(raw)) : "";
-        } catch (Throwable ignored) {
-            return "";
-        }
-    }
-
-    private String contentValueString(ContentValues values, String key) {
-        if (values == null || TextUtils.isEmpty(key) || !values.containsKey(key)) return "";
-        try {
-            String value = values.getAsString(key);
-            return value != null ? value : "";
-        } catch (Throwable ignored) {
-            Object raw = values.get(key);
-            return raw != null ? String.valueOf(raw) : "";
-        }
-    }
-
-    private String extractMsgSource(String value) {
-        if (TextUtils.isEmpty(value)) return "";
-        String lower = value.toLowerCase();
-        int start = lower.indexOf("<msgsource");
-        if (start < 0) return "";
-        int end = lower.indexOf("</msgsource>", start);
-        if (end < 0) return "";
-        end += "</msgsource>".length();
-        return value.substring(start, Math.min(end, value.length())).trim();
-    }
-
-    private boolean hasContentValuesArg(Class<?>[] params) {
-        if (params == null) return false;
-        for (Class<?> param : params) {
-            if (ContentValues.class.isAssignableFrom(param)) return true;
-        }
         return false;
     }
 

@@ -6,6 +6,7 @@ import android.content.SharedPreferences;
 import android.database.Cursor;
 import android.util.Pair;
 import h.Hchat.hooks.api.runtime.WeChatVersionApi;
+import h.Hchat.hooks.api.runtime.WeChatSqliteWrapperLocator;
 import h.Hchat.preferences.HchatStorage;
 import h.Hchat.utils.KavaReflector;
 
@@ -30,6 +31,7 @@ import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import h.Hchat.hooks.api.message.WeChatMessageParseApi;
 import h.Hchat.utils.HLog;
@@ -47,6 +49,8 @@ public class DexFinder {
     private static final String CACHE_KEY = "cache.key";
     private static final String CACHE_SNAPSHOT_VERSION_KEY = "cache.snapshot.version";
     private static final String CACHE_SNAPSHOT_VERSION = "4";
+    private static final String SQLITE_WRAPPER_LOCATOR_VERSION_KEY = "locator.sqlite.wrapper.version";
+    private static final String SQLITE_WRAPPER_LOCATOR_VERSION = "1";
     private static final String CACHE_ADDMSG_LOCATOR_RESOLVED = "locator.addmsg.resolved";
     private static final String CACHE_SEND_TEXT_LOCATOR_RESOLVED = "locator.send.text.resolved";
     private static final String CACHE_SNS_VIDEO_LOCATOR_RESOLVED = "locator.sns.video.resolved";
@@ -2860,7 +2864,14 @@ public class DexFinder {
     public void resolveDatabaseApi() {
         ensureSnapshotLoaded();
         try {
-            if (coreStorageGetter != null && sqliteDbWrapperClass != null && configStorageClass != null) return;
+            if (sqliteDbWrapperClass != null
+                    && !WeChatSqliteWrapperLocator.supportsMessageMutations(sqliteDbWrapperClass)) {
+                logDetail("SqliteDB 缓存候选结构失效: " + sqliteDbWrapperClass.getName());
+                sqliteDbWrapperClass = null;
+            }
+            if (coreStorageGetter != null && sqliteDbWrapperClass != null && configStorageClass != null) {
+                return;
+            }
 
             mmKernelClass = findFirstClassByStrings(
                     "MicroMsg.MMKernel",
@@ -2890,9 +2901,7 @@ public class DexFinder {
                     "MicroMsg.ConfigStorage",
                     "shouldProcessEvent db is close :%s");
 
-            sqliteDbWrapperClass = findFirstClassByStrings(
-                    "MicroMsg.SqliteDB",
-                    "sql is null ");
+            sqliteDbWrapperClass = findSqliteDbWrapperClass();
 
             logDetail("数据库API: kernel="
                     + (mmKernelClass != null ? mmKernelClass.getName() : "null")
@@ -2903,6 +2912,37 @@ public class DexFinder {
         } catch (Throwable e) {
             h.Hchat.utils.HLog.e(TAG + " resolveDatabaseApi 失败: " + e.getMessage(), e);
         }
+    }
+
+    private Class<?> findSqliteDbWrapperClass() {
+        List<ClassData> sqliteMarkerCandidates =
+                dexQueries.findClass(mkClassUsingStrings("MicroMsg.SqliteDB"));
+        List<ClassData> sqlErrorCandidates =
+                dexQueries.findClass(mkClassUsingStrings("sql is null "));
+        List<String> sqliteMarkerNames = new ArrayList<>();
+        List<String> sqlErrorNames = new ArrayList<>();
+        for (ClassData candidate : sqliteMarkerCandidates) sqliteMarkerNames.add(candidate.getName());
+        for (ClassData candidate : sqlErrorCandidates) sqlErrorNames.add(candidate.getName());
+        Set<String> jointAnchorNames = WeChatSqliteWrapperLocator.intersectCandidateNames(
+                sqliteMarkerNames, sqlErrorNames);
+
+        List<Class<?>> structurallyValid = new ArrayList<>();
+        for (ClassData candidate : sqliteMarkerCandidates) {
+            if (!jointAnchorNames.contains(candidate.getName())) continue;
+            try {
+                Class<?> loaded = KavaReflector.loadClass(candidate.getName(), classLoader);
+                if (WeChatSqliteWrapperLocator.supportsMessageMutations(loaded)) {
+                    structurallyValid.add(loaded);
+                }
+            } catch (Throwable ignored) {}
+        }
+        Class<?> selected = WeChatSqliteWrapperLocator.selectUniqueSupportedCandidate(structurallyValid);
+        logDetail("SqliteDB 定位: markerCandidates=" + sqliteMarkerNames.size()
+                + " errorCandidates=" + sqlErrorNames.size()
+                + " jointAnchors=" + jointAnchorNames.size()
+                + " structurallyValid=" + structurallyValid.size()
+                + " selected=" + (selected != null ? selected.getName() : "null"));
+        return selected;
     }
 
     public void resolveConversationDeleteApi() {
@@ -4001,6 +4041,11 @@ public class DexFinder {
             coreStorageClass = loadClass("coreStorageClass");
             configStorageClass = loadClass("configStorageClass");
             sqliteDbWrapperClass = loadClass("sqliteDbWrapperClass");
+            if (!SQLITE_WRAPPER_LOCATOR_VERSION.equals(
+                    cachePrefs.getString(SQLITE_WRAPPER_LOCATOR_VERSION_KEY, ""))
+                    || !WeChatSqliteWrapperLocator.supportsMessageMutations(sqliteDbWrapperClass)) {
+                sqliteDbWrapperClass = null;
+            }
             conversationDeleteMethod = loadMethod("conversationDeleteMethod");
             messageClearByTalkerMethod = loadMethod("messageClearByTalkerMethod");
             messageClearBatchMethod = loadMethod("messageClearBatchMethod");
@@ -5327,6 +5372,9 @@ public class DexFinder {
             putClass(editor, "coreStorageClass", coreStorageClass);
             putClass(editor, "configStorageClass", configStorageClass);
             putClass(editor, "sqliteDbWrapperClass", sqliteDbWrapperClass);
+            editor.putString(SQLITE_WRAPPER_LOCATOR_VERSION_KEY,
+                    WeChatSqliteWrapperLocator.supportsMessageMutations(sqliteDbWrapperClass)
+                            ? SQLITE_WRAPPER_LOCATOR_VERSION : "");
             putMethod(editor, "coreStorageGetter", coreStorageGetter);
             putMethod(editor, "conversationDeleteMethod", conversationDeleteMethod);
             putMethod(editor, "messageClearByTalkerMethod", messageClearByTalkerMethod);

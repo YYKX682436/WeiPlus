@@ -7,6 +7,7 @@ import h.Hchat.hooks.api.contact.WeChatAccountApi;
 import h.Hchat.hooks.api.model.DatabaseChange;
 import h.Hchat.hooks.api.model.WeChatMessage;
 import h.Hchat.hooks.api.runtime.WeChatDatabaseListenerApi;
+import h.Hchat.hooks.core.HookRegistry;
 
 import java.util.concurrent.CopyOnWriteArrayList;
 
@@ -88,7 +89,10 @@ public final class WeChatMessageChangeApi {
     private final WeChatAccountApi accountApi;
     private final Logger logger;
     private final CopyOnWriteArrayList<Consumer> listeners = new CopyOnWriteArrayList<>();
+    private final WeChatDatabaseListenerApi.Listener databaseChangeListener = this::onDatabaseChanged;
     private volatile boolean installed;
+    private volatile long installedGeneration = Long.MIN_VALUE;
+    private volatile WeChatDatabaseListenerApi.Subscription databaseSubscription;
 
     public WeChatMessageChangeApi(WeChatDatabaseListenerApi databaseListenerApi,
                                   WeChatMessageStoreApi messageStoreApi,
@@ -111,7 +115,13 @@ public final class WeChatMessageChangeApi {
     }
 
     public boolean isInstalled() {
-        return installed;
+        WeChatDatabaseListenerApi.Subscription subscription = databaseSubscription;
+        return installed
+                && subscription != null
+                && subscription.isActive()
+                && HookRegistry.get().isInstallationGenerationActive(installedGeneration)
+                && databaseListenerApi != null
+                && databaseListenerApi.isOperational();
     }
 
     public Subscription subscribe(Listener listener) {
@@ -131,7 +141,12 @@ public final class WeChatMessageChangeApi {
     }
 
     public synchronized void install() {
-        if (installed || databaseListenerApi == null) return;
+        if (isInstalled() || databaseListenerApi == null) return;
+        WeChatDatabaseListenerApi.Subscription oldSubscription = databaseSubscription;
+        if (oldSubscription != null) {
+            oldSubscription.unsubscribe();
+            databaseSubscription = null;
+        }
         databaseListenerApi.install();
         if (!databaseListenerApi.isOperational()) {
             log("消息变更监听未就绪: databaseHooks="
@@ -139,11 +154,14 @@ public final class WeChatMessageChangeApi {
                     + " wrapperHooks="
                     + databaseListenerApi.hookedWrapperMutationMethodCount()
                     + " wrapperInserts="
-                    + databaseListenerApi.hookedWrapperInsertMethodCount());
+                    + databaseListenerApi.hookedWrapperInsertMethodCount()
+                    + " " + databaseListenerApi.operationalDiagnostics());
+            installed = false;
             return;
         }
-        databaseListenerApi.subscribe(this::onDatabaseChanged);
-        installed = true;
+        databaseSubscription = databaseListenerApi.subscribe(databaseChangeListener);
+        installedGeneration = HookRegistry.get().installationGeneration();
+        installed = databaseSubscription != null;
         log("消息变更监听已安装");
     }
 

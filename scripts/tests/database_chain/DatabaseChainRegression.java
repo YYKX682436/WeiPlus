@@ -13,6 +13,7 @@ public final class DatabaseChainRegression {
  public static final class Database {
   public long insert(String table,String empty,ContentValues values){throw new AssertionError("Host body provided by invocation boundary");}
   public int update(String table,ContentValues values,String where,String[] args){throw new AssertionError();}
+  public int delete(String table,String where,String[] args){throw new AssertionError();}
   public Cursor rawQuery(String sql,String[] args){throw new AssertionError();}
  }
  static final Database owner=new Database();
@@ -39,7 +40,7 @@ public final class DatabaseChainRegression {
   int[] rewrites={0},originals={0};
   api.subscribeQuery(sql->{rewrites[0]++;return sql+" /* filtered */";});
   api.install();api.install();check(api.isOperational(),"Wrapper insert was not installed");
-  check(api.hookedWrapperMutationMethodCount()==2,"Mutation method coverage changed");
+  check(api.hookedWrapperMutationMethodCount()==3,"Mutation method coverage changed");
   registry.invoke(insert,owner,insertArgs(),(receiver,parameters)->{originals[0]++;return 7L;});
   check(originals[0]==1&&changes.size()==1&&changes.get(0).result==7,"Successful insert not dispatched once");depths(api);
   IllegalStateException failure=new IllegalStateException("host write failed");

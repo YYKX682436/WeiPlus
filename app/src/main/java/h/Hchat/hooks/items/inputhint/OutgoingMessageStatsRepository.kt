@@ -6,6 +6,7 @@ import h.Hchat.hooks.api.core.WeChatApis
 import h.Hchat.hooks.api.model.DatabaseChange
 import h.Hchat.hooks.api.model.WeChatMessage
 import h.Hchat.hooks.api.runtime.WeChatDatabaseListenerApi
+import h.Hchat.hooks.core.HookRegistry
 import java.util.Calendar
 import java.util.LinkedHashMap
 import java.util.concurrent.CopyOnWriteArrayList
@@ -15,6 +16,9 @@ object OutgoingMessageStatsRepository {
     class Subscription internal constructor(private val action: () -> Unit) {
         @Volatile
         private var active = true
+
+        val isActive: Boolean
+            get() = active
 
         fun unsubscribe() {
             if (!active) return
@@ -51,23 +55,39 @@ object OutgoingMessageStatsRepository {
     private val outgoingMessages = LinkedHashMap<String, WeChatMessage>()
     private var cachedDay = ""
     private var changeSubscription: WeChatDatabaseListenerApi.Subscription? = null
+    private var installedGeneration = Long.MIN_VALUE
 
     @Synchronized
     fun install(logger: (String, Throwable?) -> Unit): Boolean {
         this.logger = logger
-        if (installed) return true
+        if (isInstalledOperational()) return true
+        changeSubscription?.unsubscribe()
+        changeSubscription = null
+        installed = false
+        installedGeneration = Long.MIN_VALUE
         val changes = WeChatApis.databaseChanges() ?: return false
         return runCatching {
             changes.install()
             if (!changes.isInstalled()) return@runCatching false
             changeSubscription = changes.subscribe(::onDatabaseChanged)
-            installed = changeSubscription != null
+            installedGeneration = HookRegistry.get().installationGeneration()
+            installed = changeSubscription?.isActive == true
+            installed = installed && isInstalledOperational()
             if (installed) refreshAsync()
             installed
         }.getOrElse {
             logger("真实发送统计监听安装失败", it)
             false
         }
+    }
+
+    private fun isInstalledOperational(): Boolean {
+        val subscription = changeSubscription
+        val changes = WeChatApis.databaseChanges()
+        return installed
+            && subscription?.isActive == true
+            && HookRegistry.get().isInstallationGenerationActive(installedGeneration)
+            && changes?.isOperational() == true
     }
 
     fun subscribe(listener: () -> Unit): Subscription {

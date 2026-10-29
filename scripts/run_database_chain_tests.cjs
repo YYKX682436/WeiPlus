@@ -11,5 +11,5 @@ const tests='scripts/tests/database_chain/';
 run('javac',['-cp',api.classpath,'-d',tmp,tests+'ContentValues.java','scripts/tests/message_parser/TextUtils.java','scripts/tests/api102/ChainFixture.java']);
 const cp=[tmp,stdlib,api.classpath].join(path.delimiter);
 run('java',['-Xmx256m','-cp',jars.join(path.delimiter),'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler','-no-stdlib','-no-reflect','-classpath',cp,'-d',tmp,'app/src/main/java/h/Hchat/hooks/api/model/DatabaseChange.kt']);
-run('javac',['-cp',cp,'-d',tmp,...fs.readdirSync(path.join(root,tests)).filter(x=>x.endsWith('.java')).map(x=>tests+x),'app/src/main/java/h/Hchat/hooks/api/runtime/WeChatDatabaseListenerApi.java']);
+run('javac',['-cp',cp,'-d',tmp,...fs.readdirSync(path.join(root,tests)).filter(x=>x.endsWith('.java')).map(x=>tests+x),'app/src/main/java/h/Hchat/hooks/api/runtime/WeChatSqliteWrapperLocator.java','app/src/main/java/h/Hchat/hooks/api/runtime/WeChatDatabaseListenerApi.java']);
 run('java',['-cp',cp,'DatabaseChainRegression']);
