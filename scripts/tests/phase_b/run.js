@@ -8,20 +8,12 @@ const output = fs.mkdtempSync(path.join(os.tmpdir(), 'weiplus-phase-b-version-')
 process.once('exit', () => fs.rmSync(output, { recursive: true, force: true }));
 const compile = spawnSync(process.env.JAVAC || 'javac', [
   '-d', output,
-  'app/src/main/java/h/Hchat/hooks/api/runtime/WeChatVersionGate.java',
   'app/src/main/java/h/Hchat/hooks/api/runtime/HostRuntimeIdentityDecision.java',
-  'scripts/tests/phase_b/HostRuntimeIdentityRegression.java',
-  'scripts/tests/phase_b/WeChatVersionGateRegression.java'
+  'scripts/tests/phase_b/HostRuntimeIdentityRegression.java'
 ], { cwd: root, encoding: 'utf8' });
 if (compile.stdout) process.stdout.write(compile.stdout);
 if (compile.stderr) process.stderr.write(compile.stderr);
-if (compile.error || compile.status !== 0) throw compile.error || new Error('Version gate javac failed');
-const run = spawnSync(process.env.JAVA || 'java', [
-  '-cp', output, 'WeChatVersionGateRegression'
-], { cwd: root, encoding: 'utf8' });
-if (run.stdout) process.stdout.write(run.stdout);
-if (run.stderr) process.stderr.write(run.stderr);
-if (run.error || run.status !== 0) throw run.error || new Error('Version gate regression failed');
+if (compile.error || compile.status !== 0) throw compile.error || new Error('Host identity javac failed');
 const hostIdentityRun = spawnSync(process.env.JAVA || 'java', [
   '-cp', output, 'HostRuntimeIdentityRegression'
 ], { cwd: root, encoding: 'utf8' });

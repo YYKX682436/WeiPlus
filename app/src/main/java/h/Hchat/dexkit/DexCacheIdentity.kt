@@ -1,6 +1,6 @@
 package h.Hchat.dexkit
 
-import h.Hchat.hooks.api.runtime.WeChatVersionGate
+import h.Hchat.WechatPackage
 
 /** 仅按微信包体与补丁身份判断定位缓存是否仍属于同一运行时。 */
 object DexCacheIdentity {
@@ -17,8 +17,8 @@ object DexCacheIdentity {
     }
 
     private fun isCompleteRuntimeIdentity(parts: List<String>): Boolean {
-        if (!WeChatVersionGate.isTargetPackage(parts[0])) return false
-        if (WeChatVersionGate.parse(parts[1]) == null) return false
+        if (!WechatPackage.isTarget(parts[0])) return false
+        // Version fields are cache diagnostics; they never act as a module admission gate.
         if (parts[2].toLongOrNull() == null || parts[6].toLongOrNull() == null) return false
         if (parts[7].isBlank() || parts[8].isBlank() || parts[9].isBlank()) return false
         return true

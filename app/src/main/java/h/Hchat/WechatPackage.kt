@@ -8,6 +8,12 @@ object WechatPackage {
     @JvmStatic
     fun isTarget(packageName: String?): Boolean = packageName == OFFICIAL || packageName == MODIFIED
 
+    /** The entry filter uses only the exact package name and its own process namespace. */
+    @JvmStatic
+    fun isModuleEntryScope(packageName: String?, processName: String?): Boolean =
+        isTarget(packageName) && processName != null &&
+            (processName == packageName || processName.startsWith("$packageName:"))
+
     @JvmStatic
     fun isMainProcess(packageName: String?, processName: String?): Boolean =
         isTarget(packageName) && (processName == null || processName == packageName)

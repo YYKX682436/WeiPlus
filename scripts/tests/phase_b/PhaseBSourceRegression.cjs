@@ -5,18 +5,22 @@ const assert = require('node:assert/strict');
 const root = path.resolve(__dirname, '../../..');
 const read = file => fs.readFileSync(path.join(root, file), 'utf8');
 const checks = [
-  ['package-ready version gate precedes all early business hooks', () => {
+  ['package-ready filters only exact host package/process scope before early hooks', () => {
     const source = read('app/src/main/java/h/Hchat/ModuleEntry.java');
-    const ready = source.slice(source.indexOf('void onPackageReady'), source.indexOf('private void installPackageHooks'));
-    assert.match(source, /WeChatVersionGate\.evaluateForProcess/);
-    assert.ok(ready.indexOf('checkMinimumVersion') < ready.indexOf('installPackageHooks'));
-    assert.match(source, /param\.getApplicationInfo\(\)/);
-    assert.match(source, /getSystemContext\(\)/);
+    const readyStart = source.indexOf('void onPackageReady');
+    const ready = source.slice(readyStart, source.indexOf('private boolean verifyRuntimeIdentity', readyStart));
+    assert.match(ready, /WechatPackage\.isModuleEntryScope\(host, processName\)/);
+    assert.doesNotMatch(source, /WeChatVersionGate|checkMinimumVersion|version_gate=reject/);
+    assert.doesNotMatch(ready, /getPackageManager|buildForRuntimeIdentity|DexArchiveIdentity|readTinkerValue/);
     assert.match(source, /appbrand_tinker_attach/);
     assert.match(source, /"tinker_attach_before"/);
     assert.match(source, /"tablet_tinker_attach_" \+ stage/);
     assert.match(source, /application_on_create/);
     assert.match(source, /DexInstallScheduler\.INSTANCE\.cancelAll\(\)[\s\S]*?HookRegistry\.get\(\)\.unhookAll\(\)/);
+    const scope = read('app/src/main/java/h/Hchat/WechatPackage.kt');
+    assert.match(scope, /OFFICIAL = "com\.tencent\.mm"/);
+    assert.match(scope, /MODIFIED = "com\.tencent\.mm\.wx"/);
+    assert.match(scope, /processName\.startsWith\("\$packageName:"\)/);
   }],
   ['runtime identity compares every identity field', () => {
     const source = read('app/src/main/java/h/Hchat/dexkit/DexCacheIdentity.kt');
@@ -51,6 +55,8 @@ const checks = [
     assert.match(store, /scanFinished/);
     assert.match(store, /criticalLocatorsResolved/);
     assert.match(finder, /CACHE_SNAPSHOT_VERSION\s*=\s*"4"/);
+    assert.match(finder, /private void ensureSnapshotLoaded\(\)[\s\S]*?if \(!cacheLoadAttempted\) loadCache\(\)/);
+    assert.doesNotMatch(finder, /if \(ensureSnapshotLoaded\(\)\) return/);
     assert.match(finder, /loadMethodSoft\("addMsgObserverMethod"\)/);
     const cacheLoad = finder.slice(finder.indexOf('private synchronized boolean loadCache()'), finder.indexOf('private void resetLoadedCacheDescriptors()'));
     assert.equal((cacheLoad.match(/DexCacheRestorePolicy\.restore\(/g) || []).length, 3);
@@ -60,6 +66,17 @@ const checks = [
     const methodCache = read('app/src/main/java/h/Hchat/dexkit/DexMethodCache.kt');
     assert.match(methodCache, /it\.toDexDescriptor\(\) == descriptor/);
     assert.match(methodCache, /loadConstructorDescriptor[\s\S]*?getConstructorInstance\(classLoader\)[\s\S]*?toDexDescriptor\(\) == descriptor/);
+  }],
+  ['runtime locator retries exercise the DexFinder query boundary', () => {
+    const finder = read('app/src/main/java/h/Hchat/dexkit/DexFinder.java');
+    const test = read('app/src/test/java/h/Hchat/dexkit/DexFinderFinishedSnapshotRetryTest.java');
+    assert.match(finder, /private final DexFinderQuery dexQueries/);
+    assert.match(test, /finder\.resolveConversationMuteApi\(\)/);
+    assert.match(test, /finder\.resolveDatabaseApi\(\)/);
+    assert.match(test, /finder\.resolveContactCardApi\(\)/);
+    assert.match(test, /methodQueries\.get\(\) > afterFirstMute/);
+    assert.match(test, /methodQueries\.get\(\) > beforeContact/);
+    assert.match(test, /classQueries\.get\(\) > beforeDatabase/);
   }],
   ['AddMsg observation and pre-database blocking use distinct exact methods', () => {
     const finder = read('app/src/main/java/h/Hchat/dexkit/DexFinder.java');

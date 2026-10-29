@@ -33,4 +33,11 @@ class DexCacheIdentityRegressionTest {
         assertTrue(DexCacheIdentity.sameRuntime(first, sameHotRuntime))
         assertFalse(DexCacheIdentity.sameRuntime(first, replacedApk))
     }
+
+    @Test fun versionLabelsAndUnrecognizedBuildNumbersRemainCacheIdentityOnly() {
+        val runtime = "com.tencent.mm|future-build|-42|client|tinker|patch|1700000000|dex-crc|patch-file|stable"
+        assertTrue(DexCacheIdentity.sameRuntime(runtime, runtime))
+        assertFalse(DexCacheIdentity.sameRuntime(runtime,
+            runtime.replace("dex-crc", "changed-dex")))
+    }
 }

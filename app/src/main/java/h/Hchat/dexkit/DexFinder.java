@@ -36,7 +36,7 @@ import h.Hchat.utils.HLog;
 
 /**
  * DexFinder - 使用 DexKit 定位微信混淆后的类和方法
- * 目标支持微信 8.0.76 及以上；各混淆 locator 仍需独立验证结构和运行时状态。
+ * 兼容定位逻辑以微信 8.0.76 及以上为维护范围；版本信息不参与模块加载判断。
  */
 public class DexFinder {
 
@@ -68,7 +68,7 @@ public class DexFinder {
     private static final String NETWORK_QUEUE_LOCATOR_VERSION_KEY = "network.queue.locator.version";
     private static final String NETWORK_QUEUE_LOCATOR_VERSION = "2";
     private static final boolean VERBOSE = false;
-    private final DexKitBridge dexKit;
+    private final DexFinderQuery dexQueries;
     private final ClassLoader classLoader;
     private final SharedPreferences cachePrefs;
     private final SharedPreferences contactCachePrefs;
@@ -296,7 +296,18 @@ public class DexFinder {
     }
 
     public DexFinder(DexKitBridge dexKit, ClassLoader classLoader, Context hostContext) {
-        this.dexKit = dexKit;
+        this(dexKit == null ? null : new DexFinderQuery() {
+            @Override public List<MethodData> findMethod(FindMethod query) {
+                return dexKit.findMethod(query);
+            }
+            @Override public List<ClassData> findClass(FindClass query) {
+                return dexKit.findClass(query);
+            }
+        }, classLoader, hostContext);
+    }
+
+    DexFinder(DexFinderQuery dexQueries, ClassLoader classLoader, Context hostContext) {
+        this.dexQueries = dexQueries;
         this.classLoader = classLoader;
         this.cachePrefs = hostContext != null
                 ? HchatStorage.preferences(hostContext, CACHE_PREFS)
@@ -466,7 +477,7 @@ public class DexFinder {
         try {
             LinkedHashSet<Method> processCandidates = new LinkedHashSet<>();
             for (String anchor : new String[]{ADDMSG_PROCESS_LOG_ANCHOR}) {
-                for (MethodData data : dexKit.findMethod(mkMethodUsingStrings(anchor))) {
+                for (MethodData data : dexQueries.findMethod(mkMethodUsingStrings(anchor))) {
                     try {
                         Method candidate = data.getMethodInstance(classLoader);
                         if (isAddMsgCentralProcessMethod(candidate)) processCandidates.add(candidate);
@@ -545,7 +556,7 @@ public class DexFinder {
         List<Method> result = new ArrayList<>();
         try {
             LinkedHashSet<Method> storageErrorCallers = new LinkedHashSet<>();
-            for (MethodData data : dexKit.findMethod(mkMethodUsingStrings(ADDMSG_PREPROCESS_ERROR_ANCHOR))) {
+            for (MethodData data : dexQueries.findMethod(mkMethodUsingStrings(ADDMSG_PREPROCESS_ERROR_ANCHOR))) {
                 try {
                     Method candidate = data.getMethodInstance(classLoader);
                     if (candidate.getDeclaringClass() == processMethod.getDeclaringClass()) {
@@ -561,7 +572,7 @@ public class DexFinder {
                     .returnType(processMethod.getReturnType());
             MethodMatcher callerMatcher = new MethodMatcher();
             callerMatcher.invokeMethods(new MethodsMatcher().add(target));
-            for (MethodData data : dexKit.findMethod(new FindMethod().matcher(callerMatcher))) {
+            for (MethodData data : dexQueries.findMethod(new FindMethod().matcher(callerMatcher))) {
                 try {
                     Method caller = data.getMethodInstance(classLoader);
                     Class<?>[] params = caller.getParameterTypes();
@@ -644,7 +655,7 @@ public class DexFinder {
     private void resolveReceiveLuckyMoney() {
         try {
             // 策略1: 用真实的 CGI URL 字符串定位
-            List<ClassData> classes = dexKit.findClass(
+            List<ClassData> classes = dexQueries.findClass(
                     mkClassUsingStrings("cgi-bin/mmpay-bin/receivewxhb"));
             for (ClassData cd : classes) {
                 try {
@@ -660,7 +671,7 @@ public class DexFinder {
 
             // 策略2: 回退到旧锚点
             if (receiveLuckyMoneyClass == null) {
-                List<ClassData> classes2 = dexKit.findClass(
+                List<ClassData> classes2 = dexQueries.findClass(
                         mkClassUsingStrings("receivehongbao"));
                 for (ClassData cd : classes2) {
                     try {
@@ -691,7 +702,7 @@ public class DexFinder {
         unionReceiveCtor = null;
         receiveUnionLocatorResolved = false;
         try {
-            List<ClassData> classes = dexKit.findClass(mkClassUsingStrings(
+            List<ClassData> classes = dexQueries.findClass(mkClassUsingStrings(
                     "MicroMsg.NetSceneReceiveLuckyMoneyUnion", "union_source"));
             for (ClassData cd : classes) {
                 try {
@@ -719,7 +730,7 @@ public class DexFinder {
     private void resolveOpenLuckyMoney() {
         try {
             // 策略1: 用真实的 CGI URL 字符串定位
-            List<ClassData> classes = dexKit.findClass(
+            List<ClassData> classes = dexQueries.findClass(
                     mkClassUsingStrings("cgi-bin/mmpay-bin/openwxhb"));
             for (ClassData cd : classes) {
                 try {
@@ -739,7 +750,7 @@ public class DexFinder {
 
             // 策略2: 回退到旧锚点
             if (openLuckyMoneyClass == null) {
-                List<ClassData> classes2 = dexKit.findClass(
+                List<ClassData> classes2 = dexQueries.findClass(
                         mkClassUsingStrings("open lucky"));
                 for (ClassData cd : classes2) {
                     try {
@@ -775,7 +786,7 @@ public class DexFinder {
         unionOpenCtor9 = null;
         openUnionLocatorResolved = false;
         try {
-            List<ClassData> classes = dexKit.findClass(mkClassUsingStrings(
+            List<ClassData> classes = dexQueries.findClass(mkClassUsingStrings(
                     "MicroMsg.NetSceneOpenLuckyMoneyUnion", "union_source"));
             for (ClassData cd : classes) {
                 try {
@@ -820,7 +831,7 @@ public class DexFinder {
             }
 
             // 策略1: 搜索 doSceneImp 字符串，找到包含 dispatch 方法的类
-            List<MethodData> methods = dexKit.findMethod(
+            List<MethodData> methods = dexQueries.findMethod(
                     mkMethodUsingStrings("doSceneImp"));
             if (netQueueClass == null) {
                 for (MethodData m : methods) {
@@ -875,7 +886,7 @@ public class DexFinder {
                     {"NetSceneWishWxHb"}
             };
             for (String[] anchor : anchors) {
-                List<ClassData> classes = dexKit.findClass(mkClassUsingStrings(anchor));
+                List<ClassData> classes = dexQueries.findClass(mkClassUsingStrings(anchor));
                 for (ClassData cd : classes) {
                     try {
                         Class<?> cl = KavaReflector.loadClass(cd.getName(), classLoader);
@@ -899,10 +910,10 @@ public class DexFinder {
 
     // ============ 文本消息发送 ============
     public void resolveServiceManagerApi() {
-        if (ensureSnapshotLoaded()) return;
+        ensureSnapshotLoaded();
         try {
             if (isServiceGetterMethod(serviceGetterMethod)) return;
-            List<MethodData> methods = dexKit.findMethod(
+            List<MethodData> methods = dexQueries.findMethod(
                     mkMethodUsingStrings("calling getService(...)"));
             for (MethodData methodData : methods) {
                 try {
@@ -999,8 +1010,11 @@ public class DexFinder {
     }
 
     public void resolveGetContactServiceApi() {
-        if (ensureSnapshotLoaded()) return;
+        ensureSnapshotLoaded();
         try {
+            getContactAddMethods.removeIf(method -> !isGetContactAddMethod(method));
+            getContactServiceGetters.removeIf(method -> method == null
+                    || !isGetContactServiceGetter(method, method.getReturnType()));
             if (getContactAddMethods.isEmpty()) {
                 collectGetContactAddMethods("dkverify add Contact");
                 collectGetContactAddMethods("[addContact] has consume");
@@ -1016,7 +1030,7 @@ public class DexFinder {
 
     private void collectGetContactAddMethods(String anchor) {
         try {
-            List<MethodData> methods = dexKit.findMethod(mkMethodUsingStrings(anchor));
+            List<MethodData> methods = dexQueries.findMethod(mkMethodUsingStrings(anchor));
             for (MethodData methodData : methods) {
                 try {
                     Method method = methodData.getMethodInstance(classLoader);
@@ -1048,7 +1062,7 @@ public class DexFinder {
             mm.paramCount(0);
             mm.returnType(serviceType);
             fm.matcher(mm);
-            List<MethodData> methods = dexKit.findMethod(fm);
+            List<MethodData> methods = dexQueries.findMethod(fm);
             for (MethodData methodData : methods) {
                 try {
                     Method method = methodData.getMethodInstance(classLoader);
@@ -1064,7 +1078,7 @@ public class DexFinder {
 
     // ============ 图片消息发送 ============
     public void resolveSendImageApi() {
-        if (ensureSnapshotLoaded()) return;
+        ensureSnapshotLoaded();
         try {
             if (isSendImageAppInfoMethod(sendImageMethod)) {
                 resolveSendImageAsyncAppInfoApi();
@@ -1072,7 +1086,7 @@ public class DexFinder {
                 return;
             }
 
-            List<MethodData> methods = dexKit.findMethod(
+            List<MethodData> methods = dexQueries.findMethod(
                     mkMethodUsingStrings("sendImg: args error"));
             for (MethodData methodData : methods) {
                 try {
@@ -1104,7 +1118,7 @@ public class DexFinder {
     }
 
     public void resolveImageCdnDownloadApi() {
-        if (ensureSnapshotLoaded()) return;
+        ensureSnapshotLoaded();
         try {
             resolveMarsCdnDownloadApi();
             if (isImageCdnTaskClass(imageCdnTaskClass)
@@ -1116,7 +1130,7 @@ public class DexFinder {
             imageCdnServiceGetterMethod = null;
 
             if (!isImageCdnTaskClass(imageCdnTaskClass)) {
-                List<ClassData> classes = dexKit.findClass(mkClassUsingStrings(
+                List<ClassData> classes = dexQueries.findClass(mkClassUsingStrings(
                         "field_fullpath",
                         "field_fileId",
                         "field_aesKey",
@@ -1132,7 +1146,7 @@ public class DexFinder {
             }
 
             if (!isImageCdnTaskClass(imageCdnTaskClass)) {
-                List<MethodData> methods = dexKit.findMethod(mkMethodUsingStrings(
+                List<MethodData> methods = dexQueries.findMethod(mkMethodUsingStrings(
                         "field_fullpath",
                         "field_fileId",
                         "field_fileType"));
@@ -1159,7 +1173,7 @@ public class DexFinder {
                 MethodMatcher mm = new MethodMatcher();
                 mm.paramCount(2);
                 fm.matcher(mm);
-                List<MethodData> methods = dexKit.findMethod(fm);
+                List<MethodData> methods = dexQueries.findMethod(fm);
                 for (MethodData methodData : methods) {
                     try {
                         Method method = methodData.getMethodInstance(classLoader);
@@ -1176,7 +1190,7 @@ public class DexFinder {
                 MethodMatcher mm = new MethodMatcher();
                 mm.paramCount(1);
                 fm.matcher(mm);
-                List<MethodData> methods = dexKit.findMethod(fm);
+                List<MethodData> methods = dexQueries.findMethod(fm);
                 for (MethodData methodData : methods) {
                     try {
                         Method method = methodData.getMethodInstance(classLoader);
@@ -1189,7 +1203,7 @@ public class DexFinder {
             }
 
             if (imageCdnSubmitMethod == null) {
-                List<MethodData> methods = dexKit.findMethod(mkMethodUsingStrings(
+                List<MethodData> methods = dexQueries.findMethod(mkMethodUsingStrings(
                         "field_fileId",
                         "field_aesKey",
                         "field_fullpath"));
@@ -1211,7 +1225,7 @@ public class DexFinder {
                 MethodMatcher mm = new MethodMatcher();
                 mm.paramCount(0);
                 fm.matcher(mm);
-                List<MethodData> methods = dexKit.findMethod(fm);
+                List<MethodData> methods = dexQueries.findMethod(fm);
                 for (MethodData methodData : methods) {
                     try {
                         Method method = methodData.getMethodInstance(classLoader);
@@ -1247,7 +1261,7 @@ public class DexFinder {
                 } catch (Throwable ignored) {}
             }
             if (marsCdnDownloadRequestClass == null) {
-                List<ClassData> classes = dexKit.findClass(mkClassUsingStrings("must set marscdnBizType,apptype"));
+                List<ClassData> classes = dexQueries.findClass(mkClassUsingStrings("must set marscdnBizType,apptype"));
                 for (ClassData classData : classes) {
                     try {
                         Class<?> clazz = classData.getInstance(classLoader);
@@ -1269,7 +1283,7 @@ public class DexFinder {
                 } catch (Throwable ignored) {}
             }
             if (marsCdnDownloadCallbackClass == null) {
-                List<ClassData> classes = dexKit.findClass(mkClassUsingStrings("aeskey must be 32 bytes"));
+                List<ClassData> classes = dexQueries.findClass(mkClassUsingStrings("aeskey must be 32 bytes"));
                 for (ClassData classData : classes) {
                     try {
                         Class<?> clazz = classData.getInstance(classLoader);
@@ -1344,7 +1358,7 @@ public class DexFinder {
         try {
             if (!isImageBestPathMethod(imageBestPathMethod)) {
                 imageBestPathMethod = null;
-                List<MethodData> methods = dexKit.findMethod(
+                List<MethodData> methods = dexQueries.findMethod(
                         mkMethodUsingStrings("[getBigPicPath] msg is null."));
                 for (MethodData methodData : methods) {
                     try {
@@ -1363,7 +1377,7 @@ public class DexFinder {
             }
             if (!isImageTokenPathMethod(imageTokenPathMethod)) {
                 imageTokenPathMethod = null;
-                List<MethodData> methods = dexKit.findMethod(
+                List<MethodData> methods = dexQueries.findMethod(
                         mkMethodUsingStrings(
                                 "THUMBNAIL://",
                                 "THUMBNAIL_DIRPATH://",
@@ -1393,7 +1407,7 @@ public class DexFinder {
             mm.paramCount(0);
             mm.returnType(storageClass.getName());
             fm.matcher(mm);
-            for (MethodData methodData : dexKit.findMethod(fm)) {
+            for (MethodData methodData : dexQueries.findMethod(fm)) {
                 try {
                     Method method = methodData.getMethodInstance(classLoader);
                     if (!isImageStorageGetter(method, storageClass)) continue;
@@ -1433,7 +1447,7 @@ public class DexFinder {
     private void resolveSendImageAsyncParamClasses() {
         if (sendImageAsyncParamsClass != null && sendImageCrossParamsClass != null) return;
         try {
-            List<ClassData> classes = dexKit.findClass(
+            List<ClassData> classes = dexQueries.findClass(
                     mkClassUsingStrings("msg_raw_img_send", "crossParams", "imgPath", "fromUsername", "toUsername"));
             for (ClassData classData : classes) {
                 try {
@@ -1452,7 +1466,7 @@ public class DexFinder {
         Class<?> fromCrossParams = findSendImageAppInfoClassFromCrossParams();
         if (fromCrossParams != null) return fromCrossParams;
         try {
-            List<ClassData> classes = dexKit.findClass(
+            List<ClassData> classes = dexQueries.findClass(
                     mkClassUsingStrings("appid", "mediatagname", "messageext", "messageaction", "appinfo"));
             for (ClassData classData : classes) {
                 try {
@@ -1471,7 +1485,7 @@ public class DexFinder {
             MethodMatcher mm = new MethodMatcher();
             mm.paramTypes(sendImageAsyncParamsClass.getName());
             fm.matcher(mm);
-            List<MethodData> methods = dexKit.findMethod(fm);
+            List<MethodData> methods = dexQueries.findMethod(fm);
             Method fallback = null;
             for (MethodData methodData : methods) {
                 try {
@@ -1488,7 +1502,7 @@ public class DexFinder {
     }
 
     public void resolveSendFileApi() {
-        if (ensureSnapshotLoaded()) return;
+        ensureSnapshotLoaded();
         try {
             if (isSendFileAppMsgMethod(sendFileMethod)) {
                 if (sendFileAttachDirMethod == null || sendFileAttachPathMethod == null) {
@@ -1524,14 +1538,14 @@ public class DexFinder {
     }
 
     public void resolveSendXmlApi() {
-        if (ensureSnapshotLoaded()) return;
+        ensureSnapshotLoaded();
         try {
             if (isSendXmlAppMsgMethod(sendXmlAppMsgMethod)) {
                 resolveAppMsgParseMethod(sendXmlAppMsgMethod.getParameterTypes()[0]);
                 return;
             }
 
-            List<MethodData> methods = dexKit.findMethod(
+            List<MethodData> methods = dexQueries.findMethod(
                     mkMethodUsingStrings("summerbig sendAppMsg attachFilePath"));
             for (MethodData methodData : methods) {
                 try {
@@ -1582,7 +1596,7 @@ public class DexFinder {
             matcher.invokeMethods(new org.luckypray.dexkit.query.matchers.MethodsMatcher()
                     .add(new MethodMatcher().declaredClass("java.lang.String").name("isEmpty").paramTypes())
                     .add(new MethodMatcher().declaredClass("android.content.res.Resources").name("getIdentifier")));
-            List<MethodData> methods = dexKit.findMethod(new FindMethod().matcher(matcher));
+            List<MethodData> methods = dexQueries.findMethod(new FindMethod().matcher(matcher));
             for (MethodData methodData : methods) {
                 try {
                     Method method = methodData.getMethodInstance(classLoader);
@@ -1667,11 +1681,12 @@ public class DexFinder {
     }
 
     public void resolveSendVideoApi() {
-        if (ensureSnapshotLoaded()) return;
+        ensureSnapshotLoaded();
         try {
-            if (sendVideoMethod != null) return;
+            if (isSendVideoMethod(sendVideoMethod)) return;
+            sendVideoMethod = null;
 
-            List<MethodData> methods = dexKit.findMethod(
+            List<MethodData> methods = dexQueries.findMethod(
                     mkMethodUsingStrings("send vedio args error"));
             for (MethodData methodData : methods) {
                 try {
@@ -1690,7 +1705,7 @@ public class DexFinder {
     }
 
     public void resolveSendVideoTaskApi() {
-        if (ensureSnapshotLoaded()) return;
+        ensureSnapshotLoaded();
         try {
             if (sendVideoTaskClass != null) return;
             sendVideoTaskClass = findFirstClassByStrings(
@@ -1704,17 +1719,17 @@ public class DexFinder {
     }
 
     public void resolveVideoPathApi() {
-        if (ensureSnapshotLoaded()) return;
+        ensureSnapshotLoaded();
         try {
             if (!isVideoPathMethod(videoPathMethod)) {
                 videoPathMethod = null;
-                List<MethodData> methods = dexKit.findMethod(
+                List<MethodData> methods = dexQueries.findMethod(
                         mkMethodUsingStrings(
                                 "MicroMsg.C2CVideoPathFeatureService",
                                 "success restore file, from ",
                                 ".mp4"));
                 if (methods.isEmpty()) {
-                    methods = dexKit.findMethod(
+                    methods = dexQueries.findMethod(
                             mkMethodUsingStrings(
                                     "MicroMsg.VideoInfoStorage",
                                     "success restore file, from ",
@@ -1759,7 +1774,7 @@ public class DexFinder {
             mm.paramCount(0);
             mm.returnType(owner.getName());
             fm.matcher(mm);
-            for (MethodData methodData : dexKit.findMethod(fm)) {
+            for (MethodData methodData : dexQueries.findMethod(fm)) {
                 try {
                     Method method = methodData.getMethodInstance(classLoader);
                     if (!isVideoPathOwnerGetter(method, owner)) continue;
@@ -1779,7 +1794,7 @@ public class DexFinder {
     }
 
     public void resolveVideoInfoApi() {
-        if (ensureSnapshotLoaded()) return;
+        ensureSnapshotLoaded();
         try {
             if (isVideoInfoByFileNameMethod(videoInfoByFileNameMethod, videoInfoClass)) return;
             videoInfoByFileNameMethod = null;
@@ -1794,7 +1809,7 @@ public class DexFinder {
             find.matcher(matcher);
 
             List<Method> candidates = new ArrayList<>();
-            for (MethodData data : dexKit.findMethod(find)) {
+            for (MethodData data : dexQueries.findMethod(find)) {
                 try {
                     Method method = data.getMethodInstance(classLoader);
                     if (!isVideoInfoByFileNameMethod(method, videoInfoClass)) continue;
@@ -1833,10 +1848,11 @@ public class DexFinder {
     }
 
     public void resolveSendVoiceApi() {
-        if (ensureSnapshotLoaded()) return;
+        ensureSnapshotLoaded();
         try {
-            if (voiceStartRecordMethod == null) {
-                List<MethodData> methods = dexKit.findMethod(
+            if (!isVoiceStartRecordMethod(voiceStartRecordMethod)) {
+                voiceStartRecordMethod = null;
+                List<MethodData> methods = dexQueries.findMethod(
                         mkMethodUsingStrings("startRecord insert voicestg success"));
                 for (MethodData methodData : methods) {
                     try {
@@ -1849,8 +1865,9 @@ public class DexFinder {
                 }
             }
 
-            if (voiceFullPathMethod == null) {
-                List<MethodData> methods = dexKit.findMethod(
+            if (!isVoiceFullPathMethod(voiceFullPathMethod)) {
+                voiceFullPathMethod = null;
+                List<MethodData> methods = dexQueries.findMethod(
                         mkMethodUsingStrings("getAmrFullPath cost:"));
                 for (MethodData methodData : methods) {
                     try {
@@ -1863,8 +1880,12 @@ public class DexFinder {
                 }
             }
 
+            if (voiceMessagePathMethod != null && !isVoiceMessagePathMethod(voiceMessagePathMethod)) {
+                voiceMessagePathMethod = null;
+                voiceMessagePathLookupComplete = false;
+            }
             if (voiceMessagePathMethod == null && !voiceMessagePathLookupComplete) {
-                List<MethodData> methods = dexKit.findMethod(
+                List<MethodData> methods = dexQueries.findMethod(
                         mkMethodUsingStrings("[f11]getVoiceFullPath, businessType: "));
                 for (MethodData methodData : methods) {
                     try {
@@ -1892,7 +1913,7 @@ public class DexFinder {
             }
 
             if (voiceUploadClass == null || (voiceUploadCtor == null && voiceUploadCdnCtor == null)) {
-                List<MethodData> methods = dexKit.findMethod(
+                List<MethodData> methods = dexQueries.findMethod(
                         mkMethodUsingStrings("/cgi-bin/micromsg-bin/uploadvoice"));
                 for (MethodData methodData : methods) {
                     try {
@@ -1965,7 +1986,7 @@ public class DexFinder {
                                            Class<?> returnType,
                                            Class<?>... parameterTypes) {
         try {
-            for (MethodData data : dexKit.findMethod(mkMethodUsingStrings(anchor))) {
+            for (MethodData data : dexQueries.findMethod(mkMethodUsingStrings(anchor))) {
                 try {
                     Method method = data.getMethodInstance(classLoader);
                     Class<?> expectedOwner = owner != null ? owner : method.getDeclaringClass();
@@ -2007,7 +2028,7 @@ public class DexFinder {
             matcher.paramTypes(String.class);
             matcher.addUsingString("voiceinfo WHERE FileName= ?", StringMatchType.Contains, false);
             find.matcher(matcher);
-            for (MethodData data : dexKit.findMethod(find)) {
+            for (MethodData data : dexQueries.findMethod(find)) {
                 Method storageMethod;
                 try {
                     storageMethod = data.getMethodInstance(classLoader);
@@ -2047,10 +2068,11 @@ public class DexFinder {
     }
 
     public void resolveSendEmojiApi() {
-        if (ensureSnapshotLoaded()) return;
+        ensureSnapshotLoaded();
         try {
-            if (emojiSendMethod == null) {
-                List<MethodData> methods = dexKit.findMethod(
+            if (!isEmojiSendMethod(emojiSendMethod)) {
+                emojiSendMethod = null;
+                List<MethodData> methods = dexQueries.findMethod(
                         mkMethodUsingStrings("NetSceneUploadEmoji: msgId"));
                 for (MethodData methodData : methods) {
                     try {
@@ -2063,8 +2085,9 @@ public class DexFinder {
                 }
             }
 
-            if (emojiManagerSendMethod == null) {
-                List<MethodData> methods = dexKit.findMethod(
+            if (!isEmojiManagerSendMethod(emojiManagerSendMethod)) {
+                emojiManagerSendMethod = null;
+                List<MethodData> methods = dexQueries.findMethod(
                         mkMethodUsingStrings("sendEmoji: context is null", "sendEmoji: emoji not found"));
                 for (MethodData methodData : methods) {
                     try {
@@ -2077,8 +2100,9 @@ public class DexFinder {
                 }
             }
 
-            if (emojiGetByMd5Method == null) {
-                List<MethodData> methods = dexKit.findMethod(
+            if (!isEmojiGetByMd5Method(emojiGetByMd5Method)) {
+                emojiGetByMd5Method = null;
+                List<MethodData> methods = dexQueries.findMethod(
                         mkMethodUsingStrings("getEmojiByMd5"));
                 for (MethodData methodData : methods) {
                     try {
@@ -2091,8 +2115,9 @@ public class DexFinder {
                 }
             }
 
-            if (emojiCreateInfoMethod == null) {
-                List<MethodData> methods = dexKit.findMethod(
+            if (!isEmojiCreateInfoMethod(emojiCreateInfoMethod)) {
+                emojiCreateInfoMethod = null;
+                List<MethodData> methods = dexQueries.findMethod(
                         mkMethodUsingStrings("createEmojiInfo"));
                 for (MethodData methodData : methods) {
                     try {
@@ -2105,8 +2130,9 @@ public class DexFinder {
                 }
             }
 
-            if (emojiUpdateInfoMethod == null) {
-                List<MethodData> methods = dexKit.findMethod(
+            if (!isEmojiUpdateInfoMethod(emojiUpdateInfoMethod)) {
+                emojiUpdateInfoMethod = null;
+                List<MethodData> methods = dexQueries.findMethod(
                         mkMethodUsingStrings("updateEmojiInfo"));
                 for (MethodData methodData : methods) {
                     try {
@@ -2120,7 +2146,7 @@ public class DexFinder {
             }
 
             if (emojiAccPathMethod == null) {
-                List<MethodData> methods = dexKit.findMethod(
+                List<MethodData> methods = dexQueries.findMethod(
                         mkMethodUsingStrings("getAccPath"));
                 for (MethodData methodData : methods) {
                     try {
@@ -2134,7 +2160,7 @@ public class DexFinder {
             }
 
             if (emojiCheckGifMethod == null) {
-                List<MethodData> methods = dexKit.findMethod(
+                List<MethodData> methods = dexQueries.findMethod(
                         mkMethodUsingStrings("checkGifFile"));
                 for (MethodData methodData : methods) {
                     try {
@@ -2148,7 +2174,7 @@ public class DexFinder {
             }
 
             if (emojiFilePathMethod == null) {
-                List<MethodData> methods = dexKit.findMethod(
+                List<MethodData> methods = dexQueries.findMethod(
                         mkMethodUsingStrings("[cpan] get icon path failed. productid and md5 are null."));
                 for (MethodData methodData : methods) {
                     try {
@@ -2162,7 +2188,7 @@ public class DexFinder {
             }
 
             if (emojiDecodeDataMethod == null || emojiDecodeManagerGetterMethod == null) {
-                List<MethodData> methods = dexKit.findMethod(
+                List<MethodData> methods = dexQueries.findMethod(
                         mkMethodUsingStrings(
                                 "MicroMsg.emoji.EmojiFileEncryptMgr",
                                 "decode emoji file failed. path is no exist :%s "));
@@ -2191,7 +2217,7 @@ public class DexFinder {
     }
 
     public void resolveFavoriteApi() {
-        if (ensureSnapshotLoaded()) return;
+        ensureSnapshotLoaded();
         try {
             resolveFavoriteItemApi();
             resolveFavoriteListApi();
@@ -2224,7 +2250,7 @@ public class DexFinder {
             favoriteListCursorMethod = null;
             favoriteGetMethod = null;
             Method cursor = findFavoriteListCursorMethod();
-            List<MethodData> methods = dexKit.findMethod(
+            List<MethodData> methods = dexQueries.findMethod(
                     mkMethodUsingStrings(
                             "getItemList error, getFavItemInfoStorage null.",
                             "MicroMsg.Fav.FavApiLogic"));
@@ -2318,7 +2344,7 @@ public class DexFinder {
     }
 
     private Method findFavoriteListCursorMethod() {
-        List<MethodData> methods = dexKit.findMethod(
+        List<MethodData> methods = dexQueries.findMethod(
                 mkMethodUsingStrings("tryStartBatchGet..."));
         for (MethodData methodData : methods) {
             try {
@@ -2386,7 +2412,7 @@ public class DexFinder {
             favoriteItemClass = null;
             favoriteItemConvertFromCursorMethod = null;
 
-            List<ClassData> classes = dexKit.findClass(mkClassUsingStrings("FavItemInfo"));
+            List<ClassData> classes = dexQueries.findClass(mkClassUsingStrings("FavItemInfo"));
             for (ClassData classData : classes) {
                 Class<?> clazz = KavaReflector.loadClass(classData.getName(), classLoader);
                 if (!isFavoriteItemClass(clazz)) continue;
@@ -2395,7 +2421,7 @@ public class DexFinder {
                 if (favoriteItemConvertFromCursorMethod != null) return;
             }
 
-            List<MethodData> methods = dexKit.findMethod(
+            List<MethodData> methods = dexQueries.findMethod(
                     mkMethodUsingStrings("sendFavMsg: processing favId=%d, favType=%d, dataListSize=%d"));
             for (MethodData methodData : methods) {
                 Class<?> clazz = favoriteItemClassFromUsingFields(methodData);
@@ -2418,7 +2444,7 @@ public class DexFinder {
             }
 
             favoriteSendMethod = null;
-            List<MethodData> methods = dexKit.findMethod(
+            List<MethodData> methods = dexQueries.findMethod(
                     mkMethodUsingStrings(
                             "want to send fav msg, but context is null",
                             "want to send fav msg, but info is null"));
@@ -2515,7 +2541,7 @@ public class DexFinder {
     }
 
     public void resolveTransferOperationApi() {
-        if (ensureSnapshotLoaded()) return;
+        ensureSnapshotLoaded();
         try {
             if (isTransferOperationClass(transferOperationClass)) return;
 
@@ -2529,7 +2555,7 @@ public class DexFinder {
                 }
             } catch (Throwable ignored) {}
 
-            List<ClassData> classes = dexKit.findClass(
+            List<ClassData> classes = dexQueries.findClass(
                     mkClassUsingStrings("Micromsg.NetSceneTenpayRemittanceConfirm",
                             "recv_account_type"));
             for (ClassData cd : classes) {
@@ -2542,7 +2568,7 @@ public class DexFinder {
             }
 
             if (transferOperationClass == null) {
-                List<MethodData> methods = dexKit.findMethod(
+                List<MethodData> methods = dexQueries.findMethod(
                         mkMethodUsingStrings("/cgi-bin/mmpay-bin/transferoperation"));
                 for (MethodData methodData : methods) {
                     try {
@@ -2562,12 +2588,12 @@ public class DexFinder {
     }
 
     public void resolveTransferQueryApi() {
-        if (ensureSnapshotLoaded()) return;
+        ensureSnapshotLoaded();
         try {
             if (isTransferQueryClass(transferQueryClass)
                     && isTransferQueryResponseMethod(transferQueryResponseMethod, transferQueryClass)) return;
 
-            List<ClassData> classes = dexKit.findClass(
+            List<ClassData> classes = dexQueries.findClass(
                     mkClassUsingStrings("Micromsg.NetSceneTenpayRemittanceQuery",
                             "recv_account_info", "recv_channel"));
             for (ClassData cd : classes) {
@@ -2589,11 +2615,11 @@ public class DexFinder {
     }
 
     public void resolveVerifyUserApi() {
-        if (ensureSnapshotLoaded()) return;
+        ensureSnapshotLoaded();
         try {
             if (isVerifyUserClass(verifyUserClass)) return;
 
-            List<ClassData> classes = dexKit.findClass(
+            List<ClassData> classes = dexQueries.findClass(
                     mkClassUsingStrings("/cgi-bin/micromsg-bin/verifyuser",
                             "MicroMsg.NetSceneVerifyUser.dkverify"));
             for (ClassData cd : classes) {
@@ -2606,7 +2632,7 @@ public class DexFinder {
             }
 
             if (verifyUserClass == null) {
-                List<MethodData> methods = dexKit.findMethod(
+                List<MethodData> methods = dexQueries.findMethod(
                         mkMethodUsingStrings("/cgi-bin/micromsg-bin/verifyuser"));
                 for (MethodData methodData : methods) {
                     try {
@@ -2626,11 +2652,11 @@ public class DexFinder {
     }
 
     public void resolveContactCardApi() {
-        if (ensureSnapshotLoaded()) return;
+        ensureSnapshotLoaded();
         try {
             if (isContactCardXmlMethod(contactCardXmlMethod)) return;
 
-            List<MethodData> methods = dexKit.findMethod(
+            List<MethodData> methods = dexQueries.findMethod(
                     mkMethodUsingStrings("MicroMsg.SendContactCardHelper", "getBizNameCardString"));
             for (MethodData methodData : methods) {
                 try {
@@ -2642,7 +2668,7 @@ public class DexFinder {
             }
 
             if (contactCardXmlMethod == null) {
-                methods = dexKit.findMethod(mkMethodUsingStrings("bigheadimgurl", "smallheadimgurl"));
+                methods = dexQueries.findMethod(mkMethodUsingStrings("bigheadimgurl", "smallheadimgurl"));
                 for (MethodData methodData : methods) {
                     try {
                         Method method = methodData.getMethodInstance(classLoader);
@@ -2660,10 +2686,10 @@ public class DexFinder {
     }
 
     public void resolvePatMessageApi() {
-        if (ensureSnapshotLoaded()) return;
+        ensureSnapshotLoaded();
         try {
             if (!isPatDisplayTemplateMethod(patDisplayTemplateMethod)) {
-                List<MethodData> methods = dexKit.findMethod(
+                List<MethodData> methods = dexQueries.findMethod(
                         mkMethodUsingStrings("MicroMsg.PluginPatMsg",
                                 "parseDisplayTemplate realtime templateStr:%s"));
                 for (MethodData methodData : methods) {
@@ -2761,7 +2787,7 @@ public class DexFinder {
 
     private Method findPatCreatePairMethodByStrings(String... strings) {
         try {
-            List<MethodData> methods = dexKit.findMethod(mkMethodUsingStrings(strings));
+            List<MethodData> methods = dexQueries.findMethod(mkMethodUsingStrings(strings));
             for (MethodData methodData : methods) {
                 try {
                     Method method = methodData.getMethodInstance(classLoader);
@@ -2775,7 +2801,7 @@ public class DexFinder {
 
     private Method findPatSuffixMethodByStrings(String... strings) {
         try {
-            List<MethodData> methods = dexKit.findMethod(mkMethodUsingStrings(strings));
+            List<MethodData> methods = dexQueries.findMethod(mkMethodUsingStrings(strings));
             for (MethodData methodData : methods) {
                 try {
                     Method method = methodData.getMethodInstance(classLoader);
@@ -2789,7 +2815,7 @@ public class DexFinder {
 
     private Method findPatCanSendMethodByStrings(String... strings) {
         try {
-            List<MethodData> methods = dexKit.findMethod(mkMethodUsingStrings(strings));
+            List<MethodData> methods = dexQueries.findMethod(mkMethodUsingStrings(strings));
             for (MethodData methodData : methods) {
                 try {
                     Method method = methodData.getMethodInstance(classLoader);
@@ -2832,7 +2858,7 @@ public class DexFinder {
 
     // ============ 数据库/联系人公共 API ============
     public void resolveDatabaseApi() {
-        if (ensureSnapshotLoaded()) return;
+        ensureSnapshotLoaded();
         try {
             if (coreStorageGetter != null && sqliteDbWrapperClass != null && configStorageClass != null) return;
 
@@ -2840,7 +2866,7 @@ public class DexFinder {
                     "MicroMsg.MMKernel",
                     "Kernel not null, has initialized.");
 
-            List<MethodData> storageMethods = dexKit.findMethod(
+            List<MethodData> storageMethods = dexQueries.findMethod(
                     mkMethodUsingStrings("mCoreStorage not initialized!"));
             for (MethodData methodData : storageMethods) {
                 try {
@@ -2880,7 +2906,7 @@ public class DexFinder {
     }
 
     public void resolveConversationDeleteApi() {
-        if (ensureSnapshotLoaded()) return;
+        ensureSnapshotLoaded();
         try {
             if (isConversationDeleteMethod(conversationDeleteMethod)) return;
             conversationDeleteMethod = null;
@@ -2890,7 +2916,7 @@ public class DexFinder {
             MethodMatcher matcher = new MethodMatcher();
             matcher.usingEqStrings("delChatContact username:%s  stack:%s");
             find.matcher(matcher);
-            for (MethodData methodData : dexKit.findMethod(find)) {
+            for (MethodData methodData : dexQueries.findMethod(find)) {
                 try {
                     Method method = methodData.getMethodInstance(classLoader);
                     if (!isConversationDeleteMethod(method) || candidates.contains(method)) continue;
@@ -2923,7 +2949,7 @@ public class DexFinder {
     }
 
     public void resolveMessageClearApi() {
-        if (ensureSnapshotLoaded()) return;
+        ensureSnapshotLoaded();
         try {
             if (isMessageClearByTalkerMethod(messageClearByTalkerMethod, messageClearBatchMethod)) {
                 return;
@@ -2940,7 +2966,7 @@ public class DexFinder {
                     "summerdel deleteMsgByTalker is null or empty",
                     "AsyncDeleteMessageStage1");
             find.matcher(matcher);
-            for (MethodData methodData : dexKit.findMethod(find)) {
+            for (MethodData methodData : dexQueries.findMethod(find)) {
                 try {
                     Method method = methodData.getMethodInstance(classLoader);
                     if (!isMessageClearBatchMethod(method) || batchCandidates.contains(method)) continue;
@@ -3000,7 +3026,7 @@ public class DexFinder {
     }
 
     public void resolveConversationMuteApi() {
-        if (ensureSnapshotLoaded()) return;
+        ensureSnapshotLoaded();
         try {
             if (!isServiceGetterMethod(serviceGetterMethod)) {
                 resolveServiceManagerApi();
@@ -3045,7 +3071,7 @@ public class DexFinder {
 
     private Method findUniqueMethodUsingString(String anchor) {
         List<Method> candidates = new ArrayList<>();
-        for (MethodData data : dexKit.findMethod(mkMethodUsingStrings(anchor))) {
+        for (MethodData data : dexQueries.findMethod(mkMethodUsingStrings(anchor))) {
             try {
                 Method method = data.getMethodInstance(classLoader);
                 if (candidates.contains(method)) continue;
@@ -3070,7 +3096,7 @@ public class DexFinder {
         Method mute = contactMuteEnableMethod;
         if (!isContactMuteMethod(mute)) return null;
         List<Method> candidates = new ArrayList<>();
-        for (MethodData entry : dexKit.findMethod(mkMethodUsingStrings("room_notify_new_msg"))) {
+        for (MethodData entry : dexQueries.findMethod(mkMethodUsingStrings("room_notify_new_msg"))) {
             if (!"com.tencent.mm.ui.SingleChatInfoUI".equals(entry.getClassName())) continue;
             for (MethodData invokeData : entry.getInvokes()) {
                 try {
@@ -3101,7 +3127,7 @@ public class DexFinder {
 
         Class<?> contactType = mute.getParameterTypes()[0];
         List<Method> invokes = new ArrayList<>();
-        for (MethodData data : dexKit.findMethod(
+        for (MethodData data : dexQueries.findMethod(
                 mkMethodUsingStrings("setMute contact invalid username"))) {
             try {
                 Method candidate = data.getMethodInstance(classLoader);
@@ -3161,10 +3187,10 @@ public class DexFinder {
         chatroomMuteBuildMethod = null;
         chatroomMuteSubmitMethod = null;
 
-        List<MethodData> entries = dexKit.findMethod(mkMethodUsingStrings(
+        List<MethodData> entries = dexQueries.findMethod(mkMethodUsingStrings(
                 "ChatroomMuteRefine OpModChatRoomNotify roomId = %s, notifyMsg = %d, defaultNeedPushFlag=%d"));
         if (entries.isEmpty()) {
-            entries = dexKit.findMethod(mkMethodUsingStrings("room_notify_new_msg"));
+            entries = dexQueries.findMethod(mkMethodUsingStrings("room_notify_new_msg"));
         }
         for (MethodData entry : entries) {
             List<Method> invokes = new ArrayList<>();
@@ -3235,7 +3261,7 @@ public class DexFinder {
     }
 
     public void resolveLocalMessageApi() {
-        if (ensureSnapshotLoaded()) return;
+        ensureSnapshotLoaded();
         try {
             if (hasLocalMessageApi() && localMessageCreateTimeMethod != null) return;
             int candidateCount = resolveLocalMessageApiBySignature();
@@ -3269,7 +3295,7 @@ public class DexFinder {
             mm.returnType(long.class);
             mm.paramCount(1);
             fm.matcher(mm);
-            List<MethodData> methods = dexKit.findMethod(fm);
+            List<MethodData> methods = dexQueries.findMethod(fm);
             count = methods != null ? methods.size() : 0;
             if (methods == null) return 0;
             for (MethodData methodData : methods) {
@@ -3287,7 +3313,7 @@ public class DexFinder {
     private void resolveLocalSystemMessageMethod() {
         if (localSystemMessageMethod != null) return;
         try {
-            List<MethodData> methods = dexKit.findMethod(
+            List<MethodData> methods = dexQueries.findMethod(
                     mkMethodUsingStrings(
                             "will insert sysmsg from:",
                             "content null, cannot to insert sysmsg!",
@@ -3325,19 +3351,16 @@ public class DexFinder {
     }
 
     public void resolveGroupMemberDisplayName() {
-        if (ensureSnapshotLoaded()) return;
+        ensureSnapshotLoaded();
         try {
-            if (groupMemberDisplayNameMethod != null) return;
-            List<MethodData> methods = dexKit.findMethod(
+            if (isGroupMemberDisplayNameMethod(groupMemberDisplayNameMethod)) return;
+            groupMemberDisplayNameMethod = null;
+            List<MethodData> methods = dexQueries.findMethod(
                     mkMethodUsingStrings("ChatroomDisplayNameCache"));
             for (MethodData methodData : methods) {
                 try {
                     Method method = methodData.getMethodInstance(classLoader);
-                    if (method.getReturnType() != String.class) continue;
-                    Class<?>[] params = method.getParameterTypes();
-                    if (params.length != 2 || params[0] != String.class || params[1] != String.class) {
-                        continue;
-                    }
+                    if (!isGroupMemberDisplayNameMethod(method)) continue;
                     KavaReflector.accessible(method);
                     groupMemberDisplayNameMethod = method;
                     break;
@@ -3353,8 +3376,14 @@ public class DexFinder {
         }
     }
 
+    private boolean isGroupMemberDisplayNameMethod(Method method) {
+        if (method == null || method.getReturnType() != String.class) return false;
+        Class<?>[] params = method.getParameterTypes();
+        return params.length == 2 && params[0] == String.class && params[1] == String.class;
+    }
+
     public void resolveInviteChatroomMemberApi() {
-        if (ensureSnapshotLoaded()) return;
+        ensureSnapshotLoaded();
         try {
             if (inviteChatroomMemberCtor == null) {
                 inviteChatroomMemberCtor = findInviteChatroomMemberCtor(inviteChatroomMemberClass);
@@ -3387,7 +3416,7 @@ public class DexFinder {
     }
 
     public void resolveAddChatroomMemberApi() {
-        if (ensureSnapshotLoaded()) return;
+        ensureSnapshotLoaded();
         try {
             if (addChatroomMemberCtor == null) {
                 addChatroomMemberCtor = findAddChatroomMemberCtor(addChatroomMemberClass);
@@ -3420,7 +3449,7 @@ public class DexFinder {
     }
 
     public void resolveDelChatroomMemberApi() {
-        if (ensureSnapshotLoaded()) return;
+        ensureSnapshotLoaded();
         try {
             if (delChatroomMemberCtor == null) {
                 delChatroomMemberCtor = findDelChatroomMemberCtor(delChatroomMemberClass);
@@ -3451,7 +3480,7 @@ public class DexFinder {
     }
 
     public void resolveRevokeMsgApi() {
-        if (ensureSnapshotLoaded()) return;
+        ensureSnapshotLoaded();
         try {
             if (revokeMsgCtor == null) {
                 revokeMsgCtor = findRevokeMsgCtor(revokeMsgClass);
@@ -3483,7 +3512,7 @@ public class DexFinder {
     }
 
     public void resolveUploadDeviceStepApi() {
-        if (ensureSnapshotLoaded()) return;
+        ensureSnapshotLoaded();
         try {
             if (uploadDeviceStepCtor == null) {
                 uploadDeviceStepCtor = findUploadDeviceStepCtor(uploadDeviceStepClass);
@@ -3515,7 +3544,7 @@ public class DexFinder {
     }
 
     public void resolveContactLabelNetworkApi() {
-        if (ensureSnapshotLoaded()) return;
+        ensureSnapshotLoaded();
         try {
             if (addContactLabelCtorString == null) {
                 addContactLabelCtorString = findCtorByExactTypes(addContactLabelClass, String.class);
@@ -3689,14 +3718,14 @@ public class DexFinder {
     }
 
     public void resolveChatPageApi() {
-        if (ensureSnapshotLoaded()) return;
+        ensureSnapshotLoaded();
         try {
             if (chatPageStartMethod != null
                     && chatPageFragmentEnterMethod != null
                     && chatPageFragmentExitMethod != null) return;
 
             if (chatPageStartMethod == null) {
-                List<MethodData> methods = dexKit.findMethod(
+                List<MethodData> methods = dexQueries.findMethod(
                         mkMethodUsingStrings("try startChatting, ishow:%b userName:%s needAnim:%b"));
                 for (MethodData methodData : methods) {
                     try {
@@ -3710,7 +3739,7 @@ public class DexFinder {
             }
 
             if (chatPageFragmentEnterMethod == null) {
-                List<MethodData> methods = dexKit.findMethod(
+                List<MethodData> methods = dexQueries.findMethod(
                         mkMethodUsingStrings("onEnterBegin", "Chat_User"));
                 for (MethodData methodData : methods) {
                     try {
@@ -3725,7 +3754,7 @@ public class DexFinder {
 
             if (chatPageFragmentExitMethod == null && chatPageFragmentEnterMethod != null) {
                 Class<?> fragmentClass = chatPageFragmentEnterMethod.getDeclaringClass();
-                List<MethodData> methods = dexKit.findMethod(
+                List<MethodData> methods = dexQueries.findMethod(
                         mkMethodUsingStrings("onExitBegin"));
                 for (MethodData methodData : methods) {
                     try {
@@ -3755,7 +3784,7 @@ public class DexFinder {
             // then resolve the send entry if the cached snapshot does not contain one.
             ensureSnapshotLoaded();
             if (chatFooterSendClickMethod != null) return;
-            List<MethodData> methods = dexKit.findMethod(
+            List<MethodData> methods = dexQueries.findMethod(
                     mkMethodUsingStringsAndName("onClick",
                             "MicroMsg.ChatFooter",
                             "send msg onClick",
@@ -3770,7 +3799,7 @@ public class DexFinder {
                 } catch (Throwable ignored) {}
             }
             if (chatFooterSendClickMethod == null) {
-                methods = dexKit.findMethod(
+                methods = dexQueries.findMethod(
                         mkMethodUsingStringsAndName("onClick", "send msg onClick"));
                 for (MethodData methodData : methods) {
                     try {
@@ -3790,10 +3819,9 @@ public class DexFinder {
     }
 
     // ============ DexKit 结果缓存 ============
-    private boolean ensureSnapshotLoaded() {
-        if (resolutionFinished) return true;
-        if (cacheLoadAttempted) return false;
-        return loadCache();
+    /** Load one persisted snapshot; each resolver decides readiness from its own validated result. */
+    private void ensureSnapshotLoaded() {
+        if (!cacheLoadAttempted) loadCache();
     }
 
     private synchronized boolean loadCache() {
@@ -4941,7 +4969,7 @@ public class DexFinder {
     private Method findSnsUploadManagerGetter(Class<?> managerClass) {
         if (managerClass == null) return null;
         try {
-            List<MethodData> methods = dexKit.findMethod(
+            List<MethodData> methods = dexQueries.findMethod(
                     mkMethodUsingStrings("getSnsUploadManager"));
             for (MethodData methodData : methods) {
                 try {
@@ -4959,7 +4987,7 @@ public class DexFinder {
     private Method findSnsHelperChainMethod(String marker) {
         if (snsUploadPackHelperClass == null) return null;
         try {
-            List<MethodData> methods = dexKit.findMethod(mkMethodUsingStrings(marker));
+            List<MethodData> methods = dexQueries.findMethod(mkMethodUsingStrings(marker));
             for (MethodData methodData : methods) {
                 try {
                     Method method = methodData.getMethodInstance(classLoader);
@@ -4977,7 +5005,7 @@ public class DexFinder {
     private Method findSnsAddImageMethod(Class<?> helperClass) {
         if (helperClass == null) return null;
         try {
-            List<MethodData> methods = dexKit.findMethod(mkMethodUsingStrings("addImageMediaObjByPath"));
+            List<MethodData> methods = dexQueries.findMethod(mkMethodUsingStrings("addImageMediaObjByPath"));
             for (MethodData methodData : methods) {
                 try {
                     Method method = methodData.getMethodInstance(classLoader);
@@ -5005,7 +5033,7 @@ public class DexFinder {
         LinkedHashSet<Method> candidates = new LinkedHashSet<>();
         for (String anchor : new String[]{"addSightObjectByPath", "produceSightByPath"}) {
             try {
-                for (MethodData data : dexKit.findMethod(mkMethodUsingStrings(anchor))) {
+                for (MethodData data : dexQueries.findMethod(mkMethodUsingStrings(anchor))) {
                     try {
                         Method method = data.getMethodInstance(classLoader);
                         if (isSnsAddVideoMethod(helperClass, method)) candidates.add(method);
@@ -5033,7 +5061,7 @@ public class DexFinder {
     private Method findSnsCommitMethod(Class<?> helperClass) {
         if (helperClass == null) return null;
         try {
-            List<MethodData> methods = dexKit.findMethod(mkMethodUsingStrings("commit sns info ret %d"));
+            List<MethodData> methods = dexQueries.findMethod(mkMethodUsingStrings("commit sns info ret %d"));
             for (MethodData methodData : methods) {
                 try {
                     Method method = methodData.getMethodInstance(classLoader);
@@ -5054,7 +5082,7 @@ public class DexFinder {
     private Method findSnsUploadCheckMethod(Class<?> managerClass) {
         if (managerClass == null) return null;
         try {
-            List<MethodData> methods = dexKit.findMethod(mkMethodUsingStrings("checkPostInUI"));
+            List<MethodData> methods = dexQueries.findMethod(mkMethodUsingStrings("checkPostInUI"));
             for (MethodData methodData : methods) {
                 try {
                     Method method = methodData.getMethodInstance(classLoader);
@@ -5565,7 +5593,7 @@ public class DexFinder {
         if (out == null || anchors == null) return;
         for (String[] anchor : anchors) {
             try {
-                List<ClassData> classes = dexKit.findClass(mkClassUsingStrings(anchor));
+                List<ClassData> classes = dexQueries.findClass(mkClassUsingStrings(anchor));
                 int max = Math.min(classes.size(), maxCount);
                 for (int i = 0; i < max; i++) {
                     try {
@@ -5580,7 +5608,7 @@ public class DexFinder {
 
     private Class<?> findFirstClassByStrings(String... strings) {
         try {
-            List<ClassData> classes = dexKit.findClass(mkClassUsingStrings(strings));
+            List<ClassData> classes = dexQueries.findClass(mkClassUsingStrings(strings));
             for (ClassData cd : classes) {
                 try {
                     return KavaReflector.loadClass(cd.getName(), classLoader);
@@ -5655,7 +5683,7 @@ public class DexFinder {
     }
 
     public void resolveGroupSolitaireApi() {
-        if (ensureSnapshotLoaded()) return;
+        ensureSnapshotLoaded();
         try {
             if (groupSolitaireSendMethod != null && groupSolitairePluginClass != null) return;
             List<Class<?>> candidates = new ArrayList<>();
@@ -5749,7 +5777,7 @@ public class DexFinder {
         if (out == null || anchors == null) return;
         for (String[] anchor : anchors) {
             try {
-                List<ClassData> classes = dexKit.findClass(mkClassUsingStrings(anchor));
+                List<ClassData> classes = dexQueries.findClass(mkClassUsingStrings(anchor));
                 int max = Math.min(classes.size(), maxCount);
                 for (int i = 0; i < max; i++) {
                     try {
@@ -5765,7 +5793,7 @@ public class DexFinder {
         if (out == null || anchors == null) return;
         for (String[] anchor : anchors) {
             try {
-                List<MethodData> methods = dexKit.findMethod(mkMethodUsingStrings(anchor));
+                List<MethodData> methods = dexQueries.findMethod(mkMethodUsingStrings(anchor));
                 int max = Math.min(methods.size(), maxCount);
                 for (int i = 0; i < max; i++) {
                     try {
@@ -5781,7 +5809,7 @@ public class DexFinder {
         if (out == null || anchors == null) return;
         for (String[] anchor : anchors) {
             try {
-                List<MethodData> methods = dexKit.findMethod(mkMethodUsingStrings(anchor));
+                List<MethodData> methods = dexQueries.findMethod(mkMethodUsingStrings(anchor));
                 int max = Math.min(methods.size(), maxCount);
                 for (int i = 0; i < max; i++) {
                     try {
@@ -5909,7 +5937,7 @@ public class DexFinder {
         ecsGiftMsgClass = null;
         ecsGiftLocatorResolved = false;
         try {
-            for (MethodData md : dexKit.findMethod(mkMethodUsingStrings("updateGiftMsgByCgi"))) {
+            for (MethodData md : dexQueries.findMethod(mkMethodUsingStrings("updateGiftMsgByCgi"))) {
                 Class<?> task = KavaReflector.loadClass(md.getClassName(), classLoader);
                 if (task == null) continue;
                 for (Constructor<?> ctor : KavaReflector.declaredConstructors(task)) {
@@ -6145,7 +6173,7 @@ public class DexFinder {
             methods.add(new MethodMatcher().name("op").paramTypes("int", "java.lang.Object[]"));
             cm.methods(methods);
             fc.matcher(cm);
-            for (ClassData cd : dexKit.findClass(fc)) {
+            for (ClassData cd : dexQueries.findClass(fc)) {
                 try {
                     Class<?> cl = KavaReflector.loadClass(cd.getName(), classLoader);
                     if (cl != null) return cl;
@@ -6164,7 +6192,7 @@ public class DexFinder {
             cm.addMethod(new MethodMatcher().name("<init>").paramTypes("byte[]"));
             cm.addMethod(new MethodMatcher().name("toByteArray").returnType("byte[]"));
             fc.matcher(cm);
-            for (ClassData cd : dexKit.findClass(fc)) {
+            for (ClassData cd : dexQueries.findClass(fc)) {
                 try {
                     Class<?> cl = KavaReflector.loadClass(cd.getName(), classLoader);
                     if (KavaReflector.findConstructor(cl, byte[].class) != null
@@ -6189,7 +6217,7 @@ public class DexFinder {
             methods.add(new MethodMatcher().name("getType").returnType(int.class).usingNumbers(cgiId));
             cm.methods(methods);
             fc.matcher(cm);
-            for (ClassData cd : dexKit.findClass(fc)) {
+            for (ClassData cd : dexQueries.findClass(fc)) {
                 Class<?> cl = KavaReflector.loadClass(cd.getName(), classLoader);
                 if (isNativeNetSceneCandidate(cl, cgiId)) {
                     logDetail("原生NetScene定位: uri=" + uri + " type=" + cgiId + " class=" + cl.getName());
@@ -6200,7 +6228,7 @@ public class DexFinder {
 
         try {
             FindMethod fm = mkMethodUsingStrings(uri);
-            for (MethodData md : dexKit.findMethod(fm)) {
+            for (MethodData md : dexQueries.findMethod(fm)) {
                 Class<?> cl = KavaReflector.loadClass(md.getClassName(), classLoader);
                 if (isNativeNetSceneCandidate(cl, cgiId)) {
                     logDetail("原生NetScene定位: uri=" + uri + " type=" + cgiId + " class=" + cl.getName());
@@ -6243,7 +6271,7 @@ public class DexFinder {
             cm.addMethod(new MethodMatcher().name("<init>"));
             cm.addMethod(new MethodMatcher().name("op").paramTypes("int", "java.lang.Object[]").returnType("int"));
             fc.matcher(cm);
-            for (ClassData cd : dexKit.findClass(fc)) {
+            for (ClassData cd : dexQueries.findClass(fc)) {
                 try {
                     Class<?> cl = KavaReflector.loadClass(cd.getName(), classLoader);
                     if (KavaReflector.findConstructor(cl) != null
@@ -6267,7 +6295,7 @@ public class DexFinder {
             cm.addFieldForType(protoBase);
             cm.addFieldForType(String.class);
             fc.matcher(cm);
-            for (ClassData cd : dexKit.findClass(fc)) {
+            for (ClassData cd : dexQueries.findClass(fc)) {
                 try {
                     Class<?> cl = KavaReflector.loadClass(cd.getName(), classLoader);
                     if (cl != null && hasConfigBuilderShape(cl, protoBase)) return cl;
@@ -6330,7 +6358,7 @@ public class DexFinder {
     private Class<?> findProtobufNetSceneBaseClass() {
         try {
             FindClass fc = mkClassUsingStrings("MicroMsg.NetSceneBase");
-            for (ClassData cd : dexKit.findClass(fc)) {
+            for (ClassData cd : dexQueries.findClass(fc)) {
                 try {
                     Class<?> cl = KavaReflector.loadClass(cd.getName(), classLoader);
                     if (isProtobufNetSceneBaseClass(cl)) return cl;
@@ -6366,7 +6394,7 @@ public class DexFinder {
             mm.returnType(int.class);
             mm.paramCount(5);
             fm.matcher(mm);
-            for (MethodData md : dexKit.findMethod(fm)) {
+            for (MethodData md : dexQueries.findMethod(fm)) {
                 try {
                     Method method = md.getMethodInstance(classLoader);
                     if (!isProtobufCallbackMethod(method)) continue;
@@ -6423,7 +6451,7 @@ public class DexFinder {
             mm.addParamType(callback);
             mm.addParamType(boolean.class);
             fm.matcher(mm);
-            for (MethodData md : dexKit.findMethod(fm)) {
+            for (MethodData md : dexQueries.findMethod(fm)) {
                 try {
                     Method method = md.getMethodInstance(classLoader);
                     Class<?>[] params = method != null ? method.getParameterTypes() : null;
@@ -6449,7 +6477,7 @@ public class DexFinder {
             mm.name("d");
             mm.paramCount(3);
             fm.matcher(mm);
-            for (MethodData md : dexKit.findMethod(fm)) {
+            for (MethodData md : dexQueries.findMethod(fm)) {
                 try {
                     Method method = md.getMethodInstance(classLoader);
                     if (isProtobufStaticDispatch(method, reqResp, callback)) {
@@ -6582,7 +6610,7 @@ public class DexFinder {
         };
         for (String[] anchor : anchors) {
             try {
-                List<ClassData> classes = dexKit.findClass(mkClassUsingStrings(anchor));
+                List<ClassData> classes = dexQueries.findClass(mkClassUsingStrings(anchor));
                 int max = Math.min(classes.size(), 30);
                 for (int i = 0; i < max; i++) {
                     try {

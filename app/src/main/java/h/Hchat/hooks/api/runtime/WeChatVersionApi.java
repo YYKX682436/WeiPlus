@@ -49,15 +49,30 @@ public final class WeChatVersionApi {
     }
 
     public synchronized WeChatVersionInfo current() {
+        return current(null, null);
+    }
+
+    public synchronized WeChatVersionInfo current(PackageInfo packageInfo, ApplicationInfo appInfo) {
         WeChatVersionInfo value = cached;
         long now = System.currentTimeMillis();
         if (value != null && now - cachedAt < IDENTITY_REFRESH_INTERVAL_MS) return value;
-        return refresh();
+        return refresh(packageInfo, appInfo);
     }
 
     /** Force a fresh hashless APK/patch identity check after a Tinker or runtime transition. */
     public synchronized WeChatVersionInfo refresh() {
         WeChatVersionInfo fresh = build(hostContext, classLoader);
+        cached = fresh;
+        cachedAt = System.currentTimeMillis();
+        return fresh;
+    }
+
+    /** Refreshes after a known Tinker transition using the already-read package metadata. */
+    public synchronized WeChatVersionInfo refresh(PackageInfo packageInfo, ApplicationInfo appInfo) {
+        WeChatVersionInfo fresh = packageInfo == null
+                ? build(hostContext, classLoader)
+                : buildForRuntimeIdentity(hostContext, hostContext.getPackageName(),
+                        packageInfo, appInfo, classLoader);
         cached = fresh;
         cachedAt = System.currentTimeMillis();
         return fresh;
@@ -113,12 +128,12 @@ public final class WeChatVersionApi {
         return buildForPackage(context, packageName, packageInfo, appInfo, loader);
     }
 
-    /** Package-ready counterpart; uses the supplied PackageInfo/ApplicationInfo, not Application. */
-    public static WeChatVersionInfo buildForPackageReady(Context metadataContext,
-                                                         String packageName,
-                                                         PackageInfo packageInfo,
-                                                         ApplicationInfo appInfo,
-                                                         ClassLoader loader) {
+    /** Builds version diagnostics and runtime identity after a real host Context is available. */
+    public static WeChatVersionInfo buildForRuntimeIdentity(Context metadataContext,
+                                                            String packageName,
+                                                            PackageInfo packageInfo,
+                                                            ApplicationInfo appInfo,
+                                                            ClassLoader loader) {
         return buildForPackage(metadataContext, packageName, packageInfo, appInfo, loader);
     }
 
@@ -162,10 +177,17 @@ public final class WeChatVersionApi {
 
     public static boolean hasCompleteRuntimeIdentity(WeChatVersionInfo info) {
         return info != null
-                && WeChatVersionGate.isTargetPackage(info.packageName)
-                && WeChatVersionGate.parse(info.versionName) != null
-                && !TextUtils.isEmpty(info.apkDexIdentity)
-                && !TextUtils.isEmpty(info.cacheKey);
+                && ("com.tencent.mm".equals(info.packageName)
+                || "com.tencent.mm.wx".equals(info.packageName))
+                && info.apkDexIdentity != null && !info.apkDexIdentity.isEmpty()
+                && info.cacheKey != null && !info.cacheKey.isEmpty();
+    }
+
+    /** Stable host-generation identity; version labels and ClassLoader generation are excluded. */
+    public static String hostIdentityKey(WeChatVersionInfo info) {
+        if (!hasCompleteRuntimeIdentity(info)) return "";
+        return info.packageName + "|" + info.apkDexIdentity + "|" + info.patchFileIdentity
+                + "|" + info.tinkerId + "|" + info.patchId;
     }
 
     public static String classLoaderIdentity(ClassLoader loader) {

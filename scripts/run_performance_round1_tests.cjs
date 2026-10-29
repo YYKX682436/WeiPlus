@@ -9,7 +9,7 @@ const root = path.resolve(__dirname, '..');
 const assert = require('node:assert/strict');
 const finderSource = fs.readFileSync(path.join(root,'app/src/main/java/h/Hchat/dexkit/DexFinder.java'),'utf8');
 const summaryLocator = finderSource.slice(finderSource.indexOf('public synchronized void resolveMsgDescTextApi()'),finderSource.indexOf('private boolean isMsgDescTextMethod('));
-assert(summaryLocator.indexOf('DexMethodCache.INSTANCE.loadList') >= 0 && summaryLocator.indexOf('DexMethodCache.INSTANCE.loadList') < summaryLocator.indexOf('dexKit.findMethod'));
+assert(summaryLocator.indexOf('DexMethodCache.INSTANCE.loadList') >= 0 && summaryLocator.indexOf('DexMethodCache.INSTANCE.loadList') < summaryLocator.indexOf('dexQueries.findMethod'));
 assert(summaryLocator.includes('DexMethodCache.INSTANCE.saveList'));
 assert(summaryLocator.includes('summary_v" + MSG_DESC_LOCATOR_VERSION'));
 

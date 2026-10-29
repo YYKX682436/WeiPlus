@@ -1,6 +1,6 @@
 package h.Hchat.hooks.api.runtime;
 
-/** Tracks the approved host identity across package-ready and Tinker loader generations. */
+/** Tracks a runtime-verified host identity across legitimate Tinker loader generations. */
 public final class HostRuntimeIdentityDecision {
     public enum Result {
         SAME_GENERATION,
@@ -53,6 +53,9 @@ public final class HostRuntimeIdentityDecision {
 
     public synchronized String approvedLoaderIdentity() { return approvedLoaderIdentity; }
     public synchronized boolean isInvalidated() { return invalidated; }
+    public synchronized boolean isApproved() {
+        return !invalidated && !empty(approvedHostIdentity) && !empty(approvedLoaderIdentity);
+    }
 
     private void invalidate(Runnable action) {
         if (invalidated) return;

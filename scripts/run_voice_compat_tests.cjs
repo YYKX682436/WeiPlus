@@ -63,7 +63,8 @@ const stubs = {
             public boolean lookupComplete() { return voiceMessagePathLookupComplete; }
             public void resolveMessagePath() {
                 ${fragment('            if (voiceMessagePathMethod == null && !voiceMessagePathLookupComplete)',
-                    '            if (voiceFinishRecordMethod == null && voiceStartRecordMethod != null)')}
+                    '            if (voiceFinishRecordMethod == null && voiceStartRecordMethod != null')
+                    .replaceAll('dexQueries.findMethod(', 'dexKit.findMethod(')}
             }
             public boolean loadMessagePathCache() {
                 ${fragment('            String savedKey = cachePrefs.getString(CACHE_KEY, "");',

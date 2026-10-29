@@ -11,7 +11,6 @@ try {
  fs.mkdirSync(classes);
  run(process.env.JAVAC || 'javac',['-d',classes,...sources(__dirname),
   path.join(repo,'app/src/main/java/h/Hchat/hooks/api/runtime/WeChatVersionApi.java'),
-  path.join(repo,'app/src/main/java/h/Hchat/hooks/api/runtime/WeChatVersionGate.java'),
   path.join(repo,'app/src/main/java/h/Hchat/hooks/api/runtime/DexArchiveIdentity.java')]);
  run(process.env.JAVA || 'java',['-cp',classes,'StartupVersionRegression',temp]);
 } finally { fs.rmSync(temp,{recursive:true,force:true}); }

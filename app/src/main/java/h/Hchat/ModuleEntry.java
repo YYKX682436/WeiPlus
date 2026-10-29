@@ -5,7 +5,6 @@ import android.content.Context;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
-import android.os.Build;
 import android.os.Process;
 import h.Hchat.dexkit.DexBridgeHolder;
 import h.Hchat.dexkit.DexFinder;
@@ -13,7 +12,6 @@ import h.Hchat.event.EventBus;
 import h.Hchat.hooks.api.media.WeChatImageApi;
 import h.Hchat.hooks.api.model.WeChatVersionInfo;
 import h.Hchat.hooks.api.runtime.WeChatVersionApi;
-import h.Hchat.hooks.api.runtime.WeChatVersionGate;
 import h.Hchat.hooks.api.runtime.HostRuntimeIdentityDecision;
 import h.Hchat.hooks.core.DexInstallScheduler;
 import h.Hchat.hooks.core.FeatureContext;
@@ -62,6 +60,12 @@ public class ModuleEntry extends XposedModule {
   private String processName;
   private boolean packageReady;
   private final HostRuntimeIdentityDecision runtimeIdentity = new HostRuntimeIdentityDecision();
+  private final Object runtimeVersionApiLock = new Object();
+  private WeChatVersionApi runtimeVersionApi;
+  private String runtimeVersionApiPackage = "";
+  private String runtimeVersionApiLoader = "";
+  private long lastTinkerIdentityRefreshAt;
+  private static final long TINKER_IDENTITY_REFRESH_COOLDOWN_MS = 3000L;
   private volatile boolean hostIdentityInvalidated;
   private final java.util.concurrent.atomic.AtomicBoolean applicationReady =
       new java.util.concurrent.atomic.AtomicBoolean();
@@ -91,10 +95,7 @@ public class ModuleEntry extends XposedModule {
   public synchronized void onPackageReady(PackageReadyParam param) {
     String host = param.getPackageName();
     if (packageReady
-        || !isWeChatPackage(host)
-        || processName == null
-        || !(processName.equals(host) || processName.startsWith(host + ":"))) return;
-    if (!checkMinimumVersion(param, "package_ready")) return;
+        || !WechatPackage.isModuleEntryScope(host, processName)) return;
     packageReady = true;
     try {
       installPackageHooks(param);
@@ -103,75 +104,11 @@ public class ModuleEntry extends XposedModule {
     }
   }
 
-  /** Run before any early hook; PackageReadyParam does not guarantee an Application exists. */
-  private boolean checkMinimumVersion(PackageReadyParam param, String source) {
-    String packageName = param != null ? param.getPackageName() : "";
-    try {
-      ApplicationInfo supplied = param != null ? param.getApplicationInfo() : null;
-      if (supplied == null || !packageName.equals(supplied.packageName)) {
-        HLog.e(TAG + " version_gate=reject reason=package_application_info_mismatch source=" + source);
-        return false;
-      }
-      Context systemContext = getSystemContext();
-      if (systemContext == null || systemContext.getPackageManager() == null) {
-        HLog.e(TAG + " version_gate=reject reason=package_manager_unavailable source=" + source);
-        return false;
-      }
-      PackageInfo packageInfo = systemContext.getPackageManager().getPackageInfo(packageName, 0);
-      ApplicationInfo installed = packageInfo != null ? packageInfo.applicationInfo : null;
-      if (packageInfo == null || installed == null || !packageName.equals(installed.packageName)
-          || !samePath(supplied.sourceDir, installed.sourceDir)
-          || !samePaths(supplied.splitSourceDirs, installed.splitSourceDirs)) {
-        HLog.e(TAG + " version_gate=reject reason=package_identity_conflict source=" + source);
-        return false;
-      }
-      long packageVersionCode = Build.VERSION.SDK_INT >= 28
-          ? packageInfo.getLongVersionCode() : packageInfo.versionCode;
-      WeChatVersionGate.Decision decision = WeChatVersionGate.evaluateForProcess(
-          packageName, processName, packageInfo.versionName, packageVersionCode, true);
-      if (!decision.accepted) {
-        HLog.e(TAG + " version_gate=reject reason=" + decision.reason
-            + " version=" + packageInfo.versionName + " source=" + source);
-        return false;
-      }
-      WeChatVersionInfo info = WeChatVersionApi.buildForPackageReady(
-          systemContext, packageName, packageInfo, installed, param.getClassLoader());
-      if (!WeChatVersionApi.hasCompleteRuntimeIdentity(info)) {
-        HLog.e(TAG + " version_gate=reject reason=runtime_identity_incomplete version="
-            + info.versionName + " source=" + source);
-        return false;
-      }
-      if (!runtimeIdentity.approve(packageIdentity(info), info.classLoaderHash)) {
-        HLog.e(TAG + " version_gate=reject reason=runtime_identity_incomplete source=" + source);
-        return false;
-      }
-      HLog.i(TAG + " version_gate=accept package=" + packageName + " version="
-          + decision.versionString() + " process=" + processName);
-      return true;
-    } catch (Throwable failure) {
-      HLog.e(TAG + " version_gate=reject reason=identity_read_failed source=" + source, failure);
-      return false;
-    }
-  }
-
-  private Context getSystemContext() {
-    try {
-      Class<?> activityThread = Class.forName("android.app.ActivityThread");
-      java.lang.reflect.Method current = activityThread.getDeclaredMethod("currentActivityThread");
-      current.setAccessible(true);
-      Object thread = current.invoke(null);
-      java.lang.reflect.Method getSystem = activityThread.getDeclaredMethod("getSystemContext");
-      getSystem.setAccessible(true);
-      Object context = thread != null ? getSystem.invoke(thread) : null;
-      return context instanceof Context ? (Context) context : null;
-    } catch (Throwable ignored) {
-      return null;
-    }
-  }
-
   private boolean verifyRuntimeIdentity(Context context, ClassLoader loader, PackageReadyParam param,
                                        String source) {
-    if (hostIdentityInvalidated || context == null || param == null) return false;
+    if (hostIdentityInvalidated || context == null || param == null
+        || !WechatPackage.isTarget(param.getPackageName())
+        || !param.getPackageName().equals(context.getPackageName())) return false;
     try {
       PackageManager pm = context.getPackageManager();
       PackageInfo packageInfo = pm.getPackageInfo(param.getPackageName(), 0);
@@ -180,13 +117,27 @@ public class ModuleEntry extends XposedModule {
         invalidateHostIdentity(source + ":package_metadata_missing");
         return false;
       }
-      WeChatVersionInfo current = WeChatVersionApi.buildForPackageReady(
-          context, param.getPackageName(), packageInfo, appInfo,
-          loader != null ? loader : param.getClassLoader());
-      WeChatVersionGate.Decision decision = WeChatVersionGate.evaluate(
-          current.packageName, current.versionName, current.versionCode);
-      HostRuntimeIdentityDecision.Result identity = runtimeIdentity.verify(
-          decision.accepted ? packageIdentity(current) : "", current.classLoaderHash,
+      ClassLoader runtimeLoader = loader != null ? loader : param.getClassLoader();
+      WeChatVersionInfo current = currentRuntimeVersionInfo(
+          context, param.getPackageName(), packageInfo, appInfo, runtimeLoader, source);
+      if (!WeChatVersionApi.hasCompleteRuntimeIdentity(current)) {
+        invalidateHostIdentity(source + ":runtime_identity_incomplete");
+        return false;
+      }
+      String immutableIdentity = WeChatVersionApi.hostIdentityKey(current);
+      HostRuntimeIdentityDecision.Result identity;
+      if (!runtimeIdentity.isApproved()) {
+        if (!runtimeIdentity.approve(immutableIdentity, current.classLoaderHash)) {
+          invalidateHostIdentity(source + ":runtime_identity_unavailable");
+          return false;
+        }
+        HLog.i(TAG + " host_identity=approved package=" + current.packageName
+            + " version=" + current.versionName + " process=" + processName
+            + " source=" + source);
+        return true;
+      }
+      identity = runtimeIdentity.verify(
+          immutableIdentity, current.classLoaderHash,
           () -> invalidateHostIdentity(source + ":runtime_identity_changed"));
       if (identity == HostRuntimeIdentityDecision.Result.HOST_IDENTITY_CHANGED
           || identity == HostRuntimeIdentityDecision.Result.INCOMPLETE
@@ -204,24 +155,29 @@ public class ModuleEntry extends XposedModule {
     }
   }
 
-  private String packageIdentity(WeChatVersionInfo info) {
-    return info.packageName + "|" + info.versionName + "|" + info.versionCode + "|"
-        + info.apkDexIdentity + "|" + info.patchFileIdentity + "|" + info.tinkerId + "|" + info.patchId;
-  }
-
-  private boolean samePath(String left, String right) {
-    return left != null && right != null && new java.io.File(left).getAbsolutePath()
-        .equals(new java.io.File(right).getAbsolutePath());
-  }
-
-  private boolean samePaths(String[] left, String[] right) {
-    if (left == null || left.length == 0) return right == null || right.length == 0;
-    if (right == null || left.length != right.length) return false;
-    java.util.Set<String> normalized = new java.util.HashSet<>();
-    for (String path : left) normalized.add(path == null ? "" : new java.io.File(path).getAbsolutePath());
-    for (String path : right) if (!normalized.remove(
-        path == null ? "" : new java.io.File(path).getAbsolutePath())) return false;
-    return normalized.isEmpty();
+  private WeChatVersionInfo currentRuntimeVersionInfo(Context context, String packageName,
+      PackageInfo packageInfo, ApplicationInfo appInfo, ClassLoader loader, String source) {
+    String loaderIdentity = WeChatVersionApi.classLoaderIdentity(loader);
+    synchronized (runtimeVersionApiLock) {
+      if (runtimeVersionApi == null || !runtimeVersionApiPackage.equals(packageName)
+          || !runtimeVersionApiLoader.equals(loaderIdentity)) {
+        runtimeVersionApi = new WeChatVersionApi(context, loader, null);
+        runtimeVersionApiPackage = packageName;
+        runtimeVersionApiLoader = loaderIdentity;
+        lastTinkerIdentityRefreshAt = 0L;
+        return runtimeVersionApi.current(packageInfo, appInfo);
+      }
+      long now = System.currentTimeMillis();
+      boolean tinkerTransitionComplete = "tinker_attach_after".equals(source)
+          || source.endsWith("_tinker_attach_after")
+          || "appbrand_tinker_attach".equals(source);
+      if (tinkerTransitionComplete
+          && now - lastTinkerIdentityRefreshAt >= TINKER_IDENTITY_REFRESH_COOLDOWN_MS) {
+        lastTinkerIdentityRefreshAt = now;
+        return runtimeVersionApi.refresh(packageInfo, appInfo);
+      }
+      return runtimeVersionApi.current(packageInfo, appInfo);
+    }
   }
 
   private void invalidateHostIdentity(String reason) {
