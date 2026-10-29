@@ -63,7 +63,7 @@ public class WeChatDatabaseListenerApiRegressionTest {
         WeChatMessageChangeApi messageApi =
                 new WeChatMessageChangeApi(databaseApi, null, logs::add);
         List<WeChatMessageChangeApi.MessageChange> changes = new ArrayList<>();
-        messageApi.subscribe(changes::add);
+        WeChatMessageChangeApi.Subscription firstListener = messageApi.subscribe(changes::add);
 
         messageApi.install();
         assertTrue("the validated wrapper's insert, update, and delete hooks are active",
@@ -133,6 +133,7 @@ public class WeChatDatabaseListenerApiRegressionTest {
         assertTrue(registry.installationGeneration() > oldGeneration);
         assertFalse("revoked wrapper callbacks are no longer operational", databaseApi.isOperational());
         assertFalse("message API does not report a revoked hook generation as installed", messageApi.isInstalled());
+        assertFalse("business listener credentials expire with the hook generation", firstListener.isActive());
         assertEquals(0, databaseApi.hookedWrapperMutationMethodCount());
 
         messageApi.install();
@@ -140,7 +141,13 @@ public class WeChatDatabaseListenerApiRegressionTest {
         assertTrue(messageApi.isInstalled());
         runNested(databaseApi, insert, dbInsert,
                 new Object[]{"message", null, values}, 72L, null);
-        assertEquals("reinstalling the API does not duplicate its stable listener", 4, changes.size());
+        assertEquals("reinstalling hooks does not revive a revoked business callback", 3, changes.size());
+        WeChatMessageChangeApi.Subscription replacementListener = messageApi.subscribe(changes::add);
+        assertTrue("business code can explicitly subscribe in the replacement generation",
+                replacementListener.isActive());
+        runNested(databaseApi, insert, dbInsert,
+                new Object[]{"message", null, values}, 72L, null);
+        assertEquals("the replacement business callback receives one event", 4, changes.size());
 
         Method replacementInsert = ReplacementWrapperFixture.class.getDeclaredMethod(
                 "putRow", String.class, String.class, ContentValues.class);

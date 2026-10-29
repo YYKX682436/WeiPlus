@@ -33,6 +33,7 @@ public final class WeChatMessageChangeApi {
     private static final class Consumer {
         final Requirement requirement;
         final Listener listener;
+        volatile boolean active = true;
         Consumer(Requirement requirement, Listener listener) {
             this.requirement = requirement;
             this.listener = listener;
@@ -74,9 +75,7 @@ public final class WeChatMessageChangeApi {
         }
 
         public void unsubscribe() {
-            if (!active) return;
-            active = false;
-            listeners.remove(consumer);
+            WeChatMessageChangeApi.this.unsubscribe(this);
         }
 
         public boolean isActive() {
@@ -89,10 +88,12 @@ public final class WeChatMessageChangeApi {
     private final WeChatAccountApi accountApi;
     private final Logger logger;
     private final CopyOnWriteArrayList<Consumer> listeners = new CopyOnWriteArrayList<>();
-    private final WeChatDatabaseListenerApi.Listener databaseChangeListener = this::onDatabaseChanged;
-    private volatile boolean installed;
+    private final CopyOnWriteArrayList<Subscription> subscriptions = new CopyOnWriteArrayList<>();
     private volatile long installedGeneration = Long.MIN_VALUE;
+    private volatile long stateGeneration = Long.MIN_VALUE;
     private volatile WeChatDatabaseListenerApi.Subscription databaseSubscription;
+    private volatile AutoCloseable generationCleanup;
+    private volatile boolean destroyed;
 
     public WeChatMessageChangeApi(WeChatDatabaseListenerApi databaseListenerApi,
                                   WeChatMessageStoreApi messageStoreApi,
@@ -116,32 +117,38 @@ public final class WeChatMessageChangeApi {
 
     public boolean isInstalled() {
         WeChatDatabaseListenerApi.Subscription subscription = databaseSubscription;
-        return installed
-                && subscription != null
+        return subscription != null
                 && subscription.isActive()
                 && HookRegistry.get().isInstallationGenerationActive(installedGeneration)
+                && stateGeneration == installedGeneration
                 && databaseListenerApi != null
                 && databaseListenerApi.isOperational();
     }
 
-    public Subscription subscribe(Listener listener) {
+    public synchronized Subscription subscribe(Listener listener) {
         return subscribe(change -> true, listener);
     }
 
     /** Select interest from the immutable mutation before any row lookup/parsing. */
-    public Subscription subscribe(Requirement requirement, Listener listener) {
-        if (requirement == null || listener == null) return null;
+    public synchronized Subscription subscribe(Requirement requirement, Listener listener) {
+        if (destroyed || requirement == null || listener == null) return null;
+        if (!ensureGenerationCleanup()) return null;
         Consumer consumer = new Consumer(requirement, listener);
         listeners.add(consumer);
-        return new Subscription(consumer);
+        Subscription subscription = new Subscription(consumer);
+        subscriptions.add(subscription);
+        return subscription;
     }
 
     public void unsubscribe(Listener listener) {
-        listeners.removeIf(consumer -> consumer.listener == listener);
+        if (listener == null) return;
+        for (Subscription subscription : subscriptions) {
+            if (subscription.consumer.listener == listener) unsubscribe(subscription);
+        }
     }
 
     public synchronized void install() {
-        if (isInstalled() || databaseListenerApi == null) return;
+        if (destroyed || !ensureGenerationCleanup() || isInstalled() || databaseListenerApi == null) return;
         WeChatDatabaseListenerApi.Subscription oldSubscription = databaseSubscription;
         if (oldSubscription != null) {
             oldSubscription.unsubscribe();
@@ -156,30 +163,98 @@ public final class WeChatMessageChangeApi {
                     + " wrapperInserts="
                     + databaseListenerApi.hookedWrapperInsertMethodCount()
                     + " " + databaseListenerApi.operationalDiagnostics());
-            installed = false;
             return;
         }
-        databaseSubscription = databaseListenerApi.subscribe(databaseChangeListener);
-        installedGeneration = HookRegistry.get().installationGeneration();
-        installed = databaseSubscription != null;
-        log("消息变更监听已安装");
+        long generation = stateGeneration;
+        databaseSubscription = databaseListenerApi.subscribe(change -> {
+            if (isStateGenerationActive(generation)) onDatabaseChanged(change, generation);
+        });
+        installedGeneration = stateGeneration;
+        if (databaseSubscription != null) {
+            log("消息变更监听已安装");
+        }
     }
 
-    private void onDatabaseChanged(DatabaseChange change) {
+    public synchronized void destroy() {
+        destroyed = true;
+        clearGenerationState(stateGeneration);
+    }
+
+    private synchronized boolean ensureGenerationCleanup() {
+        if (destroyed) return false;
+        HookRegistry registry = HookRegistry.get();
+        long current = registry.installationGeneration();
+        if (!registry.isInstallationGenerationActive(current)) return false;
+        if (stateGeneration == current && generationCleanup != null) return true;
+        clearGenerationState(stateGeneration);
+        stateGeneration = current;
+        try {
+            generationCleanup = registry.registerGenerationCleanup(() -> onGenerationInvalidated(current));
+            return true;
+        } catch (Throwable error) {
+            stateGeneration = Long.MIN_VALUE;
+            log("消息变更订阅代次注册失败: " + error.getClass().getSimpleName());
+            return false;
+        }
+    }
+
+    private synchronized void onGenerationInvalidated(long invalidatedGeneration) {
+        if (stateGeneration != invalidatedGeneration) return;
+        clearGenerationState(invalidatedGeneration);
+    }
+
+    private synchronized void clearGenerationState(long expectedGeneration) {
+        if (expectedGeneration != Long.MIN_VALUE && stateGeneration != expectedGeneration) return;
+        WeChatDatabaseListenerApi.Subscription databaseToken = databaseSubscription;
+        databaseSubscription = null;
+        if (databaseToken != null) databaseToken.unsubscribe();
+        installedGeneration = Long.MIN_VALUE;
+        for (Subscription subscription : subscriptions) {
+            subscription.active = false;
+            subscription.consumer.active = false;
+        }
+        subscriptions.clear();
+        listeners.clear();
+        AutoCloseable cleanup = generationCleanup;
+        generationCleanup = null;
+        stateGeneration = Long.MIN_VALUE;
+        if (cleanup != null) {
+            try { cleanup.close(); }
+            catch (Throwable error) { log("消息变更订阅凭证释放失败: " + error.getClass().getSimpleName()); }
+        }
+    }
+
+    private synchronized void unsubscribe(Subscription subscription) {
+        if (subscription == null || !subscription.active) return;
+        subscription.active = false;
+        subscription.consumer.active = false;
+        subscriptions.remove(subscription);
+        listeners.remove(subscription.consumer);
+    }
+
+    private boolean isStateGenerationActive(long generation) {
+        return stateGeneration == generation
+                && HookRegistry.get().isInstallationGenerationActive(generation);
+    }
+
+    private void onDatabaseChanged(DatabaseChange change, long generation) {
+        if (!isStateGenerationActive(generation)) return;
         if (change == null || listeners.isEmpty() || !isMessageTable(change.table)) return;
         java.util.ArrayList<Consumer> interested = new java.util.ArrayList<>();
         for (Consumer consumer : listeners) {
+            if (!consumer.active || !isStateGenerationActive(generation)) continue;
             try {
                 if (consumer.requirement.needsMessage(change)) interested.add(consumer);
-            } catch (Throwable e) { log("消息需求回调失败: " + e.getMessage()); }
+            } catch (Throwable e) { log("消息需求回调失败: " + e.getClass().getSimpleName()); }
         }
         if (interested.isEmpty()) return;
         // Resolve on the mutation thread once, before a later write can change the row version.
         WeChatMessage message = resolveMessage(change);
         MessageChange event = new MessageChange(change, message);
         for (Consumer consumer : interested) {
+            if (!consumer.active || !isStateGenerationActive(generation)) continue;
             try { consumer.listener.onMessageChanged(event); }
-            catch (Throwable e) { log("消息变更回调失败: " + e.getMessage()); }
+            catch (Throwable e) { log("消息变更回调失败: " + e.getClass().getSimpleName()); }
         }
     }
 

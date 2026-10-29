@@ -34,11 +34,15 @@ public final class WeChatMessageEventApi {
     private final EventBus eventBus;
     private final Logger logger;
     private volatile io.github.libxposed.api.XposedInterface.HookHandle addMsgHook;
-    private volatile boolean patHooked;
+    private volatile io.github.libxposed.api.XposedInterface.HookHandle patHook;
     private final ConcurrentHashMap<String, Long> recentPatEvents = new ConcurrentHashMap<>();
     private final AddMsgEventDeduplicator addMsgDeduplicator = new AddMsgEventDeduplicator();
     private final CopyOnWriteArrayList<RawAddMsgListener> rawAddMsgListeners = new CopyOnWriteArrayList<>();
+    private final CopyOnWriteArrayList<RawSubscription> rawSubscriptions = new CopyOnWriteArrayList<>();
     private volatile boolean callbackVerified;
+    private volatile long stateGeneration = Long.MIN_VALUE;
+    private volatile AutoCloseable generationCleanup;
+    private volatile boolean destroyed;
 
     public WeChatMessageEventApi(DexFinder dexFinder,
                                  WeChatAccountApi accountApi,
@@ -53,16 +57,21 @@ public final class WeChatMessageEventApi {
     }
 
     public boolean isAvailable() {
-        return dexFinder != null && dexFinder.isAddMsgLocatorResolved()
+        return isLocatorResolved()
                 && parseApi != null && eventBus != null;
     }
 
+    public boolean isLocatorResolved() {
+        return dexFinder != null && dexFinder.isAddMsgLocatorResolved();
+    }
+
     public boolean isOperational() {
-        return HookRegistry.get().isActive(addMsgHook);
+        HookRegistry registry = HookRegistry.get();
+        return stateGeneration == registry.installationGeneration() && registry.isActive(addMsgHook);
     }
 
     public synchronized boolean installAddMsgHook() {
-        if (!isAvailable()) return false;
+        if (destroyed || !isAvailable() || !ensureGenerationCleanup()) return false;
         if (isOperational()) {
             installPatMsgHook();
             return true;
@@ -86,35 +95,39 @@ public final class WeChatMessageEventApi {
                             Object addMsg = request != null ? payloadField.get(request) : null;
                             if (stored != null && addMsg != null) {
                                 boolean fresh = dispatchAddMsg(addMsg);
-                                if (fresh) for (RawAddMsgListener listener : rawAddMsgListeners) {
-                                    try { listener.onRawAddMsg(addMsg); }
-                                    catch (Throwable e) { log("原始消息观察回调异常: " + e.getMessage()); }
-                                }
-                                if (!callbackVerified) {
-                                    callbackVerified = true;
-                                    log("AddMsg callback=verified observer=post_process");
+                                if (fresh) {
+                                    for (RawAddMsgListener listener : rawAddMsgListeners) {
+                                        try { listener.onRawAddMsg(addMsg); }
+                                        catch (Throwable e) { log("原始消息观察回调异常: " + e.getClass().getSimpleName()); }
+                                    }
+                                    if (!callbackVerified) {
+                                        callbackVerified = true;
+                                        log("AddMsg callback=verified observer=post_process");
+                                    }
                                 }
                             }
                         } catch (Throwable e) {
-                            log("AddMsg观察结果读取失败: " + e.getMessage());
+                            log("AddMsg观察结果读取失败: " + e.getClass().getSimpleName());
                         }
                         return result;
                     });
-        installPatMsgHook();
-        log("AddMsg定位=" + dexFinder.addMsgObserverMethod.getName() + " Hook="
-                + (isOperational() ? "installed" : "inactive"));
-        return isOperational();
+            installPatMsgHook();
+            log("AddMsg定位=" + dexFinder.addMsgObserverMethod.getName() + " Hook="
+                    + (isOperational() ? "installed" : "inactive"));
+            return isOperational();
         } catch (Throwable e) {
             addMsgHook = null;
-            log("AddMsg Hook安装失败: " + e.getMessage());
+            log("AddMsg Hook安装失败: " + e.getClass().getSimpleName());
             return false;
         }
     }
 
-    public RawSubscription subscribeRawAddMsg(RawAddMsgListener listener) {
-        if (listener == null) return null;
+    public synchronized RawSubscription subscribeRawAddMsg(RawAddMsgListener listener) {
+        if (listener == null || destroyed || !ensureGenerationCleanup()) return null;
         rawAddMsgListeners.addIfAbsent(listener);
-        return new RawSubscription(this, listener);
+        RawSubscription subscription = new RawSubscription(this, listener);
+        rawSubscriptions.add(subscription);
+        return subscription;
     }
 
     public static final class RawSubscription {
@@ -128,11 +141,15 @@ public final class WeChatMessageEventApi {
         }
 
         public void unsubscribe() {
-            if (active) {
-                active = false;
-                owner.rawAddMsgListeners.remove(listener);
-            }
+            owner.unsubscribe(this);
         }
+
+        public boolean isActive() { return active; }
+    }
+
+    public synchronized void destroy() {
+        destroyed = true;
+        clearGenerationState(stateGeneration);
     }
 
     public EventBus.Subscription subscribeMessage(EventHandler<Events.MessageReceived> handler) {
@@ -177,30 +194,81 @@ public final class WeChatMessageEventApi {
             }
             return true;
         } catch (Throwable e) {
-            log("派发消息事件失败: " + e.getMessage());
+            log("派发消息事件失败: " + e.getClass().getSimpleName());
             return false;
         }
     }
 
     private void installPatMsgHook() {
-        if (patHooked || dexFinder == null || dexFinder.patDisplayTemplateMethod == null
+        HookRegistry registry = HookRegistry.get();
+        if (registry.isActive(patHook) || dexFinder == null || dexFinder.patDisplayTemplateMethod == null
                 || eventBus == null) {
             return;
         }
-        HookRegistry.get()
-                .hook(
-                        dexFinder.patDisplayTemplateMethod,
-                        chain -> {
-                            if (!chain.getArgs().isEmpty()) {
-                                dispatchPatMsg(
-                                        chain.getArg(0),
-                                        chain.getArgs().size() > 1 ? chain.getArg(1) : null);
-                            }
-                            return chain.proceed();
-                        });
-        patHooked = true;
+        final long generation = registry.installationGeneration();
+        patHook = registry.hookOnce(
+                "wechat.pat.observer",
+                dexFinder.patDisplayTemplateMethod,
+                chain -> {
+                    if (!registry.isInstallationGenerationActive(generation)) return chain.proceed();
+                    if (!chain.getArgs().isEmpty()) {
+                        dispatchPatMsg(
+                                chain.getArg(0),
+                                chain.getArgs().size() > 1 ? chain.getArg(1) : null);
+                    }
+                    return chain.proceed();
+                });
         log("拍一拍事件Hook: " + dexFinder.patDisplayTemplateMethod.getDeclaringClass().getName()
                 + "#" + dexFinder.patDisplayTemplateMethod.getName());
+    }
+
+    private synchronized boolean ensureGenerationCleanup() {
+        HookRegistry registry = HookRegistry.get();
+        long current = registry.installationGeneration();
+        if (!registry.isInstallationGenerationActive(current)) return false;
+        if (stateGeneration == current && generationCleanup != null) return true;
+        clearGenerationState(stateGeneration);
+        stateGeneration = current;
+        try {
+            generationCleanup = registry.registerGenerationCleanup(() -> onGenerationInvalidated(current));
+            return true;
+        } catch (Throwable error) {
+            stateGeneration = Long.MIN_VALUE;
+            log("AddMsg订阅代次注册失败: " + error.getClass().getSimpleName());
+            return false;
+        }
+    }
+
+    private synchronized void onGenerationInvalidated(long invalidatedGeneration) {
+        if (stateGeneration != invalidatedGeneration) return;
+        clearGenerationState(invalidatedGeneration);
+    }
+
+    private synchronized void clearGenerationState(long expectedGeneration) {
+        if (expectedGeneration != Long.MIN_VALUE && stateGeneration != expectedGeneration) return;
+        for (RawSubscription subscription : rawSubscriptions) subscription.active = false;
+        rawSubscriptions.clear();
+        rawAddMsgListeners.clear();
+        addMsgHook = null;
+        patHook = null;
+        callbackVerified = false;
+        recentPatEvents.clear();
+        AutoCloseable cleanup = generationCleanup;
+        generationCleanup = null;
+        stateGeneration = Long.MIN_VALUE;
+        if (cleanup != null) {
+            try { cleanup.close(); }
+            catch (Throwable error) { log("AddMsg订阅凭证释放失败: " + error.getClass().getSimpleName()); }
+        }
+    }
+
+    private synchronized void unsubscribe(RawSubscription subscription) {
+        if (subscription == null || !subscription.active) return;
+        subscription.active = false;
+        rawSubscriptions.remove(subscription);
+        boolean stillSubscribed = rawSubscriptions.stream().anyMatch(
+                candidate -> candidate.active && candidate.listener == subscription.listener);
+        if (!stillSubscribed) rawAddMsgListeners.remove(subscription.listener);
     }
 
     private void dispatchPatMsg(Object patMsg, Object talkerArg) {
@@ -228,7 +296,7 @@ public final class WeChatMessageEventApi {
                     createTime,
                     svrId));
         } catch (Throwable e) {
-            log("派发拍一拍事件失败: " + e.getMessage());
+            log("派发拍一拍事件失败: " + e.getClass().getSimpleName());
         }
     }
 

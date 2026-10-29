@@ -359,9 +359,7 @@ public final class WeChatMessageObserveApi {
         }
 
         public void unsubscribe() {
-            if (!active) return;
-            active = false;
-            listeners.remove(listener);
+            unsubscribeSubscription(this);
         }
 
         public boolean isActive() {
@@ -375,12 +373,18 @@ public final class WeChatMessageObserveApi {
     private final WeChatAccountApi accountApi;
     private final Logger logger;
     private final CopyOnWriteArrayList<Listener> listeners = new CopyOnWriteArrayList<>();
+    private final CopyOnWriteArrayList<Subscription> listenerSubscriptions = new CopyOnWriteArrayList<>();
     private final ConcurrentHashMap<String, Long> recentOutgoing = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Long> recentIncomingDatabaseMessages = new ConcurrentHashMap<>();
-    private volatile boolean installed;
-    private volatile boolean pbLayerActive;
-    private volatile boolean dbLayerActive;
+    private volatile h.Hchat.event.EventBus.Subscription pbMessageSubscription;
+    private volatile h.Hchat.event.EventBus.Subscription pbPatSubscription;
+    private volatile WeChatMessageChangeApi.Subscription databaseSubscription;
+    private volatile long installationGeneration = Long.MIN_VALUE;
+    private volatile AutoCloseable generationCleanup;
+    private volatile boolean destroyed;
+    private volatile boolean pbEventObserved;
     private volatile long databaseIncomingStartedAt;
+    private volatile String lastReadinessDiagnostics = "";
 
     public WeChatMessageObserveApi(WeChatMessageEventApi eventApi,
                                    WeChatMessageChangeApi changeApi,
@@ -399,35 +403,177 @@ public final class WeChatMessageObserveApi {
                 || (changeApi != null && changeApi.isAvailable());
     }
 
-    public Subscription subscribe(Listener listener) {
-        if (listener == null) return null;
+    public synchronized Subscription subscribe(Listener listener) {
+        if (listener == null || destroyed || !ensureGenerationCleanup()) return null;
         listeners.addIfAbsent(listener);
-        return new Subscription(listener);
+        Subscription subscription = new Subscription(listener);
+        listenerSubscriptions.add(subscription);
+        return subscription;
     }
 
-    public void unsubscribe(Listener listener) {
-        if (listener != null) listeners.remove(listener);
+    public synchronized void unsubscribe(Listener listener) {
+        if (listener == null) return;
+        for (Subscription subscription : listenerSubscriptions) {
+            if (subscription.listener == listener) unsubscribeSubscription(subscription);
+        }
     }
 
     public synchronized void install() {
+        if (destroyed || !ensureGenerationCleanup()) return;
         boolean usePbLayer = eventApi != null && eventApi.isOperational();
-        if (usePbLayer && !pbLayerActive) {
-            eventApi.subscribeMessage(this::onMessageReceived);
-            eventApi.subscribePat(this::onPatDetected);
-            pbLayerActive = true;
+        if (usePbLayer && !hasActivePbSubscriptions()) {
+            clearPbSubscriptions();
+            long generation = installationGeneration;
+            h.Hchat.event.EventBus.Subscription message = eventApi.subscribeMessage(event -> {
+                if (isObserverGenerationActive(generation) && eventApi.isOperational()) {
+                    onMessageReceived(event, generation);
+                }
+            });
+            h.Hchat.event.EventBus.Subscription pat = eventApi.subscribePat(event -> {
+                if (isObserverGenerationActive(generation) && eventApi.isOperational()) {
+                    onPatDetected(event, generation);
+                }
+            });
+            if (message != null && message.isActive() && pat != null && pat.isActive()) {
+                pbMessageSubscription = message;
+                pbPatSubscription = pat;
+            } else {
+                eventApi.unsubscribe(message);
+                eventApi.unsubscribe(pat);
+            }
         }
-        if (changeApi != null && changeApi.isAvailable() && !dbLayerActive) {
+        if (changeApi != null && changeApi.isAvailable()
+                && (databaseSubscription == null || !databaseSubscription.isActive())) {
             databaseIncomingStartedAt = System.currentTimeMillis();
-            changeApi.subscribe(this::needsDatabaseMessage, this::onMessageChanged);
-            dbLayerActive = true;
+            long generation = installationGeneration;
+            databaseSubscription = changeApi.subscribe(
+                    change -> isObserverGenerationActive(generation) && needsDatabaseMessage(change),
+                    change -> {
+                        if (isObserverGenerationActive(generation)) onMessageChanged(change, generation);
+                    });
         }
-        installed = true;
-        log("消息观察已安装: pb=" + usePbLayer
-                + " db=" + (changeApi != null && changeApi.isAvailable()));
+        logReadinessIfChanged();
     }
 
-    private void onMessageReceived(Events.MessageReceived event) {
+    public synchronized String readinessDiagnostics() {
+        boolean locator = eventApi != null && eventApi.isLocatorResolved();
+        boolean hook = eventApi != null && eventApi.isOperational();
+        boolean pbSubscribed = hasActivePbSubscriptions();
+        boolean databaseSubscribed = databaseSubscription != null && databaseSubscription.isActive();
+        boolean databaseHook = changeApi != null && changeApi.isInstalled();
+        return "locator=" + locator + " hook=" + hook + " subscription=" + pbSubscribed
+                + " event=" + (pbEventObserved ? "observed" : "not_observed")
+                + " db_subscription=" + databaseSubscribed + " db_hook=" + databaseHook;
+    }
+
+    public synchronized boolean isPbLayerSubscribed() {
+        return hasActivePbSubscriptions();
+    }
+
+    public synchronized void destroy() {
+        destroyed = true;
+        clearInstallationState(installationGeneration);
+        clearListenerSubscriptions();
+    }
+
+    private synchronized boolean ensureGenerationCleanup() {
+        h.Hchat.hooks.core.HookRegistry registry = h.Hchat.hooks.core.HookRegistry.get();
+        long current = registry.installationGeneration();
+        if (!registry.isInstallationGenerationActive(current)) return false;
+        if (installationGeneration == current && generationCleanup != null) return true;
+        clearInstallationState(installationGeneration);
+        clearListenerSubscriptions();
+        installationGeneration = current;
+        try {
+            generationCleanup = registry.registerGenerationCleanup(() -> onGenerationInvalidated(current));
+            return true;
+        } catch (Throwable error) {
+            installationGeneration = Long.MIN_VALUE;
+            log("消息观察代次注册失败: " + error.getClass().getSimpleName());
+            return false;
+        }
+    }
+
+    private synchronized void onGenerationInvalidated(long invalidatedGeneration) {
+        if (installationGeneration != invalidatedGeneration) return;
+        clearInstallationState(invalidatedGeneration);
+        clearListenerSubscriptions();
+    }
+
+    private synchronized void clearInstallationState(long expectedGeneration) {
+        if (expectedGeneration != Long.MIN_VALUE && installationGeneration != expectedGeneration) return;
+        clearPbSubscriptions();
+        WeChatMessageChangeApi.Subscription databaseToken = databaseSubscription;
+        databaseSubscription = null;
+        if (databaseToken != null) databaseToken.unsubscribe();
+        databaseIncomingStartedAt = 0L;
+        recentOutgoing.clear();
+        recentIncomingDatabaseMessages.clear();
+        pbEventObserved = false;
+        AutoCloseable cleanup = generationCleanup;
+        generationCleanup = null;
+        installationGeneration = Long.MIN_VALUE;
+        if (cleanup != null) {
+            try { cleanup.close(); }
+            catch (Throwable error) { log("消息观察订阅凭证释放失败: " + error.getClass().getSimpleName()); }
+        }
+    }
+
+    private void clearPbSubscriptions() {
+        h.Hchat.event.EventBus.Subscription message = pbMessageSubscription;
+        h.Hchat.event.EventBus.Subscription pat = pbPatSubscription;
+        pbMessageSubscription = null;
+        pbPatSubscription = null;
+        if (eventApi != null) {
+            eventApi.unsubscribe(message);
+            eventApi.unsubscribe(pat);
+        }
+    }
+
+    private boolean hasActivePbSubscriptions() {
+        h.Hchat.event.EventBus.Subscription message = pbMessageSubscription;
+        h.Hchat.event.EventBus.Subscription pat = pbPatSubscription;
+        return eventApi != null
+                && eventApi.isOperational()
+                && installationGeneration == h.Hchat.hooks.core.HookRegistry.get().installationGeneration()
+                && message != null && message.isActive()
+                && pat != null && pat.isActive();
+    }
+
+    private boolean isObserverGenerationActive(long generation) {
+        return !destroyed
+                && installationGeneration == generation
+                && h.Hchat.hooks.core.HookRegistry.get().isInstallationGenerationActive(generation);
+    }
+
+    private void clearListenerSubscriptions() {
+        for (Subscription subscription : listenerSubscriptions) subscription.active = false;
+        listenerSubscriptions.clear();
+        listeners.clear();
+    }
+
+    private synchronized void unsubscribeSubscription(Subscription subscription) {
+        if (subscription == null || !subscription.active) return;
+        subscription.active = false;
+        listenerSubscriptions.remove(subscription);
+        boolean stillSubscribed = listenerSubscriptions.stream().anyMatch(
+                candidate -> candidate.active && candidate.listener == subscription.listener);
+        if (!stillSubscribed) listeners.remove(subscription.listener);
+    }
+
+    private void logReadinessIfChanged() {
+        String current = readinessDiagnostics();
+        if (!current.equals(lastReadinessDiagnostics)) {
+            lastReadinessDiagnostics = current;
+            log("消息观察就绪 " + current);
+        }
+    }
+
+    private void onMessageReceived(Events.MessageReceived event, long generation) {
         if (event == null) return;
+        if (!isObserverGenerationActive(generation)) return;
+        pbEventObserved = true;
+        logReadinessIfChanged();
         String nativeUrl = parseApi != null
                 ? parseApi.getXmlParamByTag(event.xml, "nativeurl") : "";
         int type = parseMessageType(event.msgType, event.content);
@@ -459,26 +605,12 @@ public final class WeChatMessageObserveApi {
                 isGroup(event.talker),
                 outgoing,
                 null,
-                transientMessage));
+                transientMessage), generation);
     }
 
-    private void onRedPacketDetected(Events.RedPacketDetected event) {
+    private void onPatDetected(Events.PatDetected event, long generation) {
         if (event == null) return;
-        dispatch(new ObservedMessage(
-                "red_packet",
-                Kind.RED_PACKET,
-                event.talker,
-                event.sender,
-                "",
-                event.xml,
-                event.nativeUrl,
-                isGroup(event.talker),
-                isSelf(event.sender),
-                null));
-    }
-
-    private void onPatDetected(Events.PatDetected event) {
-        if (event == null) return;
+        if (!isObserverGenerationActive(generation)) return;
         boolean outgoing = isSelf(event.fromUser);
         long millis = event.createTime > 100000000000L
                 ? event.createTime
@@ -507,7 +639,7 @@ public final class WeChatMessageObserveApi {
                 event.pattedUser,
                 event.template,
                 event.createTime,
-                event.svrId));
+                event.svrId), generation);
     }
 
     private boolean needsDatabaseMessage(h.Hchat.hooks.api.model.DatabaseChange change) {
@@ -516,13 +648,14 @@ public final class WeChatMessageObserveApi {
         Integer direction = change.values != null && change.values.containsKey("isSend")
                 ? change.values.getAsInteger("isSend") : null;
         if (direction == null || direction != 0) return true;
-        return !pbLayerActive && change.isInsert();
+        return !hasActivePbSubscriptions() && change.isInsert();
     }
 
-    private void onMessageChanged(WeChatMessageChangeApi.MessageChange change) {
+    private void onMessageChanged(WeChatMessageChangeApi.MessageChange change, long generation) {
+        if (!isObserverGenerationActive(generation)) return;
         if (change == null || change.message == null) return;
         WeChatMessage msg = change.message;
-        if (pbLayerActive && !msg.isOutgoing()) return;
+        if (hasActivePbSubscriptions() && !msg.isOutgoing()) return;
         if (!msg.isOutgoing() && (!change.isInsert() || !claimIncomingDatabaseMessage(msg))) return;
         if (msg.isOutgoing() && isRecentOutgoing(msg.talker, msg.content)) return;
         if (msg.isOutgoing()) {
@@ -538,7 +671,7 @@ public final class WeChatMessageObserveApi {
                 parseNativeUrl(msg.content),
                 isGroup(msg.talker),
                 msg.isOutgoing(),
-                msg));
+                msg), generation);
     }
 
     private boolean claimIncomingDatabaseMessage(WeChatMessage message) {
@@ -675,12 +808,16 @@ public final class WeChatMessageObserveApi {
         return accountApi != null ? accountApi.selfWxId() : "";
     }
 
-    private void dispatch(ObservedMessage message) {
+    private void dispatch(ObservedMessage message, long generation) {
         for (Listener listener : listeners) {
+            if (!isObserverGenerationActive(generation)) return;
+            boolean subscribed = listenerSubscriptions.stream().anyMatch(
+                    subscription -> subscription.active && subscription.listener == listener);
+            if (!subscribed) continue;
             try {
                 listener.onObservedMessage(message);
             } catch (Throwable e) {
-                log("消息观察回调失败: " + e.getMessage());
+                log("消息观察回调失败: " + e.getClass().getSimpleName());
             }
         }
     }

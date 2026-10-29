@@ -470,6 +470,12 @@ public final class WeChatApis {
     }
 
     public static void clear() {
+        WeChatMessageObserveApi observe = messageObserveApi;
+        if (observe != null) observe.destroy();
+        WeChatMessageChangeApi messageChanges = messageChangeApi;
+        if (messageChanges != null) messageChanges.destroy();
+        WeChatMessageEventApi messageEvents = messageEventApi;
+        if (messageEvents != null) messageEvents.destroy();
         messageApi = null;
         databaseApi = null;
         accountApi = null;

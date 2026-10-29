@@ -371,7 +371,7 @@ public final class WeChatDatabaseListenerApi {
                     } catch (Throwable ignored) {}
                 }
             } catch (Throwable error) {
-                log("数据库方法Hook失败: " + method + " " + error.getMessage());
+                log("数据库方法Hook失败: " + method + " errorType=" + error.getClass().getSimpleName());
             }
         }
         return count;
@@ -420,7 +420,7 @@ public final class WeChatDatabaseListenerApi {
                 String next = interceptor.onQuery(rewritten);
                 if (next != null) rewritten = next;
             } catch (Throwable error) {
-                log("数据库查询拦截器异常: " + error.getMessage());
+                log("数据库查询拦截器异常: " + error.getClass().getSimpleName());
             }
         }
         if (!rewritten.equals(sql)) args[sqlIndex] = rewritten;
@@ -488,7 +488,7 @@ public final class WeChatDatabaseListenerApi {
             try {
                 listener.onDatabaseChanged(change);
             } catch (Throwable e) {
-                log("数据库变更监听回调失败: " + e.getMessage());
+                log("数据库变更监听回调失败: " + e.getClass().getSimpleName());
             }
         }
     }

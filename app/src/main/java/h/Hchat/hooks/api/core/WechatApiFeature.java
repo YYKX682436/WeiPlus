@@ -1,5 +1,6 @@
 package h.Hchat.hooks.api.core;
 
+import h.Hchat.dexkit.DexFinder;
 import h.Hchat.hooks.api.contact.*;
 import h.Hchat.hooks.api.conversation.*;
 import h.Hchat.hooks.api.media.WeChatMediaApi;
@@ -162,17 +163,7 @@ public class WechatApiFeature implements Feature {
             }
             return resolutionFinished && context.dexFinder().isResolutionFinished();
         });
-        DexInstallScheduler.scheduleTask(
-                "wechat_api:addmsg_observer",
-                "AddMsg消息观察入口",
-                DexInstallScheduler.Stage.WARMUP,
-                -500,
-                () -> {
-                    boolean located = context.dexFinder().resolveAddMsgApi();
-                    boolean installed = located && messageEventApi.installAddMsgHook();
-                    log("AddMsg定位=" + located + " Hook=" + installed);
-                    return installed && messageEventApi.isOperational();
-                });
+        scheduleAddMsgObserverInstall(context.dexFinder(), messageEventApi, messageObserveApi);
         DexInstallScheduler.scheduleTask(
                 "wechat_api:database_changes",
                 "数据库变更监听补装",
@@ -206,6 +197,10 @@ public class WechatApiFeature implements Feature {
     }
 
     private void log(String message) {
+        if (message != null && message.startsWith("[WeChatMessageObserveApi] 消息观察就绪 ")) {
+            HLog.i(TAG + " " + message);
+            return;
+        }
         if (isImportantLog(message)) {
             HLog.e(TAG + " " + message);
         }
@@ -217,6 +212,25 @@ public class WechatApiFeature implements Feature {
         } catch (Throwable e) {
             HLog.e(TAG + " " + name + " API安装失败: " + e.getMessage(), e);
         }
+    }
+
+    void scheduleAddMsgObserverInstall(DexFinder dexFinder,
+                                       WeChatMessageEventApi messageEventApi,
+                                       WeChatMessageObserveApi messageObserveApi) {
+        DexInstallScheduler.scheduleTask(
+                "wechat_api:addmsg_observer",
+                "AddMsg消息观察入口",
+                DexInstallScheduler.Stage.WARMUP,
+                -500,
+                () -> {
+                    boolean located = dexFinder.resolveAddMsgApi();
+                    boolean installed = located && messageEventApi.installAddMsgHook();
+                    boolean operational = installed && messageEventApi.isOperational();
+                    if (operational && messageObserveApi != null) messageObserveApi.install();
+                    boolean subscribed = messageObserveApi != null && messageObserveApi.isPbLayerSubscribed();
+                    log("AddMsg定位=" + located + " Hook=" + operational + " PB订阅=" + subscribed);
+                    return operational && subscribed;
+                });
     }
 
     private boolean isImportantLog(String message) {

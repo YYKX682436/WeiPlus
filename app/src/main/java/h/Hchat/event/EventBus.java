@@ -38,7 +38,9 @@ public final class EventBus {
         List<HandlerEntry<?>> entries = handlers.get(eventClass);
         if (entries == null || entries.isEmpty()) return;
         for (HandlerEntry<?> entry : entries) {
-            dispatch(event, entry.handler);
+            if (entry.subscription != null && entry.subscription.isActive()) {
+                dispatch(event, entry.handler);
+            }
         }
     }
 
@@ -59,6 +61,8 @@ public final class EventBus {
     public <E> Subscription subscribe(Class<E> eventType, EventHandler<E> handler, int priority) {
         if (eventType == null || handler == null) return Subscription.EMPTY;
         HandlerEntry<E> entry = new HandlerEntry<>(handler, priority);
+        Subscription subscription = new Subscription(eventType, handler, entry);
+        entry.subscription = subscription;
         CopyOnWriteArrayList<HandlerEntry<?>> list =
                 handlers.computeIfAbsent(eventType, k -> new CopyOnWriteArrayList<>());
         // 按优先级降序插入
@@ -74,7 +78,7 @@ public final class EventBus {
             list.add(insertIndex, entry);
         }
         dispatchStickyIfReady(eventType, handler);
-        return new Subscription(eventType, handler);
+        return subscription;
     }
 
     /**
@@ -83,8 +87,8 @@ public final class EventBus {
     public void unsubscribe(Subscription subscription) {
         if (subscription == null || subscription == Subscription.EMPTY) return;
         List<HandlerEntry<?>> entries = handlers.get(subscription.eventType);
-        if (entries == null) return;
-        entries.removeIf(e -> e.handler == subscription.handler);
+        if (entries != null && subscription.entry != null) entries.remove(subscription.entry);
+        subscription.active = false;
     }
 
     /**
@@ -93,7 +97,11 @@ public final class EventBus {
     public void unsubscribeAll(Class<?> ownerClass) {
         if (ownerClass == null) return;
         for (CopyOnWriteArrayList<HandlerEntry<?>> entries : handlers.values()) {
-            entries.removeIf(e -> ownerClass.isInstance(e.handler));
+            entries.removeIf(e -> {
+                boolean remove = ownerClass.isInstance(e.handler);
+                if (remove && e.subscription != null) e.subscription.active = false;
+                return remove;
+            });
         }
     }
 
@@ -101,6 +109,11 @@ public final class EventBus {
      * 清除所有订阅（慎用，仅用于测试或模块卸载）。
      */
     public void clearAll() {
+        for (CopyOnWriteArrayList<HandlerEntry<?>> entries : handlers.values()) {
+            for (HandlerEntry<?> entry : entries) {
+                if (entry.subscription != null) entry.subscription.active = false;
+            }
+        }
         handlers.clear();
         stickyEvents.clear();
     }
@@ -132,7 +145,7 @@ public final class EventBus {
     private void logHandlerError(Class<?> eventType, EventHandler<?> handler, Throwable e) {
         h.Hchat.utils.HLog.e(TAG + " 处理事件异常: " + eventType.getSimpleName()
                 + ", handler=" + handler.getClass().getSimpleName()
-                + ", error=" + e.getMessage(), e);
+                + ", errorType=" + e.getClass().getSimpleName());
     }
 
     // ============ 内部结构 ============
@@ -140,6 +153,7 @@ public final class EventBus {
     private static final class HandlerEntry<E> {
         final EventHandler<E> handler;
         final int priority;
+        volatile Subscription subscription;
 
         HandlerEntry(EventHandler<E> handler, int priority) {
             this.handler = handler;
@@ -154,14 +168,25 @@ public final class EventBus {
         static final Subscription EMPTY = new Subscription(null, null);
         final Class<?> eventType;
         final EventHandler<?> handler;
+        final HandlerEntry<?> entry;
+        private volatile boolean active = true;
 
         Subscription(Class<?> eventType, EventHandler<?> handler) {
+            this(eventType, handler, null);
+        }
+
+        Subscription(Class<?> eventType, EventHandler<?> handler, HandlerEntry<?> entry) {
             this.eventType = eventType;
             this.handler = handler;
+            this.entry = entry;
         }
 
         public static Subscription empty() {
             return EMPTY;
+        }
+
+        public boolean isActive() {
+            return this != EMPTY && active;
         }
     }
 }

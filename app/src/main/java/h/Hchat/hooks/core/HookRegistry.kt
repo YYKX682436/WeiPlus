@@ -5,6 +5,7 @@ import io.github.libxposed.api.XposedInterface.Hooker
 import io.github.libxposed.api.XposedInterface.HookHandle
 import java.lang.reflect.Executable
 import java.util.concurrent.CancellationException
+import java.util.LinkedHashSet
 
 /**
  * 统一保存 Xposed hook 句柄，便于防御性卸载。
@@ -13,12 +14,31 @@ class HookRegistry private constructor() {
     private val lock = Any()
     private val unhooks = ArrayList<HookHandle>()
     private val keyedHooks = HashMap<String, KeyedHook>()
+    private val generationCleanups = HashMap<Long, MutableSet<GenerationCleanup>>()
     private val installationLease = ThreadLocal<InstallationLease>()
     @Volatile private var generation = 0L
 
     fun installationGeneration(): Long = installationLease.get()?.generation ?: generation
 
     fun isInstallationGenerationActive(generation: Long): Boolean = this.generation == generation
+
+    /** Register process-local state that must be released when this hook generation is revoked. */
+    fun registerGenerationCleanup(action: Runnable): AutoCloseable = synchronized(lock) {
+        val current = installationGeneration()
+        if (!isInstallationGenerationActive(current) || !isInstallationLeaseActive(installationLease.get())) {
+            throw CancellationException("安装代次已失效")
+        }
+        val cleanup = GenerationCleanup(this, current, action)
+        generationCleanups.getOrPut(current) { LinkedHashSet() }.add(cleanup)
+        cleanup
+    }
+
+    private fun removeGenerationCleanup(cleanup: GenerationCleanup) = synchronized(lock) {
+        generationCleanups[cleanup.generation]?.let { registrations ->
+            registrations.remove(cleanup)
+            if (registrations.isEmpty()) generationCleanups.remove(cleanup.generation)
+        }
+    }
 
     fun <T> withInstallationGeneration(
         generation: Long,
@@ -126,10 +146,13 @@ class HookRegistry private constructor() {
 
     fun unhookAll() {
         XposedRuntime.retryFailedUnhooks()
-        val previous = synchronized(lock) {
+        val (previous, cleanups) = synchronized(lock) {
             generation++
-            unhooks.toList()
+            val invalidated = generationCleanups.values.flatten()
+            generationCleanups.clear()
+            unhooks.toList() to invalidated
         }
+        cleanups.forEach { it.invalidate() }
         for (unhook in previous) {
             runCatching { this.unhook(unhook) }
         }
@@ -153,4 +176,24 @@ class HookRegistry private constructor() {
         val isActive: () -> Boolean,
         val installedHooks: MutableList<HookHandle> = ArrayList()
     )
+
+    private class GenerationCleanup(
+        private val owner: HookRegistry,
+        val generation: Long,
+        action: Runnable
+    ) : AutoCloseable {
+        private var action: Runnable? = action
+
+        override fun close() {
+            synchronized(this) { action = null }
+            owner.removeGenerationCleanup(this)
+        }
+
+        fun invalidate() {
+            val cleanup = synchronized(this) {
+                action.also { action = null }
+            }
+            runCatching { cleanup?.run() }
+        }
+    }
 }
