@@ -25,6 +25,31 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
 class MessageDetailsR1RegressionTest {
+    class NativeLvBuffer(@JvmField val field_lvbuffer: ByteArray)
+
+    @Test
+    fun `production message details reads structured legacy atuserlist`() {
+        val source = ".msgsource.atuserlist=notify@all".toByteArray(Charsets.UTF_8)
+        val buffer = java.nio.ByteBuffer.allocate(1 + 2 + 1 + 4 + 2 + source.size + 1)
+            .put('{'.code.toByte()).putShort(1).put('x'.code.toByte()).putInt(0)
+            .putShort(source.size.toShort()).put(source).put('}'.code.toByte()).array()
+        val original = buffer.clone()
+        val type = Class.forName("h.Hchat.hooks.items.hchatextra.HchatExtraHooker")
+        val unsafe = sun.misc.Unsafe::class.java.getDeclaredField("theUnsafe").apply { isAccessible = true }
+            .get(null) as sun.misc.Unsafe
+        val target = unsafe.allocateInstance(type)
+        type.getDeclaredField("messageAccessorCache").apply { isAccessible = true }
+            .set(target, java.util.concurrent.ConcurrentHashMap<Any, Any>())
+        val read = type.getDeclaredMethod("readMessageSourceFromLvBuffer", Any::class.java)
+            .apply { isAccessible = true }
+        val atList = type.getDeclaredMethod("atUserList", String::class.java, String::class.java)
+            .apply { isAccessible = true }
+        val parsed = read.invoke(target, NativeLvBuffer(buffer)) as String
+        assertEquals(".msgsource.atuserlist=notify@all", parsed)
+        assertEquals("notify@all", atList.invoke(target, parsed, ""))
+        org.junit.Assert.assertArrayEquals(original, buffer)
+    }
+
     private val renderKey = MessageDetailsRenderKey("\${time}", "HH:mm:ss", "UTC", "en-US", null, null)
 
     @Test

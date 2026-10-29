@@ -13,31 +13,43 @@ object WeChatLvBufferMsgSource {
     private val closeTag = "</msgsource>".toByteArray(StandardCharsets.US_ASCII)
 
     @JvmStatic
-    fun extract(buffer: ByteArray?): String {
+    fun extractXml(buffer: ByteArray?): String {
         if (buffer == null || buffer.size < openTag.size + closeTag.size || buffer.size > MAX_BUFFER_BYTES) {
             return ""
         }
-        findXmlSource(buffer, 0, minOf(buffer.size, MAX_SCAN_BYTES))?.let { return it }
-        return extractStructured(buffer)
+        if (buffer.first() == '{'.code.toByte()) {
+            val raw = extractStructuredRaw(buffer) ?: return ""
+            return findXmlSource(raw.bytes, raw.offset, raw.offset + raw.length) ?: ""
+        }
+        return findXmlSource(buffer, 0, minOf(buffer.size, MAX_SCAN_BYTES)) ?: ""
     }
 
-    private fun extractStructured(bytes: ByteArray): String {
+    /** Returns the decoded source field from either a structured record or a bounded raw XML buffer. */
+    @JvmStatic
+    fun extractRawSource(buffer: ByteArray?): String {
+        if (buffer == null || buffer.isEmpty() || buffer.size > MAX_BUFFER_BYTES) return ""
+        val structured = extractStructuredRaw(buffer) ?: return if (buffer.first() == '{'.code.toByte()) "" else extractXml(buffer)
+        return decodeUtf8(structured.bytes, structured.offset, structured.offset + structured.length).orEmpty()
+    }
+
+    private data class Slice(val bytes: ByteArray, val offset: Int, val length: Int)
+
+    private fun extractStructuredRaw(bytes: ByteArray): Slice? {
         // WeChat's LVBuffer: '{' + u16 string length + string + 4-byte field + u16 source length + source + '}'.
-        if (bytes.size < 10 || bytes.first() != '{'.code.toByte() || bytes.last() != '}'.code.toByte()) return ""
+        if (bytes.size < 10 || bytes.first() != '{'.code.toByte() || bytes.last() != '}'.code.toByte()) return null
         return try {
             val input = ByteBuffer.wrap(bytes).apply { position(1) }
-            val firstLength = readLength(input) ?: return ""
-            if (input.remaining() < firstLength) return ""
+            val firstLength = readLength(input) ?: return null
+            if (input.remaining() < firstLength) return null
             input.position(input.position() + firstLength)
-            if (input.remaining() < 4) return ""
+            if (input.remaining() < 4) return null
             input.position(input.position() + 4)
-            val sourceLength = readLength(input) ?: return ""
-            if (sourceLength == 0 || sourceLength > MAX_SOURCE_BYTES || input.remaining() < sourceLength + 1) return ""
+            val sourceLength = readLength(input) ?: return null
+            if (sourceLength == 0 || sourceLength > MAX_SOURCE_BYTES || input.remaining() < sourceLength + 1) return null
             val start = input.position()
-            if (bytes[start + sourceLength] != '}'.code.toByte()) return ""
-            findXmlSource(bytes, start, start + sourceLength) ?: ""
+            Slice(bytes, start, sourceLength)
         } catch (_: RuntimeException) {
-            ""
+            null
         }
     }
 

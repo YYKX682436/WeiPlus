@@ -3614,7 +3614,7 @@ private class HchatExtraHooker(
     private fun readMessageSourceFromLvBuffer(message: Any): String {
         val buffer = readMessageValue(message, "getLvBuffer", "field_lvbuffer", "lvbuffer") as? ByteArray
             ?: return ""
-        return WeChatLvBufferMsgSource.extract(buffer)
+        return WeChatLvBufferMsgSource.extractRawSource(buffer)
     }
 
     private fun configuredAvatarHidden(isSelf: Boolean): Boolean {

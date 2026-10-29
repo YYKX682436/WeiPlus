@@ -4,6 +4,7 @@ import android.content.ContentValues;
 
 import h.Hchat.dexkit.DexFinder;
 import h.Hchat.hooks.api.message.WeChatMessageChangeApi;
+import h.Hchat.hooks.api.message.WeChatLvBufferMsgSource;
 import h.Hchat.hooks.api.model.WeChatMessage;
 import h.Hchat.hooks.api.model.DatabaseChange;
 import h.Hchat.hooks.core.HookRegistry;
@@ -237,6 +238,57 @@ public class WeChatDatabaseListenerApiRegressionTest {
         values.put("lvbuffer", new byte[1024 * 1024]);
         changes = observeInsert(values, 95L, null);
         assertEquals("", changes.get(0).message.msgSource);
+    }
+
+    @Test
+    public void detailsReadStructuredXmlAndLegacyNonXmlWhileDatabaseRequiresXml() throws Throwable {
+        byte[] xml = structuredLvBuffer("<msgsource><atuserlist>notify@all</atuserlist></msgsource>");
+        byte[] legacy = structuredLvBuffer(".msgsource.atuserlist=notify@all");
+        assertEquals("<msgsource><atuserlist>notify@all</atuserlist></msgsource>",
+                WeChatLvBufferMsgSource.extractRawSource(xml));
+        String detailsSource = WeChatLvBufferMsgSource.extractRawSource(legacy);
+        assertEquals(".msgsource.atuserlist=notify@all", detailsSource);
+        assertEquals("notify@all", WeChatMessage.msgSourceValue(detailsSource, ".msgsource.atuserlist"));
+        assertEquals("", WeChatLvBufferMsgSource.extractXml(legacy));
+
+        ContentValues values = messageValues();
+        values.put("msgSource", "");
+        values.put("lvbuffer", legacy);
+        byte[] before = legacy.clone();
+        List<WeChatMessageChangeApi.MessageChange> changes = observeInsert(values, 98L, null);
+        assertEquals(1, changes.size());
+        assertEquals("database event rejects non-XML structured source", "", changes.get(0).message.msgSource);
+        assertArrayEquals(before, values.getAsByteArray("lvbuffer"));
+        assertEquals("", values.getAsString("msgSource"));
+    }
+
+    @Test
+    public void structuredFieldIsSelectedInsteadOfXmlElsewhereAndInvalidLengthsFailClosed() throws Throwable {
+        byte[] decoy = "<msgsource>decoy</msgsource>".getBytes(StandardCharsets.UTF_8);
+        byte[] source = "<msgsource>actual</msgsource>".getBytes(StandardCharsets.UTF_8);
+        java.nio.ByteBuffer buffer = java.nio.ByteBuffer.allocate(1 + 2 + decoy.length + 4 + 2 + source.length + 1);
+        buffer.put((byte) '{').putShort((short) decoy.length).put(decoy).putInt(0)
+                .putShort((short) source.length).put(source).put((byte) '}');
+        byte[] original = buffer.array().clone();
+        assertEquals("<msgsource>actual</msgsource>", WeChatLvBufferMsgSource.extractXml(buffer.array()));
+        assertEquals("<msgsource>actual</msgsource>", WeChatLvBufferMsgSource.extractRawSource(buffer.array()));
+        assertArrayEquals(original, buffer.array());
+        ContentValues values = messageValues();
+        values.put("lvbuffer", buffer.array());
+        assertEquals("<msgsource>actual</msgsource>", observeInsert(values, 99L, null).get(0).message.msgSource);
+
+        byte[] invalid = buffer.array().clone();
+        invalid[1] = 0x7f;
+        invalid[2] = (byte) 0xff;
+        assertEquals("", WeChatLvBufferMsgSource.extractRawSource(invalid));
+        assertEquals("", WeChatLvBufferMsgSource.extractXml(invalid));
+        byte[] truncated = Arrays.copyOf(buffer.array(), buffer.array().length - 2);
+        truncated[truncated.length - 1] = '}';
+        assertEquals("", WeChatLvBufferMsgSource.extractRawSource(truncated));
+        byte[] nonText = structuredLvBuffer("x");
+        nonText[nonText.length - 2] = (byte) 0xff;
+        assertEquals("", WeChatLvBufferMsgSource.extractRawSource(nonText));
+        assertEquals("", WeChatLvBufferMsgSource.extractRawSource(new byte[65537]));
     }
 
     private List<WeChatMessageChangeApi.MessageChange> observeInsert(

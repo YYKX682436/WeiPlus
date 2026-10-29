@@ -222,7 +222,7 @@ public final class WeChatMessageChangeApi {
         if (!TextUtils.isEmpty(msgSource)) return msgSource;
         Object raw = values != null ? values.get("lvbuffer") : null;
         return raw instanceof byte[]
-                ? WeChatLvBufferMsgSource.extract((byte[]) raw)
+                ? WeChatLvBufferMsgSource.extractXml((byte[]) raw)
                 : "";
     }
 
