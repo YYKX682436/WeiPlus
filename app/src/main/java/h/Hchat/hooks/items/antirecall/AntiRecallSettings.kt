@@ -8,8 +8,8 @@ object AntiRecallSettings {
     const val KEY_NOTICE_TEXT = "anti_recall_notice_text"
     const val KEY_NOTICE_TIME_FORMAT = "anti_recall_notice_time_format"
 
-    const val DEFAULT_ENABLE = false
-    const val DEFAULT_KEEP_SELF_RECALL = false
+    const val DEFAULT_ENABLE = true
+    const val DEFAULT_KEEP_SELF_RECALL = true
     const val DEFAULT_SHOW_NOTICE = true
     const val LEGACY_NOTICE_TEXT = "已阻止一条撤回消息"
     const val DEFAULT_NOTICE_TEXT = "{name}撤回了上一条消息 {content}"

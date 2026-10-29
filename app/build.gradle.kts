@@ -151,7 +151,11 @@ dependencies {
 tasks.register<Copy>("copyToDist") {
     from(layout.buildDirectory.file("outputs/apk/release/app-release.apk"))
     into(rootProject.layout.projectDirectory.dir("dist"))
-    rename { providers.environmentVariable("HCAT_APK_NAME").orElse("Hchat-release-signed.apk").get() }
+    rename {
+        providers.environmentVariable("HCAT_APK_NAME")
+            .orElse("Hchat-${providers.gradleProperty("HCAT_VERSION_NAME").get()}-release-signed.apk")
+            .get()
+    }
 }
 
 tasks.matching { it.name == "assembleRelease" }.configureEach {

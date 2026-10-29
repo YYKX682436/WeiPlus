@@ -44,7 +44,7 @@ object HchatExtraSettings {
     const val DEFAULT_MESSAGE_DETAILS_TEXT_SIZE = 10
     const val DEFAULT_MESSAGE_DETAILS_CLICK_SHOW = true
     const val DEFAULT_MESSAGE_DETAILS_FORMAT_CONTENT = false
-    const val DEFAULT_RED_PACKET_DETAILS = false
+    const val DEFAULT_RED_PACKET_DETAILS = true
     const val DEFAULT_SKIP_WEB_RISK = false
 
     @JvmStatic

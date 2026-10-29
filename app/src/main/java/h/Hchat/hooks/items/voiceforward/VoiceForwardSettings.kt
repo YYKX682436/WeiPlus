@@ -9,5 +9,5 @@ object VoiceForwardSettings {
     const val KEY_CHAT_MULTI_MERGE_ENABLE = "voice_forward_chat_multi_merge_enable"
     const val KEY_FAVORITE_FORWARD_ENABLE = "voice_forward_favorite_forward_enable"
     const val KEY_FAVORITE_SAVE_ENABLE = "voice_forward_favorite_save_enable"
-    const val DEFAULT_ENABLE = false
+    const val DEFAULT_ENABLE = true
 }

@@ -391,7 +391,7 @@ internal fun VoiceForwardMiuixPage(
                         VoiceForwardSettings.KEY_CHAT_MULTI_MERGE_ENABLE,
                         "多选语音合并",
                         "多选语音后合成为一条语音，可转发或保存为 MP3",
-                        false
+                        legacyDefault
                     )
                 }
             }

@@ -1141,7 +1141,7 @@ private class VoiceForwardHooker(
     }
 
     private fun chatMultiMergeEnabled(): Boolean {
-        return prefs.getBoolean(VoiceForwardSettings.KEY_CHAT_MULTI_MERGE_ENABLE, false)
+        return voiceSwitchEnabled(VoiceForwardSettings.KEY_CHAT_MULTI_MERGE_ENABLE)
     }
 
     private fun messageForwardMenuEnabled(): Boolean {

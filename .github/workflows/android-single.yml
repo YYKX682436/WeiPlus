@@ -2,6 +2,12 @@ name: 安卓单频道构建
 
 on:
   workflow_dispatch:
+    inputs:
+      publish_release:
+        description: 创建 GitHub Release 并发送 APK
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: write
@@ -37,14 +43,14 @@ jobs:
       - name: 准备构建配置
         env:
           GH_TOKEN: ${{ github.token }}
+          PUBLISH_RELEASE: ${{ inputs.publish_release }}
         run: |
           set -e
 
-          apk_name="Hchat-release-signed.apk"
           version_name="$(sed -n 's/^HCAT_VERSION_NAME=//p' gradle.properties | tail -n 1)"
           version_code="$(sed -n 's/^HCAT_VERSION_CODE=//p' gradle.properties | tail -n 1)"
-          if ! printf '%s' "$version_name" | grep -Eq '^[0-9]+\.[0-9]+$'; then
-            echo "正式版本号必须使用 gradle.properties 中的两段格式 x.y: ${version_name}"
+          if ! printf '%s' "$version_name" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "正式版本号必须使用 gradle.properties 中的三段格式 x.y.z: ${version_name}"
             exit 1
           fi
           if ! printf '%s' "$version_code" | grep -Eq '^[0-9]+$' \
@@ -52,8 +58,10 @@ jobs:
             echo "正式 versionCode 无效: ${version_code}"
             exit 1
           fi
+          apk_name="Hchat-${version_name}-release-signed.apk"
           release_tag="v${version_name}"
-          if git ls-remote --exit-code --tags origin "refs/tags/${release_tag}" >/dev/null 2>&1; then
+          if [ "$PUBLISH_RELEASE" = "true" ] \
+            && git ls-remote --exit-code --tags origin "refs/tags/${release_tag}" >/dev/null 2>&1; then
             echo "Release Tag 已存在，拒绝重复发布: ${release_tag}"
             exit 1
           fi
@@ -116,6 +124,7 @@ jobs:
           path: dist/${{ env.HCAT_APK_NAME }}
 
       - name: 发布单频道发行版
+        if: ${{ inputs.publish_release }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -135,7 +144,7 @@ jobs:
             --latest
 
       - name: 推送 Telegram 私聊安装包
-        if: ${{ success() }}
+        if: ${{ success() && inputs.publish_release }}
         env:
           GH_TOKEN: ${{ github.token }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
