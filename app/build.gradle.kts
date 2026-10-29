@@ -25,23 +25,51 @@ android {
         }
     }
 
-    signingConfigs {
-        create("。。") {
-            storeFile = providers.environmentVariable("HCAT_KEYSTORE_PATH").orNull
-                ?.let { file(it) }
-                ?: file("/Users/muchen/Downloads/Android App正式签名密钥/MUCHEN.jks")
-            storePassword = providers.environmentVariable("HCAT_STORE_PASSWORD").orNull
-                ?: error("缺少 HCAT_STORE_PASSWORD")
-            keyAlias = providers.environmentVariable("HCAT_KEY_ALIAS").orNull
-                ?: error("缺少 HCAT_KEY_ALIAS")
-            keyPassword = providers.environmentVariable("HCAT_KEY_PASSWORD").orNull
-                ?: error("缺少 HCAT_KEY_PASSWORD")
+    val signingProperties = mapOf(
+        "HCAT_KEYSTORE_PATH" to providers.environmentVariable("HCAT_KEYSTORE_PATH")
+            .orElse(providers.gradleProperty("HCAT_KEYSTORE_PATH")).orNull,
+        "HCAT_STORE_PASSWORD" to providers.environmentVariable("HCAT_STORE_PASSWORD")
+            .orElse(providers.gradleProperty("HCAT_STORE_PASSWORD")).orNull,
+        "HCAT_KEY_ALIAS" to providers.environmentVariable("HCAT_KEY_ALIAS")
+            .orElse(providers.gradleProperty("HCAT_KEY_ALIAS")).orNull,
+        "HCAT_KEY_PASSWORD" to providers.environmentVariable("HCAT_KEY_PASSWORD")
+            .orElse(providers.gradleProperty("HCAT_KEY_PASSWORD")).orNull
+    )
+    val missingSigningProperties = signingProperties.filterValues { it.isNullOrBlank() }.keys
+    val signingStoreFile = signingProperties["HCAT_KEYSTORE_PATH"]
+        ?.let(::file)
+        ?: file("/Users/muchen/Downloads/Android App正式签名密钥/MUCHEN.jks")
+    val releaseSigningReady = missingSigningProperties.isEmpty() && signingStoreFile.isFile
+
+    if (releaseSigningReady) {
+        signingConfigs {
+            create("release") {
+                storeFile = signingStoreFile
+                storePassword = signingProperties.getValue("HCAT_STORE_PASSWORD")
+                keyAlias = signingProperties.getValue("HCAT_KEY_ALIAS")
+                keyPassword = signingProperties.getValue("HCAT_KEY_PASSWORD")
+            }
+        }
+    }
+
+    val verifyReleaseSigning = tasks.register("verifyReleaseSigning") {
+        doLast {
+            val missing = missingSigningProperties.toMutableList()
+            if (!signingStoreFile.isFile) missing += "HCAT_KEYSTORE_PATH (Keystore 文件不存在)"
+            check(missing.isEmpty()) {
+                "Release 构建缺少有效签名配置：${missing.joinToString(", ")}。"
+            }
+        }
+    }
+    tasks.configureEach {
+        if (name in setOf("packageRelease", "assembleRelease", "bundleRelease")) {
+            dependsOn(verifyReleaseSigning)
         }
     }
 
     buildTypes {
         release {
-            signingConfig = signingConfigs.getByName("。。")
+            signingConfig = if (releaseSigningReady) signingConfigs.getByName("release") else null
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
