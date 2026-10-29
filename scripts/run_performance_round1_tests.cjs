@@ -49,6 +49,7 @@ const fixtures = {
  public String quoteTable(String t){return t.matches("[a-zA-Z0-9_]+")?'"'+t+'"':"";} public List<String> messageTables(){throw new AssertionError("cross-table probe");}public String messageTableForTalker(String t){return "message";}public String queryFirstString(String s,String[] a,String c){return "";}public Cursor rawQuery(String s,String[] a){return null;}}`,
 'h/Hchat/dexkit/DexFinder.java': `package h.Hchat.dexkit; public class DexFinder {public java.lang.reflect.Method messageClearBatchMethod;}`,
 'h/Hchat/hooks/api/message/WeChatMessageApi.java': `package h.Hchat.hooks.api.message;public class WeChatMessageApi {public static void cancelPendingLocalSend(String t,String c){}}`,
+'h/Hchat/hooks/api/message/WeChatLvBufferMsgSource.java': `package h.Hchat.hooks.api.message;public final class WeChatLvBufferMsgSource {public static String extractXml(byte[] buffer){return "";}}`,
 'h/Hchat/hooks/api/message/WeChatMessageEventApi.java': `package h.Hchat.hooks.api.message; import h.Hchat.event.Events; import java.util.function.Consumer; public class WeChatMessageEventApi {
  public boolean operational; public Consumer<Events.MessageReceived> messages; public boolean isAvailable(){return true;} public boolean isOperational(){return operational;} public void subscribeMessage(Consumer<Events.MessageReceived> c){messages=c;} public void subscribePat(Consumer<Events.PatDetected> c){} }`,
 'h/Hchat/hooks/api/message/WeChatMessageParseApi.java': `package h.Hchat.hooks.api.message; public class WeChatMessageParseApi {public String getXmlParamByTag(String s,String t){return "";}public String extractXml(String s){return s;}public boolean containsRedPacketMarker(String s){return false;}public boolean isGroupTalker(String s){return s.endsWith("@chatroom");}}`,
@@ -57,7 +58,7 @@ const fixtures = {
 for (const [file, data] of Object.entries(fixtures)) { const p=path.join(output,file);fs.mkdirSync(path.dirname(p),{recursive:true});fs.writeFileSync(p,data); }
 fs.mkdirSync(path.join(output, 'android/text'), {recursive:true});
 fs.copyFileSync(path.join(root,'scripts/tests/message_parser/TextUtils.java'), path.join(output,'android/text/TextUtils.java'));
-run(process.env.JAVAC || 'javac', ['-d', output, '-cp',api.classpath,...['android/content/ContentValues.java','android/text/TextUtils.java','android/database/Cursor.java'].map(x=>path.join(output,x)), 'scripts/tests/api102/ChainFixture.java','app/src/main/java/h/Hchat/hooks/core/XposedRuntime.java','app/src/main/java/h/Hchat/hooks/core/HookErrorBoundary.java']);
+run(process.env.JAVAC || 'javac', ['-d', output, '-cp',api.classpath,...['android/content/ContentValues.java','android/text/TextUtils.java','android/database/Cursor.java','h/Hchat/hooks/api/message/WeChatLvBufferMsgSource.java'].map(x=>path.join(output,x)), 'scripts/tests/api102/ChainFixture.java','app/src/main/java/h/Hchat/hooks/core/XposedRuntime.java','app/src/main/java/h/Hchat/hooks/core/HookErrorBoundary.java']);
 function kotlinHook(file, anchor) {
  const input=fs.readFileSync(path.join(root,source+file),'utf8');
  const start=input.indexOf('XposedInterface.Hooker {',input.indexOf(anchor));

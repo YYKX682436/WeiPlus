@@ -8,7 +8,15 @@ const checks = [
   ['package-ready filters only exact host package/process scope before early hooks', () => {
     const source = read('app/src/main/java/h/Hchat/ModuleEntry.java');
     const readyStart = source.indexOf('void onPackageReady');
-    const ready = source.slice(readyStart, source.indexOf('private boolean verifyRuntimeIdentity', readyStart));
+    const readyBrace = source.indexOf('{', readyStart);
+    let depth = 1, readyEnd = readyBrace + 1;
+    while (depth && readyEnd < source.length) {
+      if (source[readyEnd] === '{') depth++;
+      if (source[readyEnd] === '}') depth--;
+      readyEnd++;
+    }
+    assert.equal(depth, 0, 'onPackageReady body must be balanced');
+    const ready = source.slice(readyStart, readyEnd);
     assert.match(ready, /WechatPackage\.isModuleEntryScope\(host, processName\)/);
     assert.doesNotMatch(source, /WeChatVersionGate|checkMinimumVersion|version_gate=reject/);
     assert.doesNotMatch(ready, /getPackageManager|buildForRuntimeIdentity|DexArchiveIdentity|readTinkerValue/);

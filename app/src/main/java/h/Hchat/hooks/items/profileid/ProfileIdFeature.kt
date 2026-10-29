@@ -18,13 +18,21 @@ import android.widget.Toast
 import io.github.libxposed.api.XposedInterface
 import h.Hchat.hooks.core.XposedRuntime
 import h.Hchat.hooks.core.BaseFeature
+import h.Hchat.hooks.core.DexInstallScheduler
 import h.Hchat.hooks.core.FeatureContext
 import h.Hchat.hooks.core.HookRegistry
 import h.Hchat.utils.WeChatIdRules
 import h.Hchat.preferences.HchatStorage
 import h.Hchat.utils.KavaReflector
 
+data class ProfileIdInstallResult(
+    val contactInstalled: Boolean,
+    val chatroomInstalled: Boolean
+)
+
 class ProfileIdFeature : BaseFeature() {
+    private var hostClassLoader: ClassLoader? = null
+
     override fun featureId(): String = ID
 
     override fun name(): String = "资料页显示ID"
@@ -34,7 +42,16 @@ class ProfileIdFeature : BaseFeature() {
     }
 
     override fun onFeatureInstall(context: FeatureContext) {
+        hostClassLoader = context.hostClassLoader()
         install(context.hostContext(), context.hostClassLoader())
+    }
+
+    override fun onFeatureDestroy(context: FeatureContext) {
+        hostClassLoader?.let { classLoader ->
+            DexInstallScheduler.cancel(retryKey(ProfileKind.CONTACT, classLoader))
+            DexInstallScheduler.cancel(retryKey(ProfileKind.CHATROOM, classLoader))
+        }
+        hostClassLoader = null
     }
 
     companion object {
@@ -50,15 +67,15 @@ class ProfileIdFeature : BaseFeature() {
         private const val CHATROOM_PREF_KEY = "hchat_profile_id"
         private const val CHATROOM_NAME_PREF_KEY = "room_name"
         private const val CHATROOM_BIND_RETRY_LIMIT = 8
+        private const val CONTACT_INIT_VIEW = "contact:initView"
+        private const val CHATROOM_INIT_VIEW = "chatroom:initView"
+        private const val CHATROOM_PREFERENCE_CLICK = "chatroom:onPreferenceTreeClick"
         private val CHATROOM_ANCHOR_PREF_KEYS = arrayOf(
             "expand_room_member",
             "see_room_member",
             "room_name"
         )
         private const val LABEL = "ID"
-
-        @Volatile
-        private var installed = false
 
         @JvmStatic
         fun isEnabled(context: Context?): Boolean {
@@ -68,44 +85,99 @@ class ProfileIdFeature : BaseFeature() {
         }
 
         @JvmStatic
-        fun install(context: Context?, classLoader: ClassLoader?) {
-            if (context == null || classLoader == null || installed) return
-            synchronized(this) {
-                if (installed) return
-                hookContactProfile(context, classLoader)
-                hookChatroomProfile(context, classLoader)
-                installed = true
+        fun install(context: Context?, classLoader: ClassLoader?): ProfileIdInstallResult {
+            if (context == null || classLoader == null) {
+                return ProfileIdInstallResult(contactInstalled = false, chatroomInstalled = false)
+            }
+
+            val contactInstalled = runCatching { hookContactProfile(context, classLoader) }
+                .onFailure { h.Hchat.utils.HLog.e("$TAG 好友资料Hook安装失败: ${it.message}", it) }
+                .getOrDefault(false)
+            val chatroomInstalled = runCatching { hookChatroomProfile(context, classLoader) }
+                .onFailure { h.Hchat.utils.HLog.e("$TAG 群资料Hook安装失败: ${it.message}", it) }
+                .getOrDefault(false)
+
+            scheduleRetry(
+                classLoader,
+                ProfileKind.CONTACT,
+                contactInstalled
+            ) { hookContactProfile(context, classLoader) }
+            scheduleRetry(
+                classLoader,
+                ProfileKind.CHATROOM,
+                chatroomInstalled
+            ) { hookChatroomProfile(context, classLoader) }
+
+            return ProfileIdInstallResult(contactInstalled, chatroomInstalled)
+        }
+
+        private fun scheduleRetry(
+            classLoader: ClassLoader,
+            kind: ProfileKind,
+            installed: Boolean,
+            installer: () -> Boolean
+        ) {
+            val key = retryKey(kind, classLoader)
+            if (installed) {
+                DexInstallScheduler.cancel(key)
+                return
+            }
+            val label = if (kind == ProfileKind.CONTACT) "好友资料 ID Hook" else "群资料 ID Hook"
+            DexInstallScheduler.schedule(key, label, DexInstallScheduler.Stage.WARMUP) {
+                installer()
             }
         }
 
-        private fun hookContactProfile(context: Context, classLoader: ClassLoader) {
+        private fun retryKey(kind: ProfileKind, classLoader: ClassLoader): String =
+            "$ID:${kind.name.lowercase()}:${Integer.toHexString(System.identityHashCode(classLoader))}"
+
+        private fun hookContactProfile(context: Context, classLoader: ClassLoader): Boolean {
             val clazz = KavaReflector.loadClass(CONTACT_INFO_UI, classLoader)
             if (clazz == null) {
                 h.Hchat.utils.HLog.e("$TAG 未找到好友资料页类")
-                return
+                return false
             }
-            hookAfter(clazz, "initView") { param ->
+            return hookAfter(
+                clazz,
+                "${retryKey(ProfileKind.CONTACT, classLoader)}:$CONTACT_INIT_VIEW",
+                "initView"
+            ) { param ->
                 injectProfileId(context, param.thisObject as? Activity, ProfileKind.CONTACT)
             }
         }
 
-        private fun hookChatroomProfile(context: Context, classLoader: ClassLoader) {
+        private fun hookChatroomProfile(context: Context, classLoader: ClassLoader): Boolean {
             val clazz = KavaReflector.loadClass(CHATROOM_INFO_UI, classLoader)
             if (clazz == null) {
                 h.Hchat.utils.HLog.e("$TAG 未找到群聊资料页类")
-                return
+                return false
             }
-            hookAfter(clazz, "initView") { param ->
+            val initViewInstalled = hookAfter(
+                clazz,
+                "${retryKey(ProfileKind.CHATROOM, classLoader)}:$CHATROOM_INIT_VIEW",
+                "initView"
+            ) { param ->
                 injectChatroomProfileId(context, param.thisObject as? Activity)
             }
-            hookChatroomPreferenceClick(clazz)
+            val preferenceClickInstalled = hookChatroomPreferenceClick(
+                clazz,
+                retryKey(ProfileKind.CHATROOM, classLoader)
+            )
+            return initViewInstalled && preferenceClickInstalled
         }
 
-        private fun hookChatroomPreferenceClick(clazz: Class<*>) {
-            methodsOf(clazz)
+        private fun hookChatroomPreferenceClick(clazz: Class<*>, retryKey: String): Boolean {
+            val method = methodsOf(clazz)
                 .firstOrNull { it.name == "onPreferenceTreeClick" && it.parameterTypes.size >= 2 }
-                ?.let { method ->
-                    HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+            if (method == null) {
+                h.Hchat.utils.HLog.e("$TAG 未找到群聊资料页 Preference 点击方法")
+                return false
+            }
+            return runCatching {
+                val handle = HookRegistry.get().hookOnce(
+                    "$retryKey:$CHATROOM_PREFERENCE_CLICK",
+                    method,
+                    XposedInterface.Hooker { chain ->
                         val args = chain.args
                         val receiver = chain.thisObject
                         var value: Any? = null
@@ -120,9 +192,12 @@ class ProfileIdFeature : BaseFeature() {
                         }
                         if (!intercepted) value = chain.proceed()
                         value
-                    })
-                }
-                ?: h.Hchat.utils.HLog.e("$TAG 未找到群聊资料页 Preference 点击方法")
+                    }
+                )
+                HookRegistry.get().isActive(handle)
+            }.onFailure {
+                h.Hchat.utils.HLog.e("$TAG 群聊资料页 Preference 点击Hook安装失败: ${it.message}", it)
+            }.getOrDefault(false)
         }
 
         private fun injectChatroomProfileId(context: Context, activity: Activity?) {
@@ -135,24 +210,30 @@ class ProfileIdFeature : BaseFeature() {
 
         private fun hookAfter(
             clazz: Class<*>,
+            hookKey: String,
             methodName: String,
             vararg parameterTypes: Class<*>,
             block: (XposedInterface.Chain) -> Unit
-        ) {
+        ): Boolean {
             val method = KavaReflector.findMethodRecursive(clazz, methodName, *parameterTypes)
             if (method == null) {
                 h.Hchat.utils.HLog.e("$TAG 未找到 ${clazz.name}#$methodName")
-                return
+                return false
             }
-            HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
-                val value = chain.proceed()
-                run after@ {
-                    runCatching { block(chain) }.onFailure {
-                        h.Hchat.utils.HLog.e("$TAG 注入资料页 ID 失败: ${it.message}", it)
+            return runCatching {
+                val handle = HookRegistry.get().hookOnce(hookKey, method, XposedInterface.Hooker { chain ->
+                    val value = chain.proceed()
+                    run after@ {
+                        runCatching { block(chain) }.onFailure {
+                            h.Hchat.utils.HLog.e("$TAG 注入资料页 ID 失败: ${it.message}", it)
+                        }
                     }
-                }
-                value
-            })
+                    value
+                })
+                HookRegistry.get().isActive(handle)
+            }.onFailure {
+                h.Hchat.utils.HLog.e("$TAG ${clazz.name}#$methodName Hook安装失败: ${it.message}", it)
+            }.getOrDefault(false)
         }
 
         private fun injectProfileId(context: Context, activity: Activity?, kind: ProfileKind, post: Boolean = true) {
