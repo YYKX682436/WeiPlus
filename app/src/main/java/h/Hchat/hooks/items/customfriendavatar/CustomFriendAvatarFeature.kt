@@ -119,10 +119,7 @@ private class CustomFriendAvatarRuntime(
         { runnable -> Thread(runnable, "Hchat-CustomAvatarLoad").apply { isDaemon = true } },
         ThreadPoolExecutor.AbortPolicy()
     ).apply { allowCoreThreadTimeOut(true) }
-    private val pendingAvatarLoads = ConcurrentHashMap.newKeySet<String>()
-    private val completedAvatarLoads = object : LinkedHashMap<String, Unit>(32, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Unit>?): Boolean = size > 256
-    }
+    private val avatarLoadCoordinator = AvatarLoadCoordinator<Drawable>()
     private val avatarBindingRevision = AtomicLong(0L)
     private val avatarSettingsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key in AVATAR_SETTING_KEYS) refreshAvatarSettings()
@@ -381,8 +378,7 @@ private class CustomFriendAvatarRuntime(
         pendingAvatarMainTasks.forEach(mainHandler::removeCallbacks)
         pendingAvatarMainTasks.clear()
         avatarLoadExecutor.shutdownNow()
-        pendingAvatarLoads.clear()
-        synchronized(completedAvatarLoads) { completedAvatarLoads.clear() }
+        avatarLoadCoordinator.clear()
         drawableBindings.clear()
         conversationBindings.clear()
         conversationGroupAvatarCache.clear()
@@ -611,30 +607,32 @@ private class CustomFriendAvatarRuntime(
         if (existing != null) return
         val revision = CustomFriendAvatarStore.revision(context, binding.wxid)
         val loadKey = "${context.packageName}\n${binding.wxid}\n$revision"
-        synchronized(completedAvatarLoads) {
-            if (loadKey in completedAvatarLoads) return
-        }
-        if (!pendingAvatarLoads.add(loadKey)) return
-        val drawableRef = WeakReference(drawable)
+        val shouldLoad = avatarLoadCoordinator.request(
+            key = loadKey,
+            target = drawable,
+            bindingToken = binding.token,
+            isCurrent = { target, token ->
+                val current = drawableBindings[target]
+                !destroyed &&
+                    current != null &&
+                    current.token == token &&
+                    current.wxid == binding.wxid &&
+                    CustomFriendAvatarStore.revision(context, binding.wxid) == revision
+            },
+            invalidate = Drawable::invalidateSelf
+        )
+        if (!shouldLoad) return
         try {
             avatarLoadExecutor.execute {
-                try {
+                val loaded = runCatching {
                     CustomFriendAvatarStore.loadBitmap(context, binding.wxid)
-                    if (CustomFriendAvatarStore.revision(context, binding.wxid) == revision) {
-                        synchronized(completedAvatarLoads) { completedAvatarLoads[loadKey] = Unit }
-                    }
-                } finally {
-                    pendingAvatarLoads.remove(loadKey)
-                }
-                postAvatarTask {
-                    val target = drawableRef.get() ?: return@postAvatarTask
-                    if (drawableBindings[target] === binding &&
-                        CustomFriendAvatarStore.revision(context, binding.wxid) == revision
-                    ) target.invalidateSelf()
-                }
+                }.getOrNull()
+                val succeeded = loaded != null &&
+                    CustomFriendAvatarStore.revision(context, binding.wxid) == revision
+                avatarLoadCoordinator.complete(loadKey, succeeded).forEach(::postAvatarTask)
             }
         } catch (_: java.util.concurrent.RejectedExecutionException) {
-            pendingAvatarLoads.remove(loadKey)
+            avatarLoadCoordinator.complete(loadKey, succeeded = false).forEach(::postAvatarTask)
         }
     }
 
@@ -642,7 +640,6 @@ private class CustomFriendAvatarRuntime(
         if (destroyed) return
         conversationGroupAvatarCache.remove(wxid)
         configuredAvatarIds = CustomFriendAvatarStore.configuredFriends(context.hostContext())
-        synchronized(completedAvatarLoads) { completedAvatarLoads.clear() }
         val targets = synchronized(drawableBindings) {
             drawableBindings.entries
                 .filter { it.value.wxid == wxid }

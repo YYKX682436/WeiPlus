@@ -10,21 +10,21 @@ import h.Hchat.hooks.api.message.WeChatMessageObserveApi
 import h.Hchat.hooks.core.BaseFeature
 import h.Hchat.hooks.core.FeatureContext
 import h.Hchat.hooks.core.HookRegistry
+import h.Hchat.hooks.core.FeatureRuntimeSlot
 import h.Hchat.hooks.core.MessageObserveLease
 import h.Hchat.preferences.HchatStorage
 import h.Hchat.utils.HLog
 import h.Hchat.utils.KavaReflector
 
 class TextSpeechFeature : BaseFeature() {
-    @Volatile
-    private var runtime: TextSpeechRuntime? = null
+    private val runtimeSlot = FeatureRuntimeSlot<TextSpeechRuntime>()
     private var observeLease: MessageObserveLease? = null
     private var preferences: SharedPreferences? = null
     private var preferenceListener: SharedPreferences.OnSharedPreferenceChangeListener? = null
     @Volatile private var destroyed = false
 
     private val messageListener = WeChatMessageObserveApi.Listener { message ->
-        runtime?.handleMessage(message)
+        runtimeSlot.current()?.handleMessage(message)
     }
 
     override fun featureId(): String = ID
@@ -35,6 +35,7 @@ class TextSpeechFeature : BaseFeature() {
         registerSettingsProvider(TextSpeechSettingsProvider())
     }
 
+    @Synchronized
     override fun onFeatureInstall(context: FeatureContext) {
         destroyed = false
         observeLease = MessageObserveLease().also(::trackSubscription)
@@ -56,6 +57,7 @@ class TextSpeechFeature : BaseFeature() {
         subscribe(Events.DexReady::class.java) { synchronizeRuntime() }
     }
 
+    @Synchronized
     override fun onFeatureDestroy(context: FeatureContext) {
         destroyed = true
         preferences?.unregisterOnSharedPreferenceChangeListener(preferenceListener)
@@ -64,10 +66,10 @@ class TextSpeechFeature : BaseFeature() {
         observeLease?.sync(null, enabled = false, listener = null)
         observeLease?.unsubscribe()
         observeLease = null
-        runtime?.shutdown()
-        runtime = null
+        runtimeSlot.clear(TextSpeechRuntime::shutdown)
     }
 
+    @Synchronized
     private fun synchronizeRuntime() {
         if (destroyed) return
         val hostContext = context()?.hostContext() ?: return
@@ -75,10 +77,9 @@ class TextSpeechFeature : BaseFeature() {
         val messageDemand = settings.hasEffectiveMessageTargets()
         val runtimeDemand = settings.requiresRuntime()
         if (runtimeDemand) {
-            if (runtime == null) runtime = TextSpeechRuntime(hostContext)
+            runtimeSlot.getOrCreate { TextSpeechRuntime(hostContext) }
         } else {
-            runtime?.shutdown()
-            runtime = null
+            runtimeSlot.clear(TextSpeechRuntime::shutdown)
         }
         observeLease?.sync(
             WeChatApis.message().observe(),
@@ -104,7 +105,9 @@ class TextSpeechFeature : BaseFeature() {
                 var intercepted = false
                 run before@ {
                     val event = args.getOrNull(0) as? KeyEvent ?: return@before
-                    if (runtime?.handleVolumeKey(event) == true) run { intercepted = true; value = true }
+                    if (runtimeSlot.current()?.handleVolumeKey(event) == true) {
+                        run { intercepted = true; value = true }
+                    }
                 }
                 if (!intercepted) value = chain.proceed()
                 value

@@ -7,21 +7,21 @@ import h.Hchat.hooks.api.message.WeChatMessageObserveApi
 import h.Hchat.hooks.core.BaseFeature
 import h.Hchat.hooks.core.FeatureContext
 import h.Hchat.hooks.core.MessageObserveLease
+import h.Hchat.hooks.core.FeatureRuntimeSlot
 import h.Hchat.preferences.HchatStorage
 import h.Hchat.utils.HLog
 
 class AutoMessageForwardFeature : BaseFeature() {
-    @Volatile private var runtime: AutoMessageForwardRuntime? = null
+    private val runtimeSlot = FeatureRuntimeSlot<AutoMessageForwardRuntime>()
     private var observeLease: MessageObserveLease? = null
     private var preferences: SharedPreferences? = null
     private var preferenceListener: SharedPreferences.OnSharedPreferenceChangeListener? = null
     private var recallSubscription: h.Hchat.event.EventBus.Subscription? = null
     private var recallGeneration = 0L
-    private var activeRulesSnapshot: List<AutoMessageForwardRule>? = null
     @Volatile private var destroyed = false
 
     private val messageListener = WeChatMessageObserveApi.Listener { message ->
-        runtime?.handleMessage(message)
+        runtimeSlot.current()?.handleMessage(message)
     }
 
     override fun featureId(): String = ID
@@ -32,6 +32,7 @@ class AutoMessageForwardFeature : BaseFeature() {
         registerSettingsProvider(AutoMessageForwardSettingsProvider())
     }
 
+    @Synchronized
     override fun onFeatureInstall(context: FeatureContext) {
         destroyed = false
         observeLease = MessageObserveLease().also(::trackSubscription)
@@ -51,6 +52,7 @@ class AutoMessageForwardFeature : BaseFeature() {
         subscribe(Events.DexReady::class.java) { synchronizeRuntime() }
     }
 
+    @Synchronized
     override fun onFeatureDestroy(context: FeatureContext) {
         destroyed = true
         preferences?.unregisterOnSharedPreferenceChangeListener(preferenceListener)
@@ -60,23 +62,19 @@ class AutoMessageForwardFeature : BaseFeature() {
         observeLease?.unsubscribe()
         observeLease = null
         releaseRecallSubscription(context)
-        runtime?.shutdown()
-        runtime = null
-        activeRulesSnapshot = null
+        runtimeSlot.clear(AutoMessageForwardRuntime::shutdown)
     }
 
+    @Synchronized
     private fun synchronizeRuntime() {
         if (destroyed) return
         val currentContext = context()?.hostContext() ?: return
         val enabled = AutoMessageForwardSettings.hasEffectiveRules(currentContext)
         if (enabled) {
-            val rules = AutoMessageForwardSettings.rules(currentContext)
-            if (runtime == null || activeRulesSnapshot != rules) {
-                runtime?.shutdown()
-                runtime = AutoMessageForwardRuntime(currentContext) { message, error ->
+            runtimeSlot.getOrCreate {
+                AutoMessageForwardRuntime(currentContext) { message, error ->
                     HLog.e("$TAG $message", error)
                 }
-                activeRulesSnapshot = rules
             }
             observeLease?.sync(
                 WeChatApis.message().observe(),
@@ -89,9 +87,7 @@ class AutoMessageForwardFeature : BaseFeature() {
         } else {
             observeLease?.sync(null, enabled = false, listener = null)
             releaseRecallSubscription(context())
-            runtime?.shutdown()
-            runtime = null
-            activeRulesSnapshot = null
+            runtimeSlot.clear(AutoMessageForwardRuntime::shutdown)
         }
     }
 
@@ -107,7 +103,7 @@ class AutoMessageForwardFeature : BaseFeature() {
             Events.MessageRecalled::class.java
         ) { event ->
             if (!destroyed && generation == recallGeneration) {
-                runtime?.handleRecall(event)
+                runtimeSlot.current()?.handleRecall(event)
             }
         }
     }

@@ -7,12 +7,15 @@ import h.Hchat.hooks.api.model.DatabaseChange
 import h.Hchat.hooks.api.runtime.WeChatDatabaseListenerApi
 import h.Hchat.hooks.core.FeatureInstallDecision
 import h.Hchat.hooks.core.MessageObserveLease
+import h.Hchat.hooks.core.FeatureRuntimeSlotRegression
 import h.Hchat.hooks.api.message.WeChatMessageObserveApi
 import h.Hchat.hooks.items.autoreply.AutoReplyFriendRequestHook
 import h.Hchat.hooks.items.autoreply.AutoReplyMessageDeduplicator
 import h.Hchat.hooks.items.autoreply.AutoReplyObservationRetryBudget
 import h.Hchat.hooks.items.autoreply.AutoReplyObservationState
 import h.Hchat.hooks.items.backgroundassist.BackgroundRunAssistRootRegression
+import h.Hchat.hooks.items.customfriendavatar.AvatarLoadCoordinatorRegression
+import h.Hchat.hooks.items.automessageforward.PendingForwardRuleGateRegression
 import h.Hchat.hooks.items.payment.transfer.AutoTransferRunSessionRegression
 import h.Hchat.hooks.items.sendbutton.NativeSendButtonHandlers
 import h.Hchat.preferences.HchatStorage
@@ -49,11 +52,57 @@ fun main() {
     check(observer.subscriberCount == 1) { "Replacing a listener must not accumulate observer tokens" }
     observer.emit(WeChatMessageObserveApi.ObservedMessage(false, "", "", "", 1, ""))
     check(staleDeliveries == 0 && currentDeliveries == 1) { "Stale observer callbacks must not dispatch" }
+    val replacementObserver = WeChatMessageObserveApi()
+    lease.sync(replacementObserver, enabled = true, listener = currentListener)
+    check(observer.subscriberCount == 0 && replacementObserver.subscriberCount == 1) {
+        "The same callback must be resubscribed when the observer instance changes"
+    }
+    observer.emit(WeChatMessageObserveApi.ObservedMessage(false, "", "", "", 1, ""))
+    replacementObserver.emit(WeChatMessageObserveApi.ObservedMessage(false, "", "", "", 1, ""))
+    check(currentDeliveries == 2) { "Old observer instances must no longer deliver after replacement" }
     lease.unsubscribe()
-    check(observer.subscriberCount == 0)
+    check(observer.subscriberCount == 0 && replacementObserver.subscriberCount == 0)
     lease.sync(observer, enabled = true, listener = currentListener)
     check(observer.subscriberCount == 0) { "A destroyed lease must not reactivate" }
+    val reinstalledLease = MessageObserveLease()
+    reinstalledLease.sync(observer, enabled = true, listener = currentListener)
+    check(observer.subscriberCount == 1) { "A fresh feature install must create a fresh lease" }
+    reinstalledLease.unsubscribe()
+
+    val concurrentObserver = WeChatMessageObserveApi()
+    val concurrentLease = MessageObserveLease()
+    val togglePool = java.util.concurrent.Executors.newFixedThreadPool(16)
+    val togglesReady = java.util.concurrent.CountDownLatch(16)
+    val togglesStart = java.util.concurrent.CountDownLatch(1)
+    val toggleJobs = (0 until 16).map { worker ->
+        togglePool.submit {
+            togglesReady.countDown()
+            check(togglesStart.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            repeat(50) { iteration ->
+                if ((worker + iteration) % 2 == 0) {
+                    concurrentLease.sync(concurrentObserver, enabled = true, listener = currentListener)
+                } else {
+                    concurrentLease.sync(concurrentObserver, enabled = false, listener = null)
+                }
+                check(concurrentObserver.subscriberCount <= 1)
+            }
+        }
+    }
+    check(togglesReady.await(5, java.util.concurrent.TimeUnit.SECONDS))
+    togglesStart.countDown()
+    togglePool.shutdown()
+    check(togglePool.awaitTermination(10, java.util.concurrent.TimeUnit.SECONDS))
+    toggleJobs.forEach { it.get(1, java.util.concurrent.TimeUnit.SECONDS) }
+    concurrentLease.sync(concurrentObserver, enabled = false, listener = null)
+    check(concurrentObserver.subscriberCount == 0)
+    concurrentLease.sync(concurrentObserver, enabled = true, listener = currentListener)
+    check(concurrentObserver.subscriberCount == 1)
+    concurrentLease.unsubscribe()
     println("PASS: observer toggles release leases, replace callbacks, and reject late delivery")
+
+    AvatarLoadCoordinatorRegression.run()
+    PendingForwardRuleGateRegression.run()
+    FeatureRuntimeSlotRegression.run()
 
     val observation = AutoReplyObservationState()
     check(observation.startFallback())

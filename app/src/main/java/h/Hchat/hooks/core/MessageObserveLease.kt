@@ -7,6 +7,7 @@ import java.lang.ref.WeakReference
 internal class MessageObserveLease {
     private val lock = Any()
     private var observer: WeChatMessageObserveApi? = null
+    private var subscriptionObserver: WeChatMessageObserveApi? = null
     private var callback: WeChatMessageObserveApi.Listener? = null
     private var subscription: WeChatMessageObserveApi.Subscription? = null
     private var requested = false
@@ -26,12 +27,16 @@ internal class MessageObserveLease {
                 observer = null
                 return
             }
-            if (requested && callback === listener && subscription?.isActive == true) return
+            val target = observer ?: return
+            if (requested &&
+                callback === listener &&
+                subscription?.isActive == true &&
+                subscriptionObserver === target
+            ) return
 
             detachLocked()
             requested = true
             callback = listener
-            val target = observer ?: return
             val callbackGeneration = ++generation
             val callbackReference = WeakReference(listener)
             val created = target.subscribe(WeChatMessageObserveApi.Listener { message ->
@@ -43,9 +48,11 @@ internal class MessageObserveLease {
             })
             if (created?.isActive == true) {
                 subscription = created
+                subscriptionObserver = target
             } else {
                 // Keep only the desired callback. A later DexReady/configuration update can retry.
                 subscription = null
+                subscriptionObserver = null
             }
         }
     }
@@ -68,6 +75,7 @@ internal class MessageObserveLease {
         generation++
         val old = subscription
         subscription = null
+        subscriptionObserver = null
         callback = null
         old?.unsubscribe()
     }

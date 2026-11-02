@@ -316,8 +316,15 @@ internal class AutoMessageForwardRuntime(
     ): List<AutoMessageForwardRule> {
         val dueByRule = pending.targetRules[target].orEmpty()
         if (dueByRule.isEmpty()) return emptyList()
-        return AutoMessageForwardSettings.rules(appContext).filter { rule ->
-            rule.id in dueByRule && target in rule.targetIds && ruleMatches(
+        return PendingForwardRuleGate.activeRules(
+            masterEnabled = AutoMessageForwardSettings.isEnabled(appContext),
+            capturedRuleIds = dueByRule.keys,
+            target = target,
+            currentRules = AutoMessageForwardSettings.rules(appContext),
+            id = AutoMessageForwardRule::id,
+            targets = AutoMessageForwardRule::targetIds,
+            enabled = AutoMessageForwardRule::enabled,
+            matches = { rule -> ruleMatches(
                 rule,
                 pending.talker,
                 pending.kind,
@@ -325,8 +332,8 @@ internal class AutoMessageForwardRuntime(
                 pending.searchableContent,
                 pending.outgoing,
                 pending.sourceSender
-            )
-        }
+            ) }
+        )
     }
 
     private fun planForTarget(
