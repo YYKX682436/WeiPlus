@@ -16,6 +16,7 @@ import h.Hchat.hooks.items.autoreply.AutoReplyObservationState
 import h.Hchat.hooks.items.backgroundassist.BackgroundRunAssistRootRegression
 import h.Hchat.hooks.items.customfriendavatar.AvatarLoadCoordinatorRegression
 import h.Hchat.hooks.items.customfriendavatar.AvatarRetryWakeupRegression
+import h.Hchat.hooks.items.customfriendavatar.AvatarRevisionIsolationRegression
 import h.Hchat.hooks.items.automessageforward.PendingForwardRuleGateRegression
 import h.Hchat.hooks.items.payment.transfer.AutoTransferRunSessionRegression
 import h.Hchat.hooks.items.sendbutton.NativeSendButtonHandlers
@@ -103,6 +104,7 @@ fun main() {
 
     AvatarLoadCoordinatorRegression.run()
     AvatarRetryWakeupRegression.run()
+    AvatarRevisionIsolationRegression.run()
     PendingForwardRuleGateRegression.run()
     FeatureRuntimeSlotRegression.run()
 

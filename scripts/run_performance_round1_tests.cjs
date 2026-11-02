@@ -25,6 +25,7 @@ const textSpeechFeature = fs.readFileSync(path.join(root, source+'hooks/items/te
 const messageObserveLease = fs.readFileSync(path.join(root, source+'hooks/core/MessageObserveLease.kt'), 'utf8');
 const avatarFeature = fs.readFileSync(path.join(root, source+'hooks/items/customfriendavatar/CustomFriendAvatarFeature.kt'), 'utf8');
 const avatarCoordinator = fs.readFileSync(path.join(root, source+'hooks/items/customfriendavatar/AvatarLoadCoordinator.kt'), 'utf8');
+const avatarStore = fs.readFileSync(path.join(root, source+'hooks/items/customfriendavatar/CustomFriendAvatarStore.kt'), 'utf8');
 const pendingRuleGate = fs.readFileSync(path.join(root, source+'hooks/items/automessageforward/PendingForwardRuleGate.kt'), 'utf8');
 const notificationAvatarCache = fs.readFileSync(path.join(root, source+'hooks/items/notification/NotificationAvatarBitmapCache.kt'), 'utf8');
 const bottomBarFeature = fs.readFileSync(path.join(root, source+'hooks/items/custombottombar/CustomBottomBarFeature.kt'), 'utf8');
@@ -45,6 +46,15 @@ assert.match(avatarFeature, /avatarLoadCoordinator\.cancelTarget\(drawable\)/);
 assert.match(avatarFeature, /avatarLoadCoordinator\.clear\(\)/);
 assert.match(avatarFeature, /if \(!avatarSettings\.enabled\) avatarLoadCoordinator\.clear\(\)/);
 assert.match(avatarFeature, /target as\? Drawable\)\?\.let\(avatarLoadCoordinator::cancelTarget\)/);
+const avatarChangeHandler = avatarFeature.slice(
+  avatarFeature.indexOf('private fun onAvatarChanged('),
+  avatarFeature.indexOf('private fun refreshAvatarSettings(')
+);
+assert.match(avatarChangeHandler, /cancelKeysWithPrefix\("\$\{context\.hostContext\(\)\.packageName\}\\n\$wxid\\n"\)/);
+assert.doesNotMatch(avatarChangeHandler, /avatarLoadCoordinator\.clear\(\)/);
+assert.doesNotMatch(avatarFeature, /CustomFriendAvatarStore\.revision\(context, binding\.wxid\) == revision\s*\}/);
+assert.match(avatarFeature, /loaded != null &&\s*CustomFriendAvatarStore\.revision\(context, binding\.wxid\) == revision/);
+assert.match(avatarStore, /revisionGeneration\.get\(\) != revision/);
 assert.match(avatarCoordinator, /scheduler\.schedule\(delayMillis/);
 assert.match(avatarCoordinator, /maxPendingRetries/);
 assert.match(avatarCoordinator, /fun cancelTarget\(/);

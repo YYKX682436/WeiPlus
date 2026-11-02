@@ -634,8 +634,7 @@ private class CustomFriendAvatarRuntime(
                     current.token == token &&
                     current.wxid == binding.wxid &&
                     avatarScopeEnabled(binding.wxid, binding.surface, binding.hasVirtualAvatar) &&
-                    isAvatarConfigured(binding.wxid, binding.hasVirtualAvatar) &&
-                    CustomFriendAvatarStore.revision(context, binding.wxid) == revision
+                    isAvatarConfigured(binding.wxid, binding.hasVirtualAvatar)
             },
             invalidate = Drawable::invalidateSelf,
             retry = { target, token ->
@@ -660,8 +659,8 @@ private class CustomFriendAvatarRuntime(
 
     private fun onAvatarChanged(wxid: String) {
         if (destroyed) return
-        // The store revision is process-wide, so cancel stale waiters for every key.
-        avatarLoadCoordinator.clear()
+        // Store generations are process-wide, but a changed file only invalidates this owner's work.
+        avatarLoadCoordinator.cancelKeysWithPrefix("${context.hostContext().packageName}\n$wxid\n")
         conversationGroupAvatarCache.remove(wxid)
         configuredAvatarIds = CustomFriendAvatarStore.configuredFriends(context.hostContext())
         val targets = synchronized(drawableBindings) {
