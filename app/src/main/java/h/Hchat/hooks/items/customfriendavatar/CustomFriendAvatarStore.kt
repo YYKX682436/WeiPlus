@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import h.Hchat.hooks.items.notification.NotificationAvatarBitmapCache
 import h.Hchat.preferences.HchatStorage
 import h.Hchat.utils.HLog
 import java.io.File
@@ -12,8 +13,15 @@ import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 import java.util.LinkedHashMap
+import java.lang.ref.WeakReference
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicLong
 
 object CustomFriendAvatarStore {
+    fun interface ChangeListener {
+        fun onAvatarChanged(context: Context, wxid: String)
+    }
+
     private data class CacheEntry(
         val modified: Long,
         val size: Long,
@@ -25,6 +33,8 @@ object CustomFriendAvatarStore {
     private const val MAX_CACHE_BYTES = 16L * 1024 * 1024
     private val cache = LinkedHashMap<String, CacheEntry>(16, 0.75f, true)
     private var cacheBytes = 0L
+    private val changeListeners = CopyOnWriteArrayList<WeakReference<ChangeListener>>()
+    private val revisionGeneration = AtomicLong(0L)
 
     @JvmStatic
     fun configuredFriends(context: Context): Set<String> {
@@ -50,34 +60,72 @@ object CustomFriendAvatarStore {
     fun loadBitmap(context: Context, wxid: String?): Bitmap? {
         val id = wxid?.trim().orEmpty()
         if (id.isEmpty()) return null
+        val key = cacheKey(context, id)
+        val revision = revisionGeneration.get()
         val file = avatarFile(context, id)
         if (!file.isFile || file.length() <= 0L) {
-            removeCached(id)
+            removeCached(key)
             return null
         }
+        val modified = file.lastModified()
+        val size = file.length()
         synchronized(cache) {
-            cache[id]?.let {
-                if (it.modified == file.lastModified() &&
-                    it.size == file.length() &&
+            cache[key]?.let {
+                if (it.modified == modified &&
+                    it.size == size &&
                     !it.bitmap.isRecycled
                 ) {
                     return it.bitmap
                 }
-                cache.remove(id)
+                cache.remove(key)
                 cacheBytes -= it.bytes
             }
         }
         val decoded = runCatching { BitmapFactory.decodeFile(file.absolutePath) }.getOrNull()
             ?.takeIf { !it.isRecycled && it.width > 0 && it.height > 0 }
             ?: return null
-        putCached(id, file.lastModified(), file.length(), decoded)
+        if (revisionGeneration.get() != revision || !file.isFile ||
+            file.lastModified() != modified || file.length() != size
+        ) {
+            return null
+        }
+        putCached(key, modified, size, decoded)
         return decoded
+    }
+
+    /** Memory-only lookup for drawable callbacks. It performs no hashing or filesystem checks. */
+    @JvmStatic
+    fun cachedBitmap(context: Context, wxid: String?): Bitmap? {
+        val id = wxid?.trim().orEmpty()
+        if (id.isEmpty()) return null
+        return synchronized(cache) {
+            cache[cacheKey(context, id)]?.bitmap?.takeUnless { it.isRecycled }
+        }
+    }
+
+    @JvmStatic
+    fun addChangeListener(listener: ChangeListener): AutoCloseable {
+        val reference = WeakReference(listener)
+        changeListeners += reference
+        return AutoCloseable { changeListeners.remove(reference) }
     }
 
     @JvmStatic
     fun loadNotificationBitmap(context: Context, wxid: String?): Bitmap? {
         if (!CustomFriendAvatarSettings.notificationsEnabled(context)) return null
-        return loadBitmap(context, wxid)
+        val id = wxid?.trim().orEmpty()
+        if (id.isEmpty()) return null
+        val file = avatarFile(context, id).takeIf { it.isFile && it.length() > 0L } ?: return null
+        val fingerprint = "custom:${file.lastModified()}:${file.length()}"
+        val target = NotificationAvatarBitmapCache.targetEdgePx(context)
+        return NotificationAvatarBitmapCache.getOrLoad(
+            context,
+            "custom_friend_avatar_notification",
+            id,
+            fingerprint
+        ) {
+            NotificationAvatarBitmapCache.decode(file.absolutePath, target)
+        }
     }
 
     @JvmStatic
@@ -137,7 +185,9 @@ object CustomFriendAvatarStore {
                     .putStringSet(CustomFriendAvatarSettings.KEY_CONFIGURED_FRIENDS, ids)
                     .apply()
             }
-            removeCached(id)
+            bumpRevision(context, id)
+            removeCached(context, id)
+            notifyAvatarChanged(context, id)
             true
         }.getOrElse {
             HLog.e("$TAG 保存自定义头像失败: wxid=$id, error=${it.message}", it)
@@ -156,13 +206,34 @@ object CustomFriendAvatarStore {
         CustomFriendAvatarSettings.preferences(context).edit()
             .putStringSet(CustomFriendAvatarSettings.KEY_CONFIGURED_FRIENDS, ids)
             .apply()
-        removeCached(id)
+        if (deleted) bumpRevision(context, id)
+        removeCached(context, id)
+        if (deleted) notifyAvatarChanged(context, id)
         return deleted
     }
 
     @JvmStatic
     fun invalidate(wxid: String?) {
-        wxid?.trim()?.takeIf { it.isNotEmpty() }?.let(::removeCached)
+        val id = wxid?.trim()?.takeIf { it.isNotEmpty() } ?: return
+        synchronized(cache) {
+            val suffix = "\n$id"
+            val keys = cache.keys.filter { it.endsWith(suffix) }
+            keys.forEach { key -> cache.remove(key)?.let { cacheBytes -= it.bytes } }
+        }
+    }
+
+    @JvmStatic
+    fun invalidate(context: Context, wxid: String?) {
+        val id = wxid?.trim()?.takeIf { it.isNotEmpty() } ?: return
+        bumpRevision(context, id)
+        removeCached(context, id)
+        notifyAvatarChanged(context, id)
+    }
+
+    @JvmStatic
+    fun revision(context: Context, wxid: String?): Long {
+        val id = wxid?.trim().orEmpty()
+        return if (id.isEmpty()) 0L else revisionGeneration.get()
     }
 
     private fun putCached(id: String, modified: Long, size: Long, bitmap: Bitmap) {
@@ -180,9 +251,26 @@ object CustomFriendAvatarStore {
         }
     }
 
-    private fun removeCached(id: String) {
+    private fun removeCached(context: Context, id: String) = removeCached(cacheKey(context, id))
+
+    private fun removeCached(key: String) {
         synchronized(cache) {
-            cache.remove(id)?.let { cacheBytes -= it.bytes }
+            cache.remove(key)?.let { cacheBytes -= it.bytes }
+        }
+    }
+
+    private fun cacheKey(context: Context, id: String): String = "${context.packageName}\n$id"
+
+    private fun bumpRevision(context: Context, id: String) {
+        revisionGeneration.incrementAndGet()
+    }
+
+    private fun notifyAvatarChanged(context: Context, id: String) {
+        NotificationAvatarBitmapCache.invalidateTalker(context, id)
+        changeListeners.removeIf { reference ->
+            val listener = reference.get() ?: return@removeIf true
+            runCatching { listener.onAvatarChanged(context, id) }
+            false
         }
     }
 

@@ -43,6 +43,29 @@ object AutoMessageForwardSettings {
         preferences(context).getString(KEY_RULES, "").orEmpty()
     )
 
+    fun hasEffectiveRules(context: Context): Boolean {
+        if (!isEnabled(context)) return false
+        return rules(context).any { rule ->
+            rule.enabled &&
+                rule.sourceIds.isNotEmpty() &&
+                rule.messageKinds.any { it in supportedKinds } &&
+                rule.sourceIds.any { source ->
+                    rule.targetIds.any { target -> target.isNotBlank() && target != source }
+                }
+        }
+    }
+
+    fun hasRecallFollowRules(context: Context): Boolean {
+        if (!hasEffectiveRules(context)) return false
+        return rules(context).any { rule ->
+            rule.enabled && rule.followSourceRecall &&
+                rule.sourceIds.isNotEmpty() && rule.sourceIds.any { source -> rule.targetIds.any { target ->
+                    target.isNotBlank() && target != source
+                }
+                }
+        }
+    }
+
     fun saveRules(context: Context, rules: List<AutoMessageForwardRule>) {
         preferences(context).edit().putString(KEY_RULES, encodeRules(rules)).apply()
     }

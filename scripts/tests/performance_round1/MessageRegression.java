@@ -23,9 +23,12 @@ public class MessageRegression {
         WeChatMessageEventApi pb=new WeChatMessageEventApi();
         WeChatMessageObserveApi observe;
         List<WeChatMessageObserveApi.ObservedMessage> observed=new ArrayList<>();
-        Fixture(boolean operational) {
+        Fixture(boolean operational) { this(operational, true); }
+        Fixture(boolean operational, boolean subscribe) {
             pb.operational=operational;changes.install();
-            observe=new WeChatMessageObserveApi(pb,changes,null,null,null);observe.subscribe(observed::add);observe.install();
+            observe=new WeChatMessageObserveApi(pb,changes,null,null,null);
+            if (subscribe) observe.subscribe(observed::add);
+            observe.install();
         }
         void row(int outgoing,String content) { db.row.clear();db.row.putAll(fields(outgoing,content)); }
         void emit(String operation,ContentValues values) { events.listener.accept(change(operation,values)); }
@@ -108,6 +111,18 @@ public class MessageRegression {
         final int[] callbacks={0};insert.changes.subscribe(c->{check(c.message==null);callbacks[0]++;});
         insert.emit("delete",null);check(callbacks[0]==1);
         System.out.println("PASS: complete INSERT avoids reread; DELETE retains mutation semantics without a fabricated message");
+
+        Fixture internalOnly = new Fixture(false, false);
+        WeChatMessageApi.cancellations = 0;
+        internalOnly.row(1, "outgoing confirmation without business listeners");
+        internalOnly.emit("update", partial);
+        check(internalOnly.db.queries.size() == 1 && internalOnly.observed.isEmpty());
+        check(WeChatMessageApi.cancellations == 1);
+        Fixture noBusinessFallback = new Fixture(false, false);
+        noBusinessFallback.row(0, "no listener fallback");
+        noBusinessFallback.emit("insert", fields(0, "no listener fallback"));
+        check(noBusinessFallback.db.queries.isEmpty() && noBusinessFallback.observed.isEmpty());
+        System.out.println("PASS: internal outgoing confirmation survives zero listeners while unused incoming DB fallback stays detached");
 
         WeChatDatabaseListenerApi raw=new WeChatDatabaseListenerApi();
         WeChatDatabaseApi db=new WeChatDatabaseApi();

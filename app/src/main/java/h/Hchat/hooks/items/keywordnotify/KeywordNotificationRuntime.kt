@@ -11,7 +11,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.media.Ringtone
 import android.media.RingtoneManager
@@ -33,6 +32,7 @@ import h.Hchat.hooks.api.model.WeChatMessageTypes
 import h.Hchat.hooks.items.customfriendavatar.CustomFriendAvatarSettings
 import h.Hchat.hooks.items.customfriendavatar.CustomFriendAvatarStore
 import h.Hchat.hooks.items.notification.NotificationNameResolver
+import h.Hchat.hooks.items.notification.NotificationAvatarBitmapCache
 import h.Hchat.preferences.HchatStorage
 import h.Hchat.utils.HLog
 import java.io.File
@@ -40,13 +40,14 @@ import java.net.URL
 import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Calendar
-import java.util.Collections
 import java.util.Date
-import java.util.LinkedHashMap
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.Executors
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import java.util.regex.Pattern
 
 object KeywordNotificationRuntime {
@@ -54,40 +55,91 @@ object KeywordNotificationRuntime {
     private const val CHANNEL_PREFIX = "Hchat_keyword_notification_"
     private const val CHANNEL_NAME = "Hchat 关键词通知"
     private const val EXTRA_KEYWORD_NOTIFY = "hchat_keyword_notification"
-    private const val AVATAR_CACHE_MAX_ENTRIES = 64
+    private const val AVATAR_CACHE_OWNER = "keyword_notification"
     private val notifySeq = AtomicInteger(0)
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val executor = Executors.newSingleThreadExecutor { runnable ->
-        Thread(runnable, "Hchat-KeywordNotify").apply { isDaemon = true }
-    }
-    private val avatarCache = Collections.synchronizedMap(
-        object : LinkedHashMap<String, Bitmap?>(AVATAR_CACHE_MAX_ENTRIES, 0.75f, true) {
-            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Bitmap?>?): Boolean {
-                return size > AVATAR_CACHE_MAX_ENTRIES
-            }
-        }
-    )
+    private val executor = ThreadPoolExecutor(
+        0,
+        1,
+        30L,
+        TimeUnit.SECONDS,
+        LinkedBlockingQueue(),
+        { runnable -> Thread(runnable, "Hchat-KeywordNotify").apply { isDaemon = true } }
+    ).apply { allowCoreThreadTimeOut(true) }
+    private val featureGeneration = AtomicLong(0L)
+    private val pendingMainTasks = ConcurrentHashMap.newKeySet<Runnable>()
+    @Volatile private var featureActive = false
+    @Volatile private var featureDemandFingerprint = 0
     @Volatile private var avatarRoot: String? = null
+    @Volatile private var avatarRootNamespace: String = ""
     @Volatile private var lastManualSoundAt: Long = 0L
+    private val activeRingtones = ConcurrentHashMap.newKeySet<Ringtone>()
+
+    @Synchronized
+    fun setFeatureActive(context: Context, enabled: Boolean) {
+        val next = enabled && KeywordNotificationSettings(context).hasEffectiveTriggers()
+        val fingerprint = HchatStorage.preferences(context, KeywordNotificationSettings.PREFS_NAME)
+            .all.filterKeys {
+                it != KeywordNotificationSettings.KEY_LAST_TIME &&
+                    it != KeywordNotificationSettings.KEY_LAST_KEYWORD
+            }.hashCode()
+        if (featureActive == next && featureDemandFingerprint == fingerprint) return
+        featureActive = next
+        featureDemandFingerprint = fingerprint
+        featureGeneration.incrementAndGet()
+        executor.queue.clear()
+        pendingMainTasks.forEach(mainHandler::removeCallbacks)
+        pendingMainTasks.clear()
+        activeRingtones.toList().forEach(::stopRingtone)
+        activeRingtones.clear()
+        if (!next) {
+            NotificationAvatarBitmapCache.clearOwner(AVATAR_CACHE_OWNER)
+        }
+    }
+
+    private fun isFeatureGenerationActive(context: Context, generation: Long): Boolean {
+        return featureActive && featureGeneration.get() == generation &&
+            KeywordNotificationSettings(context).hasEffectiveTriggers()
+    }
+
+    private fun postFeatureTask(
+        context: Context,
+        generation: Long,
+        delayMillis: Long = 0L,
+        action: () -> Unit
+    ) {
+        lateinit var task: Runnable
+        task = Runnable {
+            pendingMainTasks.remove(task)
+            if (!isFeatureGenerationActive(context, generation)) return@Runnable
+            action()
+        }
+        pendingMainTasks += task
+        mainHandler.postDelayed(task, delayMillis.coerceAtLeast(0L))
+    }
 
     fun handleMessage(context: Context, message: WeChatMessageObserveApi.ObservedMessage) {
+        if (!featureActive) return
         val settings = KeywordNotificationSettings(context)
-        if (!settings.isEnabled()) return
+        if (!settings.hasEffectiveTriggers()) return
         if (message.isSend()) return
         val talker = message.talker.ifBlank { message.getTalker() }
         if (talker.isBlank() || !settings.shouldHandleTalker(talker)) return
         if (isInQuietWindow(settings)) return
 
-        executor.execute {
+        val generation = featureGeneration.get()
+        runCatching { executor.execute {
+            if (!isFeatureGenerationActive(context, generation)) return@execute
             runCatching {
-                handleMessageInternal(context, settings, message, talker)
+                handleMessageInternal(context, settings, message, talker, generation)
             }.onFailure {
                 HLog.e("$TAG 处理消息失败: ${it.message}", it)
             }
-        }
+        } }
     }
 
     fun handleBlockedMessage(context: Context, event: Events.MessageBlocked) {
+        if (!featureActive || !KeywordNotificationSettings(context).hasEffectiveTriggers()) return
         val talker = event.talker.orEmpty()
         val sender = event.sender.orEmpty()
         val content = event.content.orEmpty()
@@ -123,7 +175,7 @@ object KeywordNotificationRuntime {
 
     fun shouldAllowBlockedMessageIntoDatabase(context: Context, parsed: WeChatParsedMessage): Boolean {
         val settings = KeywordNotificationSettings(context)
-        if (!settings.isEnabled()) return false
+        if (!settings.isEnabled() || !settings.hasEffectiveTriggers()) return false
         val talker = parsed.talker
         val sender = parsed.sender
         val content = parsed.content
@@ -177,7 +229,8 @@ object KeywordNotificationRuntime {
         context: Context,
         settings: KeywordNotificationSettings,
         message: WeChatMessageObserveApi.ObservedMessage,
-        talker: String
+        talker: String,
+        generation: Long
     ) {
         val group = message.group || message.isGroupChat() || talker.endsWith("@chatroom") || talker.endsWith("@im.chatroom")
         val rawContent = message.content.ifBlank { message.getContent() }
@@ -210,7 +263,8 @@ object KeywordNotificationRuntime {
         val senderInfo = senderInfo(talker, senderId, group)
         val wxidDisplay = if (group && senderId.isNotBlank()) "$talker|$senderId" else senderId.ifBlank { talker }
         for (keyword in triggers.distinct()) {
-            trigger(context, settings, keyword, content, senderInfo, wxidDisplay, talker, group)
+            if (!isFeatureGenerationActive(context, generation)) return
+            trigger(context, settings, keyword, content, senderInfo, wxidDisplay, talker, group, generation)
             rememberLastMatch(context, keyword)
         }
     }
@@ -344,7 +398,8 @@ object KeywordNotificationRuntime {
         senderInfo: String,
         wxidDisplay: String,
         talker: String,
-        group: Boolean
+        group: Boolean,
+        generation: Long
     ) {
         val type = if (group) "群消息" else "好友"
         val scene = when (keyword) {
@@ -360,10 +415,16 @@ object KeywordNotificationRuntime {
             .formatKeyword(keyword, senderInfo, wxidDisplay, content, type)
 
         if (settings.getBoolean(KeywordNotificationSettings.KEY_NOTIFY, KeywordNotificationSettings.DEFAULT_NOTIFY)) {
-            mainHandler.post { sendNotification(context, settings, scene, talker, title, body, keyword, group) }
+            runCatching {
+                executor.execute {
+                    if (isFeatureGenerationActive(context, generation)) {
+                        sendNotification(context, settings, scene, talker, title, body, keyword, group, generation)
+                    }
+                }
+            }
         }
         if (settings.getBoolean(KeywordNotificationSettings.KEY_TOAST, KeywordNotificationSettings.DEFAULT_TOAST)) {
-            mainHandler.post {
+            postFeatureTask(context, generation) {
                 runCatching { Toast.makeText(context, toastText, Toast.LENGTH_SHORT).show() }
                     .onFailure { HLog.e("$TAG Toast失败: ${it.message}", it) }
             }
@@ -379,7 +440,8 @@ object KeywordNotificationRuntime {
         title: String,
         body: String,
         keyword: String,
-        group: Boolean
+        group: Boolean,
+        generation: Long
     ) {
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
         val sound = settings.getBoolean(
@@ -436,9 +498,10 @@ object KeywordNotificationRuntime {
         if (Build.VERSION.SDK_INT >= 33 &&
             context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) return
+        if (!isFeatureGenerationActive(context, generation)) return
         manager.notify(id, builder.build())
         if (Build.VERSION.SDK_INT >= 26 && sound) {
-            playManualNotificationSound(context, soundUri(ringtone))
+            playManualNotificationSound(context, soundUri(ringtone), generation)
         }
     }
 
@@ -459,19 +522,23 @@ object KeywordNotificationRuntime {
         }.getOrNull()
     }
 
-    private fun playManualNotificationSound(context: Context, uri: Uri?) {
+    private fun playManualNotificationSound(context: Context, uri: Uri?, generation: Long) {
         if (uri == null) return
         val now = System.currentTimeMillis()
         if (now - lastManualSoundAt < 1200L) return
         lastManualSoundAt = now
-        mainHandler.post {
-            val ringtone = runCatching { RingtoneManager.getRingtone(context, uri) }.getOrNull() ?: return@post
+        postFeatureTask(context, generation) {
+            val ringtone = runCatching { RingtoneManager.getRingtone(context, uri) }.getOrNull() ?: return@postFeatureTask
+            activeRingtones += ringtone
             runCatching {
                 @Suppress("DEPRECATION")
                 ringtone.setStreamType(android.media.AudioManager.STREAM_NOTIFICATION)
             }
             runCatching { ringtone.play() }
-            mainHandler.postDelayed({ stopRingtone(ringtone) }, 3500L)
+            postFeatureTask(context, generation, 3500L) {
+                stopRingtone(ringtone)
+                activeRingtones.remove(ringtone)
+            }
         }
     }
 
@@ -484,17 +551,32 @@ object KeywordNotificationRuntime {
     private fun loadAvatarBitmap(context: Context, wxId: String): Bitmap? {
         if (wxId.isBlank()) return null
         if (CustomFriendAvatarSettings.notificationsEnabled(context)) {
-            CustomFriendAvatarStore.loadBitmap(context, wxId)?.let { return it }
+            CustomFriendAvatarStore.loadNotificationBitmap(context, wxId)?.let { return it }
         }
-        if (avatarCache.containsKey(wxId)) return avatarCache[wxId]
+        val namespace = NotificationAvatarBitmapCache.namespace(context)
+        if (avatarRootNamespace != namespace) synchronized(this) {
+            if (avatarRootNamespace != namespace) {
+                avatarRoot = null
+                avatarRootNamespace = namespace
+            }
+        }
         val contacts = WeChatApis.contact().contacts()
         val primary = contacts?.getAvatarUrl(wxId, true).orEmpty()
         val backup = contacts?.getAvatarUrl(wxId, false).orEmpty()
-        val bitmap = avatarSources(context, wxId, primary, backup).firstNotNullOfOrNull { source ->
-            loadBitmap(source)
+        val sources = avatarSources(context, wxId, primary, backup)
+        if (sources.isEmpty()) return null
+        return NotificationAvatarBitmapCache.getOrLoad(
+            context,
+            AVATAR_CACHE_OWNER,
+            wxId,
+            sources.joinToString("\n") { source ->
+                if (source.startsWith("http://") || source.startsWith("https://")) source
+                else File(source).let { "$source:${it.lastModified()}:${it.length()}" }
+            }
+        ) {
+            val edge = NotificationAvatarBitmapCache.targetEdgePx(context)
+            sources.firstNotNullOfOrNull { source -> NotificationAvatarBitmapCache.decode(source, edge) }
         }
-        avatarCache[wxId] = bitmap
-        return bitmap
     }
 
     private fun avatarSources(context: Context, wxId: String, primary: String, backup: String): List<String> {
@@ -533,19 +615,6 @@ object KeywordNotificationRuntime {
             if (avatarDir.isDirectory || parent.isDirectory) return avatarDir.absolutePath
         }
         return null
-    }
-
-    private fun loadBitmap(value: String): Bitmap? {
-        return runCatching {
-            if (value.startsWith("http://") || value.startsWith("https://")) {
-                val connection = URL(value).openConnection()
-                connection.connectTimeout = 3000
-                connection.readTimeout = 3000
-                connection.getInputStream().use { BitmapFactory.decodeStream(it) }
-            } else {
-                File(value).takeIf { it.exists() }?.let { BitmapFactory.decodeFile(it.absolutePath) }
-            }
-        }.getOrNull()
     }
 
     private fun md5Lower(value: String): String? {

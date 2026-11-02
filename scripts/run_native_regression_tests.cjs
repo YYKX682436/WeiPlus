@@ -29,6 +29,7 @@ function run(args) {
 const sources = [
   'app/src/main/java/h/Hchat/WechatPackage.kt',
   'app/src/main/java/h/Hchat/hooks/api/model/WeChatMessage.kt',
+  'app/src/main/java/h/Hchat/hooks/core/MessageObserveLease.kt',
   'app/src/main/java/h/Hchat/hooks/core/FeatureInstallDecision.kt',
   'app/src/main/java/h/Hchat/hooks/items/backgroundassist/BackgroundRunAssistRoot.kt',
   'app/src/main/java/h/Hchat/hooks/items/payment/transfer/AutoTransferRunSession.kt',

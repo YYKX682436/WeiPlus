@@ -1,18 +1,31 @@
 package h.Hchat.hooks.items.textspeech
 
 import android.app.Activity
+import android.content.SharedPreferences
 import android.view.KeyEvent
 import io.github.libxposed.api.XposedInterface
 import h.Hchat.event.Events
 import h.Hchat.hooks.api.core.WeChatApis
+import h.Hchat.hooks.api.message.WeChatMessageObserveApi
 import h.Hchat.hooks.core.BaseFeature
 import h.Hchat.hooks.core.FeatureContext
 import h.Hchat.hooks.core.HookRegistry
+import h.Hchat.hooks.core.MessageObserveLease
+import h.Hchat.preferences.HchatStorage
 import h.Hchat.utils.HLog
 import h.Hchat.utils.KavaReflector
 
 class TextSpeechFeature : BaseFeature() {
+    @Volatile
     private var runtime: TextSpeechRuntime? = null
+    private var observeLease: MessageObserveLease? = null
+    private var preferences: SharedPreferences? = null
+    private var preferenceListener: SharedPreferences.OnSharedPreferenceChangeListener? = null
+    @Volatile private var destroyed = false
+
+    private val messageListener = WeChatMessageObserveApi.Listener { message ->
+        runtime?.handleMessage(message)
+    }
 
     override fun featureId(): String = ID
 
@@ -23,21 +36,55 @@ class TextSpeechFeature : BaseFeature() {
     }
 
     override fun onFeatureInstall(context: FeatureContext) {
-        runtime = TextSpeechRuntime(context.hostContext())
-        installVolumeKeyHook()
-        subscribe(Events.DexReady::class.java) {
-            val observe = WeChatApis.message().observe()
-            if (observe == null) {
-                HLog.e("$TAG 消息观察 API 未就绪")
-                return@subscribe
-            }
-            trackSubscription(observe.subscribe { message -> runtime?.handleMessage(message) })
+        destroyed = false
+        observeLease = MessageObserveLease().also(::trackSubscription)
+        preferences = HchatStorage.preferences(
+            context.hostContext(),
+            TextSpeechSettings.PREFS_NAME
+        ).also { prefs ->
+            preferenceListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+                if (key == TextSpeechSettings.KEY_ENABLE ||
+                    key == TextSpeechSettings.KEY_ALLOWED_CONTACTS ||
+                    key == TextSpeechSettings.KEY_VOLUME_CONTROL
+                ) {
+                    synchronizeRuntime()
+                }
+            }.also(prefs::registerOnSharedPreferenceChangeListener)
         }
+        installVolumeKeyHook()
+        synchronizeRuntime()
+        subscribe(Events.DexReady::class.java) { synchronizeRuntime() }
     }
 
     override fun onFeatureDestroy(context: FeatureContext) {
+        destroyed = true
+        preferences?.unregisterOnSharedPreferenceChangeListener(preferenceListener)
+        preferenceListener = null
+        preferences = null
+        observeLease?.sync(null, enabled = false, listener = null)
+        observeLease?.unsubscribe()
+        observeLease = null
         runtime?.shutdown()
         runtime = null
+    }
+
+    private fun synchronizeRuntime() {
+        if (destroyed) return
+        val hostContext = context()?.hostContext() ?: return
+        val settings = TextSpeechSettings(hostContext)
+        val messageDemand = settings.hasEffectiveMessageTargets()
+        val runtimeDemand = settings.requiresRuntime()
+        if (runtimeDemand) {
+            if (runtime == null) runtime = TextSpeechRuntime(hostContext)
+        } else {
+            runtime?.shutdown()
+            runtime = null
+        }
+        observeLease?.sync(
+            WeChatApis.message().observe(),
+            enabled = messageDemand,
+            listener = if (messageDemand) messageListener else null
+        )
     }
 
     private fun installVolumeKeyHook() {

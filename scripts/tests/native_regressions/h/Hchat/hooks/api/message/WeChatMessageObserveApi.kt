@@ -4,6 +4,10 @@ import h.Hchat.hooks.api.model.WeChatMessage
 import java.util.concurrent.CopyOnWriteArrayList
 
 class WeChatMessageObserveApi(var isAvailable: Boolean = true) {
+    fun interface Listener {
+        fun onObservedMessage(message: ObservedMessage)
+    }
+
     object Kind {
         const val TEXT = "text"
         const val IMAGE = "image"
@@ -52,20 +56,27 @@ class WeChatMessageObserveApi(var isAvailable: Boolean = true) {
         }
     }
 
-    private val listeners = CopyOnWriteArrayList<(ObservedMessage) -> Unit>()
+    private val listeners = CopyOnWriteArrayList<Subscription>()
     var subscribeCalls = 0
         private set
     val subscriberCount: Int get() = listeners.size
 
-    fun subscribe(listener: (ObservedMessage) -> Unit): Subscription {
+    fun subscribe(listener: Listener): Subscription {
         subscribeCalls++
-        listeners.addIfAbsent(listener)
-        return Subscription { listeners.remove(listener) }
+        val subscription = Subscription(listener)
+        listeners += subscription
+        return subscription
     }
 
-    fun emit(message: ObservedMessage) = listeners.forEach { it(message) }
+    fun emit(message: ObservedMessage) = listeners.forEach { it.listener.onObservedMessage(message) }
 
-    class Subscription(private val remove: () -> Unit) {
-        fun unsubscribe() = remove()
+    inner class Subscription(internal val listener: Listener) {
+        @Volatile private var active = true
+        val isActive: Boolean get() = active
+        fun unsubscribe() {
+            if (!active) return
+            active = false
+            listeners.remove(this)
+        }
     }
 }

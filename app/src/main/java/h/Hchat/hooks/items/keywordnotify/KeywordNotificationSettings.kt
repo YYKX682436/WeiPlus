@@ -10,6 +10,15 @@ class KeywordNotificationSettings(context: Context?) {
 
     fun isEnabled(): Boolean = getBoolean(KEY_ENABLE, DEFAULT_ENABLE)
 
+    fun hasEffectiveTriggers(): Boolean {
+        if (!isEnabled()) return false
+        return keywords().isNotEmpty() ||
+            getBoolean(KEY_ANY_GROUP, DEFAULT_ANY_GROUP) ||
+            getBoolean(KEY_ANY_PRIVATE, DEFAULT_ANY_PRIVATE) ||
+            getBoolean(KEY_AT_ME, DEFAULT_AT_ME) ||
+            getBoolean(KEY_AT_ALL, DEFAULT_AT_ALL)
+    }
+
     fun getBoolean(key: String, def: Boolean): Boolean = runCatching {
         prefs?.getBoolean(key, def) ?: def
     }.getOrDefault(def)

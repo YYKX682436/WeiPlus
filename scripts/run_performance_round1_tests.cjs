@@ -19,6 +19,24 @@ const jars = fs.readdirSync(lib).filter(x => x.endsWith('.jar')).map(x => path.j
 const stdlib = jars.find(x => /kotlin-stdlib-[\d.]+\.jar$/.test(x));
 const source = 'app/src/main/java/h/Hchat/';
 const tests = 'scripts/tests/performance_round1/';
+const autoForwardRuntime = fs.readFileSync(path.join(root, source+'hooks/items/automessageforward/AutoMessageForwardRuntime.kt'), 'utf8');
+const notificationAvatarCache = fs.readFileSync(path.join(root, source+'hooks/items/notification/NotificationAvatarBitmapCache.kt'), 'utf8');
+const bottomBarFeature = fs.readFileSync(path.join(root, source+'hooks/items/custombottombar/CustomBottomBarFeature.kt'), 'utf8');
+const swipeQuoteFeature = fs.readFileSync(path.join(root, source+'hooks/items/swipequote/SwipeQuoteFeature.kt'), 'utf8');
+assert.match(autoForwardRuntime, /AutoForwardMediaCleanup\.schedule\(\s*appContext\.cacheDir\.absolutePath,\s*pending\.cacheToken,\s*paths,\s*MEDIA_CACHE_CLEANUP_DELAY_MS/);
+assert.match(autoForwardRuntime, /pending\.downloadTimeoutFuture\?\.cancel\(false\)/);
+assert.match(autoForwardRuntime, /WeakReference\(pending\)/);
+assert.match(autoForwardRuntime, /AutoForwardMediaCleanup\.discardLateResult\(/);
+assert.doesNotMatch(autoForwardRuntime, /if \(runtime == null \|\| current == null\)\s*\{\s*AutoForwardMediaCleanup\.deleteOwned/);
+assert.doesNotMatch(autoForwardRuntime, /schedule\(MEDIA_CACHE_CLEANUP_DELAY_MS\)\s*\{\s*cleanupPendingMedia\(pending\)/);
+assert.match(notificationAvatarCache, /LruCache<String, Bitmap>\(MAX_CACHE_BYTES\)/);
+assert.match(notificationAvatarCache, /value\.allocationByteCount/);
+assert.match(bottomBarFeature, /WeakHashMap<ViewGroup, WeakReference<CustomBottomBarHost>>/);
+assert.match(bottomBarFeature, /WeakHashMap<ViewGroup, WeakReference<NativeCustomBottomBarHost>>/);
+assert.doesNotMatch(bottomBarFeature, /WeakHashMap<ViewGroup, CustomBottomBarHost>/);
+assert.match(swipeQuoteFeature, /WeakHashMap<View, WeakReference<TouchState>>/);
+assert.match(swipeQuoteFeature, /state\.intercepted/);
+assert.match(swipeQuoteFeature, /MotionEvent\.ACTION_CANCEL/);
 function run(command, args) {
   const r = spawnSync(command, args, { cwd: root, encoding: 'utf8', timeout: 90000 });
   process.stdout.write(r.stdout || ''); process.stderr.write(r.stderr || '');
@@ -48,7 +66,7 @@ const fixtures = {
  public final List<String> queries=new ArrayList<>();public Map<String,Object> row=new HashMap<>();public boolean isAvailable(){return true;}public List<Map<String,Object>> query(String sql,String[] args){queries.add(sql);return row.isEmpty()?new ArrayList<>():List.of(new HashMap<>(row));}
  public String quoteTable(String t){return t.matches("[a-zA-Z0-9_]+")?'"'+t+'"':"";} public List<String> messageTables(){throw new AssertionError("cross-table probe");}public String messageTableForTalker(String t){return "message";}public String queryFirstString(String s,String[] a,String c){return "";}public Cursor rawQuery(String s,String[] a){return null;}}`,
 'h/Hchat/dexkit/DexFinder.java': `package h.Hchat.dexkit; public class DexFinder {public java.lang.reflect.Method messageClearBatchMethod;}`,
-'h/Hchat/hooks/api/message/WeChatMessageApi.java': `package h.Hchat.hooks.api.message;public class WeChatMessageApi {public static void cancelPendingLocalSend(String t,String c){}}`,
+'h/Hchat/hooks/api/message/WeChatMessageApi.java': `package h.Hchat.hooks.api.message;public class WeChatMessageApi {public static int cancellations;public static void cancelPendingLocalSend(String t,String c){cancellations++;}}`,
 'h/Hchat/hooks/api/message/WeChatLvBufferMsgSource.java': `package h.Hchat.hooks.api.message;public final class WeChatLvBufferMsgSource {public static String extractXml(byte[] buffer){return "";}}`,
 'h/Hchat/hooks/api/message/WeChatMessageEventApi.java': `package h.Hchat.hooks.api.message; import h.Hchat.event.Events; import h.Hchat.event.EventBus; import java.util.function.Consumer; public class WeChatMessageEventApi {
  public boolean operational; public Consumer<Events.MessageReceived> messages; public boolean isAvailable(){return true;} public boolean isLocatorResolved(){return true;} public boolean isOperational(){return operational;} public EventBus.Subscription subscribeMessage(Consumer<Events.MessageReceived> c){messages=c;return new EventBus.Subscription();} public EventBus.Subscription subscribePat(Consumer<Events.PatDetected> c){return new EventBus.Subscription();} public void unsubscribe(EventBus.Subscription subscription){if(subscription!=null)subscription.unsubscribe();} }`,

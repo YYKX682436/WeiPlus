@@ -15,7 +15,6 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.media.Ringtone
 import android.media.RingtoneManager
 import android.net.Uri
@@ -39,7 +38,9 @@ import h.Hchat.hooks.items.atallnotify.AtAllNotificationBlockSettings
 import h.Hchat.hooks.items.customfriendavatar.CustomFriendAvatarSettings
 import h.Hchat.hooks.items.customfriendavatar.CustomFriendAvatarStore
 import h.Hchat.hooks.items.notification.NotificationNameResolver
+import h.Hchat.hooks.items.notification.NotificationAvatarBitmapCache
 import h.Hchat.hooks.items.quickread.QuickMarkReadRuntime
+import h.Hchat.preferences.HchatStorage
 import h.Hchat.utils.HLog
 import h.Hchat.utils.KavaReflector
 import org.luckypray.dexkit.query.FindMethod
@@ -48,16 +49,20 @@ import java.io.File
 import java.io.FileOutputStream
 import java.lang.reflect.Field
 import java.lang.reflect.Method
-import java.net.URL
 import java.security.MessageDigest
 import java.util.ArrayDeque
 import java.util.Calendar
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 
 object CustomNotificationRuntime {
     private const val TAG = "[Hchat:CustomNotification]"
+    private const val AVATAR_CACHE_OWNER = "custom_notification"
     private const val MARK_HCHAT = "hchat_custom_notification"
     private const val MARK_KEYWORD_NOTIFICATION = "hchat_keyword_notification"
     private const val EXTRA_TALKER = "hchat_custom_notification_talker"
@@ -104,14 +109,19 @@ object CustomNotificationRuntime {
     private val installed = java.util.concurrent.atomic.AtomicBoolean(false)
     private val receiverRegistered = java.util.concurrent.atomic.AtomicBoolean(false)
     private val notifySeq = AtomicInteger(0)
-    private val executor = Executors.newSingleThreadExecutor { runnable ->
-        Thread(runnable, "Hchat-CustomNotify").apply { isDaemon = true }
-    }
+    private val executor = ThreadPoolExecutor(
+        0, 1, 30L, TimeUnit.SECONDS, LinkedBlockingQueue(),
+        { runnable -> Thread(runnable, "Hchat-CustomNotify").apply { isDaemon = true } }
+    ).apply { allowCoreThreadTimeOut(true) }
     private val quickReplyExecutor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "Hchat-QuickReply").apply { isDaemon = true }
     }
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val avatarCache = ConcurrentHashMap<String, Bitmap?>()
+    private val observedGeneration = AtomicLong(0L)
+    private val pendingObservedTasks = ConcurrentHashMap.newKeySet<Runnable>()
+    @Volatile private var observedMessageDemand = false
+    @Volatile private var observedDemandFingerprint = 0
+    private val activeRingtones = ConcurrentHashMap.newKeySet<Ringtone>()
     private val nativeNotifyAt = ConcurrentHashMap<String, Long>()
     private val nativeHandledMessages = ConcurrentHashMap<NativeMessageKey, Long>()
     private val notificationDedupAt = ConcurrentHashMap<NotificationDedupKey, Long>()
@@ -121,6 +131,7 @@ object CustomNotificationRuntime {
     private val nativeNotificationBuildStack = ThreadLocal<ArrayDeque<Boolean>>()
     private val nativeForegroundSoundBlockStack = ThreadLocal<ArrayDeque<Boolean>>()
     @Volatile private var avatarRoot: String? = null
+    @Volatile private var avatarRootNamespace = ""
     @Volatile private var notificationActionReceiver: BroadcastReceiver? = null
     @Volatile private var lastManualSoundAt: Long = 0L
     @Volatile private var methodCachePrefs: android.content.SharedPreferences? = null
@@ -137,7 +148,28 @@ object CustomNotificationRuntime {
         }
     }
 
+    @Synchronized
+    fun setObservedMessageDemand(context: Context, enabled: Boolean) {
+        val settings = CustomNotificationSettings(context)
+        val next = enabled && settings.hasEffectiveNotificationRules()
+        val fingerprint = HchatStorage.preferences(context, CustomNotificationSettings.PREFS_NAME)
+            .all.hashCode()
+        if (observedMessageDemand == next && observedDemandFingerprint == fingerprint) return
+        observedMessageDemand = next
+        observedDemandFingerprint = fingerprint
+        observedGeneration.incrementAndGet()
+        pendingObservedTasks.forEach(mainHandler::removeCallbacks)
+        pendingObservedTasks.clear()
+        executor.queue.clear()
+        activeRingtones.toList().forEach(::stopRingtone)
+        activeRingtones.clear()
+        if (!next) {
+            NotificationAvatarBitmapCache.clearOwner(AVATAR_CACHE_OWNER)
+        }
+    }
+
     fun handleMessage(context: Context, message: WeChatMessageObserveApi.ObservedMessage) {
+        if (!observedMessageDemand) return
         if (AtAllNotificationBlockRuntime.shouldSuppress(context, message)) return
         val settings = CustomNotificationSettings(context)
         if (!settings.isEnabled()) return
@@ -153,20 +185,45 @@ object CustomNotificationRuntime {
         if (shouldSuppressByRule(rule, message)) return
         val observedAt = SystemClock.elapsedRealtime()
         val msgSvrId = message.message?.msgSvrId ?: 0L
+        val generation = observedGeneration.get()
 
-        mainHandler.postDelayed({
-            if (isHandledByNative(talker, msgSvrId, observedAt)) return@postDelayed
+        postObservedTask(context, generation, NATIVE_WAIT_MS) {
+            if (isHandledByNative(talker, msgSvrId, observedAt)) return@postObservedTask
             executor.execute {
+                if (!isObservedGenerationActive(context, generation)) return@execute
                 if (isHandledByNative(talker, msgSvrId, observedAt)) return@execute
                 if (wechatDoNotDisturbState(rule, talker) != false) return@execute
                 runCatching {
                     val payload = buildPayload(context, rule, message)
-                    sendNotification(context, rule, payload)
+                    if (isObservedGenerationActive(context, generation)) {
+                        sendNotification(context, rule, payload, generation)
+                    }
                 }.onFailure {
                     HLog.e("$TAG 发送自定义通知失败: ${it.message}", it)
                 }
             }
-        }, NATIVE_WAIT_MS)
+        }
+    }
+
+    private fun postObservedTask(
+        context: Context,
+        generation: Long,
+        delayMillis: Long = 0L,
+        action: () -> Unit
+    ) {
+        lateinit var task: Runnable
+        task = Runnable {
+            pendingObservedTasks.remove(task)
+            if (!isObservedGenerationActive(context, generation)) return@Runnable
+            action()
+        }
+        pendingObservedTasks += task
+        mainHandler.postDelayed(task, delayMillis.coerceAtLeast(0L))
+    }
+
+    private fun isObservedGenerationActive(context: Context, generation: Long): Boolean {
+        return observedMessageDemand && observedGeneration.get() == generation &&
+            CustomNotificationSettings(context).hasEffectiveNotificationRules()
     }
 
     private fun installNotificationHooks(context: FeatureContext) {
@@ -225,8 +282,10 @@ object CustomNotificationRuntime {
                     }
                     run { intercepted = true; value = null }
                     val payload = buildNativePayload(hostContext, rule, notification)
+                    val generation = observedGeneration.get()
                     executor.execute {
-                        runCatching { sendNotification(hostContext, rule, payload) }
+                        if (!isObservedGenerationActive(hostContext, generation)) return@execute
+                        runCatching { sendNotification(hostContext, rule, payload, generation) }
                         .onFailure { HLog.e("$TAG 转发微信原生通知失败: ${it.message}", it) }
                     }
                 }
@@ -1020,12 +1079,17 @@ object CustomNotificationRuntime {
         nativeHandledMessages.entries.removeIf { now - it.value > NATIVE_OWNERSHIP_TTL_MS }
     }
 
-    private fun sendNotification(context: Context, rule: CustomNotificationRule, payload: NotifyPayload) {
+    private fun sendNotification(
+        context: Context,
+        rule: CustomNotificationRule,
+        payload: NotifyPayload,
+        generation: Long
+    ) {
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
         val dedupKey = notificationDedupKey(rule.talker, payload)
         val claimedAt = if (dedupKey != null) claimNotification(dedupKey) ?: return else 0L
         try {
-            publishNotification(context, manager, rule, payload)
+            publishNotification(context, manager, rule, payload, generation)
         } catch (throwable: Throwable) {
             if (dedupKey != null) notificationDedupAt.remove(dedupKey, claimedAt)
             throw throwable
@@ -1038,7 +1102,8 @@ object CustomNotificationRuntime {
         context: Context,
         manager: NotificationManager,
         rule: CustomNotificationRule,
-        payload: NotifyPayload
+        payload: NotifyPayload,
+        generation: Long
     ) {
         val channelId = CHANNEL_PREFIX + "s${if (rule.sound) "1" else "0"}_v${if (rule.vibrate) "1" else "0"}_${rule.ringtone.hashCode()}"
         if (Build.VERSION.SDK_INT >= 26) {
@@ -1130,6 +1195,7 @@ object CustomNotificationRuntime {
                 extras?.putCharSequenceArray(Notification.EXTRA_TEXT_LINES, mergedLines.toTypedArray())
             }
         }
+        if (!isObservedGenerationActive(context, generation)) return
         if (Build.VERSION.SDK_INT >= 33 &&
             context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) return
@@ -1138,7 +1204,7 @@ object CustomNotificationRuntime {
             cancelOtherCustomNotificationsForTalker(manager, rule.talker, notificationId)
         }
         if (Build.VERSION.SDK_INT >= 26 && rule.sound) {
-            playManualNotificationSound(context, soundUri(rule.ringtone))
+            playManualNotificationSound(context, soundUri(rule.ringtone), generation)
         }
     }
 
@@ -1588,19 +1654,24 @@ object CustomNotificationRuntime {
         }.getOrDefault(rawUri)
     }
 
-    private fun playManualNotificationSound(context: Context, uri: Uri?) {
+    private fun playManualNotificationSound(context: Context, uri: Uri?, generation: Long) {
         if (uri == null) return
         val now = System.currentTimeMillis()
         if (now - lastManualSoundAt < 1200L) return
         lastManualSoundAt = now
-        mainHandler.post {
-            val ringtone = runCatching { RingtoneManager.getRingtone(context, uri) }.getOrNull() ?: return@post
+        postObservedTask(context, generation) {
+            val ringtone = runCatching { RingtoneManager.getRingtone(context, uri) }.getOrNull()
+                ?: return@postObservedTask
+            activeRingtones += ringtone
             runCatching {
                 @Suppress("DEPRECATION")
                 ringtone.setStreamType(android.media.AudioManager.STREAM_NOTIFICATION)
             }
             runCatching { ringtone.play() }
-            mainHandler.postDelayed({ stopRingtone(ringtone) }, 3500L)
+            postObservedTask(context, generation, 3500L) {
+                stopRingtone(ringtone)
+                activeRingtones.remove(ringtone)
+            }
         }
     }
 
@@ -1651,17 +1722,33 @@ object CustomNotificationRuntime {
     private fun loadAvatarBitmap(context: Context, talker: String): Bitmap? {
         if (talker.isBlank()) return null
         if (CustomFriendAvatarSettings.notificationsEnabled(context)) {
-            CustomFriendAvatarStore.loadBitmap(context, talker)?.let { return it }
+            CustomFriendAvatarStore.loadNotificationBitmap(context, talker)?.let { return it }
         }
-        if (avatarCache.containsKey(talker)) return avatarCache[talker]
+        val namespace = NotificationAvatarBitmapCache.namespace(context)
+        if (avatarRootNamespace != namespace) synchronized(this) {
+            if (avatarRootNamespace != namespace) {
+                avatarRoot = null
+                avatarRootNamespace = namespace
+            }
+        }
         val contacts = WeChatApis.contact().contacts()
         val primary = contacts?.getAvatarUrl(talker, true).orEmpty()
         val backup = contacts?.getAvatarUrl(talker, false).orEmpty()
-        val bitmap = avatarSources(context, talker, primary, backup).firstNotNullOfOrNull { source ->
-            loadBitmap(source)
+        val sources = avatarSources(context, talker, primary, backup)
+        if (sources.isEmpty()) return null
+        val fingerprint = sources.joinToString("\n") { source ->
+            if (source.startsWith("http://") || source.startsWith("https://")) source
+            else File(source).let { "$source:${it.lastModified()}:${it.length()}" }
         }
-        avatarCache[talker] = bitmap
-        return bitmap
+        return NotificationAvatarBitmapCache.getOrLoad(
+            context, AVATAR_CACHE_OWNER, talker, fingerprint,
+            loader = {
+                val edge = NotificationAvatarBitmapCache.targetEdgePx(context)
+                sources.firstNotNullOfOrNull { source ->
+                    NotificationAvatarBitmapCache.decode(source, edge)
+                }
+            }
+        )
     }
 
     private fun avatarSources(context: Context, wxId: String, primary: String, backup: String): List<String> {
@@ -1700,19 +1787,6 @@ object CustomNotificationRuntime {
             if (avatarDir.isDirectory || parent.isDirectory) return avatarDir.absolutePath
         }
         return null
-    }
-
-    private fun loadBitmap(value: String): Bitmap? {
-        return runCatching {
-            if (value.startsWith("http://") || value.startsWith("https://")) {
-                val connection = URL(value).openConnection()
-                connection.connectTimeout = 3000
-                connection.readTimeout = 3000
-                connection.getInputStream().use { BitmapFactory.decodeStream(it) }
-            } else {
-                File(value).takeIf { it.exists() }?.let { BitmapFactory.decodeFile(it.absolutePath) }
-            }
-        }.getOrNull()
     }
 
     private fun md5Lower(value: String): String? {

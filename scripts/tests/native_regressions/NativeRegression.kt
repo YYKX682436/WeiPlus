@@ -6,6 +6,8 @@ import h.Hchat.hooks.api.core.WeChatApis
 import h.Hchat.hooks.api.model.DatabaseChange
 import h.Hchat.hooks.api.runtime.WeChatDatabaseListenerApi
 import h.Hchat.hooks.core.FeatureInstallDecision
+import h.Hchat.hooks.core.MessageObserveLease
+import h.Hchat.hooks.api.message.WeChatMessageObserveApi
 import h.Hchat.hooks.items.autoreply.AutoReplyFriendRequestHook
 import h.Hchat.hooks.items.autoreply.AutoReplyMessageDeduplicator
 import h.Hchat.hooks.items.autoreply.AutoReplyObservationRetryBudget
@@ -29,6 +31,29 @@ fun main() {
     check(!WechatPackage.isAppBrandProcess("com.tencent.mm.fake", "com.tencent.mm.fake:appbrand0"))
 
     BackgroundRunAssistRootRegression.run()
+
+    val observer = WeChatMessageObserveApi()
+    val lease = MessageObserveLease()
+    var staleDeliveries = 0
+    var currentDeliveries = 0
+    val staleListener = WeChatMessageObserveApi.Listener { staleDeliveries++ }
+    val currentListener = WeChatMessageObserveApi.Listener { currentDeliveries++ }
+    repeat(20) {
+        lease.sync(observer, enabled = true, listener = staleListener)
+        check(observer.subscriberCount == 1)
+        lease.sync(observer, enabled = false, listener = null)
+        check(observer.subscriberCount == 0) { "Disabled toggles must release the observer token" }
+    }
+    lease.sync(observer, enabled = true, listener = staleListener)
+    lease.sync(observer, enabled = true, listener = currentListener)
+    check(observer.subscriberCount == 1) { "Replacing a listener must not accumulate observer tokens" }
+    observer.emit(WeChatMessageObserveApi.ObservedMessage(false, "", "", "", 1, ""))
+    check(staleDeliveries == 0 && currentDeliveries == 1) { "Stale observer callbacks must not dispatch" }
+    lease.unsubscribe()
+    check(observer.subscriberCount == 0)
+    lease.sync(observer, enabled = true, listener = currentListener)
+    check(observer.subscriberCount == 0) { "A destroyed lease must not reactivate" }
+    println("PASS: observer toggles release leases, replace callbacks, and reject late delivery")
 
     val observation = AutoReplyObservationState()
     check(observation.startFallback())

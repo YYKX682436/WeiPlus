@@ -39,6 +39,11 @@ class TextSpeechSettings(context: Context?) {
 
     fun allowedContacts(): Set<String> = parseStringSet(string(KEY_ALLOWED_CONTACTS, ""))
 
+    fun hasEffectiveMessageTargets(): Boolean = isEnabled() && allowedContacts().isNotEmpty()
+
+    fun requiresRuntime(): Boolean = isEnabled() &&
+        (allowedContacts().isNotEmpty() || boolean(KEY_VOLUME_CONTROL, DEFAULT_VOLUME_CONTROL))
+
     fun saveAllowedContacts(values: Set<String>) {
         prefs?.edit()?.putString(KEY_ALLOWED_CONTACTS, encodeStringSet(values))?.apply()
     }

@@ -643,12 +643,17 @@ public final class WeChatMessageObserveApi {
     }
 
     private boolean needsDatabaseMessage(h.Hchat.hooks.api.model.DatabaseChange change) {
-        if (listeners.isEmpty() || change.isDelete()) return false;
+        if (change == null || change.isDelete()) return false;
         // Missing direction on UPDATE is unknown, not incoming. Resolve it synchronously.
         Integer direction = change.values != null && change.values.containsKey("isSend")
                 ? change.values.getAsInteger("isSend") : null;
-        if (direction == null || direction != 0) return true;
-        return !hasActivePbSubscriptions() && change.isInsert();
+        // When business listeners are detached, keep the DB path only as the internal send
+        // confirmation fallback if the PB observer cannot perform those actions.
+        if (direction == null || direction != 0) {
+            return !listeners.isEmpty() || !hasActivePbSubscriptions();
+        }
+        // Incoming DB inserts are the business fallback only while PB observation is unavailable.
+        return !listeners.isEmpty() && !hasActivePbSubscriptions() && change.isInsert();
     }
 
     private void onMessageChanged(WeChatMessageChangeApi.MessageChange change, long generation) {
@@ -661,6 +666,7 @@ public final class WeChatMessageObserveApi {
         if (msg.isOutgoing()) {
             WeChatMessageApi.cancelPendingLocalSend(msg.talker, msg.content);
         }
+        if (listeners.isEmpty()) return;
         dispatch(new ObservedMessage(
                 "message_db",
                 kindOf(msg),

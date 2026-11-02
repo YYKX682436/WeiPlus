@@ -123,9 +123,16 @@ private class SwipeQuoteAdapter(
 
     private fun clearRows() {
         synchronized(rootTargets) { rootTargets.keys.toList() }.forEach(::clearSwipeVisual)
-        synchronized(recyclerStates) { recyclerStates.values.toList() }.forEach { clearSwipeVisual(it.visualRow) }
+        val states = synchronized(recyclerStates) {
+            recyclerStates.values.mapNotNull { it.get() }.also { recyclerStates.clear() }
+        }
+        states.forEach { state ->
+            state.owner.get()?.let { view ->
+                clearSwipeVisual(state.visualRow)
+                disposeTouchState(view, state)
+            } ?: state.reset()
+        }
         rootTargets.clear()
-        recyclerStates.clear()
     }
 
     fun destroy() {
@@ -141,7 +148,7 @@ private class SwipeQuoteAdapter(
     @Volatile private var dexQuoteMethod: Method? = null
     @Volatile private var lastFooterRef = WeakReference<Any>(null)
     private val rootTargets = Collections.synchronizedMap(WeakHashMap<View, QuoteTarget>())
-    private val recyclerStates = Collections.synchronizedMap(WeakHashMap<View, TouchState>())
+    private val recyclerStates = Collections.synchronizedMap(WeakHashMap<View, WeakReference<TouchState>>())
     private val repeatMenuTargets = Collections.synchronizedMap(WeakHashMap<MenuItem, QuoteTarget>())
     private val repeatMenuTargetsByGroup = ConcurrentHashMap<Int, QuoteTarget>()
     private val repeatMenuHookedMethods = Collections.newSetFromMap(ConcurrentHashMap<Method, Boolean>())
@@ -541,7 +548,6 @@ private class SwipeQuoteAdapter(
                         view,
                         event,
                         hit,
-                        recyclerStates,
                         methodName == "onInterceptTouchEvent"
                     )) {
                         run { intercepted = true; value = true }
@@ -579,10 +585,12 @@ private class SwipeQuoteAdapter(
         view: View,
         event: MotionEvent,
         hit: QuoteHit?,
-        stateMap: MutableMap<View, TouchState>,
         fromIntercept: Boolean
     ): Boolean {
-        val state = stateMap.getOrPut(view) { TouchState() }
+        val action = event.actionMasked
+        val state = if (action == MotionEvent.ACTION_DOWN) touchState(view, create = true)
+            else touchState(view, create = false)
+        if (state == null) return false
         if (event.actionMasked == MotionEvent.ACTION_MOVE &&
             state.lastEventTime == event.eventTime &&
             state.lastAction == event.actionMasked
@@ -591,15 +599,20 @@ private class SwipeQuoteAdapter(
         }
         state.lastEventTime = event.eventTime
         state.lastAction = event.actionMasked
-        // The intercept callback participates in gesture takeover, but the
-        // touch callback owns the terminal event. Handling UP/CANCEL here
-        // would clear the state before RecyclerView dispatches it to itself.
-        if (fromIntercept &&
-            (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL)
-        ) return state.dragging
+        if (fromIntercept && event.actionMasked == MotionEvent.ACTION_UP && state.intercepted) {
+            return state.dragging
+        }
+        if (event.actionMasked == MotionEvent.ACTION_CANCEL ||
+            (fromIntercept && event.actionMasked == MotionEvent.ACTION_UP && !state.intercepted)
+        ) {
+            clearSwipeVisual(state.visualRow)
+            resetTouchState(view, state)
+            return false
+        }
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                resetSwipeVisual(state)
+                clearSwipeVisual(state.visualRow)
+                resetTouchState(view, state)
                 state.downX = event.rawX
                 state.downY = event.rawY
                 state.hit = hit
@@ -611,6 +624,7 @@ private class SwipeQuoteAdapter(
                 state.triggered = false
                 state.visualRow = null
                 state.startTranslationX = 0f
+                state.intercepted = false
             }
             MotionEvent.ACTION_MOVE -> {
                 if (!state.tracking) return false
@@ -621,8 +635,11 @@ private class SwipeQuoteAdapter(
                 val quoteEnabled = isQuoteEnabled()
                 val repeatEnabled = isRepeatEnabled()
                 if (!state.dragging && abs(dy) > dp(32f) && abs(dy) > abs(dx) * 1.2f) {
-                    resetSwipeVisual(state)
+                    clearSwipeVisual(state.visualRow)
                     state.tracking = false
+                    state.hit = null
+                    state.visualRow = null
+                    state.intercepted = false
                     return false
                 }
                 if (!state.dragging) {
@@ -644,6 +661,7 @@ private class SwipeQuoteAdapter(
                     SwipeDirection.NONE -> return false
                 }.coerceAtMost(dp(150f))
                 view.parent?.requestDisallowInterceptTouchEvent(true)
+                if (fromIntercept) state.intercepted = true
                 state.armed = drag >= triggerDistance(state.direction)
                 updateSwipeVisual(state, activeHit, drag)
                 if (state.armed && !state.hapticSent) {
@@ -654,7 +672,9 @@ private class SwipeQuoteAdapter(
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 val activeHit = state.hit ?: hit
-                val triggered = if (event.actionMasked == MotionEvent.ACTION_UP && state.armed && activeHit != null) {
+                val triggered = if (event.actionMasked == MotionEvent.ACTION_UP &&
+                    state.intercepted && state.armed && activeHit != null
+                ) {
                     when (state.direction) {
                         SwipeDirection.LEFT_QUOTE -> showNativeQuote(activeHit.row, activeHit.target)
                         SwipeDirection.RIGHT_REPEAT -> repeatNativeMessage(activeHit.target)
@@ -668,18 +688,63 @@ private class SwipeQuoteAdapter(
                 }
                 val consume = state.dragging || state.triggered
                 resetSwipeVisual(state)
-                state.tracking = false
-                state.triggered = false
-                state.hit = null
-                state.direction = SwipeDirection.NONE
-                state.dragging = false
-                state.armed = false
-                state.hapticSent = false
-                view.parent?.requestDisallowInterceptTouchEvent(false)
+                resetTouchState(view, state)
                 return consume
             }
         }
         return false
+    }
+
+    private fun touchState(view: View, create: Boolean): TouchState? {
+        synchronized(recyclerStates) {
+            recyclerStates[view]?.get()?.let { return it }
+            if (!create) return null
+            val state = TouchState(WeakReference(view))
+            recyclerStates[view] = WeakReference(state)
+            view.addOnAttachStateChangeListener(state)
+            return state
+        }
+    }
+
+    private fun resetTouchState(view: View, state: TouchState) {
+        state.cancelDetachCheck()
+        view.parent?.requestDisallowInterceptTouchEvent(false)
+        state.hit = null
+        state.visualRow = null
+        state.startTranslationX = 0f
+        state.direction = SwipeDirection.NONE
+        state.tracking = false
+        state.dragging = false
+        state.armed = false
+        state.hapticSent = false
+        state.triggered = false
+        state.intercepted = false
+        state.lastEventTime = 0L
+        state.lastAction = -1
+    }
+
+    private fun disposeTouchState(view: View, state: TouchState) {
+        state.cancelDetachCheck()
+        resetTouchState(view, state)
+        view.removeOnAttachStateChangeListener(state)
+        synchronized(recyclerStates) {
+            if (recyclerStates[view]?.get() === state) recyclerStates.remove(view)
+        }
+    }
+
+    private fun activityForView(view: View): android.app.Activity? {
+        var owner: android.content.Context? = view.context
+        while (owner is android.content.ContextWrapper) {
+            if (owner is android.app.Activity) return owner
+            val base = owner.baseContext
+            if (base === owner) break
+            owner = base
+        }
+        return owner as? android.app.Activity
+    }
+
+    private fun isActivityPageEnding(activity: android.app.Activity?): Boolean {
+        return activity == null || activity.isFinishing || activity.isDestroyed || activity.isChangingConfigurations
     }
 
     private fun updateSwipeVisual(state: TouchState, hit: QuoteHit, drag: Float) {
@@ -1629,7 +1694,7 @@ private class SwipeQuoteAdapter(
         RIGHT_REPEAT
     }
 
-    private class TouchState {
+    private inner class TouchState(val owner: WeakReference<View>) : View.OnAttachStateChangeListener {
         var downX = 0f
         var downY = 0f
         var hit: QuoteHit? = null
@@ -1641,8 +1706,55 @@ private class SwipeQuoteAdapter(
         var armed = false
         var hapticSent = false
         var triggered = false
+        var intercepted = false
         var lastEventTime = 0L
         var lastAction = -1
+        var pendingDetachCheck: Runnable? = null
+
+        fun reset() {
+            downX = 0f
+            downY = 0f
+            hit = null
+            visualRow = null
+            startTranslationX = 0f
+            direction = SwipeDirection.NONE
+            tracking = false
+            dragging = false
+            armed = false
+            hapticSent = false
+            triggered = false
+            intercepted = false
+            lastEventTime = 0L
+            lastAction = -1
+        }
+
+        override fun onViewAttachedToWindow(view: View) {
+            cancelDetachCheck()
+        }
+
+        override fun onViewDetachedFromWindow(view: View) {
+            clearSwipeVisual(visualRow)
+            resetTouchState(view, this)
+            val activity = activityForView(view)
+            if (isActivityPageEnding(activity)) {
+                disposeTouchState(view, this)
+                return
+            }
+            val check = Runnable {
+                pendingDetachCheck = null
+                if (!view.isAttachedToWindow && isActivityPageEnding(activityForView(view))) {
+                    clearSwipeVisual(visualRow)
+                    disposeTouchState(view, this)
+                }
+            }
+            pendingDetachCheck = check
+            mainHandler.post(check)
+        }
+
+        fun cancelDetachCheck() {
+            pendingDetachCheck?.let(mainHandler::removeCallbacks)
+            pendingDetachCheck = null
+        }
     }
 
     private companion object {

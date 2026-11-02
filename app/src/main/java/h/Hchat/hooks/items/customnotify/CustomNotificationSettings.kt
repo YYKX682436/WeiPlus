@@ -12,6 +12,13 @@ class CustomNotificationSettings(context: Context?) {
 
     fun isEnabled(): Boolean = getBoolean(KEY_ENABLE, DEFAULT_ENABLE)
 
+    fun hasEffectiveNotificationRules(): Boolean {
+        if (!isEnabled()) return false
+        if (rules().any { it.enabled && it.mode != MODE_DND }) return true
+        return sequenceOf(defaultPrivateRule(), defaultGroupRule(), defaultOfficialRule())
+            .any { it.enabled && it.mode != MODE_DND }
+    }
+
     fun rules(): List<CustomNotificationRule> {
         return parseRules(getString(KEY_RULES, ""), legacyIgnoreWechatDoNotDisturb())
     }

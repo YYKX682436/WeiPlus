@@ -5,14 +5,16 @@ import h.Hchat.event.EventHandler
 import h.Hchat.ui.FeatureSettingsProvider
 import h.Hchat.utils.HLog
 import h.Hchat.utils.KavaReflector
+import java.util.LinkedHashMap
 
 /**
  * 功能模块基类。
  */
 abstract class BaseFeature : Feature {
     private val subscriptions = ArrayList<EventBus.Subscription>()
-    private val trackedSubscriptions = ArrayList<Any>()
+    private val trackedSubscriptions = LinkedHashMap<String, Any>()
     private val registeredProviderIds = ArrayList<String>()
+    private var nextTrackedSubscriptionId = 0L
     private var context: FeatureContext? = null
 
     @Throws(Throwable::class)
@@ -40,16 +42,10 @@ abstract class BaseFeature : Feature {
             }
         }
         subscriptions.clear()
-        for (subscription in trackedSubscriptions) {
-            try {
-                KavaReflector.invoke(
-                    KavaReflector.findMethod(subscription.javaClass, "unsubscribe"),
-                    subscription
-                )
-            } catch (_: Throwable) {
-            }
+        val tracked = synchronized(trackedSubscriptions) {
+            trackedSubscriptions.values.toList().also { trackedSubscriptions.clear() }
         }
-        trackedSubscriptions.clear()
+        tracked.forEach(::unsubscribeTracked)
         for (featureId in registeredProviderIds) {
             try {
                 context.uiRegistry().unregisterProvider(featureId)
@@ -98,9 +94,37 @@ abstract class BaseFeature : Feature {
 
     protected fun <T : Any> trackSubscription(subscription: T?): T? {
         if (subscription != null) {
-            trackedSubscriptions.add(subscription)
+            synchronized(trackedSubscriptions) {
+                trackedSubscriptions["tracked-${nextTrackedSubscriptionId++}"] = subscription
+            }
         }
         return subscription
+    }
+
+    /** Replaces a feature-owned subscription without retaining the previous lease until destroy. */
+    protected fun <T : Any> replaceTrackedSubscription(key: String, subscription: T?): T? {
+        val previous = synchronized(trackedSubscriptions) {
+            val old = trackedSubscriptions.remove(key)
+            if (subscription != null) trackedSubscriptions[key] = subscription
+            old
+        }
+        if (previous != null && previous !== subscription) unsubscribeTracked(previous)
+        return subscription
+    }
+
+    protected fun releaseTrackedSubscription(key: String) {
+        val previous = synchronized(trackedSubscriptions) { trackedSubscriptions.remove(key) }
+        if (previous != null) unsubscribeTracked(previous)
+    }
+
+    private fun unsubscribeTracked(subscription: Any) {
+        try {
+            KavaReflector.invoke(
+                KavaReflector.findMethod(subscription.javaClass, "unsubscribe"),
+                subscription
+            )
+        } catch (_: Throwable) {
+        }
     }
 
     protected fun globalBoolean(key: String, defValue: Boolean): Boolean {

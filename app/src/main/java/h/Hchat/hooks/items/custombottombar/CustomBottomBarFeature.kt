@@ -11,6 +11,7 @@ import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.view.View
@@ -151,11 +152,15 @@ private class CustomBottomBarRuntime(
     private val observedBottomTabs = Collections.synchronizedMap(
         WeakHashMap<ViewGroup, Unit>()
     )
+    private val pendingRefreshCallbacks = Collections.synchronizedMap(
+        WeakHashMap<View, WeakReference<Runnable>>()
+    )
+    private val mainHandler = Handler(Looper.getMainLooper())
     private val floatingHosts = Collections.synchronizedMap(
-        WeakHashMap<ViewGroup, CustomBottomBarHost>()
+        WeakHashMap<ViewGroup, WeakReference<CustomBottomBarHost>>()
     )
     private val nativeHosts = Collections.synchronizedMap(
-        WeakHashMap<ViewGroup, NativeCustomBottomBarHost>()
+        WeakHashMap<ViewGroup, WeakReference<NativeCustomBottomBarHost>>()
     )
     private val originalBottomBlurHeights = Collections.synchronizedMap(
         WeakHashMap<View, Int>()
@@ -215,6 +220,12 @@ private class CustomBottomBarRuntime(
     private var resumeHookInstalled = false
 
     @Volatile
+    private var destroyHookInstalled = false
+
+    @Volatile
+    private var destroyed = false
+
+    @Volatile
     private var bottomTabStateHooksInstalled = false
 
     @Volatile
@@ -244,6 +255,8 @@ private class CustomBottomBarRuntime(
     }
 
     fun destroy() {
+        if (destroyed) return
+        destroyed = true
         customPrefs.unregisterOnSharedPreferenceChangeListener(customPreferenceListener)
         floatingPrefs.unregisterOnSharedPreferenceChangeListener(floatingPreferenceListener)
         synchronized(knownViews) { knownViews.clear() }
@@ -253,27 +266,38 @@ private class CustomBottomBarRuntime(
         observed.forEach { it.removeOnAttachStateChangeListener(bottomTabAttachListener) }
         lastLauncherActivity = WeakReference<Activity>(null)
         val activeFloatingHosts = synchronized(floatingHosts) {
-            floatingHosts.values.toList().also { floatingHosts.clear() }
+            floatingHosts.values.mapNotNull { it.get() }.also { floatingHosts.clear() }
         }
         val activeNativeHosts = synchronized(nativeHosts) {
-            nativeHosts.values.toList().also { nativeHosts.clear() }
+            nativeHosts.values.mapNotNull { it.get() }.also { nativeHosts.clear() }
         }
         activeFloatingHosts.forEach(CustomBottomBarHost::restore)
         activeNativeHosts.forEach(NativeCustomBottomBarHost::restore)
+        val pendingRefreshes = synchronized(pendingRefreshCallbacks) {
+            pendingRefreshCallbacks.entries.mapNotNull { (view, reference) ->
+                reference.get()?.let { view to it }
+            }.also { pendingRefreshCallbacks.clear() }
+        }
+        pendingRefreshes.forEach { (view, callback) ->
+            mainHandler.removeCallbacks(callback)
+            view.removeCallbacks(callback)
+        }
         restoreAllBottomBlurAreas()
     }
 
     @Synchronized
     fun install(allowDexSearch: Boolean): Boolean {
         val resumeInstalled = installLauncherResumeHook()
+        val destroyInstalled = installLauncherDestroyHook()
         val createInstalled = installMainTabCreateHook(allowDexSearch)
         val constructorHooksInstalled = installBottomTabConstructorHooks()
         val stateHooksInstalled = installBottomTabStateHooks()
         installFrostedDrawHook(finalAttempt = allowDexSearch)
-        return resumeInstalled && createInstalled && constructorHooksInstalled && stateHooksInstalled
+        return resumeInstalled && destroyInstalled && createInstalled && constructorHooksInstalled && stateHooksInstalled
     }
 
     fun refreshCurrentActivity() {
+        if (destroyed) return
         val current = WeChatApis.currentActivity()?.currentActivity()
         val target = current?.takeIf(::isLauncherActivity) ?: lastLauncherActivity.get()
         if (target == null || target.isFinishing || target.isDestroyed) return
@@ -379,7 +403,7 @@ private class CustomBottomBarRuntime(
 
     private fun syncFloatingHost(bottomTab: ViewGroup?, selectedIndex: Int? = null) {
         val target = bottomTab ?: return
-        val host = synchronized(floatingHosts) { floatingHosts[target] }
+        val host = synchronized(floatingHosts) { floatingHosts[target]?.get() }
         if (host == null) {
             applyObservedBottomTab(target)
             return
@@ -415,6 +439,30 @@ private class CustomBottomBarRuntime(
             true
         }.getOrElse {
             logger("微信底栏恢复入口 Hook 安装失败", it)
+            false
+        }
+    }
+
+    private fun installLauncherDestroyHook(): Boolean {
+        if (destroyHookInstalled) return true
+        val launcherClass = KavaReflector.loadClass(LAUNCHER_UI_CLASS, hostClassLoader) ?: return false
+        val onDestroy = KavaReflector.declaredMethods(launcherClass).singleOrNull {
+            it.name == "onDestroy" && it.returnType == Void.TYPE && it.parameterTypes.isEmpty() &&
+                !Modifier.isStatic(it.modifiers) && !Modifier.isAbstract(it.modifiers)
+        } ?: return false
+        return runCatching {
+            HookRegistry.get().hook(onDestroy, XposedInterface.Hooker { chain ->
+                val activity = chain.thisObject as? Activity
+                try {
+                    chain.proceed()
+                } finally {
+                    if (activity != null) cleanupActivity(activity)
+                }
+            })
+            destroyHookInstalled = true
+            true
+        }.getOrElse {
+            logger("微信底栏销毁入口 Hook 安装失败", it)
             false
         }
     }
@@ -533,6 +581,7 @@ private class CustomBottomBarRuntime(
     }
 
     private fun applyFromActivity(activity: Activity?) {
+        if (destroyed) return
         val target = activity ?: return
         if (!isLauncherActivity(target) || target.isFinishing || target.isDestroyed) return
         lastLauncherActivity = WeakReference(target)
@@ -542,6 +591,7 @@ private class CustomBottomBarRuntime(
     }
 
     private fun applyBottomTab(activity: Activity, bottomTab: ViewGroup) {
+        if (destroyed) return
         lastLauncherActivity = WeakReference(activity)
         cleanupDetachedHosts(bottomTab)
         synchronized(knownViews) { knownViews[bottomTab] = WeakReference(activity) }
@@ -561,6 +611,7 @@ private class CustomBottomBarRuntime(
     }
 
     private fun applyObservedBottomTab(bottomTab: ViewGroup?) {
+        if (destroyed) return
         val target = bottomTab ?: return
         val apply = apply@{
             if (!target.isAttachedToWindow) return@apply
@@ -577,22 +628,55 @@ private class CustomBottomBarRuntime(
     }
 
     private fun cleanupDetachedHosts(current: ViewGroup) {
-        val staleFloating = synchronized(floatingHosts) {
-            floatingHosts.entries
-                .filter { (view, _) -> view !== current && !view.isAttachedToWindow }
-                .map { (view, host) -> view to host }
-                .onEach { (view, _) -> floatingHosts.remove(view) }
-                .map { it.second }
+        synchronized(floatingHosts) {
+            floatingHosts.entries.removeAll { (_, host) -> host.get() == null }
         }
-        val staleNative = synchronized(nativeHosts) {
-            nativeHosts.entries
-                .filter { (view, _) -> view !== current && !view.isAttachedToWindow }
-                .map { (view, host) -> view to host }
-                .onEach { (view, _) -> nativeHosts.remove(view) }
-                .map { it.second }
+        synchronized(nativeHosts) {
+            nativeHosts.entries.removeAll { (_, host) -> host.get() == null }
         }
-        staleFloating.forEach(CustomBottomBarHost::restore)
-        staleNative.forEach(NativeCustomBottomBarHost::restore)
+    }
+
+    private fun cleanupActivity(activity: Activity) {
+        val decor = activity.window?.decorView
+        val affected = linkedSetOf<ViewGroup>()
+        synchronized(knownViews) {
+            knownViews.entries.removeAll { entry ->
+                val view = entry.key
+                val owner = entry.value.get()
+                val matches = owner === activity || (decor != null && view.rootView === decor)
+                if (matches) affected += view
+                matches
+            }
+        }
+        val observed = synchronized(observedBottomTabs) {
+            observedBottomTabs.keys.filter { view ->
+                view in affected || (decor != null && view.rootView === decor)
+            }.onEach { observedBottomTabs.remove(it) }
+        }
+        observed.forEach { cancelRefreshCallback(it) }
+        observed.forEach { it.removeOnAttachStateChangeListener(bottomTabAttachListener) }
+        affected.forEach { cancelRefreshCallback(it) }
+        val floating = synchronized(floatingHosts) {
+            floatingHosts.entries.filter { (view, ref) ->
+                view in affected || ref.get() == null || (decor != null && view.rootView === decor)
+            }.mapNotNull { (view, ref) ->
+                floatingHosts.remove(view)
+                ref.get()
+            }
+        }
+        val native = synchronized(nativeHosts) {
+            nativeHosts.entries.filter { (view, ref) ->
+                view in affected || ref.get() == null || (decor != null && view.rootView === decor)
+            }.mapNotNull { (view, ref) ->
+                nativeHosts.remove(view)
+                ref.get()
+            }
+        }
+        floating.forEach(CustomBottomBarHost::restore)
+        native.forEach(NativeCustomBottomBarHost::restore)
+        affected.forEach { view -> synchronized(failedViews) { failedViews.remove(view) } }
+        decor?.let(::restoreBottomBlurAreas)
+        if (lastLauncherActivity.get() === activity) lastLauncherActivity = WeakReference(null)
     }
 
     private fun findBottomTab(view: View): ViewGroup? {
@@ -605,29 +689,30 @@ private class CustomBottomBarRuntime(
     }
 
     private fun configureBottomTab(activity: Activity, bottomTab: ViewGroup) {
+        if (destroyed) return
         val customEnabled = isCustomEnabled()
         val floatingEnabled = !customEnabled && isFloatingEnabled()
         if (!customEnabled && !floatingEnabled) {
-            synchronized(floatingHosts) { floatingHosts.remove(bottomTab) }?.restore()
-            synchronized(nativeHosts) { nativeHosts.remove(bottomTab) }?.restore()
+            synchronized(floatingHosts) { floatingHosts.remove(bottomTab)?.get() }?.restore()
+            synchronized(nativeHosts) { nativeHosts.remove(bottomTab)?.get() }?.restore()
             synchronized(failedViews) { failedViews.remove(bottomTab) }
             restoreBottomBlurAreas(bottomTab.rootView)
             return
         }
 
         if (customEnabled) {
-            synchronized(floatingHosts) { floatingHosts.remove(bottomTab) }?.restore()
+            synchronized(floatingHosts) { floatingHosts.remove(bottomTab)?.get() }?.restore()
             configureNativeBottomTab(activity, bottomTab, readNativeConfig())
             return
         }
 
-        synchronized(nativeHosts) { nativeHosts.remove(bottomTab) }?.restore()
+        synchronized(nativeHosts) { nativeHosts.remove(bottomTab)?.get() }?.restore()
         val config = readFloatingConfig()
-        val active = synchronized(floatingHosts) { floatingHosts[bottomTab] }
+        val active = synchronized(floatingHosts) { floatingHosts[bottomTab]?.get() }
         if (active?.updateConfig(config) == true) return
         if (active != null) {
             synchronized(floatingHosts) {
-                if (floatingHosts[bottomTab] === active) floatingHosts.remove(bottomTab)
+                if (floatingHosts[bottomTab]?.get() === active) floatingHosts.remove(bottomTab)
             }
             active.restore()
         }
@@ -679,9 +764,11 @@ private class CustomBottomBarRuntime(
                 logger = logger,
                 onRestored = {
                     synchronized(floatingHosts) {
-                        if (floatingHosts[bottomTab] === createdHost) floatingHosts.remove(bottomTab)
+                    if (floatingHosts[bottomTab]?.get() === createdHost) floatingHosts.remove(bottomTab)
                     }
-                    if (bottomTab.isAttachedToWindow && (isCustomEnabled() || isFloatingEnabled())) {
+                    if (!destroyed && !activity.isFinishing && !activity.isDestroyed && !activity.isChangingConfigurations &&
+                        bottomTab.isAttachedToWindow && (isCustomEnabled() || isFloatingEnabled())
+                    ) {
                         runAfterCurrentFrame(bottomTab) { configureBottomTab(activity, bottomTab) }
                     }
                 }
@@ -692,7 +779,7 @@ private class CustomBottomBarRuntime(
         }
         createdHost = host
         if (host.install()) {
-            synchronized(floatingHosts) { floatingHosts[bottomTab] = host }
+            synchronized(floatingHosts) { floatingHosts[bottomTab] = WeakReference(host) }
             synchronized(failedViews) { failedViews.remove(bottomTab) }
         }
     }
@@ -702,13 +789,14 @@ private class CustomBottomBarRuntime(
         bottomTab: ViewGroup,
         config: NativeCustomBottomBarConfig
     ) {
-        val active = synchronized(nativeHosts) { nativeHosts[bottomTab] }
+        if (destroyed) return
+        val active = synchronized(nativeHosts) { nativeHosts[bottomTab]?.get() }
         if (active?.config == config && active.isApplied()) {
             if (active.enforce()) return
         }
         if (active != null) {
             synchronized(nativeHosts) {
-                if (nativeHosts[bottomTab] === active) nativeHosts.remove(bottomTab)
+                if (nativeHosts[bottomTab]?.get() === active) nativeHosts.remove(bottomTab)
             }
             active.restore()
         }
@@ -722,13 +810,13 @@ private class CustomBottomBarRuntime(
             logger = logger,
             onRestored = {
                 synchronized(nativeHosts) {
-                    if (nativeHosts[bottomTab] === createdHost) nativeHosts.remove(bottomTab)
+                    if (nativeHosts[bottomTab]?.get() === createdHost) nativeHosts.remove(bottomTab)
                 }
             }
         )
         createdHost = host
         if (host.install()) {
-            synchronized(nativeHosts) { nativeHosts[bottomTab] = host }
+            synchronized(nativeHosts) { nativeHosts[bottomTab] = WeakReference(host) }
             synchronized(failedViews) { failedViews.remove(bottomTab) }
         }
     }
@@ -876,11 +964,46 @@ private class CustomBottomBarRuntime(
     }
 
     private fun runAfterCurrentFrame(view: View, action: () -> Unit) {
-        if (Looper.myLooper() == Looper.getMainLooper()) {
-            view.postOnAnimation { action() }
-        } else {
-            view.post { view.postOnAnimation { action() } }
+        lateinit var callback: Runnable
+        var framePosted = false
+        callback = Runnable {
+            if (destroyed) {
+                cancelRefreshCallback(view, callback)
+                return@Runnable
+            }
+            if (!framePosted) {
+                framePosted = true
+                view.postOnAnimation(callback)
+            } else {
+                cancelRefreshCallback(view, callback)
+                if (view.isAttachedToWindow) action()
+            }
         }
+        val previous = synchronized(pendingRefreshCallbacks) {
+            pendingRefreshCallbacks.put(view, WeakReference(callback))?.get()
+        }
+        previous?.let { old ->
+            mainHandler.removeCallbacks(old)
+            view.removeCallbacks(old)
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            framePosted = true
+            view.postOnAnimation(callback)
+        } else {
+            mainHandler.post(callback)
+        }
+    }
+
+    private fun cancelRefreshCallback(view: View, expected: Runnable? = null) {
+        val callback = synchronized(pendingRefreshCallbacks) {
+            val current = pendingRefreshCallbacks[view]?.get()
+            if (current != null && (expected == null || current === expected)) {
+                pendingRefreshCallbacks.remove(view)
+                current
+            } else null
+        } ?: return
+        mainHandler.removeCallbacks(callback)
+        view.removeCallbacks(callback)
     }
 
     private fun isBottomBlurSuppressed(root: View): Boolean {
@@ -1226,7 +1349,6 @@ private class NativeCustomBottomBarHost(
                 tab.originalLabelVisibility?.let { label.visibility = it }
             }
             tab.icon?.let { icon -> tab.originalIconVisibility?.let { icon.visibility = it } }
-            tab.bitmap?.takeUnless { it.isRecycled }?.recycle()
         }
         tabs.clear()
         if (config.hideBar) {

@@ -1,6 +1,8 @@
 package h.Hchat.hooks.items.automessageforward
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import h.Hchat.event.Events
 import h.Hchat.hooks.api.core.WeChatApis
 import h.Hchat.hooks.api.media.WeChatImageApi
@@ -17,7 +19,9 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedDeque
 import java.util.concurrent.ScheduledThreadPoolExecutor
+import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
+import java.lang.ref.WeakReference
 
 internal class AutoMessageForwardRuntime(
     context: Context,
@@ -32,13 +36,13 @@ internal class AutoMessageForwardRuntime(
     private val recentMessages = LinkedHashMap<String, Long>()
     private val pendingKeys = ConcurrentHashMap.newKeySet<String>()
     private val pendingForwards = ConcurrentHashMap<String, PendingForward>()
-    private val protectedMediaPaths = ConcurrentHashMap.newKeySet<String>()
     private val moduleOutgoing = ConcurrentLinkedDeque<ModuleOutgoing>()
     private val recallRecords = ArrayList<AutoMessageForwardRecallRecord>()
     private val recentRecallKeys = LinkedHashMap<String, Long>()
     private val recallRevocationsInFlight = linkedSetOf<String>()
     private var recallAccount = ""
     private var nextSendAllowedAt = 0L
+    @Volatile private var closed = false
 
     init {
         ensureRecallAccount()
@@ -46,12 +50,15 @@ internal class AutoMessageForwardRuntime(
     }
 
     fun handleMessage(observed: WeChatMessageObserveApi.ObservedMessage) {
+        if (closed) return
         if (observed.talker.isBlank()) return
         if (executor.isShutdown) return
         if (observed.isRecalled()) {
+            if (!AutoMessageForwardSettings.hasRecallFollowRules(appContext)) return
             schedule(0L) { acceptObservedRecall(observed) }
             return
         }
+        if (!AutoMessageForwardSettings.hasEffectiveRules(appContext)) return
         val delayMillis = if (observed.outgoing) MODULE_OUTGOING_SETTLE_DELAY_MS else 0L
         runCatching {
             executor.schedule(Runnable { acceptMessage(observed) }, delayMillis, TimeUnit.MILLISECONDS)
@@ -59,11 +66,15 @@ internal class AutoMessageForwardRuntime(
     }
 
     fun handleRecall(event: Events.MessageRecalled) {
-        if (event.talker.isBlank() || executor.isShutdown) return
+        if (closed || event.talker.isBlank() || executor.isShutdown) return
+        if (!AutoMessageForwardSettings.hasRecallFollowRules(appContext)) return
         schedule(0L) { acceptRecall(event) }
     }
 
     fun shutdown() {
+        if (closed) return
+        closed = true
+        pendingForwards.values.toList().forEach(::finishPending)
         executor.shutdownNow()
         synchronized(recentMessages) { recentMessages.clear() }
         pendingKeys.clear()
@@ -75,8 +86,9 @@ internal class AutoMessageForwardRuntime(
     }
 
     private fun acceptMessage(observed: WeChatMessageObserveApi.ObservedMessage) {
+        if (closed) return
         if (observed.outgoing && consumeModuleOutgoing(observed)) return
-        if (!AutoMessageForwardSettings.isEnabled(appContext)) return
+        if (!AutoMessageForwardSettings.hasEffectiveRules(appContext)) return
         if (!isSupportedKind(observed)) return
         val searchable = buildSearchableContent(observed)
         val sourceSender = observed.sender.ifBlank { observed.getSendTalker() }.trim()
@@ -143,6 +155,7 @@ internal class AutoMessageForwardRuntime(
     }
 
     private fun prepareAndSend(pending: PendingForward) {
+        if (closed) return
         if (pending.key !in pendingKeys || !AutoMessageForwardSettings.isEnabled(appContext)) {
             finishPending(pending)
             return
@@ -186,6 +199,7 @@ internal class AutoMessageForwardRuntime(
     }
 
     private fun sendNext(pending: PendingForward, plan: ForwardPlan, index: Int) {
+        if (closed) return
         runCatching { sendNextInternal(pending, plan, index) }
             .onFailure { error ->
                 finishPending(pending)
@@ -244,7 +258,7 @@ internal class AutoMessageForwardRuntime(
     }
 
     private fun schedule(delayMillis: Long, action: () -> Unit): Boolean {
-        if (executor.isShutdown) return false
+        if (closed || executor.isShutdown) return false
         return runCatching {
             executor.schedule(Runnable { action() }, delayMillis.coerceAtLeast(0L), TimeUnit.MILLISECONDS)
             true
@@ -596,7 +610,7 @@ internal class AutoMessageForwardRuntime(
     }
 
     private fun acceptRecall(event: Events.MessageRecalled, accountAttempt: Int = 0) {
-        if (!AutoMessageForwardSettings.isEnabled(appContext)) return
+        if (closed || !AutoMessageForwardSettings.hasRecallFollowRules(appContext)) return
         val sourceMsgId = event.sourceMsgId.takeIf { it > 0L } ?: 0L
         val sourceSvrIds = (event.lookupSvrIds + event.sourceMsgSvrId)
             .filterTo(linkedSetOf()) { it > 0L }
@@ -647,6 +661,7 @@ internal class AutoMessageForwardRuntime(
     }
 
     private fun acceptObservedRecall(observed: WeChatMessageObserveApi.ObservedMessage) {
+        if (closed || !AutoMessageForwardSettings.hasRecallFollowRules(appContext)) return
         val lookupSvrIds = sequenceOf(observed.xml, observed.content, observed.message.bodyContent())
             .filter { it.isNotBlank() }
             .flatMap { raw ->
@@ -679,6 +694,7 @@ internal class AutoMessageForwardRuntime(
         index: Int,
         attempt: Int
     ) {
+        if (closed || !AutoMessageForwardSettings.hasRecallFollowRules(appContext)) return
         if (index >= records.size) return
         val record = records[index]
         val revokeKey = "${record.targetTalker}:${record.forwardedMsgId}"
@@ -938,6 +954,11 @@ internal class AutoMessageForwardRuntime(
             protectManagedMediaFile(File(target))
             pending.downloadRequested = true
             pending.downloadInFlight = true
+            val runtimeRef = WeakReference(this)
+            val pendingRef = WeakReference(pending)
+            val pendingKey = pending.key
+            val cacheToken = pending.cacheToken
+            val cacheRoot = appContext.cacheDir.absolutePath
             val submitted = imageApi.downloadCdn(
                     download.md5,
                     download.url,
@@ -946,9 +967,23 @@ internal class AutoMessageForwardRuntime(
                     download.fileType,
                     download.expectedLength.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
                     object : WeChatImageApi.DownloadCallback {
-                        override fun onSuccess(file: File) = resumeDownloadedMedia(pending, file)
+                        override fun onSuccess(file: File) {
+                            val runtime = runtimeRef.get()
+                            val current = pendingRef.get()
+                            if (runtime == null || current == null) {
+                                AutoForwardMediaCleanup.discardLateResult(cacheRoot, target, cacheToken)
+                            } else {
+                                runtime.resumeDownloadedMedia(current, pendingKey, cacheToken, target, file)
+                            }
+                        }
 
-                        override fun onError(message: String) = failDownloadedMedia(pending, message)
+                        override fun onError(message: String) {
+                            val runtime = runtimeRef.get()
+                            val current = pendingRef.get()
+                            if (runtime != null && current != null) {
+                                runtime.failDownloadedMedia(current, pendingKey, cacheToken, target, message)
+                            }
+                        }
                     }
                 )
             if (submitted) {
@@ -1015,6 +1050,11 @@ internal class AutoMessageForwardRuntime(
             protectManagedMediaFile(File(target))
             pending.downloadRequested = true
             pending.downloadInFlight = true
+            val runtimeRef = WeakReference(this)
+            val pendingRef = WeakReference(pending)
+            val pendingKey = pending.key
+            val cacheToken = pending.cacheToken
+            val cacheRoot = appContext.cacheDir.absolutePath
             val submitted = videoApi.downloadCdn(
                 download.md5,
                 download.url,
@@ -1022,17 +1062,32 @@ internal class AutoMessageForwardRuntime(
                 target,
                 object : WeChatVideoApi.DownloadCallback {
                     override fun onSuccess(file: File) {
+                        val runtime = runtimeRef.get()
+                        val current = pendingRef.get()
+                        if (runtime == null || current == null) {
+                            AutoForwardMediaCleanup.discardLateResult(cacheRoot, target, cacheToken)
+                            return
+                        }
                         if (download.expectedLength > 0L && file.length() < download.expectedLength) {
-                            failDownloadedMedia(
-                                pending,
+                            runtime.failDownloadedMedia(
+                                current,
+                                pendingKey,
+                                cacheToken,
+                                target,
                                 "视频下载文件不完整: ${file.length()}/${download.expectedLength}"
                             )
                         } else {
-                            resumeDownloadedMedia(pending, file)
+                            runtime.resumeDownloadedMedia(current, pendingKey, cacheToken, target, file)
                         }
                     }
 
-                    override fun onError(message: String) = failDownloadedMedia(pending, message)
+                    override fun onError(message: String) {
+                        val runtime = runtimeRef.get()
+                        val current = pendingRef.get()
+                        if (runtime != null && current != null) {
+                            runtime.failDownloadedMedia(current, pendingKey, cacheToken, target, message)
+                        }
+                    }
                 }
             )
             if (submitted) {
@@ -1166,17 +1221,31 @@ internal class AutoMessageForwardRuntime(
         return File(appContext.cacheDir, MEDIA_CACHE_DIRECTORY).apply { mkdirs() }
     }
 
-    private fun resumeDownloadedMedia(pending: PendingForward, file: File) {
-        dispatchDownloadResult(pending, { deleteDiscardedDownload(pending, file) }) {
+    private fun resumeDownloadedMedia(
+        pending: PendingForward,
+        key: String,
+        token: String,
+        targetPath: String,
+        file: File
+    ) {
+        dispatchDownloadResult(pending, key, token, targetPath, file) {
             pending.downloadInFlight = false
+            cancelDownloadTimeout(pending)
             pending.downloadPath = file.absolutePath
             prepareAndSend(pending)
         }
     }
 
-    private fun failDownloadedMedia(pending: PendingForward, message: String) {
-        dispatchDownloadResult(pending) {
+    private fun failDownloadedMedia(
+        pending: PendingForward,
+        key: String,
+        token: String,
+        targetPath: String,
+        message: String
+    ) {
+        dispatchDownloadResult(pending, key, token, targetPath, null) {
             pending.downloadInFlight = false
+            cancelDownloadTimeout(pending)
             pending.downloadFailed = true
             pending.downloadError = message
             prepareAndSend(pending)
@@ -1185,48 +1254,85 @@ internal class AutoMessageForwardRuntime(
 
     private fun dispatchDownloadResult(
         pending: PendingForward,
-        discarded: (() -> Unit)? = null,
+        key: String,
+        token: String,
+        targetPath: String,
+        downloadedFile: File?,
         action: () -> Unit
     ) {
-        if (executor.isShutdown) {
-            discarded?.invoke()
+        fun discard() {
+            downloadedFile?.let { file ->
+                if (managedMediaPath(File(targetPath)) == managedMediaPath(file)) {
+                    AutoForwardMediaCleanup.discardLateResult(
+                        appContext.cacheDir.absolutePath,
+                        targetPath,
+                        token
+                    )
+                }
+            }
+        }
+        if (closed || executor.isShutdown) {
+            discard()
             return
         }
         runCatching {
             executor.execute {
-                if (!pending.downloadInFlight || pending.key !in pendingKeys) {
-                    discarded?.invoke()
+                if (closed ||
+                    !pending.downloadInFlight ||
+                    pending.key != key ||
+                    pending.cacheToken != token ||
+                    pending.downloadTargetPath != targetPath ||
+                    pendingForwards[key] !== pending ||
+                    key !in pendingKeys
+                ) {
+                    discard()
                     return@execute
                 }
                 action()
             }
-        }.onFailure { discarded?.invoke() }
+        }.onFailure { discard() }
     }
 
     private fun scheduleDownloadTimeout(pending: PendingForward) {
-        schedule(MEDIA_WAIT_TIMEOUT_MS) {
-            if (!pending.downloadInFlight || pending.key !in pendingKeys) return@schedule
-            pending.downloadInFlight = false
-            pending.downloadFailed = true
-            pending.downloadError = "等待下载完成回调超时"
-            prepareAndSend(pending)
-        }
+        cancelDownloadTimeout(pending)
+        pending.downloadTimeoutFuture = runCatching {
+            executor.schedule({
+                if (closed ||
+                    !pending.downloadInFlight ||
+                    pending.key !in pendingKeys ||
+                    pendingForwards[pending.key] !== pending
+                ) return@schedule
+                pending.downloadTimeoutFuture = null
+                pending.downloadInFlight = false
+                pending.downloadFailed = true
+                pending.downloadError = "等待下载完成回调超时"
+                prepareAndSend(pending)
+            }, MEDIA_WAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        }.getOrNull()
     }
 
     private fun finishPending(pending: PendingForward) {
         pendingForwards.remove(pending.key, pending)
         if (!pendingKeys.remove(pending.key)) return
+        cancelDownloadTimeout(pending)
         pending.downloadInFlight = false
         if (!pending.downloadRequested && pending.downloadPath.isBlank()) return
-        schedule(MEDIA_CACHE_CLEANUP_DELAY_MS) { cleanupPendingMedia(pending) }
+        val paths = listOf(pending.downloadTargetPath, pending.downloadPath)
+            .mapNotNull { path -> managedMediaPath(File(path)) }
+            .distinct()
+        if (paths.isNotEmpty()) {
+            AutoForwardMediaCleanup.schedule(
+                appContext.cacheDir.absolutePath,
+                pending.cacheToken,
+                paths,
+                MEDIA_CACHE_CLEANUP_DELAY_MS
+            )
+        }
     }
 
-    private fun cleanupPendingMedia(pending: PendingForward) {
-        sequenceOf(pending.downloadTargetPath, pending.downloadPath)
-            .filter { it.isNotBlank() }
-            .distinct()
-            .map(::File)
-            .forEach(::deleteManagedMediaFile)
+    private fun cancelDownloadTimeout(pending: PendingForward) {
+        pending.downloadTimeoutFuture?.cancel(false)
+        pending.downloadTimeoutFuture = null
     }
 
     private fun cleanupStaleMediaCache() {
@@ -1237,7 +1343,7 @@ internal class AutoMessageForwardRuntime(
                 file.isFile &&
                     (file.name.startsWith("image_") || file.name.startsWith("video_")) &&
                     file.lastModified() <= cutoff &&
-                    managedMediaPath(file)?.let { it !in protectedMediaPaths } == true
+                    managedMediaPath(file)?.let { !AutoForwardMediaCleanup.isProtected(it) } == true
             }
             ?.forEach(::deleteManagedMediaFile)
     }
@@ -1250,18 +1356,16 @@ internal class AutoMessageForwardRuntime(
     }
 
     private fun protectManagedMediaFile(file: File) {
-        managedMediaPath(file)?.let(protectedMediaPaths::add)
-    }
-
-    private fun deleteDiscardedDownload(pending: PendingForward, file: File) {
-        val targetPath = managedMediaPath(File(pending.downloadTargetPath)) ?: return
-        if (managedMediaPath(file) == targetPath) deleteManagedMediaFile(file)
+        val token = file.name.removePrefix("image_").removePrefix("video_")
+            .substringBeforeLast('.')
+        managedMediaPath(file)?.let {
+            if (token.isNotBlank()) AutoForwardMediaCleanup.protect(appContext.cacheDir.absolutePath, it, token)
+        }
     }
 
     private fun deleteManagedMediaFile(file: File) {
         val path = managedMediaPath(file) ?: return
-        if (file.isFile) file.delete()
-        protectedMediaPaths.remove(path)
+        AutoForwardMediaCleanup.deleteStale(appContext.cacheDir.absolutePath, path)
     }
 
     private fun managedMediaPath(file: File): String? {
@@ -1405,6 +1509,7 @@ internal class AutoMessageForwardRuntime(
         var downloadPath: String = "",
         var downloadRequested: Boolean = false,
         var downloadInFlight: Boolean = false,
+        var downloadTimeoutFuture: ScheduledFuture<*>? = null,
         var downloadFailed: Boolean = false,
         var downloadError: String = "",
         var stableLocalPath: String = "",
@@ -1496,4 +1601,63 @@ internal class AutoMessageForwardRuntime(
         private const val MEDIA_CACHE_DIRECTORY = "Hchat_auto_message_forward"
         private const val REQUIRED_LOCAL_STABLE_CHECKS = 1
     }
+}
+
+/** Delayed media deletion retains only bounded path ownership metadata, never a forward task. */
+private object AutoForwardMediaCleanup {
+    private const val DIRECTORY_NAME = "Hchat_auto_message_forward"
+    private val handler = Handler(Looper.getMainLooper())
+    private val owners = ConcurrentHashMap<String, String>()
+
+    fun protect(cacheRoot: String, path: String, token: String) {
+        if (isOwnedPath(cacheRoot, path, token)) owners[path] = token
+    }
+
+    fun isProtected(path: String): Boolean = owners.containsKey(path)
+
+    fun schedule(cacheRoot: String, token: String, paths: List<String>, delayMillis: Long) {
+        val safePaths = paths.filter { isOwnedPath(cacheRoot, it, token) }.distinct()
+        if (safePaths.isEmpty()) return
+        val task = Runnable { safePaths.forEach { deleteOwned(cacheRoot, it, token) } }
+        handler.postDelayed(task, delayMillis.coerceAtLeast(0L))
+    }
+
+    fun deleteOwned(cacheRoot: String, path: String, token: String) {
+        if (!isOwnedPath(cacheRoot, path, token)) return
+        val owner = owners[path]
+        if (owner != null && owner != token) return
+        runCatching {
+            val file = File(path)
+            if (file.isFile) file.delete()
+        }
+        if (owner == token) owners.remove(path, token)
+    }
+
+    fun discardLateResult(cacheRoot: String, path: String, token: String) {
+        if (!isOwnedPath(cacheRoot, path, token)) return
+        val owner = owners[path]
+        if (owner == token) return // The one-hour cleanup already scheduled for this task owns it.
+        if (owner == null) deleteOwned(cacheRoot, path, token)
+    }
+
+    fun deleteStale(cacheRoot: String, path: String) {
+        if (owners.containsKey(path) || !isManagedPath(cacheRoot, path)) return
+        runCatching {
+            val file = File(path)
+            if (file.isFile) file.delete()
+        }
+    }
+
+    private fun isOwnedPath(cacheRoot: String, path: String, token: String): Boolean {
+        if (token.isBlank()) return false
+        val file = File(path)
+        val expectedNames = setOf("image_$token.jpg", "video_$token.mp4")
+        return file.name in expectedNames && isManagedPath(cacheRoot, path)
+    }
+
+    private fun isManagedPath(cacheRoot: String, path: String): Boolean = runCatching {
+        val directory = File(File(cacheRoot), DIRECTORY_NAME).canonicalFile
+        val file = File(path).canonicalFile
+        file.parentFile == directory
+    }.getOrDefault(false)
 }

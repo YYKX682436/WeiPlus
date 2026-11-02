@@ -5,13 +5,18 @@ import android.app.Notification
 import android.app.NotificationManager
 import android.content.Context
 import android.content.ContextWrapper
+import android.content.SharedPreferences
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.RectF
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.Icon
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.ContextMenu
 import android.view.MenuItem
 import android.view.View
@@ -23,12 +28,14 @@ import h.Hchat.hooks.core.BaseFeature
 import h.Hchat.hooks.core.ConversationMenuExtension
 import h.Hchat.hooks.core.ConversationMenuExtensionRegistry
 import h.Hchat.hooks.core.ConversationMenuExtensionTarget
+import h.Hchat.hooks.core.ChatRowRefresh
 import h.Hchat.hooks.core.DexInstallScheduler
 import h.Hchat.hooks.core.FeatureContext
 import h.Hchat.hooks.core.HookRegistry
 import h.Hchat.hooks.items.conversationgroup.ConversationGroupRuntime
 import h.Hchat.hooks.items.conversationgroup.ConversationGroupStore
 import h.Hchat.hooks.items.customnotify.CustomNotificationRuntime
+import h.Hchat.hooks.items.notification.NotificationAvatarBitmapCache
 import h.Hchat.hooks.items.quickcontactedit.ConversationMenuLocator
 import h.Hchat.ui.miuix.VoiceForwardMiuixDialog
 import h.Hchat.utils.KavaReflector
@@ -44,6 +51,10 @@ import java.util.Collections
 import java.util.LinkedHashMap
 import java.util.WeakHashMap
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 import org.luckypray.dexkit.query.FindMethod
 import org.luckypray.dexkit.query.matchers.MethodMatcher
 
@@ -94,9 +105,37 @@ private class CustomFriendAvatarRuntime(
     private val logger: (String, Throwable?) -> Unit,
 ) {
     private val hookedMembers = ConcurrentHashMap.newKeySet<Executable>()
-    private val drawableWxids = Collections.synchronizedMap(WeakHashMap<Any, String>())
-    private val drawableSurfaces = Collections.synchronizedMap(WeakHashMap<Any, AvatarSurface>())
-    private val drawableRadiusFactors = Collections.synchronizedMap(WeakHashMap<Any, Float>())
+    private val drawableBindings = Collections.synchronizedMap(WeakHashMap<Any, DrawableAvatarBinding>())
+    private val avatarPrefs = CustomFriendAvatarSettings.preferences(context.hostContext())
+    private val roundAvatarPrefs = h.Hchat.preferences.HchatStorage.preferences(
+        context.hostContext(), h.Hchat.hooks.items.roundavatar.RoundAvatarSettings.PREFS_NAME
+    )
+    @Volatile private var avatarSettings = readAvatarSettings()
+    @Volatile private var configuredAvatarIds = CustomFriendAvatarStore.configuredFriends(context.hostContext())
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val pendingAvatarMainTasks = ConcurrentHashMap.newKeySet<Runnable>()
+    private val avatarLoadExecutor = ThreadPoolExecutor(
+        1, 1, 30L, TimeUnit.SECONDS, ArrayBlockingQueue(64),
+        { runnable -> Thread(runnable, "Hchat-CustomAvatarLoad").apply { isDaemon = true } },
+        ThreadPoolExecutor.AbortPolicy()
+    ).apply { allowCoreThreadTimeOut(true) }
+    private val pendingAvatarLoads = ConcurrentHashMap.newKeySet<String>()
+    private val completedAvatarLoads = object : LinkedHashMap<String, Unit>(32, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Unit>?): Boolean = size > 256
+    }
+    private val avatarBindingRevision = AtomicLong(0L)
+    private val avatarSettingsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        if (key in AVATAR_SETTING_KEYS) refreshAvatarSettings()
+    }
+    private val roundAvatarSettingsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        if (key == h.Hchat.hooks.items.roundavatar.RoundAvatarSettings.KEY_ENABLE ||
+            key == h.Hchat.hooks.items.roundavatar.RoundAvatarSettings.KEY_RADIUS_FACTOR
+        ) refreshAvatarSettings()
+    }
+    private val avatarStoreListener = CustomFriendAvatarStore.ChangeListener { _, wxid ->
+        postAvatarTask { onAvatarChanged(wxid) }
+    }
+    private val avatarStoreListenerToken = CustomFriendAvatarStore.addChangeListener(avatarStoreListener)
     private val conversationBindings =
         Collections.synchronizedMap(WeakHashMap<MenuItem, ConversationBinding>())
     private val conversationGroupAvatarCache =
@@ -127,8 +166,15 @@ private class CustomFriendAvatarRuntime(
         }
     private var installed = false
     private var desktopShortcutInstalled = false
+    @Volatile private var destroyed = false
+
+    init {
+        avatarPrefs.registerOnSharedPreferenceChangeListener(avatarSettingsListener)
+        roundAvatarPrefs.registerOnSharedPreferenceChangeListener(roundAvatarSettingsListener)
+    }
 
     fun installNotificationHooks() {
+        if (destroyed) return
         NotificationManager::class
             .java
             .declaredMethods
@@ -143,14 +189,17 @@ private class CustomFriendAvatarRuntime(
                 hook(
                     method,
                     Hooker { chain ->
+                        if (destroyed) return@Hooker chain.proceed()
                         if (!CustomFriendAvatarSettings.notificationsEnabled(context.hostContext()))
                             return@Hooker chain.proceed()
                         val notification =
                             chain.args.lastOrNull() as? Notification
                                 ?: return@Hooker chain.proceed()
                         val talker = CustomNotificationRuntime.notificationTalker(notification)
+                        val virtualAvatar = hasVirtualAvatar(talker)
+                        if (!isAvatarConfigured(talker, virtualAvatar)) return@Hooker chain.proceed()
                         val source =
-                            CustomFriendAvatarStore.loadBitmap(context.hostContext(), talker)
+                            CustomFriendAvatarStore.loadNotificationBitmap(context.hostContext(), talker)
                                 ?: return@Hooker chain.proceed()
                         replaceNotificationLargeIcon(
                             notification,
@@ -164,6 +213,7 @@ private class CustomFriendAvatarRuntime(
 
     @Synchronized
     fun installDesktopShortcutHook(): Boolean {
+        if (destroyed) return false
         if (desktopShortcutInstalled) return true
         val method = locateDesktopShortcutMethod() ?: return false
         desktopShortcutInstalled =
@@ -199,6 +249,7 @@ private class CustomFriendAvatarRuntime(
 
     @Synchronized
     fun install(): Boolean {
+        if (destroyed) return false
         val avatarMembers = locateAvatarMembers() ?: return false
         val legacy =
             hook(
@@ -214,7 +265,11 @@ private class CustomFriendAvatarRuntime(
                     // group ID.
                     val image = chain.args.getOrNull(0) as? ImageView ?: return@Hooker result
                     val wxid = requestedWxid ?: return@Hooker result
-                    if (avatarScopeEnabled(wxid, AvatarSurfaceClassifier.forView(image))) {
+                    val surface = AvatarSurfaceClassifier.forView(image)
+                    val virtualAvatar = hasVirtualAvatar(wxid)
+                    if (avatarScopeEnabled(wxid, surface, virtualAvatar) &&
+                        isAvatarConfigured(wxid, virtualAvatar)
+                    ) {
                         CustomFriendAvatarStore.loadBitmap(context.hostContext(), wxid)?.let {
                             bitmap ->
                             val radius = (chain.args.getOrNull(2) as? Number)?.toFloat()
@@ -238,10 +293,12 @@ private class CustomFriendAvatarRuntime(
                     // object.
                     val drawable = chain.thisObject
                     if (!requestedWxid.isNullOrBlank() && drawable != null) {
-                        drawableWxids[drawable] = requestedWxid
-                        drawableSurfaces[drawable] =
-                            AvatarSurfaceClassifier.forObject(chain.args.getOrNull(0))
-                        drawableRadiusFactors[drawable] = effectiveRadiusFactor(args, 2, 5)
+                        bindDrawable(
+                            drawable,
+                            requestedWxid,
+                            AvatarSurfaceClassifier.forObject(chain.args.getOrNull(0)),
+                            effectiveRadiusFactor(args, 2, 5)
+                        )
                     }
                     result
                 },
@@ -260,10 +317,12 @@ private class CustomFriendAvatarRuntime(
                         }
                         val result = chain.proceed(args)
                         if (requestedWxid.isNotBlank()) {
-                            drawableWxids[target] = requestedWxid
-                            drawableSurfaces[target] =
-                                AvatarSurfaceClassifier.forObject(chain.args.getOrNull(1))
-                            drawableRadiusFactors[target] = effectiveRadiusFactor(args, 3, 6)
+                            bindDrawable(
+                                target,
+                                requestedWxid,
+                                AvatarSurfaceClassifier.forObject(chain.args.getOrNull(1)),
+                                effectiveRadiusFactor(args, 3, 6)
+                            )
                         }
                         result
                     },
@@ -273,23 +332,37 @@ private class CustomFriendAvatarRuntime(
             hook(
                 avatarMembers.draw,
                 Hooker { chain ->
-                    val wxid = drawableWxids[chain.thisObject].orEmpty()
-                    if (wxid.isBlank()) return@Hooker chain.proceed()
-                    val surface = drawableSurfaces[chain.thisObject] ?: AvatarSurface.OTHER
-                    if (!avatarScopeEnabled(wxid, surface)) {
+                    if (destroyed || !avatarSettings.enabled) return@Hooker chain.proceed()
+                    val drawable = chain.thisObject as? Drawable ?: return@Hooker chain.proceed()
+                    val binding = drawableBindings[drawable] ?: return@Hooker chain.proceed()
+                    if (!avatarScopeEnabled(binding.wxid, binding.surface, binding.hasVirtualAvatar)) {
+                        return@Hooker chain.proceed()
+                    }
+                    if (!isAvatarConfigured(binding.wxid, binding.hasVirtualAvatar)) {
                         return@Hooker chain.proceed()
                     }
                     val bitmap =
-                        CustomFriendAvatarStore.loadBitmap(context.hostContext(), wxid)
-                            ?: return@Hooker chain.proceed()
+                        CustomFriendAvatarStore.cachedBitmap(context.hostContext(), binding.wxid)
+                    if (bitmap == null) {
+                        requestAvatarLoad(drawable, binding)
+                        return@Hooker chain.proceed()
+                    }
                     val canvas = chain.args.getOrNull(0) as? Canvas ?: return@Hooker chain.proceed()
-                    val drawable = chain.thisObject as? Drawable ?: return@Hooker chain.proceed()
-                    canvas.drawBitmap(
-                        processBitmap(bitmap, drawableRadiusFactors[chain.thisObject]),
-                        null,
-                        drawable.bounds,
-                        DRAW_PAINT,
+                    val drawState = DRAW_STATE.get() ?: return@Hooker chain.proceed()
+                    drawState.bounds.set(drawable.bounds)
+                    val settings = avatarSettings
+                    val radiusFactor = if (settings.roundAvatarEnabled) settings.roundRadiusFactor
+                        else binding.nativeRadiusFactor?.takeIf { it > 0f }?.coerceAtMost(MAX_RADIUS_FACTOR)
+                            ?: NATIVE_RADIUS_FACTOR
+                    val radius = minOf(drawState.bounds.width(), drawState.bounds.height()) * radiusFactor
+                    drawState.path.reset()
+                    drawState.path.addRoundRect(
+                        drawState.bounds, radius, radius, Path.Direction.CW
                     )
+                    val save = canvas.save()
+                    canvas.clipPath(drawState.path)
+                    canvas.drawBitmap(bitmap, null, drawState.bounds, DRAW_PAINT)
+                    canvas.restoreToCount(save)
                     null
                 },
             )
@@ -299,10 +372,18 @@ private class CustomFriendAvatarRuntime(
     }
 
     fun destroy() {
+        if (destroyed) return
+        destroyed = true
         ConversationMenuExtensionRegistry.unregister(conversationMenuExtension)
-        drawableWxids.clear()
-        drawableSurfaces.clear()
-        drawableRadiusFactors.clear()
+        avatarPrefs.unregisterOnSharedPreferenceChangeListener(avatarSettingsListener)
+        roundAvatarPrefs.unregisterOnSharedPreferenceChangeListener(roundAvatarSettingsListener)
+        runCatching { avatarStoreListenerToken.close() }
+        pendingAvatarMainTasks.forEach(mainHandler::removeCallbacks)
+        pendingAvatarMainTasks.clear()
+        avatarLoadExecutor.shutdownNow()
+        pendingAvatarLoads.clear()
+        synchronized(completedAvatarLoads) { completedAvatarLoads.clear() }
+        drawableBindings.clear()
         conversationBindings.clear()
         conversationGroupAvatarCache.clear()
     }
@@ -478,11 +559,151 @@ private class CustomFriendAvatarRuntime(
         }
     }
 
-    private fun avatarScopeEnabled(wxid: String, surface: AvatarSurface): Boolean {
-        if (ConversationGroupRuntime.isVirtualTalker(wxid)) {
-            return conversationGroupAvatar(wxid)?.avatarPath?.isNotBlank() == true
+    private fun avatarScopeEnabled(
+        wxid: String,
+        surface: AvatarSurface,
+        hasVirtualAvatar: Boolean
+    ): Boolean {
+        val settings = avatarSettings
+        if (!settings.enabled) return false
+        if (ConversationGroupRuntime.isVirtualTalker(wxid)) return hasVirtualAvatar
+        return settings.scopeEnabled(surface)
+    }
+
+    private fun hasVirtualAvatar(wxid: String): Boolean {
+        return ConversationGroupRuntime.isVirtualTalker(wxid) &&
+            conversationGroupAvatar(wxid)?.avatarPath?.isNotBlank() == true
+    }
+
+    private fun isAvatarConfigured(wxid: String, hasVirtualAvatar: Boolean): Boolean {
+        return if (ConversationGroupRuntime.isVirtualTalker(wxid)) {
+            hasVirtualAvatar
+        } else {
+            configuredAvatarIds.contains(wxid)
         }
-        return CustomFriendAvatarSettings.scopeEnabled(context.hostContext(), surface)
+    }
+
+    private fun bindDrawable(
+        target: Any,
+        wxid: String,
+        surface: AvatarSurface,
+        nativeRadiusFactor: Float?
+    ) {
+        if (destroyed) return
+        val binding = DrawableAvatarBinding(
+            wxid = wxid,
+            surface = surface,
+            nativeRadiusFactor = nativeRadiusFactor,
+            hasVirtualAvatar = hasVirtualAvatar(wxid),
+            revision = CustomFriendAvatarStore.revision(context.hostContext(), wxid),
+            token = avatarBindingRevision.incrementAndGet()
+        )
+        drawableBindings[target] = binding
+        (target as? Drawable)?.let { requestAvatarLoad(it, binding) }
+    }
+
+    private fun requestAvatarLoad(drawable: Drawable, binding: DrawableAvatarBinding) {
+        if (destroyed || !avatarScopeEnabled(binding.wxid, binding.surface, binding.hasVirtualAvatar) ||
+            !isAvatarConfigured(binding.wxid, binding.hasVirtualAvatar)
+        ) return
+        val context = context.hostContext()
+        val existing = CustomFriendAvatarStore.cachedBitmap(context, binding.wxid)
+        if (existing != null) return
+        val revision = CustomFriendAvatarStore.revision(context, binding.wxid)
+        val loadKey = "${context.packageName}\n${binding.wxid}\n$revision"
+        synchronized(completedAvatarLoads) {
+            if (loadKey in completedAvatarLoads) return
+        }
+        if (!pendingAvatarLoads.add(loadKey)) return
+        val drawableRef = WeakReference(drawable)
+        try {
+            avatarLoadExecutor.execute {
+                try {
+                    CustomFriendAvatarStore.loadBitmap(context, binding.wxid)
+                    if (CustomFriendAvatarStore.revision(context, binding.wxid) == revision) {
+                        synchronized(completedAvatarLoads) { completedAvatarLoads[loadKey] = Unit }
+                    }
+                } finally {
+                    pendingAvatarLoads.remove(loadKey)
+                }
+                postAvatarTask {
+                    val target = drawableRef.get() ?: return@postAvatarTask
+                    if (drawableBindings[target] === binding &&
+                        CustomFriendAvatarStore.revision(context, binding.wxid) == revision
+                    ) target.invalidateSelf()
+                }
+            }
+        } catch (_: java.util.concurrent.RejectedExecutionException) {
+            pendingAvatarLoads.remove(loadKey)
+        }
+    }
+
+    private fun onAvatarChanged(wxid: String) {
+        if (destroyed) return
+        conversationGroupAvatarCache.remove(wxid)
+        configuredAvatarIds = CustomFriendAvatarStore.configuredFriends(context.hostContext())
+        synchronized(completedAvatarLoads) { completedAvatarLoads.clear() }
+        val targets = synchronized(drawableBindings) {
+            drawableBindings.entries
+                .filter { it.value.wxid == wxid }
+                .mapNotNull { entry -> (entry.key as? Drawable)?.let { it to entry.value } }
+        }
+        targets.forEach { (drawable, binding) ->
+            if (isAvatarConfigured(wxid, binding.hasVirtualAvatar)) requestAvatarLoad(drawable, binding)
+            else drawable.invalidateSelf()
+        }
+        ChatRowRefresh.request()
+    }
+
+    private fun refreshAvatarSettings() {
+        if (destroyed) return
+        avatarSettings = readAvatarSettings()
+        configuredAvatarIds = CustomFriendAvatarStore.configuredFriends(context.hostContext())
+        if (!avatarSettings.enabled || !avatarSettings.notificationsEnabled) {
+            NotificationAvatarBitmapCache.clearOwner("custom_friend_avatar_notification")
+        }
+        val targets = synchronized(drawableBindings) {
+            drawableBindings.entries.mapNotNull { entry ->
+                (entry.key as? Drawable)?.let { it to entry.value }
+            }
+        }
+        targets.forEach { (drawable, binding) -> requestAvatarLoad(drawable, binding) }
+        postAvatarTask(ChatRowRefresh::request)
+    }
+
+    private fun postAvatarTask(action: () -> Unit) {
+        lateinit var task: Runnable
+        task = Runnable {
+            pendingAvatarMainTasks.remove(task)
+            if (!destroyed) action()
+        }
+        pendingAvatarMainTasks += task
+        mainHandler.post(task)
+    }
+
+    private fun readAvatarSettings(): AvatarSettingsSnapshot {
+        val prefs = avatarPrefs
+        val roundPrefs = roundAvatarPrefs
+        return AvatarSettingsSnapshot(
+            enabled = prefs.getBoolean(CustomFriendAvatarSettings.KEY_ENABLE, CustomFriendAvatarSettings.DEFAULT_ENABLE),
+            chat = prefs.getBoolean(CustomFriendAvatarSettings.KEY_CHAT, CustomFriendAvatarSettings.DEFAULT_SCOPE),
+            conversation = prefs.getBoolean(CustomFriendAvatarSettings.KEY_CONVERSATION, CustomFriendAvatarSettings.DEFAULT_SCOPE),
+            contacts = prefs.getBoolean(CustomFriendAvatarSettings.KEY_CONTACTS, CustomFriendAvatarSettings.DEFAULT_SCOPE),
+            profile = prefs.getBoolean(CustomFriendAvatarSettings.KEY_PROFILE, CustomFriendAvatarSettings.DEFAULT_SCOPE),
+            moments = prefs.getBoolean(CustomFriendAvatarSettings.KEY_MOMENTS, CustomFriendAvatarSettings.DEFAULT_SCOPE),
+            other = prefs.getBoolean(CustomFriendAvatarSettings.KEY_OTHER_UI, CustomFriendAvatarSettings.DEFAULT_SCOPE),
+            notificationsEnabled = prefs.getBoolean(CustomFriendAvatarSettings.KEY_NOTIFICATIONS, CustomFriendAvatarSettings.DEFAULT_SCOPE),
+            roundAvatarEnabled = roundPrefs.getBoolean(
+                h.Hchat.hooks.items.roundavatar.RoundAvatarSettings.KEY_ENABLE,
+                h.Hchat.hooks.items.roundavatar.RoundAvatarSettings.DEFAULT_ENABLE
+            ),
+            roundRadiusFactor = h.Hchat.hooks.items.roundavatar.RoundAvatarSettings.normalizeRadiusFactor(
+                roundPrefs.getFloat(
+                    h.Hchat.hooks.items.roundavatar.RoundAvatarSettings.KEY_RADIUS_FACTOR,
+                    h.Hchat.hooks.items.roundavatar.RoundAvatarSettings.DEFAULT_RADIUS_FACTOR
+                )
+            )
+        )
     }
 
     private fun automaticGroupAvatarSource(wxid: String): String? {
@@ -495,14 +716,8 @@ private class CustomFriendAvatarRuntime(
     }
 
     private fun processBitmap(bitmap: Bitmap, nativeRadiusFactor: Float?): Bitmap {
-        val factor =
-            if (
-                h.Hchat.hooks.items.roundavatar.RoundAvatarSettings.enabled(context.hostContext())
-            ) {
-                h.Hchat.hooks.items.roundavatar.RoundAvatarSettings.radiusFactor(
-                    context.hostContext()
-                )
-            } else {
+        val settings = avatarSettings
+        val factor = if (settings.roundAvatarEnabled) settings.roundRadiusFactor else {
                 nativeRadiusFactor?.takeIf { it > 0f }?.coerceAtMost(MAX_RADIUS_FACTOR)
                     ?: NATIVE_RADIUS_FACTOR
             }
@@ -551,6 +766,17 @@ private class CustomFriendAvatarRuntime(
     }
 
     private companion object {
+        val AVATAR_SETTING_KEYS = setOf(
+            CustomFriendAvatarSettings.KEY_ENABLE,
+            CustomFriendAvatarSettings.KEY_CHAT,
+            CustomFriendAvatarSettings.KEY_CONVERSATION,
+            CustomFriendAvatarSettings.KEY_CONTACTS,
+            CustomFriendAvatarSettings.KEY_PROFILE,
+            CustomFriendAvatarSettings.KEY_MOMENTS,
+            CustomFriendAvatarSettings.KEY_OTHER_UI,
+            CustomFriendAvatarSettings.KEY_NOTIFICATIONS,
+            CustomFriendAvatarSettings.KEY_CONFIGURED_FRIENDS
+        )
         const val CONVERSATION_MENU_ID = 0x7A1001
         const val MENU_TITLE = "设置自定义头像"
         const val CACHE_PREFS = "Hchat_custom_friend_avatar_method_cache"
@@ -575,6 +801,7 @@ private class CustomFriendAvatarRuntime(
         const val GROUP_CACHE_MS = 1000L
         const val GROUP_CACHE_MAX_ENTRIES = 256
         val DRAW_PAINT = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+        val DRAW_STATE = ThreadLocal.withInitial { AvatarDrawState() }
     }
 
     private data class AvatarMembers(
@@ -588,6 +815,42 @@ private class CustomFriendAvatarRuntime(
         val loadedAt: Long,
         val group: h.Hchat.hooks.items.conversationgroup.ConversationGroup?,
     )
+
+    private data class AvatarSettingsSnapshot(
+        val enabled: Boolean,
+        val chat: Boolean,
+        val conversation: Boolean,
+        val contacts: Boolean,
+        val profile: Boolean,
+        val moments: Boolean,
+        val other: Boolean,
+        val notificationsEnabled: Boolean,
+        val roundAvatarEnabled: Boolean,
+        val roundRadiusFactor: Float
+    ) {
+        fun scopeEnabled(surface: AvatarSurface): Boolean = when (surface) {
+            AvatarSurface.CHAT -> chat
+            AvatarSurface.CONVERSATION -> conversation
+            AvatarSurface.CONTACTS -> contacts
+            AvatarSurface.PROFILE -> profile
+            AvatarSurface.MOMENTS -> moments
+            AvatarSurface.OTHER -> other
+        }
+    }
+
+    private data class DrawableAvatarBinding(
+        val wxid: String,
+        val surface: AvatarSurface,
+        val nativeRadiusFactor: Float?,
+        val hasVirtualAvatar: Boolean,
+        val revision: Long,
+        val token: Long
+    )
+
+    private class AvatarDrawState {
+        val bounds = RectF()
+        val path = Path()
+    }
 
     private data class ConversationBinding(val activity: WeakReference<Activity>, val wxid: String)
 
