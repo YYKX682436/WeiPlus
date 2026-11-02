@@ -15,6 +15,7 @@ import h.Hchat.hooks.items.autoreply.AutoReplyObservationRetryBudget
 import h.Hchat.hooks.items.autoreply.AutoReplyObservationState
 import h.Hchat.hooks.items.backgroundassist.BackgroundRunAssistRootRegression
 import h.Hchat.hooks.items.customfriendavatar.AvatarLoadCoordinatorRegression
+import h.Hchat.hooks.items.customfriendavatar.AvatarRetryWakeupRegression
 import h.Hchat.hooks.items.automessageforward.PendingForwardRuleGateRegression
 import h.Hchat.hooks.items.payment.transfer.AutoTransferRunSessionRegression
 import h.Hchat.hooks.items.sendbutton.NativeSendButtonHandlers
@@ -101,6 +102,7 @@ fun main() {
     println("PASS: observer toggles release leases, replace callbacks, and reject late delivery")
 
     AvatarLoadCoordinatorRegression.run()
+    AvatarRetryWakeupRegression.run()
     PendingForwardRuleGateRegression.run()
     FeatureRuntimeSlotRegression.run()
 

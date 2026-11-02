@@ -119,7 +119,12 @@ private class CustomFriendAvatarRuntime(
         { runnable -> Thread(runnable, "Hchat-CustomAvatarLoad").apply { isDaemon = true } },
         ThreadPoolExecutor.AbortPolicy()
     ).apply { allowCoreThreadTimeOut(true) }
-    private val avatarLoadCoordinator = AvatarLoadCoordinator<Drawable>()
+    private val avatarRetryScheduler = AvatarRetryScheduler { delayMillis, action ->
+        val retry = Runnable(action)
+        mainHandler.postDelayed(retry, delayMillis.coerceAtLeast(0L))
+        AvatarRetryHandle { mainHandler.removeCallbacks(retry) }
+    }
+    private val avatarLoadCoordinator = AvatarLoadCoordinator<Drawable>(scheduler = avatarRetryScheduler)
     private val avatarBindingRevision = AtomicLong(0L)
     private val avatarSettingsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key in AVATAR_SETTING_KEYS) refreshAvatarSettings()
@@ -594,6 +599,7 @@ private class CustomFriendAvatarRuntime(
             revision = CustomFriendAvatarStore.revision(context.hostContext(), wxid),
             token = avatarBindingRevision.incrementAndGet()
         )
+        (target as? Drawable)?.let(avatarLoadCoordinator::cancelTarget)
         drawableBindings[target] = binding
         (target as? Drawable)?.let { requestAvatarLoad(it, binding) }
     }
@@ -604,7 +610,17 @@ private class CustomFriendAvatarRuntime(
         ) return
         val context = context.hostContext()
         val existing = CustomFriendAvatarStore.cachedBitmap(context, binding.wxid)
-        if (existing != null) return
+        if (existing != null) {
+            avatarLoadCoordinator.cancelTarget(drawable)
+            if (!destroyed &&
+                drawableBindings[drawable] === binding &&
+                avatarScopeEnabled(binding.wxid, binding.surface, binding.hasVirtualAvatar) &&
+                isAvatarConfigured(binding.wxid, binding.hasVirtualAvatar)
+            ) {
+                drawable.invalidateSelf()
+            }
+            return
+        }
         val revision = CustomFriendAvatarStore.revision(context, binding.wxid)
         val loadKey = "${context.packageName}\n${binding.wxid}\n$revision"
         val shouldLoad = avatarLoadCoordinator.request(
@@ -617,9 +633,15 @@ private class CustomFriendAvatarRuntime(
                     current != null &&
                     current.token == token &&
                     current.wxid == binding.wxid &&
+                    avatarScopeEnabled(binding.wxid, binding.surface, binding.hasVirtualAvatar) &&
+                    isAvatarConfigured(binding.wxid, binding.hasVirtualAvatar) &&
                     CustomFriendAvatarStore.revision(context, binding.wxid) == revision
             },
-            invalidate = Drawable::invalidateSelf
+            invalidate = Drawable::invalidateSelf,
+            retry = { target, token ->
+                val current = drawableBindings[target]
+                if (current != null && current.token == token) requestAvatarLoad(target, current)
+            }
         )
         if (!shouldLoad) return
         try {
@@ -638,6 +660,8 @@ private class CustomFriendAvatarRuntime(
 
     private fun onAvatarChanged(wxid: String) {
         if (destroyed) return
+        // The store revision is process-wide, so cancel stale waiters for every key.
+        avatarLoadCoordinator.clear()
         conversationGroupAvatarCache.remove(wxid)
         configuredAvatarIds = CustomFriendAvatarStore.configuredFriends(context.hostContext())
         val targets = synchronized(drawableBindings) {
@@ -656,6 +680,7 @@ private class CustomFriendAvatarRuntime(
         if (destroyed) return
         avatarSettings = readAvatarSettings()
         configuredAvatarIds = CustomFriendAvatarStore.configuredFriends(context.hostContext())
+        if (!avatarSettings.enabled) avatarLoadCoordinator.clear()
         if (!avatarSettings.enabled || !avatarSettings.notificationsEnabled) {
             NotificationAvatarBitmapCache.clearOwner("custom_friend_avatar_notification")
         }
@@ -664,7 +689,15 @@ private class CustomFriendAvatarRuntime(
                 (entry.key as? Drawable)?.let { it to entry.value }
             }
         }
-        targets.forEach { (drawable, binding) -> requestAvatarLoad(drawable, binding) }
+        targets.forEach { (drawable, binding) ->
+            if (avatarScopeEnabled(binding.wxid, binding.surface, binding.hasVirtualAvatar) &&
+                isAvatarConfigured(binding.wxid, binding.hasVirtualAvatar)
+            ) {
+                requestAvatarLoad(drawable, binding)
+            } else {
+                avatarLoadCoordinator.cancelTarget(drawable)
+            }
+        }
         postAvatarTask(ChatRowRefresh::request)
     }
 
