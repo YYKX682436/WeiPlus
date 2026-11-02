@@ -40,14 +40,35 @@ public class DexMethodCacheDescriptorRegressionTest {
                 prefs, RUNTIME, Owner.class.getClassLoader(), "owner_ctor"));
     }
 
+    @Test public void upgradeResponseRejectsPartiallyInvalidDescriptorList() throws Exception {
+        Map<String, Object> values = new HashMap<>();
+        SharedPreferences prefs = preferences(values);
+        Method target = Owner.class.getDeclaredMethod("target", String.class);
+        DexMethodCache.INSTANCE.saveList(prefs, RUNTIME, "upgrade_response", java.util.List.of(target));
+        assertEquals(1, DexMethodCache.INSTANCE.loadUpgradeResponse(prefs, RUNTIME, Owner.class.getClassLoader()).getMethods().size());
+        values.put("upgrade_response", values.get("upgrade_response") + "\nLbad/Owner;->missing()V");
+        var lookup = DexMethodCache.INSTANCE.loadUpgradeResponse(prefs, RUNTIME, Owner.class.getClassLoader());
+        assertTrue(lookup.getInvalid());
+        assertTrue(lookup.getMethods().isEmpty());
+        values.put("upgrade_response", "");
+        assertTrue(DexMethodCache.INSTANCE.loadUpgradeResponse(prefs, RUNTIME, Owner.class.getClassLoader()).getInvalid());
+        values.put("upgrade_response", Integer.valueOf(7));
+        assertTrue(DexMethodCache.INSTANCE.loadUpgradeResponse(prefs, RUNTIME, Owner.class.getClassLoader()).getInvalid());
+        values.remove("upgrade_response");
+        assertFalse(DexMethodCache.INSTANCE.loadUpgradeResponse(prefs, RUNTIME, Owner.class.getClassLoader()).getInvalid());
+        assertFalse(DexMethodCache.INSTANCE.loadUpgradeResponse(prefs, RUNTIME.replace("dex-crc", "other"), Owner.class.getClassLoader()).getInvalid());
+    }
+
     private static SharedPreferences preferences(Map<String, Object> values) {
         return (SharedPreferences) Proxy.newProxyInstance(
                 SharedPreferences.class.getClassLoader(), new Class<?>[]{SharedPreferences.class},
                 (proxy, method, args) -> {
                     if (method.getName().equals("getString")) {
                         Object value = values.get(args[0]);
+                        if (value != null && !(value instanceof String)) throw new ClassCastException("not a string");
                         return value instanceof String ? value : args[1];
                     }
+                    if (method.getName().equals("contains")) return values.containsKey(args[0]);
                     if (method.getName().equals("edit")) return editor(values);
                     return defaultValue(method.getReturnType());
                 });

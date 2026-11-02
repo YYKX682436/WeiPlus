@@ -132,6 +132,23 @@ object DexMethodCache {
             }
     }
 
+    data class UpgradeResponseLookup(val methods: List<Method>, val invalid: Boolean)
+
+    /** An incomplete descriptor list is never a successful lookup. */
+    fun loadUpgradeResponse(prefs: SharedPreferences, runtimeKey: String, classLoader: ClassLoader): UpgradeResponseLookup {
+        val saved = runCatching { prefs.getString(CACHE_KEY, "").orEmpty() }
+            .getOrElse { return UpgradeResponseLookup(emptyList(), true) }
+        if (!sameRuntimeAcrossProcesses(saved, runtimeKey)) return UpgradeResponseLookup(emptyList(), false)
+        val raw = runCatching { prefs.getString("upgrade_response", "").orEmpty() }
+            .getOrElse { return UpgradeResponseLookup(emptyList(), true) }
+        if (raw.isBlank()) return UpgradeResponseLookup(emptyList(),
+            runCatching { prefs.contains("upgrade_response") }.getOrDefault(true))
+        val descriptors = raw.split('\n')
+        val methods = descriptors.mapNotNull { if (it.isBlank()) null else loadMethodDescriptor(it, classLoader) }
+        return if (methods.size == descriptors.size) UpgradeResponseLookup(methods, false)
+        else UpgradeResponseLookup(emptyList(), true)
+    }
+
     fun saveList(
         prefs: SharedPreferences,
         runtimeKey: String,

@@ -77,7 +77,7 @@ class DisableHotUpdateFeature : BaseFeature() {
                 val cache = DexMethodCache.prefs(context, CACHE_PREFS)
                 val runtimeKey = DexMethodCache.runtimeKey(context, classLoader)
                 hookSyncResponseConsumer(classLoader, dexKit, cache, runtimeKey)
-                hookUpgradeResponse(classLoader, dexKit, cache, runtimeKey)
+                hookUpgradeResponse(context, classLoader, dexKit, cache, runtimeKey)
                 hookManualUpdater(classLoader, dexKit, cache, runtimeKey)
                 hookLegacyPatchService(classLoader)
                 lateInstalledLoaders.add(key)
@@ -253,39 +253,41 @@ class DisableHotUpdateFeature : BaseFeature() {
         }
 
         private fun hookUpgradeResponse(
+            context: Context,
             classLoader: ClassLoader,
             dexKit: DexKitBridge,
             cache: android.content.SharedPreferences,
             runtimeKey: String
         ) {
             runCatching {
-                val cached = DexMethodCache.loadListCrossProcess(cache, runtimeKey, classLoader, "upgrade_response")
-                val methods = cached.ifEmpty {
-                    dexKit.findMethod(
-                        FindMethod().apply {
-                            matcher(MethodMatcher().apply {
-                                usingStrings(RESPONSE_HANDLER_STRINGS)
-                            })
-                        }
-                    ).mapNotNull { data ->
-                        runCatching { data.getMethodInstance(classLoader) }.getOrNull()
-                            ?.takeIf { method -> isUpgradeResponseHandler(method) }
+                val markerDir = java.io.File(HchatStorage.storageDir(context), "hot_update_upgrade_empty")
+                UpgradeResponseEmptyCache(markerDir).withIdentity(runtimeKey, "upgrade_response_v1") { marker ->
+                    val lookup = DexMethodCache.loadUpgradeResponse(cache, runtimeKey, classLoader)
+                    val invalid = lookup.invalid || lookup.methods.any { !isUpgradeResponseHandler(it) }
+                    val methods = UpgradeResponseResolver.resolve(
+                        marker, lookup.methods, invalid,
+                        query = {
+                            dexKit.findMethod(
+                                FindMethod().apply {
+                                    matcher(MethodMatcher().apply { usingStrings(RESPONSE_HANDLER_STRINGS) })
+                                }
+                            ).toList()
+                        },
+                        resolveCandidate = { data ->
+                            runCatching { data.getMethodInstance(classLoader) }.getOrNull()
+                                ?.takeIf { method -> isUpgradeResponseHandler(method) }
+                        },
+                        savePositive = { DexMethodCache.saveList(cache, runtimeKey, "upgrade_response", it) }
+                    )
+                    methods.forEach { method ->
+                        HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
+                            var value: Any? = null
+                            var intercepted = false
+                            run before@ { run { intercepted = true; value = blockedReturnValue(method) } }
+                            if (!intercepted) value = chain.proceed()
+                            value
+                        })
                     }
-                }
-                if (cached.isEmpty()) {
-                    if (methods.isNotEmpty()) DexMethodCache.saveList(cache, runtimeKey, "upgrade_response", methods)
-                    else DexMethodCache.clear(cache, runtimeKey, "upgrade_response")
-                }
-                methods.forEach { method ->
-                    HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
-                        var value: Any? = null
-                        var intercepted = false
-                        run before@ {
-                            run { intercepted = true; value = blockedReturnValue(method) }
-                        }
-                        if (!intercepted) value = chain.proceed()
-                        value
-                    })
                 }
             }.onFailure {
                 HLog.e("$TAG Hook 热更新响应处理失败: ${it.message}", it)
