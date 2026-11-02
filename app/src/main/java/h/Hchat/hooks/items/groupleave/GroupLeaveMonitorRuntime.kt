@@ -11,6 +11,7 @@ import h.Hchat.hooks.api.message.WeChatMessageObserveApi
 import h.Hchat.hooks.core.FeatureContext
 import h.Hchat.hooks.items.membertitle.MemberTitleStore
 import h.Hchat.hooks.items.realtail.RealNameTailStore
+import h.Hchat.loader.utils.SilkLibrary
 import h.Hchat.preferences.HchatStorage
 import java.net.HttpURLConnection
 import java.net.URL
@@ -657,9 +658,15 @@ class GroupLeaveMonitorRuntime(
                 mediaPaths(groupId, type, GroupLeaveMonitorSettings.KEY_JOIN_VOICE_PATHS, GroupLeaveMonitorSettings.KEY_LEFT_VOICE_PATHS, template),
                 delayMsFor(groupId, GroupLeaveMonitorSettings.KEY_VOICE_DELAY_MS, GroupLeaveMonitorSettings.DEFAULT_MEDIA_DELAY_MS, template)
             ) { path ->
-                Handler(Looper.getMainLooper()).post {
-                    if (snapshots.current(OWNER, groupId, lease) && replyEnabled(type, groupId)) {
-                        runCatching { WeChatApis.media()?.sendVoice(groupId, path) }
+                if (valid()) {
+                    runCatching { SilkLibrary.ensureLoaded() }.onSuccess {
+                        Handler(Looper.getMainLooper()).post {
+                            if (snapshots.current(OWNER, groupId, lease) && replyEnabled(type, groupId)) {
+                                runCatching { WeChatApis.media()?.sendVoice(groupId, path) }
+                            }
+                        }
+                    }.onFailure {
+                        logger("进退群自动回复语音加载失败", it)
                     }
                 }
                 true

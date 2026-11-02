@@ -608,11 +608,6 @@ internal object AudioTransformSettingsPage {
             updateResult("请先选择输入文件", toast = true)
             return
         }
-        val validate = audioTransformValidateInput(mode, sourcePath, bridge)
-        if (validate != null) {
-            updateResult(validate, toast = true)
-            return
-        }
         running = true
         resultText = "正在转换并保存"
         Thread({
@@ -623,6 +618,8 @@ internal object AudioTransformSettingsPage {
                 "audio_${System.currentTimeMillis()}${audioTransformOutputExtension(mode)}"
             )
             val result = runCatching {
+                val validate = audioTransformValidateInput(mode, sourcePath, bridge)
+                if (validate != null) return@runCatching false to validate
                 val code = when (mode) {
                     AudioTransformSettings.MODE_AUDIO_TO_SILK_SAVE -> {
                         if (bridge.getFileType(sourcePath) == 1) {

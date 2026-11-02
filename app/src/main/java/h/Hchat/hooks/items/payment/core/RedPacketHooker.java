@@ -28,6 +28,7 @@ import h.Hchat.hooks.items.payment.notify.RedPacketNotifier;
 import h.Hchat.hooks.items.payment.notify.RedPacketTemplateFormatter;
 import h.Hchat.hooks.items.payment.reply.RedPacketAutoReply;
 import h.Hchat.hooks.items.payment.reply.RedPacketWishSender;
+import h.Hchat.loader.utils.SilkLibrary;
 import h.Hchat.utils.KavaReflector;
 
 /**
@@ -438,6 +439,18 @@ public class RedPacketHooker {
             logx(source + " 忽略: " + rej);
             state.finishDetectedPacket(nu);
             return;
+        }
+        if (settings.getBoolean(RedPacketSettings.KEY_REPLY_ENABLE, false)) {
+            List<RedPacketReplyStep> steps = talker != null &&
+                    (talker.endsWith("@chatroom") || talker.endsWith("@im.chatroom"))
+                    ? rule.getGroupReplySteps() : rule.getReplySteps();
+            for (RedPacketReplyStep step : steps) {
+                if (step.getMode() == RedPacketRuleConfig.REPLY_VOICE &&
+                        !TextUtils.isEmpty(step.getContent())) {
+                    SilkLibrary.prewarm();
+                    break;
+                }
+            }
         }
         long delay = rule.nextDelayMillis();
         int grabMode = rule.getGrabMode();

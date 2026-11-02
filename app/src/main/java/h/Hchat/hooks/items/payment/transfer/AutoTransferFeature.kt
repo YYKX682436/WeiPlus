@@ -13,6 +13,8 @@ import h.Hchat.hooks.core.BaseFeature
 import h.Hchat.hooks.core.DexInstallScheduler
 import h.Hchat.hooks.core.FeatureContext
 import h.Hchat.preferences.HchatStorage
+import h.Hchat.hooks.items.payment.core.RedPacketRuleConfig
+import h.Hchat.loader.utils.SilkLibrary
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ThreadPoolExecutor
@@ -142,6 +144,10 @@ class AutoTransferFeature : BaseFeature() {
         if (!runSession.isCurrent(session)) return
         if (!rule.enabled || !markTransferOnce(info)) return
         val rejectReason = rejectReason(rule, info, message)
+        if (rejectReason == null && rule.replyStepsFor(message.group || message.talker.endsWith("@chatroom"))
+                .any { it.mode == RedPacketRuleConfig.REPLY_VOICE && it.content.isNotBlank() }) {
+            SilkLibrary.prewarm()
+        }
         val delay = rule.nextDelayMillis()
         val action = Runnable {
             dispatchTransferAction(session) {

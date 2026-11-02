@@ -30,6 +30,7 @@ import h.Hchat.hooks.items.miniprogramsplashad.SkipGlobalMiniProgramSplashAdsFea
 import h.Hchat.hooks.items.miniprogramvideoad.SkipMiniProgramVideoAdsFeature;
 import h.Hchat.hooks.items.tablet.WeChatTabletFeature;
 import h.Hchat.loader.utils.NativeLibraryLoader;
+import h.Hchat.loader.utils.SilkLibrary;
 import h.Hchat.preferences.ConfigStore;
 import h.Hchat.ui.UIRegistry;
 import h.Hchat.ui.miuix.FirstUseAgreementRuntime;
@@ -561,7 +562,7 @@ public class ModuleEntry extends XposedModule {
       // 1. 加载 Native 库（DexKit）
       NativeLibraryLoader nativeLibraryLoader = new NativeLibraryLoader();
       nativeLibraryLoader.loadDexKit(hostContext, getClass().getClassLoader());
-      nativeLibraryLoader.loadSilkCodec(hostContext, getClass().getClassLoader());
+      SilkLibrary.initialize(hostContext);
 
       // 2. 创建模块自身 Context
       Context moduleContext = createModuleContext(hostContext);

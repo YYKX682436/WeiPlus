@@ -4,6 +4,8 @@ import com.tencent.mm.storage.e9;
 import h.Hchat.dexkit.DexFinder;
 import h.Hchat.hooks.api.core.WeChatApis;
 import h.Hchat.utils.HLog;
+import h.Hchat.loader.utils.NativeLibraryLoader;
+import h.Hchat.loader.utils.SilkLibrary;
 import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -68,6 +70,17 @@ public final class VoiceCompatRegression {
         finder.voiceUploadClass = Upload.class;
         finder.voiceUploadCtor = Upload.class.getConstructor(String.class, int.class);
         WeChatVoiceApi api = new WeChatVoiceApi(null, finder, message -> {});
+        android.content.Context testContext = new android.content.Context();
+        SilkLibrary.initialize(testContext);
+        same(0, NativeLibraryLoader.attempts, "voice API creation does not load Silk");
+        Method detect = WeChatVoiceApi.class.getDeclaredMethod("detectFileType", String.class);
+        detect.setAccessible(true);
+        NativeLibraryLoader.fail = true;
+        same(0, detect.invoke(api, "voice-test"), "failed native load retains voice detection fallback");
+        same(1, NativeLibraryLoader.attempts, "first voice detection attempts loading");
+        NativeLibraryLoader.fail = false;
+        same(1, detect.invoke(api, "voice-test"), "next voice detection retries successfully");
+        same(2, NativeLibraryLoader.attempts, "failed voice loading is not cached");
         Method finish = WeChatVoiceApi.class.getDeclaredMethod("finishRecord", String.class, int.class, int.class);
         finish.setAccessible(true);
 

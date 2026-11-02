@@ -1,6 +1,12 @@
 package me.yun.silk;
 
+import h.Hchat.loader.utils.SilkLibrary;
+
 public class SilkCodec {
+
+    public SilkCodec() {
+        SilkLibrary.ensureLoaded();
+    }
 
     /** 时长限制：60秒 */
     public static final long MAX_DURATION_MS = 60_000L;

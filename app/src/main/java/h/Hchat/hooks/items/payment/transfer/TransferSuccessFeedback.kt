@@ -10,6 +10,7 @@ import h.Hchat.hooks.items.payment.core.PaymentTemplateTimeFormatter
 import h.Hchat.hooks.items.payment.core.RedPacketReplyStep
 import h.Hchat.hooks.items.payment.core.RedPacketRuleConfig
 import h.Hchat.hooks.items.payment.notify.RedPacketNotifier
+import h.Hchat.loader.utils.SilkLibrary
 import java.util.ArrayDeque
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
@@ -30,9 +31,11 @@ class TransferSuccessFeedback(
     private val settings = AutoTransferSettings(context)
     private var tts: TextToSpeech? = null
     private var ttsReady = false
+    @Volatile private var closed = false
     private val pendingSpeech = ArrayDeque<String>()
 
     fun shutdown() {
+        closed = true
         mainHandler.removeCallbacksAndMessages(null)
         pendingSpeech.clear()
         runCatching { tts?.stop() }
@@ -47,6 +50,7 @@ class TransferSuccessFeedback(
         info: TransferMessageInfo,
         rule: TransferEffectiveRule
     ) {
+        if (closed) return
         if (key.isNotBlank() && !handled.add(key)) return
         val receivedAt = System.currentTimeMillis()
         val title = "自动收款"
@@ -68,12 +72,14 @@ class TransferSuccessFeedback(
             )
         }
         if (rule.announceEnabled) announce(format(rule.announceText, message, info, receivedAt))
+        val replySteps = rule.replyStepsFor(message.group || message.talker.endsWith("@chatroom"))
+        if (replySteps.any { it.mode == RedPacketRuleConfig.REPLY_VOICE }) SilkLibrary.prewarm()
         sendReplySteps(
             message.talker,
             info.payerUsername.ifBlank { message.sender },
             message,
             info,
-            rule.replyStepsFor(message.group || message.talker.endsWith("@chatroom")),
+            replySteps,
             receivedAt,
             0
         )
@@ -88,13 +94,40 @@ class TransferSuccessFeedback(
         receivedAt: Long,
         index: Int
     ) {
-        if (talker.isBlank() || index !in steps.indices) return
+        if (closed || talker.isBlank() || index !in steps.indices) return
         val step = steps[index]
         val delay = step.nextDelayMillis().coerceAtLeast(0L)
         mainHandler.postDelayed({
-            runCatching { sendStep(talker, sender, message, info, step, receivedAt) }
-                .onFailure { logger("自动收款回复失败", it) }
-            sendReplySteps(talker, sender, message, info, steps, receivedAt, index + 1)
+            if (closed) return@postDelayed
+            val selected = pick(step.content)
+            val needsSilk = runCatching {
+                when {
+                    SilkLibrary.isReady() -> false
+                    step.mode == RedPacketRuleConfig.REPLY_VOICE -> true
+                    step.mode == RedPacketRuleConfig.REPLY_FAVORITE ->
+                        WeChatApis.media()?.favorites()?.requiresSilk(selected)
+                    else -> false
+                }
+            }.getOrElse {
+                logger("自动收款回复失败", it)
+                null
+            }
+            val complete: (Boolean) -> Unit = { ready ->
+                if (!closed) {
+                    if (ready && needsSilk != null) {
+                        runCatching { sendStep(talker, sender, message, info, step, receivedAt, selected) }
+                            .onFailure { logger("自动收款回复失败", it) }
+                    } else {
+                        logger("自动收款回复收藏或音频不可用", null)
+                    }
+                    sendReplySteps(talker, sender, message, info, steps, receivedAt, index + 1)
+                }
+            }
+            if (needsSilk == true) {
+                SilkLibrary.whenReady { ready -> mainHandler.post { complete(ready) } }
+            } else {
+                complete(needsSilk != null)
+            }
         }, delay)
     }
 
@@ -104,9 +137,9 @@ class TransferSuccessFeedback(
         message: h.Hchat.hooks.api.message.WeChatMessageObserveApi.ObservedMessage,
         info: TransferMessageInfo,
         step: RedPacketReplyStep,
-        receivedAt: Long
+        receivedAt: Long,
+        selected: String
     ): Boolean {
-        val selected = pick(step.content)
         val formatted = if (step.mode == RedPacketRuleConfig.REPLY_TEXT ||
             step.mode == RedPacketRuleConfig.REPLY_AT_SENDER ||
             step.mode == RedPacketRuleConfig.REPLY_XML

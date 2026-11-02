@@ -1,6 +1,8 @@
 package h.Hchat.hooks.items.payment.reply;
 
 import android.text.TextUtils;
+import android.os.Handler;
+import android.os.Looper;
 
 import h.Hchat.hooks.api.core.WeChatApis;
 import h.Hchat.hooks.api.media.WeChatMediaApi;
@@ -12,12 +14,14 @@ import h.Hchat.hooks.items.payment.core.RedPacketRuleConfig;
 import h.Hchat.hooks.items.payment.core.RedPacketSettings;
 import h.Hchat.hooks.items.payment.core.RedPacketState;
 import h.Hchat.hooks.items.payment.notify.RedPacketTemplateFormatter;
+import h.Hchat.loader.utils.SilkLibrary;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Random;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * 抢到红包后的自动回复。
@@ -37,7 +41,8 @@ public final class RedPacketAutoReply {
     private final Logger logger;
     private final RedPacketTemplateFormatter formatter;
     private final Random random = new Random();
-    private final Set<String> pendingReplyTaskKeys = ConcurrentHashMap.newKeySet();
+    private final Map<String, Long> pendingReplyTaskKeys = new ConcurrentHashMap<>();
+    private final AtomicLong replyGeneration = new AtomicLong();
     private static final String AT_SENDER_TOKEN = "{@发红包的人}";
     private static final String[] AT_SENDER_TOKENS = new String[] {
             AT_SENDER_TOKEN,
@@ -74,68 +79,148 @@ public final class RedPacketAutoReply {
             List<ReplyPlan> plans = buildReplyPlans(
                     replySteps(rule, isGroupTalker(talker)), amount, talker, nativeUrl);
             if (plans.isEmpty()) return;
+            for (ReplyPlan plan : plans) {
+                if (plan.replyMode == RedPacketRuleConfig.REPLY_VOICE) {
+                    SilkLibrary.prewarm();
+                    break;
+                }
+            }
 
             final String finalTalker = talker;
             final String sender = formatter.resolveSenderId(nativeUrl);
             final String replyKey = "redpacket_reply:"
                     + (!TextUtils.isEmpty(nativeUrl) ? nativeUrl : finalTalker + ":" + amount);
             WeChatTaskApi tasks = WeChatApis.runtime().tasks();
+            long generation = replyGeneration.get();
             if (tasks == null) {
-                sendReplySequence(finalTalker, sender, plans);
+                sendReplySequence(finalTalker, sender, plans, 0, generation);
                 return;
             }
-            if (!tasks.runOnce(replyKey, () -> {
-                // runOnce 只标记本红包，实际发送交给回复队列。
-            })) {
-                log("自动回复跳过: 已处理 " + replyKey);
-                return;
+            synchronized (pendingReplyTaskKeys) {
+                if (generation != replyGeneration.get()) return;
+                if (!tasks.runOnce(replyKey, () -> {
+                    // runOnce 只标记本红包，实际发送交给回复队列。
+                })) {
+                    log("自动回复跳过: 已处理 " + replyKey);
+                    return;
+                }
+                scheduleReplyStep(tasks, replyKey, finalTalker, sender, plans, 0, generation);
             }
-            scheduleReplyStep(tasks, replyKey, finalTalker, sender, plans, 0);
         } catch (Throwable e) {
             log("自动回复失败: " + e.getMessage());
         }
     }
 
     private void scheduleReplyStep(WeChatTaskApi tasks, String replyKey, String talker,
-                                   String sender, List<ReplyPlan> plans, int index) {
-        if (index >= plans.size()) return;
+                                   String sender, List<ReplyPlan> plans, int index, long generation) {
+        if (generation != replyGeneration.get() || index >= plans.size()) return;
         ReplyPlan plan = plans.get(index);
         String taskKey = replyKey + ":step:" + index;
-        pendingReplyTaskKeys.add(taskKey);
-        tasks.runOnMainDelayed(taskKey, plan.delayMs, () -> {
-            pendingReplyTaskKeys.remove(taskKey);
-            if (!isReplyEnabled()) {
-                log("自动回复跳过: 全局开关已关闭");
-                tasks.clearRunState(replyKey);
-                return;
+        synchronized (pendingReplyTaskKeys) {
+            if (generation != replyGeneration.get()) return;
+            pendingReplyTaskKeys.put(taskKey, generation);
+            tasks.runOnMainDelayed(taskKey, plan.delayMs, () -> {
+                if (generation != replyGeneration.get() ||
+                        !Long.valueOf(generation).equals(pendingReplyTaskKeys.get(taskKey))) return;
+                if (!isReplyEnabled()) {
+                    synchronized (pendingReplyTaskKeys) {
+                        if (generation != replyGeneration.get() ||
+                                !pendingReplyTaskKeys.remove(taskKey, generation)) return;
+                        tasks.clearRunState(replyKey);
+                    }
+                    log("自动回复跳过: 全局开关已关闭");
+                    return;
+                }
+                Boolean needsSilk = requiresSilk(plan);
+                if (needsSilk == null) {
+                    finishReplyStep(tasks, replyKey, taskKey, talker, sender, plans, index, generation, false);
+                } else if (needsSilk && !SilkLibrary.isReady()) {
+                    SilkLibrary.whenReady(ready -> tasks.runOnMain(() ->
+                            finishReplyStep(tasks, replyKey, taskKey, talker, sender, plans, index, generation, ready)));
+                } else {
+                    finishReplyStep(tasks, replyKey, taskKey, talker, sender, plans, index, generation, true);
+                }
+            });
+        }
+    }
+
+    private void finishReplyStep(WeChatTaskApi tasks, String replyKey, String taskKey, String talker,
+                                 String sender, List<ReplyPlan> plans, int index, long generation,
+                                 boolean ready) {
+        if (generation != replyGeneration.get() || !pendingReplyTaskKeys.remove(taskKey, generation)) return;
+        if (!isReplyEnabled()) {
+            synchronized (pendingReplyTaskKeys) {
+                clearUnreplacedRunState(tasks, replyKey, generation);
             }
-            sendReply(talker, plan.content, sender, plan.atSender, plan.replyMode, plan.delayMs);
-            if (isReplyEnabled()) {
-                scheduleReplyStep(tasks, replyKey, talker, sender, plans, index + 1);
-            }
-            clearReplyRunState(tasks, replyKey, index, plans.size());
-        });
+            return;
+        }
+        ReplyPlan plan = plans.get(index);
+        if (ready) sendReply(talker, plan.content, sender, plan.atSender, plan.replyMode, plan.delayMs);
+        else log("自动回复" + replyModeName(plan.replyMode) + "发送失败: 收藏或音频不可用");
+        if (isReplyEnabled()) scheduleReplyStep(tasks, replyKey, talker, sender, plans, index + 1, generation);
+        synchronized (pendingReplyTaskKeys) {
+            if (generation == replyGeneration.get()) clearReplyRunState(tasks, replyKey, index, plans.size());
+            else clearUnreplacedRunState(tasks, replyKey, generation);
+        }
     }
 
     public void cancelPendingReplies() {
-        WeChatTaskApi tasks = WeChatApis.runtime().tasks();
-        if (tasks != null) {
-            for (String key : pendingReplyTaskKeys) {
-                tasks.cancel(key);
-                int separator = key.indexOf(":step:");
-                if (separator > 0) tasks.clearRunState(key.substring(0, separator));
+        synchronized (pendingReplyTaskKeys) {
+            replyGeneration.incrementAndGet();
+            WeChatTaskApi tasks = WeChatApis.runtime().tasks();
+            if (tasks != null) {
+                for (String key : pendingReplyTaskKeys.keySet()) {
+                    tasks.cancel(key);
+                    int separator = key.indexOf(":step:");
+                    if (separator > 0) tasks.clearRunState(key.substring(0, separator));
+                }
             }
+            pendingReplyTaskKeys.clear();
         }
-        pendingReplyTaskKeys.clear();
     }
 
     private void clearReplyRunState(WeChatTaskApi tasks, String replyKey, int index, int size) {
         if (index + 1 >= size) tasks.clearRunState(replyKey);
     }
 
-    private void sendReplySequence(String talker, String sender, List<ReplyPlan> plans) {
-        for (ReplyPlan plan : plans) {
-            sendReply(talker, plan.content, sender, plan.atSender, plan.replyMode, plan.delayMs);
+    private void clearUnreplacedRunState(WeChatTaskApi tasks, String replyKey, long generation) {
+        if (generation != replyGeneration.get()) {
+            String prefix = replyKey + ":step:";
+            for (String key : pendingReplyTaskKeys.keySet()) if (key.startsWith(prefix)) return;
+        }
+        tasks.clearRunState(replyKey);
+    }
+
+    private void sendReplySequence(String talker, String sender, List<ReplyPlan> plans, int index, long generation) {
+        for (int cursor = index; cursor < plans.size(); cursor++) {
+            if (generation != replyGeneration.get() || !isReplyEnabled()) return;
+            ReplyPlan plan = plans.get(cursor);
+            Boolean needsSilk = requiresSilk(plan);
+            if (Boolean.TRUE.equals(needsSilk) && !SilkLibrary.isReady()) {
+                int next = cursor + 1;
+                SilkLibrary.whenReady(ready -> new Handler(Looper.getMainLooper()).post(() -> {
+                    if (generation != replyGeneration.get() || !isReplyEnabled()) return;
+                    if (ready) sendReply(talker, plan.content, sender, plan.atSender, plan.replyMode, plan.delayMs);
+                    else log("自动回复" + replyModeName(plan.replyMode) + "发送失败: 音频不可用");
+                    sendReplySequence(talker, sender, plans, next, generation);
+                }));
+                return;
+            }
+            if (needsSilk != null) sendReply(talker, plan.content, sender, plan.atSender, plan.replyMode, plan.delayMs);
+            else log("自动回复收藏发送失败: 收藏不可用");
+        }
+    }
+
+    private Boolean requiresSilk(ReplyPlan plan) {
+        if (plan.replyMode == RedPacketRuleConfig.REPLY_VOICE) return true;
+        if (plan.replyMode != RedPacketRuleConfig.REPLY_FAVORITE || SilkLibrary.isReady()) return false;
+        try {
+            WeChatMediaApi media = WeChatApis.media();
+            if (media == null) return false;
+            return media.favorites().requiresSilk(plan.content);
+        } catch (Throwable error) {
+            log("自动回复收藏检查失败: " + error.getMessage());
+            return null;
         }
     }
 

@@ -21,7 +21,18 @@ function fragment(startText, endText) {
     return dexFinder.slice(start, end);
 }
 const stubs = {
-    'android/content/Context.java': 'package android.content; public class Context {}',
+    'android/content/Context.java': 'package android.content; public class Context { public Context getApplicationContext() { return this; } }',
+    'h/Hchat/loader/utils/NativeLibraryLoader.java': `package h.Hchat.loader.utils;
+        import android.content.Context;
+        public class NativeLibraryLoader {
+            public static int attempts; public static boolean fail, loaded;
+            public boolean loadSilkCodec(Context context, ClassLoader loader) {
+                synchronized (NativeLibraryLoader.class) {
+                    if (loaded) return true;
+                    attempts++; if (fail) return false; loaded=true; return true;
+                }
+            }
+        }`,
     'android/content/ContentValues.java': 'package android.content; public class ContentValues extends java.util.HashMap<String,Object> {}',
     'android/media/MediaMetadataRetriever.java': `package android.media; public class MediaMetadataRetriever {
         public static final int METADATA_KEY_DURATION = 9;
@@ -182,6 +193,7 @@ const stubs = {
             }
         }`,
     'me/yun/silk/SilkCodec.java': `package me.yun.silk; public class SilkCodec {
+        public SilkCodec() { h.Hchat.loader.utils.SilkLibrary.ensureLoaded(); }
         public int getFileType(String file) { return 1; } public long getDuration(String file) { return 1200; }
     }`,
     'me/yun/silk/AacCodec.java': `package me.yun.silk; public class AacCodec {
@@ -204,5 +216,6 @@ function run(command, args) {
 }
 run(process.env.JAVAC || 'javac', ['-d', output,
     source + 'hooks/api/media/WeChatVoiceApi.java',
+    source + 'loader/utils/SilkLibrary.java',
     'scripts/tests/voice_compat/VoiceCompatRegression.java', ...generated]);
 run(process.env.JAVA || 'java', ['-cp', output, 'h.Hchat.hooks.api.media.VoiceCompatRegression']);

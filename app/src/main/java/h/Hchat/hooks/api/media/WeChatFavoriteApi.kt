@@ -236,6 +236,20 @@ class WeChatFavoriteApi(
         )
     }
 
+    /** Resolves the same item that send() would use, before a main-thread voice reply. */
+    fun requiresSilk(localId: String): Boolean? {
+        val value = localId.trim().toLongOrNull()
+        if (value == null || value <= 0L) {
+            log("发送收藏失败: localId 非法 $localId")
+            return null
+        }
+        val favorite = loadFavoriteNative(value) ?: run {
+            log("发送收藏失败: 未找到收藏 localId=$localId")
+            return null
+        }
+        return favoriteType(favorite) == 3
+    }
+
     fun send(talker: String, localId: String): Boolean {
         val value = localId.trim().toLongOrNull()
         if (value == null || value <= 0L) {

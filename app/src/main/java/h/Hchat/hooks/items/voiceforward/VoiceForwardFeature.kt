@@ -806,11 +806,14 @@ private class VoiceForwardHooker(
                         preparePreviewVoice(source)
                     },
                     onConfirm = {
-                        val sent = sendVoiceForForward(source, target)
-                        toast(targetActivity, if (sent) "收藏语音已发送" else "收藏语音发送失败")
-                        if (sent && !targetActivity.isFinishing) {
-                            targetActivity.finish()
-                        }
+                        val main = Handler(Looper.getMainLooper())
+                        Thread({
+                            val sent = sendVoiceForForward(source, target)
+                            main.post {
+                                toast(targetActivity, if (sent) "收藏语音已发送" else "收藏语音发送失败")
+                                if (sent && !targetActivity.isFinishing) targetActivity.finish()
+                            }
+                        }, "Hchat-FavoriteVoiceSend").start()
                     },
                     onDismiss = {
                         seenDialogs.remove(targetActivity)
