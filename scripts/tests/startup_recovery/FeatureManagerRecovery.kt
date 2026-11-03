@@ -27,10 +27,14 @@ private class Downstream : Feature {
 }
 
 private class PublicApiCore : Feature {
+    var failNextInstall = false
     override fun featureId() = "wechat_api"
     override fun isRequiredCore() = true
-    override fun onInit(context: FeatureContext) { ApiRegistry.current = context.publicApi }
-    override fun install(context: FeatureContext) { ApiRegistry.current = context.publicApi }
+    override fun install(context: FeatureContext) {
+        if (failNextInstall) { failNextInstall = false; error("injected core API replacement failure") }
+        ApiRegistry.current = context.publicApi
+    }
+    override fun onDestroy(context: FeatureContext) { ApiRegistry.current?.clear() }
 }
 
 private class ApiSubscriber : Feature {
@@ -39,11 +43,11 @@ private class ApiSubscriber : Feature {
     var initCalls = 0
     var installCalls = 0
     override fun featureId() = "api_subscriber"
-    override fun onInit(context: FeatureContext) {
-        initCalls++
+    override fun onInit(context: FeatureContext) { initCalls++ }
+    override fun install(context: FeatureContext) {
+        installCalls++
         subscription = ApiRegistry.current!!.subscribe { callbackCount++ }
     }
-    override fun install(context: FeatureContext) { installCalls++ }
     override fun onDestroy(context: FeatureContext) { subscription?.unsubscribe() }
 }
 
@@ -95,6 +99,40 @@ fun main() {
     check(subscriber.callbackCount == 1) { "one public API event must invoke exactly one current callback" }
     check(subscriber.initCalls == 2 && subscriber.installCalls == 2) {
         "business feature state must be restored once after the public API is replaced"
+    }
+
+    val retryOldApi = ApiBus()
+    val failedReplacementApi = ApiBus()
+    val retriedReplacementApi = ApiBus()
+    val retryCore = PublicApiCore()
+    val retrySubscriber = ApiSubscriber()
+    val retryManager = FeatureManager().register(retryCore).register(retrySubscriber)
+    check(retryManager.installAll(FeatureContext(retryOldApi))) { "initial retry-path API install failed" }
+    val subscriptionBeforeFailure = retrySubscriber.subscription!!
+    retryCore.failNextInstall = true
+    check(!retryManager.revalidateRuntime(FeatureContext(failedReplacementApi), AnyClassLoader, true)) {
+        "injected public API replacement failure must remain pending"
+    }
+    check(!subscriptionBeforeFailure.active && retryOldApi.listeners.isEmpty()) {
+        "failed core replacement must revoke subscriptions owned by the old API generation"
+    }
+    retryOldApi.post()
+    failedReplacementApi.post()
+    check(retrySubscriber.callbackCount == 0) { "failed replacement must not leave an old callback active" }
+
+    check(retryManager.revalidateRuntime(FeatureContext(retriedReplacementApi), AnyClassLoader, false)) {
+        "a later public API replacement retry must complete"
+    }
+    val retrySubscription = retrySubscriber.subscription!!
+    check(retrySubscription !== subscriptionBeforeFailure && retrySubscription.active)
+    check(retryOldApi.listeners.isEmpty() && failedReplacementApi.listeners.isEmpty())
+    check(retriedReplacementApi.listeners.size == 1) { "retry must bind exactly one current subscription" }
+    retryOldApi.post()
+    failedReplacementApi.post()
+    retriedReplacementApi.post()
+    check(retrySubscriber.callbackCount == 1) { "only the recovered API generation may callback once" }
+    check(retrySubscriber.initCalls == 2 && retrySubscriber.installCalls == 2) {
+        "business feature must rebind once after a failed then successful core replacement"
     }
     println("PASS: core init failure blocks downstream, retries once, and successful installs deduplicate")
 }

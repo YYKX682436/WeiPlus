@@ -7,6 +7,7 @@ import h.Hchat.utils.KavaReflector;
 
 import java.lang.reflect.Method;
 import java.util.concurrent.CopyOnWriteArrayList;
+import io.github.libxposed.api.XposedInterface.HookHandle;
 
 
 /**
@@ -76,16 +77,21 @@ public final class WeChatLifecycleApi {
     private final CopyOnWriteArrayList<Listener> listeners = new CopyOnWriteArrayList<>();
     private volatile boolean installed;
     private volatile int hookedMethodCount;
+    private HookHandle resumeHook;
+    private HookHandle pauseHook;
+    private HookHandle destroyHook;
 
     public WeChatLifecycleApi(Logger logger) {
         this.logger = logger;
     }
 
-    public boolean isAvailable() {
+    public synchronized boolean isAvailable() {
+        refreshInstalledState();
         return installed;
     }
 
-    public int hookedMethodCount() {
+    public synchronized int hookedMethodCount() {
+        refreshInstalledState();
         return hookedMethodCount;
     }
 
@@ -100,20 +106,20 @@ public final class WeChatLifecycleApi {
     }
 
     public synchronized void install() {
-        if (installed) return;
-        int count = 0;
-        count += hookLifecycleMethod("onResume", ActivityEvent.RESUME);
-        count += hookLifecycleMethod("onPause", ActivityEvent.PAUSE);
-        count += hookLifecycleMethod("onDestroy", ActivityEvent.DESTROY);
-        hookedMethodCount = count;
-        installed = count > 0;
-        log("生命周期监听Hook: methods=" + count);
+        if (isAvailable()) return;
+        resumeHook = hookLifecycleMethod("onResume", ActivityEvent.RESUME, resumeHook);
+        pauseHook = hookLifecycleMethod("onPause", ActivityEvent.PAUSE, pauseHook);
+        destroyHook = hookLifecycleMethod("onDestroy", ActivityEvent.DESTROY, destroyHook);
+        refreshInstalledState();
+        log("生命周期监听Hook: methods=" + hookedMethodCount + "/3");
     }
 
-    private int hookLifecycleMethod(String methodName, String event) {
+    private HookHandle hookLifecycleMethod(String methodName, String event, HookHandle existing) {
+        HookRegistry registry = HookRegistry.get();
+        if (registry.isActive(existing)) return existing;
         try {
             Method method = KavaReflector.findDeclaredMethod(Activity.class, methodName);
-            HookRegistry.get().hook(method, chain -> {
+            return registry.hook(method, chain -> {
                 boolean cleanup = ActivityEvent.PAUSE.equals(event) || ActivityEvent.DESTROY.equals(event);
                 Object result;
                 try {
@@ -124,11 +130,18 @@ public final class WeChatLifecycleApi {
                 if (!cleanup) dispatchLifecycleEvent(event, chain.getThisObject());
                 return result;
             });
-            return 1;
         } catch (Throwable e) {
             log("生命周期Hook失败: " + methodName + " " + e.getMessage());
-            return 0;
+            return null;
         }
+    }
+
+    private void refreshInstalledState() {
+        HookRegistry registry = HookRegistry.get();
+        hookedMethodCount = (registry.isActive(resumeHook) ? 1 : 0)
+                + (registry.isActive(pauseHook) ? 1 : 0)
+                + (registry.isActive(destroyHook) ? 1 : 0);
+        installed = hookedMethodCount == 3;
     }
 
     private void dispatchLifecycleEvent(String event, Object receiver) {

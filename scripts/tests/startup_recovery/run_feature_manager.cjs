@@ -26,6 +26,7 @@ class ApiBus {
   val listeners = arrayListOf<ApiSubscription>()
   fun subscribe(listener: () -> Unit) = ApiSubscription(this, listener).also(listeners::add)
   fun post() = listeners.toList().forEach { if (it.active) it.listener() }
+  fun clear() = listeners.toList().forEach { it.unsubscribe() }
 }
 `,
   'stubs.kt': `package h.Hchat.hooks.core

@@ -5,9 +5,10 @@ const path = require('node:path');
 
 const root = path.resolve(__dirname, '../../..');
 const baseline = process.argv.includes('--baseline');
+const BASELINE_COMMIT = 'd1f71c58db2f88035303e3d2840086c3daf1e935';
 function read(file) {
   return baseline
-    ? execFileSync('git', ['show', `HEAD:${file}`], { cwd: root, encoding: 'utf8' })
+    ? execFileSync('git', ['show', `${BASELINE_COMMIT}:${file}`], { cwd: root, encoding: 'utf8' })
     : fs.readFileSync(path.join(root, file), 'utf8');
 }
 function body(source, signature) {

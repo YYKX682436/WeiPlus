@@ -8,7 +8,13 @@ import h.Hchat.hooks.core.HookRegistry;
 import h.Hchat.utils.KavaReflector;
 
 import java.lang.reflect.Method;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
+import io.github.libxposed.api.XposedInterface.HookHandle;
 
 
 /**
@@ -44,6 +50,7 @@ public final class WeChatActivityStartApi {
 
     private final Logger logger;
     private final CopyOnWriteArrayList<Listener> listeners = new CopyOnWriteArrayList<>();
+    private final Map<Method, HookHandle> hooks = new LinkedHashMap<>();
     private volatile boolean installed;
     private volatile int hookedMethodCount;
 
@@ -51,11 +58,13 @@ public final class WeChatActivityStartApi {
         this.logger = logger;
     }
 
-    public boolean isAvailable() {
+    public synchronized boolean isAvailable() {
+        refreshInstalledState(discoverStartMethods());
         return installed;
     }
 
-    public int hookedMethodCount() {
+    public synchronized int hookedMethodCount() {
+        refreshInstalledState(discoverStartMethods());
         return hookedMethodCount;
     }
 
@@ -70,29 +79,45 @@ public final class WeChatActivityStartApi {
     }
 
     public synchronized void install() {
-        if (installed) return;
-        int count = hookStartMethods(Activity.class);
-        count += hookStartMethods(ContextWrapper.class);
-        hookedMethodCount = count;
-        installed = count > 0;
-        log("Activity启动监听Hook: methods=" + count);
+        List<Method> methods = discoverStartMethods();
+        HookRegistry registry = HookRegistry.get();
+        for (Method method : methods) {
+            HookHandle existing = hooks.get(method);
+            if (registry.isActive(existing)) continue;
+            try {
+                HookHandle handle = registry.hook(method, chain -> {
+                    Intent intent = findIntent(chain.getArgs().toArray());
+                    if (intent != null) dispatch(intent, chain.getThisObject(), method);
+                    return chain.proceed();
+                });
+                hooks.put(method, handle);
+            } catch (Throwable failure) {
+                log("Activity启动监听Hook失败: " + method + " " + failure.getMessage());
+            }
+        }
+        refreshInstalledState(methods);
+        log("Activity启动监听Hook: methods=" + hookedMethodCount + "/" + methods.size());
     }
 
-    private int hookStartMethods(Class<?> clazz) {
-        int count = 0;
-        for (Method method : KavaReflector.declaredMethods(clazz)) {
-            if (!isStartMethod(method)) continue;
-            HookRegistry.get()
-                    .hook(
-                            method,
-                            chain -> {
-                                Intent intent = findIntent(chain.getArgs().toArray());
-                                if (intent != null) dispatch(intent, chain.getThisObject(), method);
-                                return chain.proceed();
-                            });
-            count++;
+    private List<Method> discoverStartMethods() {
+        LinkedHashSet<Method> methods = new LinkedHashSet<>();
+        for (Class<?> clazz : new Class<?>[] {Activity.class, ContextWrapper.class}) {
+            try {
+                for (Method method : KavaReflector.declaredMethods(clazz)) {
+                    if (isStartMethod(method)) methods.add(method);
+                }
+            } catch (Throwable failure) {
+                log("Activity启动监听方法枚举失败: " + clazz.getName() + " " + failure.getMessage());
+            }
         }
-        return count;
+        return new ArrayList<>(methods);
+    }
+
+    private void refreshInstalledState(List<Method> methods) {
+        HookRegistry registry = HookRegistry.get();
+        hookedMethodCount = 0;
+        for (Method method : methods) if (registry.isActive(hooks.get(method))) hookedMethodCount++;
+        installed = !methods.isEmpty() && hookedMethodCount == methods.size();
     }
 
     private boolean isStartMethod(Method method) {

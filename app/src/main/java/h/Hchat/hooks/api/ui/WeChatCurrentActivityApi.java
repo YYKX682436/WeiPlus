@@ -9,6 +9,7 @@ import java.lang.ref.WeakReference;
 import java.lang.reflect.Method;
 
 import io.github.libxposed.api.XposedInterface;
+import io.github.libxposed.api.XposedInterface.HookHandle;
 
 /**
  * 当前微信 Activity 跟踪 API。
@@ -22,55 +23,78 @@ public final class WeChatCurrentActivityApi {
     private volatile WeakReference<Activity> currentActivity =
             new WeakReference<>(null);
     private volatile boolean installed;
+    private volatile int hookedMethodCount;
+    private HookHandle resumeHook;
+    private HookHandle pauseHook;
+    private HookHandle destroyHook;
 
     public WeChatCurrentActivityApi(Logger logger) {
         this.logger = logger;
     }
 
-    public boolean isAvailable() {
+    public synchronized boolean isAvailable() {
+        refreshInstalledState();
         return installed;
     }
 
+    public synchronized int hookedMethodCount() {
+        refreshInstalledState();
+        return hookedMethodCount;
+    }
+
     public synchronized void install() {
-        if (installed) return;
+        if (isAvailable()) return;
+        resumeHook = installResumeHook(resumeHook);
+        pauseHook = installClearHook("onPause", pauseHook);
+        destroyHook = installClearHook("onDestroy", destroyHook);
+        refreshInstalledState();
+        log("当前Activity Hook: methods=" + hookedMethodCount + "/3");
+    }
+
+    private HookHandle installResumeHook(HookHandle existing) {
+        HookRegistry registry = HookRegistry.get();
+        if (registry.isActive(existing)) return existing;
         try {
             Method onResume = KavaReflector.findDeclaredMethod(Activity.class, "onResume");
-            Method onPause = KavaReflector.findDeclaredMethod(Activity.class, "onPause");
-            Method onDestroy = KavaReflector.findDeclaredMethod(Activity.class, "onDestroy");
-            HookRegistry.get()
-                    .hook(
-                            onResume,
-                            new XposedInterface.Hooker() {
-                                @Override
-                                public Object intercept(XposedInterface.Chain chain)
-                                        throws Throwable {
-                                    Object[] args = chain.getArgs().toArray();
-                                    Object hookResult = chain.proceed();
-                                    Object receiver = chain.getThisObject();
-                                    if (receiver instanceof Activity) {
-                                        currentActivity = new WeakReference<>((Activity) receiver);
-                                    }
-
-                                    return hookResult;
-                                }
-                            });
-            XposedInterface.Hooker clearHook =
-                    chain -> {
-                        try {
-                            return chain.proceed();
-                        } finally {
-                            Activity current = currentActivity();
-                            if (current != null && current == chain.getThisObject())
-                                currentActivity = new WeakReference<>(null);
-                        }
-                    };
-            HookRegistry.get().hook(onPause, clearHook);
-            HookRegistry.get().hook(onDestroy, clearHook);
-            installed = true;
-            log("当前Activity Hook已安装");
-        } catch (Throwable e) {
-            log("当前Activity Hook失败: " + e.getMessage());
+            return registry.hook(onResume, chain -> {
+                Object hookResult = chain.proceed();
+                Object receiver = chain.getThisObject();
+                if (receiver instanceof Activity) currentActivity = new WeakReference<>((Activity) receiver);
+                return hookResult;
+            });
+        } catch (Throwable error) {
+            log("当前Activity Hook失败: onResume " + error.getMessage());
+            return null;
         }
+    }
+
+    private HookHandle installClearHook(String methodName, HookHandle existing) {
+        HookRegistry registry = HookRegistry.get();
+        if (registry.isActive(existing)) return existing;
+        try {
+            Method method = KavaReflector.findDeclaredMethod(Activity.class, methodName);
+            XposedInterface.Hooker clearHook = chain -> {
+                try {
+                    return chain.proceed();
+                } finally {
+                    Activity current = currentActivity();
+                    if (current != null && current == chain.getThisObject())
+                        currentActivity = new WeakReference<>(null);
+                }
+            };
+            return registry.hook(method, clearHook);
+        } catch (Throwable error) {
+            log("当前Activity Hook失败: " + methodName + " " + error.getMessage());
+            return null;
+        }
+    }
+
+    private void refreshInstalledState() {
+        HookRegistry registry = HookRegistry.get();
+        hookedMethodCount = (registry.isActive(resumeHook) ? 1 : 0)
+                + (registry.isActive(pauseHook) ? 1 : 0)
+                + (registry.isActive(destroyHook) ? 1 : 0);
+        installed = hookedMethodCount == 3;
     }
 
     public Activity currentActivity() {
