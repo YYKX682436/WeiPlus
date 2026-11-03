@@ -1,13 +1,15 @@
 package h.Hchat.hooks.items.antirecall
 
 import h.Hchat.hooks.api.model.WeChatMessage
+import h.Hchat.hooks.api.model.WeChatMessageTypes
+import h.Hchat.hooks.api.message.NativeInsertOutcome
 import java.text.SimpleDateFormat
 import java.util.Date
-import java.util.LinkedHashSet
+import java.util.LinkedHashMap
 import java.util.Locale
 
 internal class RecallEventGate(private val maxEntries: Int) {
-    private val handled = LinkedHashSet<String>()
+    private val handled = LinkedHashMap<String, NativeInsertOutcome>()
     private val inFlight = HashSet<String>()
 
     @Synchronized
@@ -18,12 +20,12 @@ internal class RecallEventGate(private val maxEntries: Int) {
     }
 
     @Synchronized
-    fun complete(key: String) {
+    fun complete(key: String, outcome: NativeInsertOutcome = NativeInsertOutcome.SUCCESS) {
         inFlight.remove(key)
         if (key.isBlank()) return
-        handled += key
+        handled[key] = outcome
         while (handled.size > maxEntries) {
-            val iterator = handled.iterator()
+            val iterator = handled.entries.iterator()
             if (!iterator.hasNext()) break
             iterator.next()
             iterator.remove()
@@ -34,6 +36,14 @@ internal class RecallEventGate(private val maxEntries: Int) {
     fun abort(key: String) {
         inFlight.remove(key)
     }
+
+    @Synchronized
+    fun finishNoticeAttempt(key: String, outcome: NativeInsertOutcome) {
+        if (outcome == NativeInsertOutcome.FAILED) abort(key) else complete(key, outcome)
+    }
+
+    @Synchronized
+    fun completedOutcome(key: String): NativeInsertOutcome? = handled[key]
 
     @Synchronized
     fun clear() {
@@ -104,6 +114,16 @@ internal object RecallNoticePolicy {
 
     fun normalizeMillis(createTime: Long): Long {
         return if (createTime > 0L && createTime < 10_000_000_000L) createTime * 1000L else createTime
+    }
+
+    fun matchesStoredNotice(
+        rows: Iterable<WeChatMessage>,
+        talker: String,
+        content: String,
+        createTime: Long
+    ): Boolean = rows.any { row ->
+        row.talker == talker && row.type == WeChatMessageTypes.SYSTEM &&
+            row.content == content && normalizeMillis(row.createTime) == createTime
     }
 
     fun formatTime(time: Long, pattern: String, fallbackPattern: String): String {

@@ -3,6 +3,9 @@ package h.Hchat.hooks.items.antirecall
 import h.Hchat.hooks.api.model.WeChatMessage
 import h.Hchat.hooks.api.model.WeChatMessageTypes
 import h.Hchat.hooks.api.message.NativeSystemMessageInsertReceipt
+import h.Hchat.hooks.api.message.NativeInsertFallbackPolicy
+import h.Hchat.hooks.api.message.NativeInsertOutcome
+import h.Hchat.hooks.api.message.SystemMessageInsertResult
 import java.util.Locale
 import java.util.TimeZone
 import org.junit.Assert.assertEquals
@@ -12,6 +15,17 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class RecallRuntimePolicyRegressionTest {
+    @Test
+    fun nativeInsertFallbackIsAllowedOnlyWhenNotInvokedOrExplicitlyFailed() {
+        assertTrue(NativeInsertFallbackPolicy.mayUseDirectStorage(null))
+        assertTrue(NativeInsertFallbackPolicy.mayUseDirectStorage(NativeInsertOutcome.FAILED))
+        assertFalse(NativeInsertFallbackPolicy.mayUseDirectStorage(NativeInsertOutcome.UNKNOWN))
+        assertFalse(NativeInsertFallbackPolicy.mayUseDirectStorage(NativeInsertOutcome.SUCCESS))
+        assertEquals(44L, SystemMessageInsertResult(NativeInsertOutcome.SUCCESS, 44L).messageId)
+        assertEquals(0L, SystemMessageInsertResult(NativeInsertOutcome.FAILED).messageId)
+        assertEquals(0L, SystemMessageInsertResult(NativeInsertOutcome.UNKNOWN).messageId)
+    }
+
     @Test
     fun duplicateRecallIsClaimedOnlyOnceAndFailedAttemptCanRetry() {
         val gate = RecallEventGate(maxEntries = 4)
@@ -24,6 +38,20 @@ class RecallRuntimePolicyRegressionTest {
         assertTrue(gate.begin("room:msg-2"))
         gate.abort("room:msg-2")
         assertTrue(gate.begin("room:msg-2"))
+    }
+
+    @Test
+    fun onlyExplicitFailureReleasesRecallGateAfterInsertAttempt() {
+        val gate = RecallEventGate(maxEntries = 4)
+        assertTrue(gate.begin("room:uncertain"))
+        gate.finishNoticeAttempt("room:uncertain", NativeInsertOutcome.UNKNOWN)
+        assertEquals(NativeInsertOutcome.UNKNOWN, gate.completedOutcome("room:uncertain"))
+        assertFalse("unknown write must not be replayed", gate.begin("room:uncertain"))
+
+        assertTrue(gate.begin("room:failed"))
+        gate.finishNoticeAttempt("room:failed", NativeInsertOutcome.FAILED)
+        assertNull(gate.completedOutcome("room:failed"))
+        assertTrue("explicit pre-write failure is safe to retry", gate.begin("room:failed"))
     }
 
     @Test
@@ -71,6 +99,16 @@ class RecallRuntimePolicyRegressionTest {
             Locale.setDefault(previousLocale)
             TimeZone.setDefault(previousZone)
         }
+    }
+
+    @Test
+    fun duplicateRecallVerificationRequiresSameSessionContentSystemTypeAndTime() {
+        val expected = message(81L, 0L, "target-chat", WeChatMessageTypes.SYSTEM, 2_000L, "recall notice")
+        assertTrue(RecallNoticePolicy.matchesStoredNotice(listOf(expected), "target-chat", "recall notice", 2_000_000L))
+        assertFalse(RecallNoticePolicy.matchesStoredNotice(listOf(expected), "other-chat", "recall notice", 2_000_000L))
+        assertFalse(RecallNoticePolicy.matchesStoredNotice(listOf(expected), "target-chat", "other notice", 2_000_000L))
+        assertFalse(RecallNoticePolicy.matchesStoredNotice(listOf(message(81L, 0L, "target-chat", 1, 2_000L, "recall notice")), "target-chat", "recall notice", 2_000_000L))
+        assertFalse(RecallNoticePolicy.matchesStoredNotice(listOf(message(81L, 0L, "target-chat", WeChatMessageTypes.SYSTEM, 3_000L, "recall notice")), "target-chat", "recall notice", 2_000_000L))
     }
 
     @Test
@@ -135,16 +173,23 @@ class RecallRuntimePolicyRegressionTest {
         assertFalse(selfRecallNotKept.markEventHandled)
     }
 
-    private fun message(msgId: Long, msgSvrId: Long, talker: String): WeChatMessage {
+    private fun message(
+        msgId: Long,
+        msgSvrId: Long,
+        talker: String,
+        type: Int = 1,
+        createTime: Long = 1_700_000_000_000L,
+        content: String = "text"
+    ): WeChatMessage {
         return WeChatMessage(
             msgId,
             msgSvrId,
-            type = 1,
+            type = type,
             status = 2,
             isSend = 0,
-            createTime = 1_700_000_000_000L,
+            createTime = createTime,
             talker = talker,
-            content = "text",
+            content = content,
             imagePath = "",
             reserved = "",
             translatedContent = "",

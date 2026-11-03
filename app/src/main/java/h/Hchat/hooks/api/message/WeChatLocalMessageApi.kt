@@ -64,31 +64,34 @@ class WeChatLocalMessageApi(
     }
 
     fun insertSystemMessage(talker: String?, content: String?, createTime: Long = System.currentTimeMillis()): Long {
-        return insertSystemMessage(talker, content, createTime, true)
+        return insertSystemMessageResult(talker, content, createTime, true).messageId
     }
 
     fun insertSystemMessageAt(talker: String?, content: String?, createTime: Long): Long {
-        return insertSystemMessage(talker, content, createTime, false)
+        return insertSystemMessageResult(talker, content, createTime, false).messageId
     }
 
-    private fun insertSystemMessage(
+    internal fun insertSystemMessageAtWithOutcome(talker: String?, content: String?, createTime: Long) =
+        insertSystemMessageResult(talker, content, createTime, false)
+
+    private fun insertSystemMessageResult(
         talker: String?,
         content: String?,
         createTime: Long,
         useWechatCreateTime: Boolean
-    ): Long {
+    ): SystemMessageInsertResult {
         if (TextUtils.isEmpty(talker) || TextUtils.isEmpty(content)) {
             log("插入系统消息失败: talker/content 为空")
-            return 0L
+            return SystemMessageInsertResult(NativeInsertOutcome.FAILED)
         }
         val finder = dexFinder
         if (finder == null || !finder.hasLocalMessageApi()) {
             log("插入系统消息失败: 本地消息API未就绪")
-            return 0L
+            return SystemMessageInsertResult(NativeInsertOutcome.FAILED)
         }
         if (!useWechatCreateTime && !installCreateTimeHook()) {
             log("插入系统消息失败: createTime hook 未就绪")
-            return 0L
+            return SystemMessageInsertResult(NativeInsertOutcome.FAILED)
         }
         return runCatching {
             val expectedCreateTime = if (useWechatCreateTime) null else normalizeCreateTimeMillis(createTime)
@@ -98,24 +101,28 @@ class WeChatLocalMessageApi(
                 content.orEmpty(),
                 expectedCreateTime
             )
-            if ((nativeAttempt?.messageId ?: 0L) > 0L) {
-                return@runCatching nativeAttempt!!.messageId
+            when {
+                nativeAttempt?.outcome == NativeInsertOutcome.SUCCESS ->
+                    return@runCatching SystemMessageInsertResult(NativeInsertOutcome.SUCCESS, nativeAttempt.messageId)
+                NativeInsertFallbackPolicy.mayUseDirectStorage(nativeAttempt?.outcome) -> Unit
+                // The native listener may have written through storage without the receipt hook
+                // observing it. A direct retry here can create a second visible system message.
+                else -> return@runCatching SystemMessageInsertResult(NativeInsertOutcome.UNKNOWN)
             }
-            if (nativeAttempt?.ambiguous == true) return@runCatching 0L
             val msg = newMessage(finder, talker.orEmpty())
                 ?: throw IllegalStateException("消息对象创建失败")
             fillSystemMessage(msg, talker.orEmpty(), content.orEmpty(), createTime, useWechatCreateTime)
             val result = insertMessageDirect(finder, msg)
             val insertedId = (result as? Number)?.toLong() ?: 0L
             if (isStoredSystemMessage(insertedId, talker.orEmpty(), content.orEmpty(), expectedCreateTime)) {
-                insertedId
+                SystemMessageInsertResult(NativeInsertOutcome.SUCCESS, insertedId)
             } else {
                 log("插入系统消息失败: 本地存储未确认")
-                0L
+                SystemMessageInsertResult(NativeInsertOutcome.UNKNOWN)
             }
         }.onFailure {
             log("插入系统消息失败: ${it.message}")
-        }.getOrDefault(0L)
+        }.getOrDefault(SystemMessageInsertResult(NativeInsertOutcome.UNKNOWN))
     }
 
     private fun insertViaWechatSystemMessageMethod(
@@ -130,7 +137,7 @@ class WeChatLocalMessageApi(
             return null
         }
         val owner = newSystemMessageOwner(finder, method)
-            ?: return NativeSystemInsertAttempt(messageId = 0L, ambiguous = false)
+            ?: return NativeSystemInsertAttempt(NativeInsertOutcome.FAILED)
         val receipt = NativeSystemMessageInsertReceipt(talker, createTime)
         val previousCreateTime = PENDING_CREATE_TIME.get()
         val previousReceipt = PENDING_SYSTEM_INSERT_RECEIPT.get()
@@ -142,13 +149,16 @@ class WeChatLocalMessageApi(
             KavaReflector.invoke(method, owner, talker, content, "")
             val inserted = receipt.insertedMessage()
             if (inserted == null) {
-                NativeSystemInsertAttempt(messageId = 0L, ambiguous = false)
+                NativeSystemInsertAttempt(NativeInsertOutcome.UNKNOWN)
             } else if (isStoredSystemMessage(inserted.messageId, talker, inserted.content, createTime)) {
-                NativeSystemInsertAttempt(messageId = inserted.messageId, ambiguous = false)
+                NativeSystemInsertAttempt(NativeInsertOutcome.SUCCESS, inserted.messageId)
             } else {
                 log("原生系统消息调用已写入但存储回读未确认")
-                NativeSystemInsertAttempt(messageId = 0L, ambiguous = true)
+                NativeSystemInsertAttempt(NativeInsertOutcome.UNKNOWN)
             }
+        } catch (error: Throwable) {
+            // Invocation may have crossed the write boundary before throwing.
+            NativeSystemInsertAttempt(NativeInsertOutcome.UNKNOWN)
         } finally {
             if (previousCreateTime == null) PENDING_CREATE_TIME.remove() else PENDING_CREATE_TIME.set(previousCreateTime)
             if (previousReceipt == null) PENDING_SYSTEM_INSERT_RECEIPT.remove() else PENDING_SYSTEM_INSERT_RECEIPT.set(previousReceipt)
@@ -399,12 +409,24 @@ class WeChatLocalMessageApi(
     }
 
     private data class NativeSystemInsertAttempt(
-        val messageId: Long,
-        val ambiguous: Boolean
+        val outcome: NativeInsertOutcome,
+        val messageId: Long = 0L
     )
 
     private data class TimedInsert(
         val talker: String,
         val createTime: Long
     )
+}
+
+internal enum class NativeInsertOutcome { SUCCESS, FAILED, UNKNOWN }
+
+internal data class SystemMessageInsertResult(
+    val outcome: NativeInsertOutcome,
+    val messageId: Long = 0L
+)
+
+internal object NativeInsertFallbackPolicy {
+    fun mayUseDirectStorage(outcome: NativeInsertOutcome?): Boolean =
+        outcome == null || outcome == NativeInsertOutcome.FAILED
 }
