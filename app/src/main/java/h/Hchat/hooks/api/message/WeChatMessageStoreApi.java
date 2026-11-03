@@ -510,10 +510,10 @@ public final class WeChatMessageStoreApi {
         if (!TextUtils.isEmpty(table)) {
             List<WeChatMessage> rows = queryMessages(
                     "SELECT * FROM " + table
-                            + " WHERE msgSvrId=? ORDER BY createTime DESC, msgId DESC LIMIT 1",
-                    new String[]{String.valueOf(msgSvrId)});
+                            + " WHERE talker=? AND msgSvrId=? ORDER BY createTime DESC, msgId DESC LIMIT 1",
+                    new String[]{talker, String.valueOf(msgSvrId)});
             if (!rows.isEmpty()) {
-                log("按talker/msgSvrId命中会话表: talker=" + talker + " id=" + msgSvrId + " table=" + table);
+                log("按talker/msgSvrId命中会话表");
                 return rows;
             }
         }
@@ -524,10 +524,10 @@ public final class WeChatMessageStoreApi {
             if (TextUtils.isEmpty(quoted)) continue;
             List<WeChatMessage> rows = queryMessages(
                     "SELECT * FROM " + quoted
-                            + " WHERE msgSvrId=? ORDER BY createTime DESC, msgId DESC LIMIT 1",
-                    new String[]{String.valueOf(msgSvrId)});
+                            + " WHERE talker=? AND msgSvrId=? ORDER BY createTime DESC, msgId DESC LIMIT 1",
+                    new String[]{talker, String.valueOf(msgSvrId)});
             if (!rows.isEmpty()) {
-                log("按talker/msgSvrId命中分表: talker=" + talker + " id=" + msgSvrId + " table=" + anyTable);
+                log("按talker/msgSvrId命中分表");
                 return rows;
             }
         }

@@ -3,6 +3,7 @@ package h.Hchat.hooks.api.message
 import android.text.TextUtils
 import io.github.libxposed.api.XposedInterface
 import h.Hchat.dexkit.DexFinder
+import h.Hchat.hooks.api.core.WeChatApis
 import h.Hchat.hooks.core.HookRegistry
 import h.Hchat.hooks.api.media.WeChatInternalServices
 import h.Hchat.utils.HLog
@@ -20,7 +21,6 @@ class WeChatLocalMessageApi(
     private val dexFinder: DexFinder?,
     private val logger: Logger?
 ) {
-    private val pendingCreateTime = ThreadLocal<TimedInsert?>()
     @Volatile
     private var createTimeHookInstalled = false
 
@@ -34,7 +34,9 @@ class WeChatLocalMessageApi(
 
     fun ensureReady() {
         val finder = dexFinder ?: return
-        if (!finder.hasLocalMessageApi() || finder.localMessageCreateTimeMethod == null) {
+        if (!finder.hasLocalMessageApi() || finder.localMessageCreateTimeMethod == null ||
+            finder.localSystemMessageMethod != null && finder.localSystemMessageStorageInsertMethod == null
+        ) {
             finder.resolveLocalMessageApi()
         }
         installCreateTimeHook()
@@ -49,8 +51,8 @@ class WeChatLocalMessageApi(
         val method = finder.localMessageCreateTimeMethod ?: return false
         synchronized(this) {
             if (createTimeHookInstalled) return true
-            HookRegistry.get().hook(method, XposedInterface.Hooker { chain ->
-                val pending = pendingCreateTime.get() ?: return@Hooker chain.proceed()
+            HookRegistry.get().hookOnce(CREATE_TIME_HOOK_KEY, method, XposedInterface.Hooker { chain ->
+                val pending = PENDING_CREATE_TIME.get() ?: return@Hooker chain.proceed()
                 val args = chain.args
                 val talker = args.getOrNull(0) as? String ?: return@Hooker chain.proceed()
                 if (talker != pending.talker) return@Hooker chain.proceed()
@@ -89,19 +91,28 @@ class WeChatLocalMessageApi(
             return 0L
         }
         return runCatching {
-            insertViaWechatSystemMessageMethod(
+            val expectedCreateTime = if (useWechatCreateTime) null else normalizeCreateTimeMillis(createTime)
+            val nativeAttempt = insertViaWechatSystemMessageMethod(
                 finder,
                 talker.orEmpty(),
                 content.orEmpty(),
-                if (useWechatCreateTime) null else normalizeCreateTimeMillis(createTime)
-            )?.let {
-                return@runCatching it
+                expectedCreateTime
+            )
+            if ((nativeAttempt?.messageId ?: 0L) > 0L) {
+                return@runCatching nativeAttempt!!.messageId
             }
+            if (nativeAttempt?.ambiguous == true) return@runCatching 0L
             val msg = newMessage(finder, talker.orEmpty())
                 ?: throw IllegalStateException("消息对象创建失败")
             fillSystemMessage(msg, talker.orEmpty(), content.orEmpty(), createTime, useWechatCreateTime)
-            val result = KavaReflector.invoke(finder.localMessageInsertMethod, null, msg)
-            (result as? Number)?.toLong() ?: 0L
+            val result = insertMessageDirect(finder, msg)
+            val insertedId = (result as? Number)?.toLong() ?: 0L
+            if (isStoredSystemMessage(insertedId, talker.orEmpty(), content.orEmpty(), expectedCreateTime)) {
+                insertedId
+            } else {
+                log("插入系统消息失败: 本地存储未确认")
+                0L
+            }
         }.onFailure {
             log("插入系统消息失败: ${it.message}")
         }.getOrDefault(0L)
@@ -112,19 +123,107 @@ class WeChatLocalMessageApi(
         talker: String,
         content: String,
         createTime: Long?
-    ): Long? {
+    ): NativeSystemInsertAttempt? {
         val method = finder.localSystemMessageMethod ?: return null
-        val owner = newSystemMessageOwner(finder, method)
-            ?: throw IllegalStateException("系统消息API实例创建失败")
-        if (createTime != null) {
-            pendingCreateTime.set(TimedInsert(talker, createTime))
+        if (!installLocalMessageInsertReceiptHook(finder)) {
+            log("原生系统消息插入结果无法观察，转本地消息存储API")
+            return null
         }
+        val owner = newSystemMessageOwner(finder, method)
+            ?: return NativeSystemInsertAttempt(messageId = 0L, ambiguous = false)
+        val receipt = NativeSystemMessageInsertReceipt(talker, createTime)
+        val previousCreateTime = PENDING_CREATE_TIME.get()
+        val previousReceipt = PENDING_SYSTEM_INSERT_RECEIPT.get()
+        if (createTime != null) {
+            PENDING_CREATE_TIME.set(TimedInsert(talker, createTime))
+        }
+        PENDING_SYSTEM_INSERT_RECEIPT.set(receipt)
         return try {
             KavaReflector.invoke(method, owner, talker, content, "")
-            1L
+            val inserted = receipt.insertedMessage()
+            if (inserted == null) {
+                NativeSystemInsertAttempt(messageId = 0L, ambiguous = false)
+            } else if (isStoredSystemMessage(inserted.messageId, talker, inserted.content, createTime)) {
+                NativeSystemInsertAttempt(messageId = inserted.messageId, ambiguous = false)
+            } else {
+                log("原生系统消息调用已写入但存储回读未确认")
+                NativeSystemInsertAttempt(messageId = 0L, ambiguous = true)
+            }
         } finally {
-            if (createTime != null) pendingCreateTime.remove()
+            if (previousCreateTime == null) PENDING_CREATE_TIME.remove() else PENDING_CREATE_TIME.set(previousCreateTime)
+            if (previousReceipt == null) PENDING_SYSTEM_INSERT_RECEIPT.remove() else PENDING_SYSTEM_INSERT_RECEIPT.set(previousReceipt)
         }
+    }
+
+    private fun installLocalMessageInsertReceiptHook(finder: DexFinder): Boolean {
+        val method = if (finder.localSystemMessageMethod != null) {
+            finder.localSystemMessageStorageInsertMethod
+        } else {
+            finder.localMessageInsertMethod
+        } ?: return false
+        return runCatching {
+            HookRegistry.get().hookOnce(LOCAL_INSERT_HOOK_KEY, method, XposedInterface.Hooker { chain ->
+                val message = chain.args.getOrNull(0)
+                val result = chain.proceed()
+                val receipt = PENDING_SYSTEM_INSERT_RECEIPT.get()
+                if (receipt != null && message != null) {
+                    receipt.record(
+                        actualTalker = stringProperty(message, "getTalker", "field_talker", "talker"),
+                        actualContent = stringProperty(message, "getContent", "field_content", "content"),
+                        actualType = numberProperty(message, "getType", "field_type", "type").toInt(),
+                        actualCreateTime = numberProperty(message, "getCreateTime", "field_createTime", "createTime"),
+                        insertedMessageId = (result as? Number)?.toLong() ?: 0L
+                    )
+                }
+                result
+            })
+            true
+        }.onFailure {
+            log("本地消息插入结果Hook失败: ${it.message}")
+        }.getOrDefault(false)
+    }
+
+    private fun stringProperty(target: Any, getter: String, vararg fields: String): String? {
+        val method = KavaReflector.findMethod(target.javaClass, getter)
+        val fromMethod = runCatching { KavaReflector.invoke(method, target) as? String }.getOrNull()
+        if (fromMethod != null) return fromMethod
+        return fields.firstNotNullOfOrNull { field -> KavaReflector.readField(target, field) as? String }
+    }
+
+    private fun numberProperty(target: Any, getter: String, vararg fields: String): Long {
+        val method = KavaReflector.findMethod(target.javaClass, getter)
+        val fromMethod = runCatching { KavaReflector.invoke(method, target) as? Number }.getOrNull()
+        if (fromMethod != null) return fromMethod.toLong()
+        return fields.firstNotNullOfOrNull { field -> (KavaReflector.readField(target, field) as? Number)?.toLong() } ?: 0L
+    }
+
+    private fun isStoredSystemMessage(
+        messageId: Long,
+        talker: String,
+        content: String,
+        expectedCreateTime: Long?
+    ): Boolean {
+        if (messageId <= 0L) return false
+        val stored = WeChatApis.messageStore()?.getMessageById(messageId) ?: return false
+        return stored.msgId == messageId &&
+            stored.talker == talker &&
+            stored.content == content &&
+            stored.type == WeChatMessageTypes.SYSTEM &&
+            (expectedCreateTime == null || normalizeCreateTimeMillis(stored.createTime) == expectedCreateTime)
+    }
+
+    private fun insertMessageDirect(finder: DexFinder, message: Any): Any? {
+        finder.localMessageInsertMethod?.let { method ->
+            return KavaReflector.invoke(method, null, message)
+        }
+        val method = finder.localSystemMessageStorageInsertMethod
+            ?: throw IllegalStateException("消息存储插入方法未就绪")
+        val ownerClass = method.declaringClass
+        val owner = WeChatInternalServices.getService(finder, ownerClass)
+            ?: KavaReflector.staticInstance(ownerClass)
+            ?: staticOwnerInstance(ownerClass)
+            ?: throw IllegalStateException("消息存储服务实例未就绪")
+        return KavaReflector.invoke(method, owner, message)
     }
 
     private fun newSystemMessageOwner(finder: DexFinder, method: Method): Any? {
@@ -293,7 +392,16 @@ class WeChatLocalMessageApi(
 
     companion object {
         private const val TAG = "[Hchat:LocalMessage]"
+        private const val CREATE_TIME_HOOK_KEY = "wechat_local_message_create_time"
+        private const val LOCAL_INSERT_HOOK_KEY = "wechat_local_message_insert_receipt"
+        private val PENDING_CREATE_TIME = ThreadLocal<TimedInsert?>()
+        private val PENDING_SYSTEM_INSERT_RECEIPT = ThreadLocal<NativeSystemMessageInsertReceipt?>()
     }
+
+    private data class NativeSystemInsertAttempt(
+        val messageId: Long,
+        val ambiguous: Boolean
+    )
 
     private data class TimedInsert(
         val talker: String,

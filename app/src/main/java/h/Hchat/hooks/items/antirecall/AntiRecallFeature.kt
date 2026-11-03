@@ -17,15 +17,13 @@ import h.Hchat.hooks.core.HookRegistry
 import h.Hchat.preferences.HchatStorage
 import h.Hchat.utils.KavaReflector
 import java.lang.reflect.Method
-import java.text.SimpleDateFormat
 import java.util.Collections
-import java.util.Date
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import org.luckypray.dexkit.result.MethodData
 
 class AntiRecallFeature : BaseFeature() {
-    private val handledRecalls = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
+    private val handledRecalls = RecallEventGate(MAX_CACHED_MESSAGES)
     private val publishedRecallEvents = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
     private val messageCache = ConcurrentHashMap<String, WeChatMessage>()
     private val selfRecallMsgIds = Collections.newSetFromMap(ConcurrentHashMap<Long, Boolean>())
@@ -87,11 +85,39 @@ class AntiRecallFeature : BaseFeature() {
                             publishRecallEvent(context, talker, svrId, recalledInfo)
                             if (!isAntiRecallEnabled(context)) return@before
                             val handledKey = recallHandledKey(talker, svrId, recalledInfo)
-                            if (!isHandled(handledKey)) {
-                                if (!handleRecall(context, talker, svrId, recalledInfo, recallTime)) return@before
-                                markHandled(handledKey)
+                            val selfRecall = isSelfRecall(payloadInfo) || isSelfRecall(recalledInfo)
+                            val initialDecision = RecallNoticePolicy.decideEvent(
+                                    antiRecallEnabled = true,
+                                    selfRecall = selfRecall,
+                                    keepSelfRecall = keepSelfRecallEnabled(context),
+                                    showNotice = showNoticeEnabled(context),
+                                    noticeInserted = false
+                                )
+                            if (!initialDecision.suppressOriginalRecall) return@before
+                            if (!handledRecalls.begin(handledKey)) {
+                                run { intercepted = true; value = null }
+                                return@before
                             }
+                            // Preserve the existing anti-recall behavior even when locating the
+                            // source message or inserting its optional notice fails.
                             run { intercepted = true; value = null }
+                            val noticeInserted = runCatching {
+                                handleRecall(context, talker, svrId, recalledInfo, recallTime)
+                            }.onFailure {
+                                logError("防撤回事件处理失败", it)
+                            }.getOrDefault(false)
+                            val decision = RecallNoticePolicy.decideEvent(
+                                antiRecallEnabled = true,
+                                selfRecall = selfRecall,
+                                keepSelfRecall = keepSelfRecallEnabled(context),
+                                showNotice = showNoticeEnabled(context),
+                                noticeInserted = noticeInserted
+                            )
+                            if (decision.markEventHandled) {
+                                handledRecalls.complete(handledKey)
+                            } else {
+                                handledRecalls.abort(handledKey)
+                            }
                         }
                         if (!intercepted) value = chain.proceed()
                         value
@@ -166,19 +192,16 @@ class AntiRecallFeature : BaseFeature() {
         val payloadSelfRecall = isSelfRecall(payloadInfo)
         val resolvedSelfRecall = isSelfRecall(recalledInfo)
         val selfRecall = payloadSelfRecall || resolvedSelfRecall
-        if (selfRecall && !keepSelfRecallEnabled(context)) {
-            return false
-        }
+        val keepSelfRecall = keepSelfRecallEnabled(context)
+        if (!RecallNoticePolicy.shouldPreserve(true, selfRecall, keepSelfRecall)) return false
         if (selfRecall) markSelfRecallMessage(recalledInfo)
-        if (selfRecall) {
-            if (showNoticeEnabled(context)) {
-                insertLocalNotice(context, talker, svrId, recalledInfo, recallTime, true)
-            }
-            return true
-        }
-        if (!showNoticeEnabled(context)) return true
-        insertLocalNotice(context, talker, svrId, recalledInfo, recallTime, selfRecall)
-        return true
+        if (!RecallNoticePolicy.shouldInsertNotice(
+                antiRecallEnabled = true,
+                showNotice = showNoticeEnabled(context),
+                selfRecall = selfRecall,
+                keepSelfRecall = keepSelfRecall
+            )) return false
+        return insertLocalNotice(context, talker, svrId, recalledInfo, recallTime, selfRecall)
     }
 
     @Volatile private var cacheNeeded = false
@@ -616,34 +639,33 @@ class AntiRecallFeature : BaseFeature() {
         recalledInfo: WeChatRecalledMessage?,
         recallTime: Long,
         selfRecall: Boolean
-    ) {
+    ): Boolean {
         if (talker.isBlank() || svrId <= 0L) {
-            h.Hchat.utils.HLog.e("$TAG 插入提示失败: talker/newmsgid为空 talker=$talker newmsgid=$svrId")
-            return
+            h.Hchat.utils.HLog.e("$TAG 插入提示失败: 必要消息字段缺失")
+            return false
         }
         val localMessages = WeChatApis.localMessages()
         if (localMessages == null) {
             h.Hchat.utils.HLog.e("$TAG 插入提示失败: LocalMessage API为空")
-            return
+            return false
         }
         localMessages.ensureReady()
-        val targetCreateTime = resolveRecalledCreateTime(svrId, recalledInfo)
+        val targetCreateTime = resolveRecalledCreateTime(talker, svrId, recalledInfo)
         val notice = if (selfRecall) {
             AntiRecallSettings.SELF_NOTICE_TEXT
         } else {
             noticeText(context, talker, recalledInfo, targetCreateTime, recallTime)
         }
         if (targetCreateTime <= 0L) {
-            h.Hchat.utils.HLog.e(
-                "$TAG 插入提示失败: 未定位原消息时间 talker=$talker id=$svrId " +
-                    "origin=${recalledInfo?.originSvrId ?: 0L} new=${recalledInfo?.newMsgId ?: 0L}"
-            )
-            return
+            h.Hchat.utils.HLog.e("$TAG 插入提示失败: 未定位原消息时间")
+            return false
         }
         val result = localMessages.insertSystemMessageAt(talker, notice, targetCreateTime + 1L)
         if (result <= 0L) {
-            h.Hchat.utils.HLog.e("$TAG 插入提示失败: talker=$talker newmsgid=$svrId")
+            h.Hchat.utils.HLog.e("$TAG 插入提示失败: 实际消息存储未确认")
+            return false
         }
+        return true
     }
 
     private fun resolveRecalledInfo(
@@ -665,34 +687,27 @@ class AntiRecallFeature : BaseFeature() {
         svrId: Long,
         payloadInfo: WeChatRecalledMessage?
     ): WeChatMessage? {
-        for (id in recallLookupIds(svrId, payloadInfo)) {
-            messageCache[cacheKey(talker, id)]?.let { return it }
-            val message = WeChatApis.messageStore()?.getMessageById(id)
-                ?: WeChatApis.messageStore()?.getMessageBySvrId(talker, id)
-                ?: WeChatApis.messageStore()?.getMessageBySvrId(id)
-            if (message != null) {
-                rememberMessage(message)
-                return message
-            }
-        }
-        return null
+        val ids = recallLookupIds(svrId, payloadInfo)
+        return RecallMessageResolver.resolve(
+            talker = talker,
+            serverIds = ids,
+            hinted = payloadInfo?.message,
+            cachedByServerId = { session, id -> messageCache[cacheKey(session, id)] },
+            storedByServerId = { session, id -> WeChatApis.messageStore()?.getMessageBySvrId(session, id) }
+        )?.also(::rememberMessage)
     }
 
-    private fun resolveRecalledCreateTime(svrId: Long, info: WeChatRecalledMessage?): Long {
-        for (id in recallLookupIds(svrId, info)) {
-            val byLocalId = normalizeMillis(WeChatApis.messageStore()?.getMessageById(id)?.createTime ?: 0L)
-            if (byLocalId > 0L) return byLocalId
-        }
-        val newMsgCreateTime = normalizeMillis(WeChatApis.messageStore()?.getCreateTimeBySvrId(info?.newMsgId ?: 0L) ?: 0L)
-        if (newMsgCreateTime > 0L) return newMsgCreateTime
-        val createTime = normalizeMillis(info?.bestCreateTime() ?: 0L)
-        if (createTime > 0L) return createTime
-        return normalizeMillis(WeChatApis.messageStore()?.getCreateTimeBySvrId(svrId) ?: 0L)
+    private fun resolveRecalledCreateTime(talker: String, svrId: Long, info: WeChatRecalledMessage?): Long {
+        val sourceTime = normalizeMillis(resolveRecalledMessage(talker, svrId, info)?.createTime ?: 0L)
+        if (sourceTime > 0L) return sourceTime
+        val lookupIds = recallLookupIds(svrId, info)
+        val payloadTime = info?.takeIf {
+            it.talker == talker && it.originSvrId > 0L && it.originSvrId in lookupIds
+        }?.createTime ?: 0L
+        return normalizeMillis(payloadTime)
     }
 
-    private fun normalizeMillis(createTime: Long): Long {
-        return if (createTime > 0L && createTime < 10_000_000_000L) createTime * 1000L else createTime
-    }
+    private fun normalizeMillis(createTime: Long): Long = RecallNoticePolicy.normalizeMillis(createTime)
 
     private fun recallLookupIds(svrId: Long, payloadInfo: WeChatRecalledMessage?): List<Long> {
         return linkedSetOf(
@@ -746,13 +761,7 @@ class AntiRecallFeature : BaseFeature() {
     }
 
     private fun formatNoticeTime(time: Long, pattern: String): String {
-        if (time <= 0L) return ""
-        return runCatching {
-            SimpleDateFormat(pattern, Locale.getDefault()).format(Date(time))
-        }.getOrElse {
-            SimpleDateFormat(AntiRecallSettings.DEFAULT_NOTICE_TIME_FORMAT, Locale.getDefault())
-                .format(Date(time))
-        }
+        return RecallNoticePolicy.formatTime(time, pattern, AntiRecallSettings.DEFAULT_NOTICE_TIME_FORMAT)
     }
 
     private fun normalizeNoticeTemplate(template: String): String {
@@ -868,19 +877,6 @@ class AntiRecallFeature : BaseFeature() {
                 ?: svrId
         }
         return "$talker:$id"
-    }
-
-    private fun isHandled(key: String): Boolean {
-        if (key.isBlank()) return false
-        return handledRecalls.contains(key)
-    }
-
-    private fun markHandled(key: String) {
-        if (key.isBlank()) return
-        handledRecalls.add(key)
-        if (handledRecalls.size > MAX_CACHED_MESSAGES) {
-            handledRecalls.take((handledRecalls.size - MAX_CACHED_MESSAGES).coerceAtLeast(0)).forEach { handledRecalls.remove(it) }
-        }
     }
 
     private fun cacheKey(talker: String, svrId: Long): String = "$talker:$svrId"

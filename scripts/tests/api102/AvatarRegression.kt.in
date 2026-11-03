@@ -4,22 +4,37 @@ import java.util.WeakHashMap
 
 class Bitmap(val name:String)
 class ImageView {var displayed:Bitmap?=null;fun setImageBitmap(value:Bitmap){displayed=value}}
-open class Drawable {var initialized=false;val bounds=Any()}
-class Canvas {var draws=0;fun drawBitmap(value:Bitmap,from:Any?,to:Any,paint:Any){draws++}}
+class Bounds {fun set(other:Any){};fun width()=100;fun height()=100}
+class Path {enum class Direction {CW};fun reset(){};fun addRoundRect(bounds:Bounds,x:Float,y:Float,direction:Direction){}}
+open class Drawable {var initialized=false;val bounds=Bounds()}
+class Canvas {var draws=0;fun save()=1;fun clipPath(path:Path){};fun drawBitmap(value:Bitmap,from:Any?,to:Bounds,paint:Any){draws++};fun restoreToCount(value:Int){}}
+class DrawState {val bounds=Bounds();val path=Path()}
+object DRAW_STATE {private val local=ThreadLocal.withInitial { DrawState() };fun get():DrawState?=local.get()}
 object AvatarSurface {val OTHER=Any()}
 object AvatarSurfaceClassifier {fun forView(value:Any)=AvatarSurface.OTHER;fun forObject(value:Any?)=AvatarSurface.OTHER}
-object CustomFriendAvatarStore {val avatars=HashMap<String,Bitmap>();fun loadBitmap(context:Any,id:String)=avatars[id]}
+object CustomFriendAvatarStore {val avatars=HashMap<String,Bitmap>();fun loadBitmap(context:Any,id:String)=avatars[id];fun cachedBitmap(context:Any,id:String)=avatars[id];fun revision(context:Any,id:String)=0L}
+object ConversationGroupRuntime {fun isVirtualTalker(id:String)=id.endsWith("@chatroom")}
+data class DrawableAvatarBinding(val wxid:String,val surface:Any,val nativeRadiusFactor:Float?,val hasVirtualAvatar:Boolean)
 private class AvatarHarness {
  val context=this
  fun hostContext()=this
  val drawableWxids=WeakHashMap<Any?,String>()
  val drawableSurfaces=WeakHashMap<Any?,Any>()
  val drawableRadiusFactors=WeakHashMap<Any?,Float?>()
+ val drawableBindings=WeakHashMap<Any,DrawableAvatarBinding>()
  var scoped=true
+ var destroyed=false
  val DRAW_PAINT=Any()
+ val NATIVE_RADIUS_FACTOR=0.1f
+ val MAX_RADIUS_FACTOR=0.5f
+ private val avatarSettings=object {val enabled=true;val roundAvatarEnabled=false;val roundRadiusFactor=0.3f;fun scopeEnabled(surface:Any)=scoped}
  fun conversationGroupHasCustomAvatar(id:String)=false
  fun automaticGroupAvatarSource(id:String)=if(id.endsWith("@chatroom"))"member" else null
- fun avatarScopeEnabled(id:String,surface:Any)=scoped
+ fun hasVirtualAvatar(id:String)=ConversationGroupRuntime.isVirtualTalker(id)&&CustomFriendAvatarStore.avatars.containsKey(id)
+ fun isAvatarConfigured(id:String,hasVirtualAvatar:Boolean)=if(ConversationGroupRuntime.isVirtualTalker(id))hasVirtualAvatar else CustomFriendAvatarStore.avatars.containsKey(id)
+ fun avatarScopeEnabled(id:String,surface:Any,hasVirtualAvatar:Boolean)=scoped&&(!ConversationGroupRuntime.isVirtualTalker(id)||hasVirtualAvatar)
+ fun bindDrawable(target:Any,wxid:String,surface:Any,nativeRadiusFactor:Float?){drawableWxids[target]=wxid;drawableSurfaces[target]=surface;drawableRadiusFactors[target]=nativeRadiusFactor;drawableBindings[target]=DrawableAvatarBinding(wxid,surface,nativeRadiusFactor,hasVirtualAvatar(wxid))}
+ fun requestAvatarLoad(drawable:Drawable,binding:DrawableAvatarBinding){}
  fun processBitmap(value:Bitmap,radius:Float?)=value
  fun effectiveRadiusFactor(args:Array<Any?>,from:Int,to:Int)=(args.getOrNull(from) as? Number)?.toFloat()
  val legacy=Hooker @LEGACY@

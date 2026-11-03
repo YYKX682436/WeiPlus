@@ -172,6 +172,7 @@ public class DexFinder {
     public Class<?> localMessageClass;
     public Constructor<?> localMessageCtor;
     public Method localSystemMessageMethod;
+    public Method localSystemMessageStorageInsertMethod;
     public Method localMessageInsertMethod;
     public Method localMessageCreateTimeMethod;
     // 视频发送高层入口
@@ -3303,10 +3304,16 @@ public class DexFinder {
     public void resolveLocalMessageApi() {
         ensureSnapshotLoaded();
         try {
-            if (hasLocalMessageApi() && localMessageCreateTimeMethod != null) return;
+            boolean nativeInsertObservable = localSystemMessageMethod == null
+                    || localSystemMessageStorageInsertMethod != null;
+            boolean directInsertAvailable = localMessageInsertMethod != null
+                    || localSystemMessageStorageInsertMethod != null;
+            if (hasLocalMessageApi() && localMessageCreateTimeMethod != null
+                    && nativeInsertObservable && directInsertAvailable) return;
             int candidateCount = resolveLocalMessageApiBySignature();
             logDetail("本地消息API: insert=" + methodName(localMessageInsertMethod)
                     + " system=" + methodName(localSystemMessageMethod)
+                    + " systemInsert=" + methodName(localSystemMessageStorageInsertMethod)
                     + " createTime=" + methodName(localMessageCreateTimeMethod)
                     + " msg=" + (localMessageClass != null ? localMessageClass.getName() : "null")
                     + " ctor=" + (localMessageCtor != null ? localMessageCtor.getParameterTypes().length : -1));
@@ -3323,10 +3330,16 @@ public class DexFinder {
         int count = 0;
         resolveLocalSystemMessageMethod();
         try {
-            if (localMessageInsertMethod != null && localMessageCreateTimeMethod == null) {
+            if (localSystemMessageMethod == null && localMessageInsertMethod != null
+                    && localMessageCreateTimeMethod == null) {
                 localMessageCreateTimeMethod = findLocalMessageCreateTimeMethod(localMessageInsertMethod.getDeclaringClass());
             }
-            if (localMessageInsertMethod != null && localMessageCreateTimeMethod != null) {
+            if (localSystemMessageMethod == null && localMessageInsertMethod != null
+                    && localMessageCreateTimeMethod != null) {
+                return count;
+            }
+            if (localSystemMessageMethod != null && localSystemMessageStorageInsertMethod != null
+                    && localMessageCreateTimeMethod != null) {
                 return count;
             }
             FindMethod fm = new FindMethod();
@@ -3351,19 +3364,45 @@ public class DexFinder {
     }
 
     private void resolveLocalSystemMessageMethod() {
-        if (localSystemMessageMethod != null) return;
+        if (localSystemMessageMethod != null
+                && localSystemMessageStorageInsertMethod != null
+                && isLocalMessageCreateTimeMethod(localMessageCreateTimeMethod)) return;
         try {
             List<MethodData> methods = dexQueries.findMethod(
                     mkMethodUsingStrings(
                             "will insert sysmsg from:",
                             "content null, cannot to insert sysmsg!",
-                            "failed to insert sysmsg",
-                            "sysmsg inserted"));
+                            "failed to insert sysmsg"));
             for (MethodData methodData : methods) {
                 try {
                     Method method = methodData.getMethodInstance(classLoader);
                     if (!isLocalSystemMessageMethod(method)) continue;
+                    if (localSystemMessageMethod != null && !localSystemMessageMethod.equals(method)) continue;
+                    List<Method> storageInsertMethods = new ArrayList<>();
+                    List<Method> createTimeMethods = new ArrayList<>();
+                    for (MethodData invokeData : methodData.getInvokes()) {
+                        try {
+                            Method invoke = invokeData.getMethodInstance(classLoader);
+                            if (isLocalSystemMessageStorageInsertMethod(invoke)
+                                    && !storageInsertMethods.contains(invoke)) {
+                                storageInsertMethods.add(invoke);
+                            }
+                            if (isLocalMessageCreateTimeMethod(invoke) && !createTimeMethods.contains(invoke)) {
+                                createTimeMethods.add(invoke);
+                            }
+                        } catch (Throwable ignored) {}
+                    }
                     localSystemMessageMethod = KavaReflector.accessible(method);
+                    if (storageInsertMethods.size() == 1) {
+                        setLocalSystemMessageStorageInsertApi(storageInsertMethods.get(0));
+                    } else {
+                        localSystemMessageStorageInsertMethod = null;
+                    }
+                    if (createTimeMethods.size() == 1) {
+                        localMessageCreateTimeMethod = KavaReflector.accessible(createTimeMethods.get(0));
+                    } else {
+                        localMessageCreateTimeMethod = null;
+                    }
                     break;
                 } catch (Throwable ignored) {}
             }
@@ -3387,7 +3426,9 @@ public class DexFinder {
         localMessageInsertMethod = method;
         localMessageClass = method.getParameterTypes()[0];
         localMessageCtor = findLocalMessageConstructor(localMessageClass);
-        localMessageCreateTimeMethod = findLocalMessageCreateTimeMethod(method.getDeclaringClass());
+        if (localSystemMessageMethod == null) {
+            localMessageCreateTimeMethod = findLocalMessageCreateTimeMethod(method.getDeclaringClass());
+        }
     }
 
     public void resolveGroupMemberDisplayName() {
@@ -3981,6 +4022,7 @@ public class DexFinder {
             groupSolitairePluginClass = loadClass("groupSolitairePluginClass");
             groupSolitaireSendMethod = loadMethod("groupSolitaireSendMethod");
             localSystemMessageMethod = loadMethod("localSystemMessageMethod");
+            localSystemMessageStorageInsertMethod = loadMethod("localSystemMessageStorageInsertMethod");
             localMessageInsertMethod = loadMethod("localMessageInsertMethod");
             localMessageCreateTimeMethod = loadMethod("localMessageCreateTimeMethod");
             localMessageClass = loadClass("localMessageClass");
@@ -5317,6 +5359,7 @@ public class DexFinder {
             putClass(editor, "groupSolitairePluginClass", groupSolitairePluginClass);
             putMethod(editor, "groupSolitaireSendMethod", groupSolitaireSendMethod);
             putMethod(editor, "localSystemMessageMethod", localSystemMessageMethod);
+            putMethod(editor, "localSystemMessageStorageInsertMethod", localSystemMessageStorageInsertMethod);
             putClass(editor, "localMessageClass", localMessageClass);
             putMethod(editor, "localMessageInsertMethod", localMessageInsertMethod);
             putMethod(editor, "localMessageCreateTimeMethod", localMessageCreateTimeMethod);
@@ -5728,6 +5771,23 @@ public class DexFinder {
         if (msgClass == null || !msgClass.getName().startsWith("com.tencent.mm.storage.")) return false;
         return KavaReflector.findConstructor(msgClass) != null
                 || KavaReflector.findConstructor(msgClass, String.class) != null;
+    }
+
+    private boolean isLocalSystemMessageStorageInsertMethod(Method method) {
+        if (method == null || method.getReturnType() != long.class || KavaReflector.isStatic(method)) return false;
+        Class<?>[] params = method.getParameterTypes();
+        if (params.length != 1) return false;
+        Class<?> msgClass = params[0];
+        if (msgClass == null || !msgClass.getName().startsWith("com.tencent.mm.storage.")) return false;
+        return KavaReflector.findConstructor(msgClass) != null
+                || KavaReflector.findConstructor(msgClass, String.class) != null;
+    }
+
+    private void setLocalSystemMessageStorageInsertApi(Method method) {
+        KavaReflector.accessible(method);
+        localSystemMessageStorageInsertMethod = method;
+        localMessageClass = method.getParameterTypes()[0];
+        localMessageCtor = findLocalMessageConstructor(localMessageClass);
     }
 
     public void resolveGroupSolitaireApi() {
