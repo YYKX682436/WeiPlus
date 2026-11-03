@@ -474,7 +474,16 @@ public final class WeChatApis {
     public static boolean isCoreInitialized() {
         return messageApi != null && databaseApi != null && accountApi != null
                 && contactApi != null && networkApi != null && messageEventApi != null
-                && messageObserveApi != null && versionApi != null && taskApi != null;
+                && messageObserveApi != null && versionApi != null && taskApi != null
+                && areRequiredCoreHooksOperational(
+                        currentActivityApi != null && currentActivityApi.isAvailable(),
+                        activityStartApi != null && activityStartApi.isAvailable(),
+                        lifecycleApi != null && lifecycleApi.isAvailable());
+    }
+
+    static boolean areRequiredCoreHooksOperational(
+            boolean currentActivity, boolean activityStart, boolean lifecycle) {
+        return currentActivity && activityStart && lifecycle;
     }
 
     public static void clear() {

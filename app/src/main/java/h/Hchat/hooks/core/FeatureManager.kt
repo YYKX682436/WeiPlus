@@ -145,11 +145,20 @@ class FeatureManager {
             if (!lifecycleInstalled) return true
             pendingRevalidations.addAll(affectedByClass)
             pendingRevalidations.addAll(pendingTaskOwners)
-            if (refreshCoreApi) pendingRevalidations.add(CORE_API_ID)
+            if (refreshCoreApi) {
+                pendingRevalidations.add(CORE_API_ID)
+                // Business features own leases to the currently published API objects.
+                // Rebind them only when the shared API generation is actually replaced.
+                pendingRevalidations.addAll(installedFeatures
+                    .asSequence()
+                    .map(::safeFeatureId)
+                    .filter { it != CORE_API_ID }
+                    .toList())
+            }
             pendingRevalidations.removeAll { id ->
                 featureById[id] == null || installedFeatures.none { safeFeatureId(it) == id }
             }
-            pendingRevalidations.toList()
+            pendingRevalidations.toList().sortedBy { if (it == CORE_API_ID) 0 else 1 }
         }
         if (targets.isEmpty()) return true
 
@@ -174,7 +183,8 @@ class FeatureManager {
                 synchronized(stateLock) { pendingRevalidations.remove(featureId) }
             } catch (failure: Throwable) {
                 HLog.e("$TAG 运行时代码复核失败，单独停用功能: $displayName, error=$failure", failure)
-                if (!requiredCore) runCatching { feature.onDestroy(context) }
+                HookRegistry.get().unhookFeature(featureId)
+                runCatching { feature.onDestroy(context) }
                 if (requiredCore) return false
             }
         }

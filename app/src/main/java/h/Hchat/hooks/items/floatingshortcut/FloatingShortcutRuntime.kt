@@ -112,11 +112,11 @@ object FloatingShortcutRuntime {
     }
 
     @Synchronized
-    fun install(hostContext: Context) {
-        if (installed) return
+    fun install(hostContext: Context): Boolean {
+        if (installed) return true
         val application = (hostContext as? Application)
             ?: (hostContext.applicationContext as? Application)
-            ?: return
+            ?: return false
         enabledItems = FloatingShortcutSettings.loadItems(hostContext).filter { it.enabled }
         prefs = HchatStorage.preferences(hostContext, FloatingShortcutSettings.PREFS_NAME).also {
             it.registerOnSharedPreferenceChangeListener(preferenceListener)
@@ -129,6 +129,7 @@ object FloatingShortcutRuntime {
         lifecycleApplication = WeakReference(application)
         installed = true
         if (enabled) prefetchIcons()
+        return true
     }
 
     fun setEnabled(context: Context, value: Boolean) {

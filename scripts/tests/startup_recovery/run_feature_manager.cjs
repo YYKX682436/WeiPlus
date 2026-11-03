@@ -17,8 +17,19 @@ function jar(group, name, version) {
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'weiplus-startup-recovery-'));
 process.once('exit', () => fs.rmSync(temp, { recursive: true, force: true }));
 const sources = {
+  'api.kt': `package h.Hchat.hooks.core
+class ApiSubscription(private val bus: ApiBus, val listener: () -> Unit) {
+  var active = true; private set
+  fun unsubscribe() { if (active) { active = false; bus.listeners.remove(this) } }
+}
+class ApiBus {
+  val listeners = arrayListOf<ApiSubscription>()
+  fun subscribe(listener: () -> Unit) = ApiSubscription(this, listener).also(listeners::add)
+  fun post() = listeners.toList().forEach { if (it.active) it.listener() }
+}
+`,
   'stubs.kt': `package h.Hchat.hooks.core
-class FeatureContext { fun eventBus() = h.Hchat.event.EventBus() }
+class FeatureContext(val publicApi: ApiBus = ApiBus()) { fun eventBus() = h.Hchat.event.EventBus() }
 interface Feature {
   enum class InstallationPolicy { PREINSTALL_HOOKS, ENABLED_ONLY }
   fun featureId(): String

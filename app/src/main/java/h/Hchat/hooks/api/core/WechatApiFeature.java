@@ -69,7 +69,7 @@ public class WechatApiFeature implements Feature {
         WeChatMessageApi messageApi = new WeChatMessageApi(
                 context.dexFinder(), dispatcher, accountApi, contactApi, messageStoreApi, context.eventBus(), this::log);
         WeChatLocalMessageApi localMessageApi = new WeChatLocalMessageApi(context.dexFinder(), this::log);
-        localMessageApi.installCreateTimeHook();
+        installApiHook("localMessageCreateTime", localMessageApi::installCreateTimeHook);
         WeChatConversationApi conversationApi = new WeChatConversationApi(
                 databaseApi, contactApi, notifyApi, context.dexFinder(), this::log);
         WeChatUserApi userApi = new WeChatUserApi(accountApi, contactApi, this::log);
@@ -112,15 +112,17 @@ public class WechatApiFeature implements Feature {
         WeChatSnsApi snsApi = new WeChatSnsApi(
                 context.hostContext(), context.dexFinder(), context.hostClassLoader(),
                 context.dexKitBridge(), networkApi, accountApi, contactApi, context, this::log);
-        networkApi.installNetworkHook(context.dexFinder());
+        installApiHook("network", () -> networkApi.installNetworkHook(context.dexFinder()));
         installApiHook("databaseChanges", databaseListenerApi::install);
         installApiHook("messageChanges", messageChangeApi::install);
         installApiHook("conversationChanges", conversationChangeApi::install);
         installApiHook("contactChanges", contactChangeApi::install);
         installApiHook("chatroomChanges", chatroomChangeApi::install);
-        installApiHook("currentActivity", currentActivityApi::install);
-        installApiHook("activityStart", activityStartApi::install);
-        installApiHook("lifecycle", lifecycleApi::install);
+        // These process-wide event sources are required by the business feature layer. Optional
+        // locator hooks above remain isolated and cannot block the entire feature set.
+        if (!installRequiredCoreHooks(currentActivityApi, activityStartApi, lifecycleApi)) {
+            throw new IllegalStateException("微信必要 Activity 核心 Hook 安装失败");
+        }
         installApiHook("messageObserve", messageObserveApi::install);
         installApiHook("chatPage", chatPageApi::install);
         WeChatApis.init(messageApi, databaseApi, accountApi, contactApi,
@@ -237,6 +239,18 @@ public class WechatApiFeature implements Feature {
                     log("AddMsg定位=" + located + " Hook=" + operational + " PB订阅=" + subscribed);
                     return operational && subscribed;
                 });
+    }
+
+    static boolean installRequiredCoreHooks(
+            WeChatCurrentActivityApi currentActivityApi,
+            WeChatActivityStartApi activityStartApi,
+            WeChatLifecycleApi lifecycleApi) {
+        if (currentActivityApi == null || activityStartApi == null || lifecycleApi == null) return false;
+        try { currentActivityApi.install(); } catch (Throwable ignored) {}
+        try { activityStartApi.install(); } catch (Throwable ignored) {}
+        try { lifecycleApi.install(); } catch (Throwable ignored) {}
+        return WeChatApis.areRequiredCoreHooksOperational(
+                currentActivityApi.isAvailable(), activityStartApi.isAvailable(), lifecycleApi.isAvailable());
     }
 
     private boolean isImportantLog(String message) {

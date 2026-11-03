@@ -23,13 +23,17 @@ object FirstUseAgreementRuntime : Application.ActivityLifecycleCallbacks {
     private val overlays = WeakHashMap<Activity, AgreementOverlay>()
 
     @JvmStatic
-    fun install(application: Application) {
-        if (TermsGate.isAccepted(application)) return
-        synchronized(lock) {
-            if (this.application === application || this.application != null) return
+    fun install(application: Application): Boolean {
+        if (TermsGate.isAccepted(application)) return true
+        val shouldRegister = synchronized(lock) {
+            if (this.application === application) return true
+            if (this.application != null) return false
             this.application = application
+            true
         }
+        if (!shouldRegister) return false
         application.registerActivityLifecycleCallbacks(this)
+        return true
     }
 
     /** Called after TermsGate has synchronously saved the user's acceptance. */

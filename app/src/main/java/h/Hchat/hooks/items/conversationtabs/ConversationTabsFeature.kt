@@ -15,6 +15,7 @@ class ConversationTabsFeature : BaseFeature() {
         const val ID = "conversation_tabs"
 
         @JvmStatic
-        fun installEarly(classLoader: ClassLoader) = ConversationTabsRuntime.installUiHooks(classLoader)
+        fun installEarly(classLoader: ClassLoader): Boolean =
+            ConversationTabsRuntime.installUiHooks(classLoader)
     }
 }

@@ -20,6 +20,8 @@ import h.Hchat.hooks.core.FeatureContext;
 import h.Hchat.hooks.core.FeatureManager;
 import h.Hchat.hooks.core.FeatureRegistry;
 import h.Hchat.hooks.core.HookRegistry;
+import h.Hchat.hooks.core.ModuleStartupState;
+import h.Hchat.hooks.core.StartupEntryDispatch;
 import h.Hchat.hooks.core.XposedRuntime;
 import h.Hchat.hooks.items.conversationtabs.ConversationTabsFeature;
 import h.Hchat.hooks.items.custombottombar.CustomBottomBarFeature;
@@ -70,8 +72,9 @@ public class ModuleEntry extends XposedModule {
   private long lastTinkerIdentityRefreshAt;
   private static final long TINKER_IDENTITY_REFRESH_COOLDOWN_MS = 3000L;
   private volatile boolean hostIdentityInvalidated;
-  private final java.util.concurrent.atomic.AtomicBoolean applicationReady =
+  private final java.util.concurrent.atomic.AtomicBoolean appBrandApplicationReady =
       new java.util.concurrent.atomic.AtomicBoolean();
+  private final ModuleStartupState startupState = new ModuleStartupState();
 
   private FeatureManager featureManager;
   private FeatureContext featureContext;
@@ -98,15 +101,27 @@ public class ModuleEntry extends XposedModule {
   public synchronized void onPackageReady(PackageReadyParam param) {
     String host = param.getPackageName();
     if (!WechatPackage.isModuleEntryScope(host, processName)) return;
-    if (!packageReady) {
-      packageReady = true;
-      try {
-        scheduleArchiveIdentityPrewarm(param);
-      } catch (Throwable failure) {
-        HLog.e(TAG + " APK身份后台预热调度失败", failure);
-      }
-    }
-    schedulePackageHooks(param);
+    boolean prewarm = !packageReady;
+    packageReady = true;
+    final boolean[] installed = {false};
+    StartupEntryDispatch.installBeforeScheduling(
+        () -> {
+          try {
+            installed[0] = installPackageHooks(param);
+          } catch (Throwable failure) {
+            HLog.e(TAG + " package_ready Hook 安装失败: " + host, failure);
+          }
+        },
+        () -> {
+          if (prewarm) {
+            try {
+              scheduleArchiveIdentityPrewarm(param);
+            } catch (Throwable failure) {
+              HLog.e(TAG + " APK身份后台预热调度失败", failure);
+            }
+          }
+        });
+    if (!installed[0]) schedulePackageHooks(param);
   }
 
   /** Queue the process-local ZIP metadata walk before Application.onCreate identity approval. */
@@ -228,13 +243,13 @@ public class ModuleEntry extends XposedModule {
       if (identity == HostRuntimeIdentityDecision.Result.ALREADY_INVALIDATED) return false;
       if (identity == HostRuntimeIdentityDecision.Result.CLASS_LOADER_GENERATION_CHANGED) {
         HLog.i(TAG + " host_identity=classloader_generation_accepted source=" + source);
-        if (applicationReady.get()) {
+        if (startupState.isInitializationSucceeded()) {
           scheduleRuntimeRevalidation(context, param, runtimeLoader, current.runtimeCodeIdentity, source);
         }
       }
       if (identity == HostRuntimeIdentityDecision.Result.RUNTIME_CODE_CHANGED) {
         HLog.i(TAG + " host_identity=runtime_code_changed targeted_revalidation=scheduled source=" + source);
-        if (applicationReady.get()) {
+        if (startupState.isInitializationSucceeded()) {
           scheduleRuntimeRevalidation(context, param, runtimeLoader, current.runtimeCodeIdentity, source);
         }
       }
@@ -330,7 +345,9 @@ public class ModuleEntry extends XposedModule {
     }
 
     // 热更新加载发生在 Tinker attach 阶段，必须早于普通功能初始化安装。
-    installHotUpdateEarlyHook(lpparam);
+    StartupEntryDispatch.installOptional(
+        () -> installHotUpdateEarlyHook(lpparam),
+        () -> scheduleHotUpdateEntryHookRetry(lpparam));
 
     // 平板模式需要在微信所有进程保持一致，避免升级/降级后登录态校验看到不同设备形态。
     installTabletEarlyHook(lpparam);
@@ -343,6 +360,14 @@ public class ModuleEntry extends XposedModule {
       return true;
     }
 
+    // Register the one-shot Application callback before unrelated best-effort hooks. A failure
+    // in one optional entry must not consume the only synchronous registration opportunity.
+    boolean applicationEntryInstalled = installApplicationOnCreateHook(lpparam);
+    if (!applicationEntryInstalled) {
+      // Retry once on this callback thread in case the framework rejected a transient request.
+      applicationEntryInstalled = installApplicationOnCreateHook(lpparam);
+    }
+
     // 3. Mars CDN 管理器可能早于模块 API 初始化创建，先按稳定类名捕获实例。
     WeChatImageApi.installMarsCdnManagerHook(
         lpparam.getClassLoader(), message -> HLog.e("[Hchat:WechatApi] " + message));
@@ -350,8 +375,12 @@ public class ModuleEntry extends XposedModule {
     // 底栏在 LauncherUI 首帧前创建，必须早于完整 DexKit 初始化安装 Hook。
     installCustomBottomBarEarlyHook(lpparam);
 
-    // 4. Hook Application.onCreate，等 Application 完全初始化后再启动模块
-    hookEntryOnce(
+    return applicationEntryInstalled;
+  }
+
+  private boolean installApplicationOnCreateHook(PackageReadyParam lpparam) {
+    try {
+      hookEntryOnce(
         "application-on-create",
         lpparam,
         Application.class,
@@ -363,39 +392,29 @@ public class ModuleEntry extends XposedModule {
           Object result = chain.proceed();
           Application app = (Application) chain.getThisObject();
           if (!lpparam.getPackageName().equals(app.getPackageName())) return result;
-          if (applicationReady.get()) return result;
+          startupState.markApplicationReady();
           if (!verifyRuntimeIdentity(app, app.getClassLoader(), lpparam,
               "application_on_create")) {
+            scheduleApplicationEarlyRetry(app, lpparam, "application_on_create_identity_retry");
             scheduleModuleInitialization(app, lpparam, "application_on_create_identity_retry");
             return result;
           }
-          try {
-            FirstUseAgreementRuntime.install(app);
-          } catch (Throwable failure) {
-            HLog.e(TAG + " 首次协议运行时安装失败", failure);
+          if (!installApplicationEarlyFeatures(app, lpparam)) {
+            scheduleApplicationEarlyRetry(app, lpparam, "application_on_create_early_feature_retry");
           }
-          // 标签栏先捕获首页根视图，不能等待后台 DexKit 初始化后再挂载。
-          try {
-            ConversationTabsFeature.installEarly(resolveHostClassLoader(app, lpparam));
-          } catch (Throwable e) {
-            HLog.e(TAG + " 标签分组早期安装失败", e);
-          }
-          // 悬浮入口不依赖 DexKit，先注册生命周期，避免错过首个 Activity。
-          try {
-            FloatingShortcutRuntime.INSTANCE.install(app);
-          } catch (Throwable e) {
-            HLog.e(TAG + " 悬浮快捷菜单早期安装失败", e);
-          }
-          installCustomBottomBarEarly(app, resolveHostClassLoader(app, lpparam));
           scheduleModuleInitialization(app, lpparam, "application_on_create");
 
           return result;
         });
-    return true;
+      return true;
+    } catch (Throwable failure) {
+      HLog.e(TAG + " Application.onCreate 入口 Hook 安装失败，保留同步重试", failure);
+      return false;
+    }
   }
 
   private void scheduleModuleInitialization(Context hostContext, PackageReadyParam param, String source) {
-    if (hostIdentityInvalidated || applicationReady.get()) return;
+    if (hostIdentityInvalidated || !startupState.shouldScheduleInitialization()) return;
     DexInstallScheduler.scheduleTask(
         "module:init:" + processName,
         "微信模块初始化",
@@ -403,13 +422,71 @@ public class ModuleEntry extends XposedModule {
         Integer.MIN_VALUE + 30,
         () -> {
           if (hostIdentityInvalidated) return true;
+          if (!startupState.isApplicationReady()) return false;
           ClassLoader loader = resolveHostClassLoader(hostContext, param);
           if (!verifyRuntimeIdentity(hostContext, loader, param, "module_init:" + source)) {
             return hostIdentityInvalidated;
           }
-          boolean initialized = initModule(hostContext, param);
-          if (initialized) applicationReady.set(true);
-          return initialized;
+          if (!startupState.beginInitializationAttempt()) {
+            return startupState.isInitializationSucceeded();
+          }
+          boolean initialized = false;
+          try {
+            installApplicationEarlyFeatures(hostContext, param);
+            initialized = initModule(hostContext, param);
+            return initialized;
+          } finally {
+            startupState.finishInitializationAttempt(initialized);
+          }
+        });
+  }
+
+  private boolean installApplicationEarlyFeatures(Context context, PackageReadyParam param) {
+    boolean complete = true;
+    ClassLoader loader = resolveHostClassLoader(context, param);
+    Application application = context instanceof Application
+        ? (Application) context : (Application) context.getApplicationContext();
+    if (application == null) return false;
+    try {
+      complete &= startupState.installEarlyEntryOnce("first_use_agreement",
+          () -> FirstUseAgreementRuntime.install(application));
+    } catch (Throwable failure) {
+      HLog.e(TAG + " 首次协议运行时安装失败", failure);
+      complete = false;
+    }
+    try {
+      complete &= startupState.installEarlyEntryOnce("conversation_tabs",
+          () -> ConversationTabsFeature.installEarly(loader));
+    } catch (Throwable failure) {
+      HLog.e(TAG + " 标签分组早期安装失败", failure);
+      complete = false;
+    }
+    try {
+      complete &= startupState.installEarlyEntryOnce("floating_shortcut",
+          () -> FloatingShortcutRuntime.INSTANCE.install(context));
+    } catch (Throwable failure) {
+      HLog.e(TAG + " 悬浮快捷菜单早期安装失败", failure);
+      complete = false;
+    }
+    try {
+      complete &= startupState.installEarlyEntryOnce("custom_bottom_bar",
+          () -> installCustomBottomBarEarly(context, loader));
+    } catch (Throwable failure) {
+      HLog.e(TAG + " 自定义底栏早期Hook失败", failure);
+      complete = false;
+    }
+    return complete;
+  }
+
+  private void scheduleApplicationEarlyRetry(Context context, PackageReadyParam param, String source) {
+    DexInstallScheduler.scheduleTask("module:app_early:" + processName,
+        "Application 早期入口补装", DexInstallScheduler.Stage.EARLY,
+        Integer.MIN_VALUE + 25, () -> {
+          if (hostIdentityInvalidated) return true;
+          if (!startupState.isApplicationReady()) return false;
+          ClassLoader loader = resolveHostClassLoader(context, param);
+          if (!verifyRuntimeIdentity(context, loader, param, "app_early:" + source)) return false;
+          return installApplicationEarlyFeatures(context, param);
         });
   }
 
@@ -471,7 +548,7 @@ public class ModuleEntry extends XposedModule {
             if (!lpparam.getPackageName().equals(app.getPackageName())
                 || !verifyRuntimeIdentity(app, app.getClassLoader(), lpparam,
                     "appbrand_application_on_create")
-                || !applicationReady.compareAndSet(false, true)) return result;
+                || !appBrandApplicationReady.compareAndSet(false, true)) return result;
             ClassLoader loader = resolveHostClassLoader(app, lpparam);
             installAppBrandProcessHook(app, loader, lpparam, true);
 
@@ -511,7 +588,8 @@ public class ModuleEntry extends XposedModule {
 
   // ============ 模块初始化 ============
 
-  private void installHotUpdateEarlyHook(PackageReadyParam lpparam) throws Throwable {
+  private boolean installHotUpdateEarlyHook(PackageReadyParam lpparam) {
+    try {
       hookEntryOnce(
           "hot-update-tinker-attach",
           lpparam,
@@ -532,13 +610,24 @@ public class ModuleEntry extends XposedModule {
             if (runtimeLoader == null) runtimeLoader = resolveHostClassLoader(context, lpparam);
             if (verifyRuntimeIdentity(context, runtimeLoader, lpparam, "tinker_attach_after")) {
               installHotUpdateForAttach(lpparam, chain, "after");
-              if (!applicationReady.get() && isMainProcess(lpparam)) {
+              if (startupState.shouldScheduleInitialization() && isMainProcess(lpparam)) {
                 scheduleModuleInitialization(context, lpparam, "tinker_attach_after");
               }
             }
 
             return result;
           });
+      return true;
+    } catch (Throwable failure) {
+      HLog.e(TAG + " 热更新早期入口 Hook 安装失败，保留独立补装: " + failure.getMessage(), failure);
+      return false;
+    }
+  }
+
+  private void scheduleHotUpdateEntryHookRetry(PackageReadyParam param) {
+    DexInstallScheduler.scheduleTask("hotupdate:attach_entry:" + processName,
+        "Tinker attach 入口 Hook 补装", DexInstallScheduler.Stage.EARLY,
+        Integer.MIN_VALUE + 3, () -> installHotUpdateEarlyHook(param));
   }
 
   private void installHotUpdateForAttach(
@@ -636,12 +725,13 @@ public class ModuleEntry extends XposedModule {
     }
   }
 
-  private void installCustomBottomBarEarly(Context context, ClassLoader classLoader) {
-    if (hostIdentityInvalidated) return;
+  private boolean installCustomBottomBarEarly(Context context, ClassLoader classLoader) {
+    if (hostIdentityInvalidated) return false;
     try {
-      CustomBottomBarFeature.installEarly(context, classLoader);
+      return CustomBottomBarFeature.installEarly(context, classLoader);
     } catch (Throwable e) {
       HLog.e(TAG + " 自定义底栏早期Hook失败: " + e.getMessage(), e);
+      return false;
     }
   }
 
