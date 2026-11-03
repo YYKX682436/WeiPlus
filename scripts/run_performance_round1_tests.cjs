@@ -30,6 +30,7 @@ const pendingRuleGate = fs.readFileSync(path.join(root, source+'hooks/items/auto
 const notificationAvatarCache = fs.readFileSync(path.join(root, source+'hooks/items/notification/NotificationAvatarBitmapCache.kt'), 'utf8');
 const bottomBarFeature = fs.readFileSync(path.join(root, source+'hooks/items/custombottombar/CustomBottomBarFeature.kt'), 'utf8');
 const swipeQuoteFeature = fs.readFileSync(path.join(root, source+'hooks/items/swipequote/SwipeQuoteFeature.kt'), 'utf8');
+const swipeQuoteTouchPolicy = fs.readFileSync(path.join(root, source+'hooks/items/swipequote/SwipeQuoteTouchPolicy.kt'), 'utf8');
 assert.match(autoForwardRuntime, /AutoForwardMediaCleanup\.schedule\(\s*appContext\.cacheDir\.absolutePath,\s*pending\.cacheToken,\s*paths,\s*MEDIA_CACHE_CLEANUP_DELAY_MS/);
 assert.match(autoForwardRuntime, /pending\.downloadTimeoutFuture\?\.cancel\(false\)/);
 assert.match(autoForwardRuntime, /WeakReference\(pending\)/);
@@ -79,7 +80,11 @@ assert.match(bottomBarFeature, /WeakHashMap<ViewGroup, WeakReference<CustomBotto
 assert.match(bottomBarFeature, /WeakHashMap<ViewGroup, WeakReference<NativeCustomBottomBarHost>>/);
 assert.doesNotMatch(bottomBarFeature, /WeakHashMap<ViewGroup, CustomBottomBarHost>/);
 assert.match(swipeQuoteFeature, /WeakHashMap<View, WeakReference<TouchState>>/);
-assert.match(swipeQuoteFeature, /state\.intercepted/);
+assert.match(swipeQuoteFeature, /SwipeQuoteTouchPolicy\.terminalDecision/);
+assert.doesNotMatch(swipeQuoteFeature, /state\.intercepted/);
+assert.match(swipeQuoteTouchPolicy, /phase == CallbackPhase\.INTERCEPT\) return TerminalDecision\.DEFER/);
+assert.match(swipeQuoteTouchPolicy, /action == TerminalAction\.CANCEL\) return TerminalDecision\.RESET/);
+assert.match(swipeQuoteTouchPolicy, /armed && hasTarget/);
 assert.match(swipeQuoteFeature, /MotionEvent\.ACTION_CANCEL/);
 function run(command, args) {
   const r = spawnSync(command, args, { cwd: root, encoding: 'utf8', timeout: 90000 });

@@ -599,15 +599,33 @@ private class SwipeQuoteAdapter(
         }
         state.lastEventTime = event.eventTime
         state.lastAction = event.actionMasked
-        if (fromIntercept && event.actionMasked == MotionEvent.ACTION_UP && state.intercepted) {
-            return state.dragging
+        val terminalAction = when (action) {
+            MotionEvent.ACTION_UP -> SwipeQuoteTouchPolicy.TerminalAction.UP
+            MotionEvent.ACTION_CANCEL -> SwipeQuoteTouchPolicy.TerminalAction.CANCEL
+            else -> null
         }
-        if (event.actionMasked == MotionEvent.ACTION_CANCEL ||
-            (fromIntercept && event.actionMasked == MotionEvent.ACTION_UP && !state.intercepted)
-        ) {
-            clearSwipeVisual(state.visualRow)
+        if (terminalAction != null) {
+            val activeHit = state.hit ?: hit
+            val decision = SwipeQuoteTouchPolicy.terminalDecision(
+                terminalAction,
+                if (fromIntercept) SwipeQuoteTouchPolicy.CallbackPhase.INTERCEPT
+                else SwipeQuoteTouchPolicy.CallbackPhase.TOUCH,
+                armed = state.armed,
+                hasTarget = activeHit != null
+            )
+            if (decision == SwipeQuoteTouchPolicy.TerminalDecision.DEFER) {
+                return state.dragging
+            }
+            val triggered = decision == SwipeQuoteTouchPolicy.TerminalDecision.TRIGGER &&
+                activeHit != null && when (state.direction) {
+                    SwipeDirection.LEFT_QUOTE -> showNativeQuote(activeHit.row, activeHit.target)
+                    SwipeDirection.RIGHT_REPEAT -> repeatNativeMessage(activeHit.target)
+                    SwipeDirection.NONE -> false
+                }
+            val consume = state.dragging || triggered
+            resetSwipeVisual(state)
             resetTouchState(view, state)
-            return false
+            return consume
         }
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
@@ -621,14 +639,11 @@ private class SwipeQuoteAdapter(
                 state.armed = false
                 state.hapticSent = false
                 state.tracking = true
-                state.triggered = false
                 state.visualRow = null
                 state.startTranslationX = 0f
-                state.intercepted = false
             }
             MotionEvent.ACTION_MOVE -> {
                 if (!state.tracking) return false
-                if (state.triggered) return true
                 val activeHit = state.hit ?: hit ?: return false
                 val dx = event.rawX - state.downX
                 val dy = event.rawY - state.downY
@@ -639,7 +654,6 @@ private class SwipeQuoteAdapter(
                     state.tracking = false
                     state.hit = null
                     state.visualRow = null
-                    state.intercepted = false
                     return false
                 }
                 if (!state.dragging) {
@@ -661,7 +675,6 @@ private class SwipeQuoteAdapter(
                     SwipeDirection.NONE -> return false
                 }.coerceAtMost(dp(150f))
                 view.parent?.requestDisallowInterceptTouchEvent(true)
-                if (fromIntercept) state.intercepted = true
                 state.armed = drag >= triggerDistance(state.direction)
                 updateSwipeVisual(state, activeHit, drag)
                 if (state.armed && !state.hapticSent) {
@@ -669,27 +682,6 @@ private class SwipeQuoteAdapter(
                     state.hapticSent = true
                 }
                 return true
-            }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                val activeHit = state.hit ?: hit
-                val triggered = if (event.actionMasked == MotionEvent.ACTION_UP &&
-                    state.intercepted && state.armed && activeHit != null
-                ) {
-                    when (state.direction) {
-                        SwipeDirection.LEFT_QUOTE -> showNativeQuote(activeHit.row, activeHit.target)
-                        SwipeDirection.RIGHT_REPEAT -> repeatNativeMessage(activeHit.target)
-                        SwipeDirection.NONE -> false
-                    }
-                } else {
-                    false
-                }
-                if (triggered) {
-                    state.triggered = true
-                }
-                val consume = state.dragging || state.triggered
-                resetSwipeVisual(state)
-                resetTouchState(view, state)
-                return consume
             }
         }
         return false
@@ -717,8 +709,6 @@ private class SwipeQuoteAdapter(
         state.dragging = false
         state.armed = false
         state.hapticSent = false
-        state.triggered = false
-        state.intercepted = false
         state.lastEventTime = 0L
         state.lastAction = -1
     }
@@ -1705,8 +1695,6 @@ private class SwipeQuoteAdapter(
         var dragging = false
         var armed = false
         var hapticSent = false
-        var triggered = false
-        var intercepted = false
         var lastEventTime = 0L
         var lastAction = -1
         var pendingDetachCheck: Runnable? = null
@@ -1722,8 +1710,6 @@ private class SwipeQuoteAdapter(
             dragging = false
             armed = false
             hapticSent = false
-            triggered = false
-            intercepted = false
             lastEventTime = 0L
             lastAction = -1
         }
