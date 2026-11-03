@@ -55,6 +55,24 @@ class RecallRuntimePolicyRegressionTest {
     }
 
     @Test
+    fun priorNoticeVerificationExceptionIsLoggedAndKeepsUnknownDeduped() {
+        val gate = RecallEventGate(maxEntries = 4)
+        assertTrue(gate.begin("room:uncertain"))
+        gate.finishNoticeAttempt("room:uncertain", NativeInsertOutcome.UNKNOWN)
+        val diagnostics = mutableListOf<String>()
+
+        val verified = runPriorNoticeVerificationCatching(
+            verify = { throw IllegalStateException("injected storage read failure") },
+            onFailure = { diagnostics += it.message.orEmpty() }
+        )
+
+        assertFalse(verified)
+        assertEquals(listOf("injected storage read failure"), diagnostics)
+        assertEquals(NativeInsertOutcome.UNKNOWN, gate.completedOutcome("room:uncertain"))
+        assertFalse("an unverified duplicate stays suppressed", gate.begin("room:uncertain"))
+    }
+
+    @Test
     fun recallResolutionRejectsLocalIdCollisionAndCrossConversationRows() {
         val unrelated = message(msgId = 42L, msgSvrId = 9001L, talker = "other-chat")
 

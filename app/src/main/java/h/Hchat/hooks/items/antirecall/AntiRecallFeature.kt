@@ -96,10 +96,16 @@ class AntiRecallFeature : BaseFeature() {
                                 )
                             if (!initialDecision.suppressOriginalRecall) return@before
                             if (!handledRecalls.begin(handledKey)) {
-                                if (handledRecalls.completedOutcome(handledKey) == NativeInsertOutcome.UNKNOWN &&
-                                    verifyPriorNotice(context, talker, svrId, recalledInfo, recallTime, selfRecall)
-                                ) {
-                                    handledRecalls.complete(handledKey, NativeInsertOutcome.SUCCESS)
+                                if (handledRecalls.completedOutcome(handledKey) == NativeInsertOutcome.UNKNOWN) {
+                                    val priorNoticeVerified = runPriorNoticeVerificationCatching(
+                                        verify = {
+                                            verifyPriorNotice(context, talker, svrId, recalledInfo, recallTime, selfRecall)
+                                        },
+                                        onFailure = { error -> logError("重复撤回提示存储核对异常", error) }
+                                    )
+                                    if (priorNoticeVerified) {
+                                        handledRecalls.complete(handledKey, NativeInsertOutcome.SUCCESS)
+                                    }
                                 }
                                 run { intercepted = true; value = null }
                                 return@before
@@ -1248,3 +1254,10 @@ class AntiRecallFeature : BaseFeature() {
         val data: MethodData?
     )
 }
+
+internal fun runPriorNoticeVerificationCatching(
+    verify: () -> Boolean,
+    onFailure: (Throwable) -> Unit
+): Boolean = runCatching(verify)
+    .onFailure(onFailure)
+    .getOrDefault(false)
