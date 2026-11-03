@@ -5,6 +5,18 @@ import h.Hchat.hooks.core.XposedRuntime
 import h.Hchat.hooks.core.HookRegistry
 import java.util.concurrent.atomic.AtomicBoolean
 
+class RuntimeTarget { fun value() = "target" }
+
+private class ChildTargetLoader(parent: ClassLoader, private val bytes: ByteArray) : ClassLoader(parent) {
+    override fun loadClass(name: String, resolve: Boolean): Class<*> {
+        if (name != RuntimeTarget::class.java.name) return super.loadClass(name, resolve)
+        var loaded = findLoadedClass(name)
+        if (loaded == null) loaded = defineClass(name, bytes, 0, bytes.size)
+        if (resolve) resolveClass(loaded)
+        return loaded
+    }
+}
+
 fun main() {
     val framework = FrameworkFixture()
     XposedRuntime.initialize(framework.create())
@@ -172,6 +184,42 @@ fun main() {
     check(ChainFixture(method,"abcd",emptyArray()) { _, _ -> 4 }.run(FrameworkFixture.handle(replacement).hooker) == "new")
     replacement.unhook()
     check(framework.handles.none { it.active })
+
+    val featureGeneration = registry.installationGeneration()
+    val changedMethod = RuntimeTarget::class.java.getMethod("value")
+    val unchangedMethod = String::class.java.getMethod("length")
+    lateinit var changedFeatureHook: XposedInterface.HookHandle
+    lateinit var unchangedFeatureHook: XposedInterface.HookHandle
+    lateinit var partialFeatureHook: XposedInterface.HookHandle
+    registry.withInstallationGeneration(featureGeneration) {
+        registry.withFeature("changed_feature") {
+            changedFeatureHook = registry.hookOnce("feature:changed", changedMethod, observe)
+            check(changedFeatureHook === registry.hookOnce("feature:changed", changedMethod, observe)) {
+                "A feature retry must reuse its active Hook"
+            }
+        }
+        registry.withFeature("unchanged_feature") {
+            unchangedFeatureHook = registry.hookOnce("feature:unchanged", unchangedMethod, observe)
+        }
+        check(runCatching {
+            registry.withFeature("partial_feature") {
+                partialFeatureHook = registry.hookOnce("feature:partial", method, observe)
+                error("injected feature install failure")
+            }
+        }.isFailure)
+    }
+    check(!registry.isActive(partialFeatureHook)) { "A failed feature install must roll back its own partial hook" }
+    val targetBytes = RuntimeTarget::class.java.getResourceAsStream("/RuntimeTarget.class")!!.use { it.readBytes() }
+    val changedLoader = ChildTargetLoader(RuntimeTarget::class.java.classLoader!!, targetBytes)
+    check(registry.featuresWithChangedClasses(changedLoader) == setOf("changed_feature")) {
+        "Runtime code comparison must identify only the feature whose declaring class changed"
+    }
+    registry.unhookFeature("changed_feature")
+    check(!registry.isActive(changedFeatureHook) && registry.isActive(unchangedFeatureHook)) {
+        "Feature cleanup must remove only the affected feature's hooks"
+    }
+    registry.unhookAll()
+    println("PASS: feature-owned rollback, per-feature loaded-class change detection, selective unhook and retry dedupe")
     println("PASS: combined batch install/unhook failure remains owned and inert on retry, explicit teardown clears all; replacement preserves old snapshots and handle ownership")
     println("PASS: API102 immutable arguments, copied argument replacement, return replacement, short circuit, priority nesting, host exception identity and expired Chain rejection")
     println("PASS: 1000 removal cycles, shared-key dedupe, key release, individual and bulk failed-unhook retry, canceled-task rollback, stale-generation rejection")

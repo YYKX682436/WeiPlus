@@ -4,10 +4,13 @@ import io.github.libxposed.api.XposedInterface;
 import java.lang.reflect.Executable;
 import java.lang.reflect.Proxy;
 import java.util.ArrayList;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 
 /** Records registrations only. ART installation is validated on device, not simulated here. */
 public final class FrameworkFixture {
+    private static final Map<XposedInterface, FrameworkFixture> INSTANCES = new IdentityHashMap<>();
     public static final class LogEntry {
         public final int priority; public final String message; public final Throwable error;
         LogEntry(int p,String m,Throwable t) { priority=p;message=m;error=t; }
@@ -29,7 +32,7 @@ public final class FrameworkFixture {
     public Executable failOn;
     public Runnable afterRegistration;
     public XposedInterface create() {
-        return (XposedInterface)Proxy.newProxyInstance(getClass().getClassLoader(),new Class<?>[]{XposedInterface.class},(proxy,method,args)-> {
+        XposedInterface proxy = (XposedInterface)Proxy.newProxyInstance(getClass().getClassLoader(),new Class<?>[]{XposedInterface.class},(proxyObject,method,args)-> {
             switch(method.getName()) {
                 case "hook": {
                     Executable executable=(Executable)args[0];
@@ -55,6 +58,11 @@ public final class FrameworkFixture {
                 default:throw new UnsupportedOperationException(method.getName());
             }
         });
+        synchronized (INSTANCES) { INSTANCES.put(proxy, this); }
+        return proxy;
+    }
+    public static FrameworkFixture forRuntime(XposedInterface runtime) {
+        synchronized (INSTANCES) { return INSTANCES.get(runtime); }
     }
     public static Handle handle(XposedInterface.HookHandle value) {
         if (value instanceof Handle) return (Handle)value;

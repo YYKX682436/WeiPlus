@@ -17,12 +17,13 @@ public class WeChatVersionInfoIdentityTest {
         assertTrue(WeChatVersionApi.hostIdentityKey(old).equals(WeChatVersionApi.hostIdentityKey(unnamed)));
         assertTrue(!WeChatVersionApi.hostIdentityKey(old).equals(WeChatVersionApi.hostIdentityKey(
                 info("8.0.49", 1L, "apk-replaced", "patch-metadata"))));
-        assertTrue(!WeChatVersionApi.hostIdentityKey(old).equals(WeChatVersionApi.hostIdentityKey(
-                info("8.0.49", 1L, "apk-dex-metadata", "patch-replaced"))));
+        assertTrue("Tinker metadata alone must not revoke the verified APK identity",
+                WeChatVersionApi.hostIdentityKey(old).equals(WeChatVersionApi.hostIdentityKey(
+                        info("8.0.49", 1L, "apk-dex-metadata", "patch-metadata-rewritten"))));
     }
 
     private static WeChatVersionInfo info(String name, long code, String apk, String patchFile) {
         return new WeChatVersionInfo("com.tencent.mm.wx", name, code, "client", "tinker", "patch",
-                0L, apk, patchFile, "loader", "runtime-cache-key");
+                0L, apk, patchFile, "loaded-patch-code", "loader", "runtime-cache-key");
     }
 }

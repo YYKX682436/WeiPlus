@@ -96,8 +96,8 @@ object FeatureRegistry {
     @JvmStatic
     fun createDefaultManager(): FeatureManager {
         return FeatureManager()
-            .register(SettingsFeature())
             .register(WechatApiFeature())
+            .register(SettingsFeature())
             .register(NativeSendButtonFeature())
 
             .register(FloatingShortcutFeature())

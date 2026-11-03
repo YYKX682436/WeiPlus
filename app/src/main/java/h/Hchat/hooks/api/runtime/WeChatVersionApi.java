@@ -114,7 +114,7 @@ public final class WeChatVersionApi {
     public static WeChatVersionInfo build(Context context, ClassLoader loader) {
         if (context == null) {
             return new WeChatVersionInfo("", "", 0L, "", "", "", 0L,
-                    "", "", loaderHash(loader), "");
+                    "", "", "", loaderHash(loader), "");
         }
 
         String packageName = context.getPackageName();
@@ -155,6 +155,7 @@ public final class WeChatVersionApi {
         }
         String apkDexIdentity = DexArchiveIdentity.forApplication(appInfo);
         String patchFileIdentity = patchFileIdentity(appInfo);
+        String runtimeCodeIdentity = DexArchiveIdentity.activeTinkerCodeIdentity(loader);
 
         String loaderText = String.valueOf(loader);
         String clientVersion = readBuildConfigClientVersion(loader);
@@ -169,11 +170,11 @@ public final class WeChatVersionApi {
         String classLoaderHash = loaderHash(loader);
 
         String cacheKey = buildCacheKey(packageName, versionName, versionCode,
-                clientVersion, tinkerId, patchId, sourceLastModified, apkDexIdentity,
-                patchFileIdentity, STABLE_CACHE_SCOPE);
+                "", "", "", sourceLastModified, apkDexIdentity,
+                runtimeCodeIdentity, STABLE_CACHE_SCOPE);
         return new WeChatVersionInfo(packageName, versionName, versionCode,
                 clientVersion, tinkerId, patchId, sourceLastModified,
-                apkDexIdentity, patchFileIdentity, classLoaderHash, cacheKey);
+                apkDexIdentity, patchFileIdentity, runtimeCodeIdentity, classLoaderHash, cacheKey);
     }
 
     public static boolean hasCompleteRuntimeIdentity(WeChatVersionInfo info) {
@@ -181,14 +182,14 @@ public final class WeChatVersionApi {
                 && ("com.tencent.mm".equals(info.packageName)
                 || "com.tencent.mm.wx".equals(info.packageName))
                 && info.apkDexIdentity != null && !info.apkDexIdentity.isEmpty()
+                && info.runtimeCodeIdentity != null && !info.runtimeCodeIdentity.isEmpty()
                 && info.cacheKey != null && !info.cacheKey.isEmpty();
     }
 
     /** Stable host-generation identity; version labels and ClassLoader generation are excluded. */
     public static String hostIdentityKey(WeChatVersionInfo info) {
         if (!hasCompleteRuntimeIdentity(info)) return "";
-        return info.packageName + "|" + info.apkDexIdentity + "|" + info.patchFileIdentity
-                + "|" + info.tinkerId + "|" + info.patchId;
+        return info.packageName + "|" + info.apkDexIdentity;
     }
 
     public static String classLoaderIdentity(ClassLoader loader) {
@@ -207,7 +208,7 @@ public final class WeChatVersionApi {
                                         String patchId,
                                         long sourceLastModified,
                                         String apkDexIdentity,
-                                        String patchFileIdentity,
+                                        String runtimeCodeIdentity,
                                         String classLoaderHash) {
         StringBuilder sb = new StringBuilder();
         sb.append(safe(packageName))
@@ -218,7 +219,7 @@ public final class WeChatVersionApi {
                 .append('|').append(safe(patchId))
                 .append('|').append(sourceLastModified)
                 .append('|').append(safe(apkDexIdentity))
-                .append('|').append(safe(patchFileIdentity))
+                .append('|').append(safe(runtimeCodeIdentity))
                 .append('|').append(safe(classLoaderHash));
         return sb.toString();
     }
@@ -377,7 +378,8 @@ public final class WeChatVersionApi {
     }
 
     private static String loaderHash(ClassLoader loader) {
-        return Integer.toHexString(String.valueOf(loader).hashCode());
+        return loader == null ? "" : loader.getClass().getName() + "@"
+                + Integer.toHexString(System.identityHashCode(loader));
     }
 
     private static String safe(String value) {

@@ -49,7 +49,7 @@ public class RuntimeKeyArchiveIdentityRegressionTest {
         }
     }
 
-    @Test public void runtimeKeyRetainsLoaderAndTinkerPatchIdentity() throws Exception {
+    @Test public void runtimeKeyIgnoresPatchMetadataButTracksLoadedTinkerDex() throws Exception {
         File apk = archiveWithDex();
         File dataDir = Files.createTempDirectory("weiplus-runtime-patch-").toFile();
         ApplicationInfo hostInfo = new ApplicationInfo();
@@ -74,16 +74,27 @@ public class RuntimeKeyArchiveIdentityRegressionTest {
             assertFalse("loader diagnostic changes while the archive cache retains no loader",
                     firstLoaderIdentity.classLoaderHash.equals(secondLoaderIdentity.classLoaderHash));
 
-            File patch = new File(dataDir, "tinker/patch-20261029/patch.apk");
-            assertTrue(patch.getParentFile().mkdirs());
-            writeBytes(patch, new byte[]{1, 2, 3});
-            String beforePatchUpdate = WeChatVersionApi.buildCacheKey(hostContext, firstLoader);
-            java.nio.file.attribute.FileTime originalMtime = Files.getLastModifiedTime(patch.toPath());
-            writeBytes(patch, new byte[]{3, 2, 1});
-            Files.setLastModifiedTime(patch.toPath(), originalMtime);
-            String afterPatchUpdate = WeChatVersionApi.buildCacheKey(hostContext, firstLoader);
-            assertFalse("runtime key must reflect a same-size Tinker patch update with restored mtime",
-                    beforePatchUpdate.equals(afterPatchUpdate));
+            File patchMetadata = new File(dataDir, "tinker/patch_meta.info");
+            writeBytes(patchMetadata, new byte[]{1, 2, 3});
+            String beforeMetadataUpdate = WeChatVersionApi.buildCacheKey(hostContext, firstLoader);
+            writeBytes(patchMetadata, new byte[]{3, 2, 1});
+            assertEquals("patch metadata alone must not change the Dex locator key",
+                    beforeMetadataUpdate, WeChatVersionApi.buildCacheKey(hostContext, firstLoader));
+
+            File patchDexJar = new File(dataDir, "tinker/patch-20261029/dex/classes.dex.jar");
+            writeDexArchive(patchDexJar, new byte[]{1, 2, 3, 4});
+            ClassLoader activePatchLoader = new ClassLoader() {
+                @Override public String toString() {
+                    return "AndroidNClassLoader[DexPathList[[zip file \"" + patchDexJar + "\"]]]";
+                }
+            };
+            String beforeCodeUpdate = WeChatVersionApi.buildCacheKey(hostContext, activePatchLoader);
+            java.nio.file.attribute.FileTime originalMtime = Files.getLastModifiedTime(patchDexJar.toPath());
+            writeDexArchive(patchDexJar, new byte[]{4, 3, 2, 1});
+            Files.setLastModifiedTime(patchDexJar.toPath(), originalMtime);
+            String afterCodeUpdate = WeChatVersionApi.buildCacheKey(hostContext, activePatchLoader);
+            assertFalse("runtime key must reflect changed DEX CRC even when size and mtime are restored",
+                    beforeCodeUpdate.equals(afterCodeUpdate));
         } finally {
             apk.delete();
             deleteRecursively(dataDir);
@@ -95,6 +106,16 @@ public class RuntimeKeyArchiveIdentityRegressionTest {
         if (parent != null) parent.mkdirs();
         try (FileOutputStream out = new FileOutputStream(file)) {
             out.write(bytes);
+        }
+    }
+
+    private static void writeDexArchive(File file, byte[] dex) throws Exception {
+        File parent = file.getParentFile();
+        if (parent != null) parent.mkdirs();
+        try (ZipOutputStream zip = new ZipOutputStream(new FileOutputStream(file))) {
+            zip.putNextEntry(new ZipEntry("classes.dex"));
+            zip.write(dex);
+            zip.closeEntry();
         }
     }
 

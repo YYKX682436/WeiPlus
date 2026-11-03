@@ -12,6 +12,7 @@ try {
   const cp = prepare(output).classpath;
   const files = [processFixture,
     'app/src/main/java/h/Hchat/hooks/core/XposedRuntime.java',
+    'app/src/main/java/h/Hchat/hooks/api/runtime/HostApkPathDecision.java',
     'app/src/main/java/h/Hchat/utils/HLog.java',
     'app/src/main/java/h/Hchat/loader/utils/NativeLoadCache.java',
     'app/src/main/java/h/Hchat/loader/utils/NativeLibraryLoader.java',

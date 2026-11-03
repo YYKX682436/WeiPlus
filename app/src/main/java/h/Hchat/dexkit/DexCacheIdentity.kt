@@ -2,15 +2,15 @@ package h.Hchat.dexkit
 
 import h.Hchat.WechatPackage
 
-/** 仅按微信包体与补丁身份判断定位缓存是否仍属于同一运行时。 */
+/** 仅按微信 APK 与当前加载的补丁 DEX 代码身份判断定位缓存是否仍可复用。 */
 object DexCacheIdentity {
     @JvmStatic
     fun sameRuntime(cachedKey: String?, runtimeKey: String?): Boolean {
         if (cachedKey.isNullOrBlank() || runtimeKey.isNullOrBlank()) return false
         val cached = cachedKey.split('|')
         val runtime = runtimeKey.split('|')
-        // Ten fields are required, including APK/DEX and patch-file metadata added after
-        // the old seven-field identity. Some caches append a private schema suffix.
+        // Ten fields are required, including APK/DEX and active patch-code identity. Tinker
+        // metadata and inactive patch files are diagnostic only. Some caches append a schema suffix.
         if (cached.size < 10 || runtime.size < 10) return false
         if (!isCompleteRuntimeIdentity(cached) || !isCompleteRuntimeIdentity(runtime)) return false
         return cachedKey == runtimeKey

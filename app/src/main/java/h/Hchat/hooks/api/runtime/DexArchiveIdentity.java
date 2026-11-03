@@ -23,6 +23,8 @@ import java.util.zip.ZipFile;
 /** Reads APK central-directory entry metadata; never streams or hashes APK/DEX payload bytes. */
 public final class DexArchiveIdentity {
     private static final Pattern DEX_ENTRY = Pattern.compile("classes(?:[0-9]+)?\\.dex");
+    private static final Pattern ACTIVE_TINKER_DEX_ARCHIVE = Pattern.compile(
+            "zip file \\\"([^\\\"]*/tinker/patch-[^\\\"]*/dex/[^\\\"]+\\.(?:jar|apk|zip))\\\"");
     private static final int MAX_CACHED_ARCHIVES = 128;
     private static final Object CACHE_LOCK = new Object();
     // Key: canonical path + file key/dev/inode/size/mode/nanosecond mtime and ctime.
@@ -56,6 +58,49 @@ public final class DexArchiveIdentity {
     /** Fingerprints a resource/config split without requiring it to contain classes.dex. */
     public static String fingerprintSplit(String path) {
         return fingerprint(path, false);
+    }
+
+    /**
+     * Fingerprints only DEX archives named by the active Tinker ClassLoader description.
+     * Patch metadata, inactive patch directories and historical APKs are intentionally ignored.
+     */
+    public static String activeTinkerCodeIdentity(ClassLoader loader) {
+        if (loader == null) return "none";
+        String loaderDescription;
+        try {
+            loaderDescription = String.valueOf(loader);
+        } catch (Throwable unavailable) {
+            return "";
+        }
+        java.util.regex.Matcher matcher = ACTIVE_TINKER_DEX_ARCHIVE.matcher(loaderDescription);
+        List<String> codeArchives = new ArrayList<>();
+        while (matcher.find()) {
+            String identity = codeFingerprint(matcher.group(1));
+            if (identity.isEmpty()) return "";
+            codeArchives.add(identity);
+        }
+        Collections.sort(codeArchives);
+        return codeArchives.isEmpty() ? "none" : String.join(";", codeArchives);
+    }
+
+    private static String codeFingerprint(String path) {
+        if (path == null || path.isEmpty()) return "";
+        FileSnapshot before = snapshot(path);
+        if (before == null) return "";
+        synchronized (CACHE_LOCK) {
+            ArchiveFingerprint cached = FINGERPRINTS.get(before);
+            if (cached != null) return cached.hasDex ? cached.codeIdentity : "";
+            ArchiveFingerprint fingerprint = scanArchive(before);
+            if (fingerprint == null) return "";
+            FileSnapshot after = snapshot(before.canonicalPath);
+            if (!before.equals(after)) return "";
+            FINGERPRINTS.put(before, fingerprint);
+            while (FINGERPRINTS.size() > MAX_CACHED_ARCHIVES) {
+                FileSnapshot eldest = FINGERPRINTS.keySet().iterator().next();
+                FINGERPRINTS.remove(eldest);
+            }
+            return fingerprint.hasDex ? fingerprint.codeIdentity : "";
+        }
     }
 
     /** Cheap change token for non-APK patch files; it reads filesystem metadata only. */
@@ -104,8 +149,10 @@ public final class DexArchiveIdentity {
         File file = new File(snapshot.canonicalPath);
         List<String> dex = new ArrayList<>();
         MessageDigest metadataDigest;
+        MessageDigest dexDigest;
         try {
             metadataDigest = MessageDigest.getInstance("SHA-256");
+            dexDigest = MessageDigest.getInstance("SHA-256");
         } catch (Throwable unavailable) {
             return null;
         }
@@ -121,6 +168,7 @@ public final class DexArchiveIdentity {
                 metadataDigest.update((item + "\n").getBytes(StandardCharsets.UTF_8));
                 if (DEX_ENTRY.matcher(entry.getName()).matches()) {
                     dex.add(item);
+                    dexDigest.update((item + "\\n").getBytes(StandardCharsets.UTF_8));
                 }
             }
         } catch (Throwable ignored) {
@@ -131,7 +179,7 @@ public final class DexArchiveIdentity {
         String contents = "dex{" + String.join(",", dex) + "};archive-metadata-sha256="
                 + hex(metadataDigest.digest());
         return new ArchiveFingerprint(file.length() + ":" + file.lastModified() + ":" + contents,
-                !dex.isEmpty());
+                "dex{" + hex(dexDigest.digest()) + "}", !dex.isEmpty());
     }
 
     /** Cheap process-local invalidation key; full ZIP metadata remains the returned identity. */
@@ -212,10 +260,12 @@ public final class DexArchiveIdentity {
 
     private static final class ArchiveFingerprint {
         final String identity;
+        final String codeIdentity;
         final boolean hasDex;
 
-        ArchiveFingerprint(String identity, boolean hasDex) {
+        ArchiveFingerprint(String identity, String codeIdentity, boolean hasDex) {
             this.identity = identity;
+            this.codeIdentity = codeIdentity;
             this.hasDex = hasDex;
         }
     }

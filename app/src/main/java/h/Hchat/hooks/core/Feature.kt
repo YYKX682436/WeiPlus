@@ -13,6 +13,9 @@ interface Feature {
 
     fun featureId(): String
 
+    /** A failure here prevents feature initialization until this core feature recovers. */
+    fun isRequiredCore(): Boolean = false
+
     fun name(): String = featureId()
 
     fun isEnabled(context: FeatureContext): Boolean {

@@ -90,11 +90,13 @@ public class StartupVersionRegression {
   eq("file-new",info.tinkerId,"NEW_TINKER_ID beats TINKER_ID");
   eq("patch-one",info.patchId,"patch directory fallback");
   String before=info.cacheKey;
+  String beforeHostIdentity=WeChatVersionApi.hostIdentityKey(info);
   write(meta,"patch.client.ver=301\nclient.ver=401\nNEW_TINKER_ID=changed\nTINKER_ID=old\n");
   info=WeChatVersionApi.build(host,loader);
   eq("301",info.clientVersion,"next build observes metadata update");
   eq("changed",info.tinkerId,"next build observes Tinker update");
-  eq(false,before.equals(info.cacheKey),"cache key immediately invalidates");
+  eq(true,before.equals(info.cacheKey),"patch metadata alone does not invalidate loaded-code cache identity");
+  eq(beforeHostIdentity,WeChatVersionApi.hostIdentityKey(info),"patch metadata alone preserves approved host identity");
   write(meta,"client.ver=402\nTINKER_ID=only-old\n");
   info=WeChatVersionApi.build(host,loader);
   eq("402",info.clientVersion,"legacy client key fallback");
@@ -109,6 +111,25 @@ public class StartupVersionRegression {
   eq("403",api.current().clientVersion,"cached identity stays stable until refresh boundary");
   eq("900",api.refresh().clientVersion,"forced runtime refresh observes loader mutation");
   eq(reads,host.fileReads,"runtime loader fallback skips disk");
+
+  Path patchDexJar=patch.resolve("dex/classes.dex.jar");
+  writePatchDexJar(patchDexJar,new byte[]{1,2,3,4});
+  Loader activePatchLoader=new Loader("AndroidNClassLoader[DexPathList[[zip file \""+patchDexJar+"\", zip file \""+host.applicationInfo.sourceDir+"\"]]]");
+  WeChatVersionInfo activePatch=WeChatVersionApi.build(host,activePatchLoader);
+  eq(false,activePatch.runtimeCodeIdentity.equals("none"),"active Tinker DEX archive is detected from the running ClassLoader");
+  eq(WeChatVersionApi.hostIdentityKey(info),WeChatVersionApi.hostIdentityKey(activePatch),"Tinker code generation remains separate from immutable host APK identity");
+  eq(false,info.cacheKey.equals(activePatch.cacheKey),"active Tinker code change invalidates locator cache identity");
+  String activeCode=activePatch.runtimeCodeIdentity;
+  writePatchDexJar(patchDexJar,new byte[]{4,3,2,1});
+  WeChatVersionInfo changedActivePatch=WeChatVersionApi.build(host,activePatchLoader);
+  eq(false,activeCode.equals(changedActivePatch.runtimeCodeIdentity),"same-size active Tinker DEX content change changes runtime code identity");
   System.out.println("StartupVersionRegression: "+checks+" checks passed");
+ }
+
+ static void writePatchDexJar(Path path,byte[] dex) throws Exception {
+  Files.createDirectories(path.getParent());
+  try (java.util.zip.ZipOutputStream zip=new java.util.zip.ZipOutputStream(Files.newOutputStream(path))) {
+   zip.putNextEntry(new java.util.zip.ZipEntry("classes.dex")); zip.write(dex); zip.closeEntry();
+  }
  }
 }

@@ -52,7 +52,7 @@ const checks = [
     assert.match(entry, /DexInstallScheduler\.INSTANCE\.cancelAll\(\);[\s\S]*?HookRegistry\.get\(\)\.unhookAll\(\)/);
     assert.match(guard, /CLASS_LOADER_GENERATION_CHANGED/);
     assert.match(guard, /approvedHostIdentity\.equals\(currentHostIdentity\)/);
-    assert.match(read('app/src/test/java/h/Hchat/hooks/api/runtime/HostRuntimeIdentityLifecycleTest.java'), /legalTinkerLoaderRotationSurvivesAndPatchChangeCancelsGeneration/);
+    assert.match(read('app/src/test/java/h/Hchat/hooks/api/runtime/HostRuntimeIdentityLifecycleTest.java'), /metadataAndLoaderChangesAreSeparatedFromActiveCodeAndApkIdentity/);
   }],
   ['global Dex cache stores locator state separately from scan completion', () => {
     const finder = read('app/src/main/java/h/Hchat/dexkit/DexFinder.java');

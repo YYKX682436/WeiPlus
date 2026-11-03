@@ -14,6 +14,7 @@ import h.Hchat.hooks.api.model.WeChatVersionInfo;
 import h.Hchat.hooks.api.runtime.DexArchiveIdentity;
 import h.Hchat.hooks.api.runtime.WeChatVersionApi;
 import h.Hchat.hooks.api.runtime.HostRuntimeIdentityDecision;
+import h.Hchat.hooks.api.runtime.HostApkPathDecision;
 import h.Hchat.hooks.core.DexInstallScheduler;
 import h.Hchat.hooks.core.FeatureContext;
 import h.Hchat.hooks.core.FeatureManager;
@@ -96,19 +97,16 @@ public class ModuleEntry extends XposedModule {
   @Override
   public synchronized void onPackageReady(PackageReadyParam param) {
     String host = param.getPackageName();
-    if (packageReady
-        || !WechatPackage.isModuleEntryScope(host, processName)) return;
-    packageReady = true;
-    try {
-      scheduleArchiveIdentityPrewarm(param);
-    } catch (Throwable failure) {
-      HLog.e(TAG + " APK身份后台预热调度失败", failure);
+    if (!WechatPackage.isModuleEntryScope(host, processName)) return;
+    if (!packageReady) {
+      packageReady = true;
+      try {
+        scheduleArchiveIdentityPrewarm(param);
+      } catch (Throwable failure) {
+        HLog.e(TAG + " APK身份后台预热调度失败", failure);
+      }
     }
-    try {
-      installPackageHooks(param);
-    } catch (Throwable failure) {
-      HLog.e(TAG + " package_ready Hook 安装失败: " + host, failure);
-    }
+    schedulePackageHooks(param);
   }
 
   /** Queue the process-local ZIP metadata walk before Application.onCreate identity approval. */
@@ -122,8 +120,27 @@ public class ModuleEntry extends XposedModule {
         Integer.MIN_VALUE,
         () -> {
           String identity = DexArchiveIdentity.forApplication(appInfo);
-          if (identity.isEmpty()) HLog.e(TAG + " APK归档身份后台预热未完成");
+          if (identity.isEmpty()) {
+            HLog.e(TAG + " APK归档身份后台预热未完成，按有限策略重试");
+            return false;
+          }
+          HLog.i(TAG + " APK归档身份预热完成 source=" + appInfo.sourceDir);
           return true;
+        });
+  }
+
+  private void schedulePackageHooks(PackageReadyParam param) {
+    DexInstallScheduler.scheduleTask(
+        "entry:package_hooks:" + processName,
+        "入口 Hook 初始化",
+        DexInstallScheduler.Stage.EARLY,
+        Integer.MIN_VALUE + 10,
+        () -> {
+          try {
+            return installPackageHooks(param);
+          } catch (Throwable failure) {
+            throw new IllegalStateException("入口 Hook 初始化暂时失败", failure);
+          }
         });
   }
 
@@ -137,21 +154,59 @@ public class ModuleEntry extends XposedModule {
       PackageInfo packageInfo = pm.getPackageInfo(param.getPackageName(), 0);
       ApplicationInfo appInfo = packageInfo != null ? packageInfo.applicationInfo : null;
       if (appInfo == null || !param.getPackageName().equals(appInfo.packageName)) {
-        invalidateHostIdentity(source + ":package_metadata_missing");
+        HLog.e(TAG + " host_identity=temporarily_incomplete reason=package_metadata_missing source=" + source);
         return false;
+      }
+      ApplicationInfo frameworkAppInfo = param.getApplicationInfo();
+      String frameworkApkPath = frameworkAppInfo != null ? frameworkAppInfo.sourceDir : "";
+      String contextApkPath = "";
+      try {
+        ApplicationInfo contextAppInfo = context.getApplicationInfo();
+        contextApkPath = contextAppInfo != null ? contextAppInfo.sourceDir : "";
+      } catch (Throwable ignored) {}
+      HostApkPathDecision.Result pathDecision = HostApkPathDecision.compare(
+          frameworkApkPath, contextApkPath, appInfo.sourceDir);
+      if (pathDecision != HostApkPathDecision.Result.MATCH) {
+        HLog.e(TAG + " apk_path_diagnostic package=" + param.getPackageName()
+            + " process=" + processName + " framework=" + safePath(frameworkApkPath)
+            + " context=" + safePath(contextApkPath)
+            + " package_manager=" + safePath(appInfo.sourceDir)
+            + " result=" + pathDecision);
+      }
+      // PackageReadyParam is the framework's loaded-generation path. Use that APK identity if
+      // PackageManager has already switched to a new install path while this process is attached.
+      ApplicationInfo loadedAppInfo = frameworkAppInfo != null && frameworkAppInfo.sourceDir != null
+          && !frameworkAppInfo.sourceDir.isEmpty() ? frameworkAppInfo : appInfo;
+      PackageInfo loadedVersionInfo = packageInfo;
+      if (pathDecision != HostApkPathDecision.Result.MATCH) {
+        try {
+          PackageInfo archiveInfo = pm.getPackageArchiveInfo(loadedAppInfo.sourceDir, 0);
+          if (archiveInfo != null && param.getPackageName().equals(archiveInfo.packageName)) {
+            loadedVersionInfo = archiveInfo;
+          } else {
+            HLog.e(TAG + " apk_version_diagnostic loaded_archive_metadata_unavailable source="
+                + safePath(loadedAppInfo.sourceDir));
+          }
+        } catch (Throwable unavailable) {
+          HLog.e(TAG + " apk_version_diagnostic loaded_archive_metadata_unavailable source="
+              + safePath(loadedAppInfo.sourceDir), unavailable);
+        }
       }
       ClassLoader runtimeLoader = loader != null ? loader : param.getClassLoader();
       WeChatVersionInfo current = currentRuntimeVersionInfo(
-          context, param.getPackageName(), packageInfo, appInfo, runtimeLoader, source);
+          context, param.getPackageName(), loadedVersionInfo, loadedAppInfo, runtimeLoader, source);
       if (!WeChatVersionApi.hasCompleteRuntimeIdentity(current)) {
-        invalidateHostIdentity(source + ":runtime_identity_incomplete");
+        HLog.e(TAG + " host_identity=temporarily_incomplete source=" + source
+            + " runtime_code=" + current.runtimeCodeIdentity
+            + " apk_source=" + safePath(appInfo.sourceDir));
         return false;
       }
       String immutableIdentity = WeChatVersionApi.hostIdentityKey(current);
       HostRuntimeIdentityDecision.Result identity;
       if (!runtimeIdentity.isApproved()) {
-        if (!runtimeIdentity.approve(immutableIdentity, current.classLoaderHash)) {
-          invalidateHostIdentity(source + ":runtime_identity_unavailable");
+        if (!runtimeIdentity.approve(immutableIdentity, current.runtimeCodeIdentity,
+            current.classLoaderHash)) {
+          HLog.e(TAG + " host_identity=temporarily_incomplete source=" + source);
           return false;
         }
         HLog.i(TAG + " host_identity=approved package=" + current.packageName
@@ -160,20 +215,74 @@ public class ModuleEntry extends XposedModule {
         return true;
       }
       identity = runtimeIdentity.verify(
-          immutableIdentity, current.classLoaderHash,
+          immutableIdentity, current.runtimeCodeIdentity, current.classLoaderHash,
           () -> invalidateHostIdentity(source + ":runtime_identity_changed"));
-      if (identity == HostRuntimeIdentityDecision.Result.HOST_IDENTITY_CHANGED
-          || identity == HostRuntimeIdentityDecision.Result.INCOMPLETE
-          || identity == HostRuntimeIdentityDecision.Result.ALREADY_INVALIDATED) {
+      if (identity == HostRuntimeIdentityDecision.Result.HOST_IDENTITY_CHANGED) {
         invalidateHostIdentity(source + ":runtime_identity_changed");
         return false;
       }
+      if (identity == HostRuntimeIdentityDecision.Result.INCOMPLETE) {
+        HLog.e(TAG + " host_identity=temporarily_incomplete source=" + source);
+        return false;
+      }
+      if (identity == HostRuntimeIdentityDecision.Result.ALREADY_INVALIDATED) return false;
       if (identity == HostRuntimeIdentityDecision.Result.CLASS_LOADER_GENERATION_CHANGED) {
         HLog.i(TAG + " host_identity=classloader_generation_accepted source=" + source);
+        if (applicationReady.get()) {
+          scheduleRuntimeRevalidation(context, param, runtimeLoader, current.runtimeCodeIdentity, source);
+        }
+      }
+      if (identity == HostRuntimeIdentityDecision.Result.RUNTIME_CODE_CHANGED) {
+        HLog.i(TAG + " host_identity=runtime_code_changed targeted_revalidation=scheduled source=" + source);
+        if (applicationReady.get()) {
+          scheduleRuntimeRevalidation(context, param, runtimeLoader, current.runtimeCodeIdentity, source);
+        }
       }
       return true;
     } catch (Throwable failure) {
-      invalidateHostIdentity(source + ":identity_read_failed");
+      HLog.e(TAG + " host_identity=temporarily_unavailable source=" + source, failure);
+      return false;
+    }
+  }
+
+  private void scheduleRuntimeRevalidation(Context context, PackageReadyParam param,
+      ClassLoader classLoader, String codeIdentity, String source) {
+    if (context == null || param == null || classLoader == null || featureManager == null) return;
+    String taskKey = "module:runtime_code:" + Integer.toHexString(codeIdentity.hashCode())
+        + ":" + codeIdentity.length();
+    DexInstallScheduler.scheduleTask(taskKey, "Tinker 运行代码定位/Hook 复核",
+        DexInstallScheduler.Stage.EARLY, Integer.MIN_VALUE + 20, () -> {
+          if (hostIdentityInvalidated) return true;
+          return revalidateRuntimeCode(context, param, classLoader, source);
+        });
+  }
+
+  private boolean revalidateRuntimeCode(Context context, PackageReadyParam param,
+      ClassLoader classLoader, String source) {
+    try {
+      NativeLibraryLoader nativeLibraryLoader = new NativeLibraryLoader();
+      nativeLibraryLoader.loadDexKit(context, getClass().getClassLoader());
+      String apkPath = resolveCurrentHostApkPath(context, param);
+      DexKitBridge dexKit = createDexKitBridge(classLoader, apkPath);
+      DexFinder finder = new DexFinder(dexKit, classLoader, context);
+      DexBridgeHolder holder = new DexBridgeHolder(dexKit, finder, classLoader, apkPath);
+      FeatureContext old = featureContext;
+      ConfigStore configStore = old != null ? old.configStore() : new ConfigStore(context);
+      Context moduleContext = old != null ? old.moduleContext() : createModuleContext(context);
+      FeatureContext refreshed = new FeatureContext(context, moduleContext != null ? moduleContext : context,
+          classLoader, dexKit, finder, eventBus, configStore, holder, uiRegistry);
+      boolean ready = featureManager != null
+          && featureManager.revalidateRuntime(refreshed, classLoader, true);
+      if (ready) {
+        featureContext = refreshed;
+        installMsgDescTextFallback(finder);
+        HLog.i(TAG + " runtime_code_revalidation=complete source=" + source);
+      } else {
+        HLog.e(TAG + " runtime_code_revalidation=pending source=" + source);
+      }
+      return ready;
+    } catch (Throwable failure) {
+      HLog.e(TAG + " runtime_code_revalidation=failed source=" + source, failure);
       return false;
     }
   }
@@ -212,12 +321,12 @@ public class ModuleEntry extends XposedModule {
     HookRegistry.get().unhookAll();
   }
 
-  private void installPackageHooks(PackageReadyParam lpparam) throws Throwable {
+  private boolean installPackageHooks(PackageReadyParam lpparam) throws Throwable {
     // 1. 包名过滤
-    if (!isWeChatPackage(lpparam.getPackageName())) return;
+    if (!isWeChatPackage(lpparam.getPackageName())) return true;
     if (!Process.is64Bit()) {
       HLog.e(TAG + " 当前版本仅支持 ARM64 微信进程，跳过32位进程: " + processName);
-      return;
+      return true;
     }
 
     // 热更新加载发生在 Tinker attach 阶段，必须早于普通功能初始化安装。
@@ -231,7 +340,7 @@ public class ModuleEntry extends XposedModule {
       if (isAppBrandProcess(lpparam)) {
         installAppBrandProcessHook(lpparam);
       }
-      return;
+      return true;
     }
 
     // 3. Mars CDN 管理器可能早于模块 API 初始化创建，先按稳定类名捕获实例。
@@ -253,10 +362,13 @@ public class ModuleEntry extends XposedModule {
         chain -> {
           Object result = chain.proceed();
           Application app = (Application) chain.getThisObject();
-          if (!lpparam.getPackageName().equals(app.getPackageName())
-              || !verifyRuntimeIdentity(app, app.getClassLoader(), lpparam,
-                  "application_on_create")
-              || !applicationReady.compareAndSet(false, true)) return result;
+          if (!lpparam.getPackageName().equals(app.getPackageName())) return result;
+          if (applicationReady.get()) return result;
+          if (!verifyRuntimeIdentity(app, app.getClassLoader(), lpparam,
+              "application_on_create")) {
+            scheduleModuleInitialization(app, lpparam, "application_on_create_identity_retry");
+            return result;
+          }
           try {
             FirstUseAgreementRuntime.install(app);
           } catch (Throwable failure) {
@@ -275,9 +387,29 @@ public class ModuleEntry extends XposedModule {
             HLog.e(TAG + " 悬浮快捷菜单早期安装失败", e);
           }
           installCustomBottomBarEarly(app, resolveHostClassLoader(app, lpparam));
-          new Thread(() -> initModule(app, lpparam), "Hchat-Init").start();
+          scheduleModuleInitialization(app, lpparam, "application_on_create");
 
           return result;
+        });
+    return true;
+  }
+
+  private void scheduleModuleInitialization(Context hostContext, PackageReadyParam param, String source) {
+    if (hostIdentityInvalidated || applicationReady.get()) return;
+    DexInstallScheduler.scheduleTask(
+        "module:init:" + processName,
+        "微信模块初始化",
+        DexInstallScheduler.Stage.EARLY,
+        Integer.MIN_VALUE + 30,
+        () -> {
+          if (hostIdentityInvalidated) return true;
+          ClassLoader loader = resolveHostClassLoader(hostContext, param);
+          if (!verifyRuntimeIdentity(hostContext, loader, param, "module_init:" + source)) {
+            return hostIdentityInvalidated;
+          }
+          boolean initialized = initModule(hostContext, param);
+          if (initialized) applicationReady.set(true);
+          return initialized;
         });
   }
 
@@ -379,8 +511,7 @@ public class ModuleEntry extends XposedModule {
 
   // ============ 模块初始化 ============
 
-  private void installHotUpdateEarlyHook(PackageReadyParam lpparam) {
-    try {
+  private void installHotUpdateEarlyHook(PackageReadyParam lpparam) throws Throwable {
       hookEntryOnce(
           "hot-update-tinker-attach",
           lpparam,
@@ -392,21 +523,22 @@ public class ModuleEntry extends XposedModule {
           chain -> {
             if (hostIdentityInvalidated) return chain.proceed();
             Context context = (Context) chain.getArg(0);
-            if (!verifyRuntimeIdentity(context, lpparam.getClassLoader(), lpparam,
-                "tinker_attach_before")) return chain.proceed();
+            // The package/process scope is already verified. Install the pre-attach blocker before
+            // identity metadata can settle so a transient read cannot miss the early Tinker gate.
             installHotUpdateForAttach(lpparam, chain, "before");
-
+            verifyRuntimeIdentity(context, lpparam.getClassLoader(), lpparam, "tinker_attach_before");
             Object result = chain.proceed();
             ClassLoader runtimeLoader = resolveTinkerClassLoader(chain.getThisObject());
-            if (!verifyRuntimeIdentity(context, runtimeLoader, lpparam,
-                "tinker_attach_after")) return result;
-            installHotUpdateForAttach(lpparam, chain, "after");
+            if (runtimeLoader == null) runtimeLoader = resolveHostClassLoader(context, lpparam);
+            if (verifyRuntimeIdentity(context, runtimeLoader, lpparam, "tinker_attach_after")) {
+              installHotUpdateForAttach(lpparam, chain, "after");
+              if (!applicationReady.get() && isMainProcess(lpparam)) {
+                scheduleModuleInitialization(context, lpparam, "tinker_attach_after");
+              }
+            }
 
             return result;
           });
-    } catch (Throwable e) {
-      HLog.e(TAG + " 热更新早期入口安装失败: " + e.getMessage(), e);
-    }
   }
 
   private void installHotUpdateForAttach(
@@ -414,37 +546,43 @@ public class ModuleEntry extends XposedModule {
     try {
       Context context = (Context) chain.getArg(0);
       if (!DisableHotUpdateFeature.isEnabled(context)) return;
+      Object tinkerApplication = chain.getThisObject();
+      ClassLoader hostClassLoader = "before".equals(stage)
+          ? lpparam.getClassLoader() : resolveTinkerClassLoader(tinkerApplication);
+      if (hostClassLoader == null) hostClassLoader = lpparam.getClassLoader();
+      final ClassLoader targetLoader = hostClassLoader;
       if ("before".equals(stage)) {
-        DisableHotUpdateFeature.installEarly(context, lpparam.getClassLoader());
+        if (!DisableHotUpdateFeature.installEarly(context, targetLoader)) {
+          scheduleHotUpdateEarlyRetry(context, targetLoader);
+        }
         return;
       }
-      Object tinkerApplication = chain.getThisObject();
-      new Thread(
-              () -> {
-                DexInstallScheduler.runDexKitTask(
-                    () -> {
-                      try {
-                        ClassLoader hostClassLoader = resolveTinkerClassLoader(tinkerApplication);
-                        if (hostClassLoader == null) {
-                          hostClassLoader = resolveHostClassLoader(context, lpparam);
-                        }
-                        NativeLibraryLoader nativeLibraryLoader = new NativeLibraryLoader();
-                        nativeLibraryLoader.loadDexKit(
-                            context, ModuleEntry.this.getClass().getClassLoader());
-                        DexKitBridge dexKit =
-                            createDexKitBridge(
-                                hostClassLoader, lpparam.getApplicationInfo().sourceDir);
-                        DisableHotUpdateFeature.install(context, hostClassLoader, dexKit);
-                      } catch (Throwable e) {
-                        HLog.e(TAG + " 热更新后置安装失败: " + e.getMessage(), e);
-                      }
-                    });
-              },
-              "Hchat-HotUpdateHook")
-          .start();
+      String loaderToken = WeChatVersionApi.classLoaderIdentity(targetLoader);
+      String key = "hotupdate:late:" + processName + ":" + loaderToken;
+      DexInstallScheduler.scheduleTask(key, "热更新后置 Hook 安装",
+          DexInstallScheduler.Stage.EARLY, Integer.MIN_VALUE + 5, () -> {
+            if (hostIdentityInvalidated || !DisableHotUpdateFeature.isEnabled(context)) return true;
+            ClassLoader activeLoader = resolveTinkerClassLoader(tinkerApplication);
+            if (activeLoader != null && activeLoader != targetLoader) {
+              HLog.i(TAG + " hotupdate_late_install=stale_loader_skipped");
+              return true;
+            }
+            NativeLibraryLoader nativeLibraryLoader = new NativeLibraryLoader();
+            nativeLibraryLoader.loadDexKit(context, ModuleEntry.this.getClass().getClassLoader());
+            String apkPath = resolveCurrentHostApkPath(context, lpparam);
+            DexKitBridge dexKit = createDexKitBridge(targetLoader, apkPath);
+            return DisableHotUpdateFeature.install(context, targetLoader, dexKit);
+          });
     } catch (Throwable e) {
       HLog.e(TAG + " 热更新早期Hook失败(" + stage + "): " + e.getMessage(), e);
     }
+  }
+
+  private void scheduleHotUpdateEarlyRetry(Context context, ClassLoader classLoader) {
+    String loaderToken = WeChatVersionApi.classLoaderIdentity(classLoader);
+    DexInstallScheduler.scheduleTask("hotupdate:early:" + processName + ":" + loaderToken,
+        "热更新早期 Hook 补装", DexInstallScheduler.Stage.EARLY, Integer.MIN_VALUE + 4,
+        () -> DisableHotUpdateFeature.installEarly(context, classLoader));
   }
 
   private void installTabletEarlyHook(PackageReadyParam lpparam) {
@@ -531,16 +669,17 @@ public class ModuleEntry extends XposedModule {
               if (!DisableHotUpdateFeature.isEnabled(context)) return;
               NativeLibraryLoader nativeLibraryLoader = new NativeLibraryLoader();
               nativeLibraryLoader.loadDexKit(context, ModuleEntry.this.getClass().getClassLoader());
+              String apkPath = resolveCurrentHostApkPath(context, lpparam);
               DexKitBridge dexKit =
-                  createDexKitBridge(
-                      lpparam.getClassLoader(), lpparam.getApplicationInfo().sourceDir);
+                  createDexKitBridge(lpparam.getClassLoader(), apkPath);
               WeChatTabletFeature.install(context, lpparam.getClassLoader(), dexKit);
               return;
             }
             NativeLibraryLoader nativeLibraryLoader = new NativeLibraryLoader();
             nativeLibraryLoader.loadDexKit(context, ModuleEntry.this.getClass().getClassLoader());
+            String apkPath = resolveCurrentHostApkPath(context, lpparam);
             DexKitBridge dexKit =
-                createDexKitBridge(hostClassLoader, lpparam.getApplicationInfo().sourceDir);
+                createDexKitBridge(hostClassLoader, apkPath);
             WeChatTabletFeature.install(context, hostClassLoader, dexKit);
           });
     } catch (Throwable e) {
@@ -557,7 +696,7 @@ public class ModuleEntry extends XposedModule {
     }
   }
 
-  private void initModule(Context hostContext, PackageReadyParam lpparam) {
+  private boolean initModule(Context hostContext, PackageReadyParam lpparam) {
     try {
       // 1. 加载 Native 库（DexKit）
       NativeLibraryLoader nativeLibraryLoader = new NativeLibraryLoader();
@@ -565,14 +704,17 @@ public class ModuleEntry extends XposedModule {
       SilkLibrary.initialize(hostContext);
 
       // 2. 创建模块自身 Context
-      Context moduleContext = createModuleContext(hostContext);
-      ConfigStore configStore = new ConfigStore(hostContext);
-
+      boolean[] initialized = {false};
       DexInstallScheduler.runDexKitTask(
           () -> {
             // 3. 初始化 DexKit。优先使用 Tinker 之后的运行时 ClassLoader。
-            String apkPath = lpparam.getApplicationInfo().sourceDir;
             ClassLoader hostClassLoader = resolveHostClassLoader(hostContext, lpparam);
+            String apkPath;
+            try {
+              apkPath = resolveCurrentHostApkPath(hostContext, lpparam);
+            } catch (Exception failure) {
+              throw new IllegalStateException("微信 APK 路径在初始化期间暂不一致", failure);
+            }
             DexKitBridge dexKit = createDexKitBridge(hostClassLoader, apkPath);
             DexFinder finder = new DexFinder(dexKit, hostClassLoader, hostContext);
             WeChatImageApi.installMarsCdnManagerHook(
@@ -583,6 +725,11 @@ public class ModuleEntry extends XposedModule {
                 new DexBridgeHolder(dexKit, finder, hostClassLoader, apkPath);
 
             // 5. 创建统一上下文
+            FeatureContext previousContext = featureContext;
+            Context moduleContext = previousContext != null
+                ? previousContext.moduleContext() : createModuleContext(hostContext);
+            ConfigStore configStore = previousContext != null
+                ? previousContext.configStore() : new ConfigStore(hostContext);
             featureContext =
                 new FeatureContext(
                     hostContext,
@@ -596,15 +743,19 @@ public class ModuleEntry extends XposedModule {
                     uiRegistry);
 
             // 6. 注册并安装所有功能模块
-            featureManager = FeatureRegistry.createDefaultManager();
-            featureManager.installAll(featureContext);
+            if (featureManager == null) featureManager = FeatureRegistry.createDefaultManager();
+            if (!featureManager.installAll(featureContext)) {
+              throw new IllegalStateException("核心功能初始化未完成，等待异步重试");
+            }
 
             // 7. 防崩兜底：微信 8.0.76 消息描述文本方法对 null 调 isEmpty() 崩溃（收到特殊小程序电商卡片消息触发）
             installMsgDescTextFallback(finder);
+            initialized[0] = true;
           });
-
+      return initialized[0];
     } catch (Throwable e) {
       HLog.e(TAG + " 初始化失败: " + e, e);
+      return false;
     }
   }
 
@@ -622,8 +773,12 @@ public class ModuleEntry extends XposedModule {
       for (Method m : finder.msgDescTextMethods) {
         if (m == null) continue;
         try {
+          String key = "runtime:msg-desc-fallback:"
+              + WeChatVersionApi.classLoaderIdentity(m.getDeclaringClass().getClassLoader())
+              + ":" + m.toGenericString();
           HookRegistry.get()
-              .hook(
+              .hookOnce(
+                  key,
                   m,
                   chain -> {
                     try {
@@ -706,7 +861,23 @@ public class ModuleEntry extends XposedModule {
 
   private DexKitBridge createDexKitBridge(ClassLoader classLoader, String apkPath) {
     synchronized (DEXKIT_CREATE_LOCK) {
-      String key = apkPath != null ? apkPath : "";
+      if (apkPath == null || apkPath.isEmpty()) {
+        throw new IllegalStateException("缺少已核对的微信 APK 路径");
+      }
+      String archiveIdentity = DexArchiveIdentity.fingerprint(apkPath);
+      if (archiveIdentity.isEmpty()) {
+        throw new IllegalStateException("微信 APK 归档身份不可用: " + apkPath);
+      }
+      String key;
+      try {
+        byte[] digest = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(archiveIdentity.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        StringBuilder token = new StringBuilder(digest.length * 2);
+        for (byte value : digest) token.append(String.format(java.util.Locale.ROOT, "%02x", value & 0xff));
+        key = new java.io.File(apkPath).getCanonicalPath() + "|" + token;
+      } catch (Throwable unavailable) {
+        key = apkPath + "|" + Integer.toHexString(archiveIdentity.hashCode());
+      }
       DexKitBridge cached = DEXKIT_BRIDGES.get(key);
       if (cached != null) return cached;
       // 仅缓存轻量入口；实际查询才加载，连续空闲 30 秒后释放 native 分析资源。
@@ -714,6 +885,42 @@ public class ModuleEntry extends XposedModule {
       DEXKIT_BRIDGES.put(key, bridge);
       return bridge;
     }
+  }
+
+  private String resolveCurrentHostApkPath(Context context, PackageReadyParam param) {
+    ApplicationInfo frameworkInfo = param != null ? param.getApplicationInfo() : null;
+    ApplicationInfo contextInfo = context != null ? context.getApplicationInfo() : null;
+    PackageInfo packageInfo;
+    try {
+      packageInfo = context != null
+          ? context.getPackageManager().getPackageInfo(context.getPackageName(), 0) : null;
+    } catch (Throwable failure) {
+      throw new IllegalStateException("无法读取已安装微信 APK 元数据", failure);
+    }
+    ApplicationInfo packageManagerInfo = packageInfo != null ? packageInfo.applicationInfo : null;
+    String frameworkPath = frameworkInfo != null ? frameworkInfo.sourceDir : "";
+    String contextPath = contextInfo != null ? contextInfo.sourceDir : "";
+    String packageManagerPath = packageManagerInfo != null ? packageManagerInfo.sourceDir : "";
+    HostApkPathDecision.Result pathDecision = HostApkPathDecision.compare(
+        frameworkPath, contextPath, packageManagerPath);
+    if (pathDecision != HostApkPathDecision.Result.MATCH) {
+      HLog.e(TAG + " apk_path_diagnostic upgrade_or_stale_path framework=" + safePath(frameworkPath)
+          + " context=" + safePath(contextPath)
+          + " package_manager=" + safePath(packageManagerPath)
+          + " result=" + pathDecision);
+      HLog.i(TAG + " apk_path_source=framework_loaded_generation");
+    }
+    java.io.File apk = new java.io.File(frameworkPath);
+    if (!apk.isFile()) throw new IllegalStateException("微信 APK 路径不可读: " + safePath(frameworkPath));
+    try {
+      return apk.getCanonicalPath();
+    } catch (java.io.IOException failure) {
+      throw new IllegalStateException("无法规范化微信 APK 路径: " + safePath(frameworkPath), failure);
+    }
+  }
+
+  private static String safePath(String path) {
+    return path == null ? "<empty>" : path;
   }
 
   private boolean isTinkerClassLoader(ClassLoader classLoader) {

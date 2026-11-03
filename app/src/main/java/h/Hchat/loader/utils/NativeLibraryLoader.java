@@ -1,6 +1,8 @@
 package h.Hchat.loader.utils;
 
 import android.content.Context;
+import android.content.pm.ApplicationInfo;
+import h.Hchat.hooks.api.runtime.HostApkPathDecision;
 import android.os.Process;
 import h.Hchat.hooks.core.XposedRuntime;
 import java.io.File;
@@ -30,10 +32,29 @@ public class NativeLibraryLoader {
   }
 
   /** The framework supplies the identity of this loaded module generation. */
-  private String getModuleApkPath() {
-    String path = XposedRuntime.get().getModuleApplicationInfo().sourceDir;
+  private String getModuleApkPath(Context context) {
+    ApplicationInfo moduleInfo = XposedRuntime.get().getModuleApplicationInfo();
+    String path = moduleInfo != null ? moduleInfo.sourceDir : null;
     if (path == null || !new File(path).isFile()) {
       throw new IllegalStateException("框架未提供可读的模块 APK");
+    }
+    android.content.pm.PackageInfo modulePackage = null;
+    String installedPath = "";
+    try {
+      modulePackage = context.getPackageManager().getPackageArchiveInfo(path, 0);
+    } catch (Throwable ignored) {}
+    try {
+      ApplicationInfo installedModule = context.getPackageManager().getApplicationInfo("h.Hchat", 0);
+      installedPath = installedModule != null ? installedModule.sourceDir : "";
+    } catch (Throwable ignored) {}
+    h.Hchat.utils.HLog.i(TAG + " framework_module_apk version="
+        + (modulePackage != null && modulePackage.versionName != null ? modulePackage.versionName : "")
+        + " versionCode=" + (modulePackage != null ? modulePackage.versionCode : 0)
+        + " source=" + path + " package_manager_source=" + installedPath);
+    if (!installedPath.isEmpty() && !HostApkPathDecision.samePath(path, installedPath)) {
+      h.Hchat.utils.HLog.e(TAG + " module_apk_path_diagnostic framework_loaded=" + path
+          + " package_manager_installed=" + installedPath
+          + " action=keep_framework_generation_no_fallback");
     }
     return path;
   }
@@ -60,7 +81,7 @@ public class NativeLibraryLoader {
     File cacheDir = new File(new File(ctx.getCacheDir(), "Hchat_native"), abi);
 
     try {
-      moduleApk = getModuleApkPath();
+      moduleApk = getModuleApkPath(ctx);
       try (ZipFile apk = new ZipFile(moduleApk)) {
         java.util.zip.ZipEntry entry = apk.getEntry(entryPath);
         if (entry == null) {
@@ -70,6 +91,9 @@ public class NativeLibraryLoader {
         cacheDir.mkdirs();
         String cacheName = versionedLibraryName(soName, entry.getCrc());
         File destSo = new File(cacheDir, cacheName);
+        h.Hchat.utils.HLog.i(TAG + " native_cache_identity so=" + soName
+            + " abi=" + abi + " crc=" + Long.toHexString(entry.getCrc())
+            + " cache=" + destSo.getName());
         synchronized (EXTRACTION_LOCK) {
           File lockFile = new File(cacheDir, cacheName + ".lock");
           try (RandomAccessFile lockAccess = new RandomAccessFile(lockFile, "rw");

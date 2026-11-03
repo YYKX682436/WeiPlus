@@ -50,6 +50,7 @@ object DexInstallScheduler {
         state.label = label
         state.stage = stage
         state.priority = priority
+        state.ownerFeatureId = registry.currentFeatureId().orEmpty()
         state.installer = installer
         if (!isReady(stage)) return@synchronized
         if (!state.running.get() && !state.retryScheduled.get() &&
@@ -103,6 +104,21 @@ object DexInstallScheduler {
         states.remove(key)?.let(::cancelState)
     }
 
+    /** Cancel pending locator tasks owned by one feature before that feature is revalidated. */
+    fun cancelFeature(featureId: String) = synchronized(stateLock) {
+        if (featureId.isBlank()) return@synchronized
+        val owned = states.entries.filter { it.value.ownerFeatureId == featureId }.map { it.key }
+        owned.forEach { key -> states.remove(key)?.let(::cancelState) }
+    }
+
+    /** Feature owners with work that has not completed and still carries an old runtime context. */
+    fun pendingFeatureOwners(): Set<String> = synchronized(stateLock) {
+        states.values.asSequence()
+            .filter { it.ownerFeatureId.isNotBlank() && !it.installed.get() && it.installer != null }
+            .map { it.ownerFeatureId }
+            .toSet()
+    }
+
     /** 不等待无法中断的 DexKit 调用；它返回后由旧代次租约拒绝后续挂钩。 */
     fun cancelAll() = synchronized(stateLock) {
         val previous = states.values.toList()
@@ -153,7 +169,11 @@ object DexInstallScheduler {
                 ok = HookRegistry.get().withInstallationGeneration(
                     state.generation,
                     isLeaseActive = { !state.cancelled.get() && isCurrent(key, state) }
-                ) { installer() }
+                ) {
+                    val owner = state.ownerFeatureId
+                    if (owner.isBlank()) installer()
+                    else HookRegistry.get().withFeature(owner) { installer() }
+                }
             }
         } catch (_: CancellationException) {
             // 卸载与正在执行的定位竞争时，旧租约失效属于正常取消。
@@ -219,6 +239,7 @@ object DexInstallScheduler {
     private class State(@Volatile var label: String, val generation: Long) {
         @Volatile var stage: Stage = Stage.BRIDGE
         @Volatile var priority: Int = 0
+        @Volatile var ownerFeatureId: String = ""
         @Volatile var installer: (() -> Boolean)? = null
         var future: FutureTask<Unit>? = null
         var retryTask: Runnable? = null

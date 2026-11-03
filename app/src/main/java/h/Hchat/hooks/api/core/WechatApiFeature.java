@@ -41,6 +41,11 @@ public class WechatApiFeature implements Feature {
     }
 
     @Override
+    public boolean isRequiredCore() {
+        return true;
+    }
+
+    @Override
     public boolean isEnabled(FeatureContext context) {
         return true;
     }
@@ -126,6 +131,9 @@ public class WechatApiFeature implements Feature {
                 conversationChangeApi, contactChangeApi, chatroomChangeApi,
                 lifecycleApi, diagnosticsApi, taskApi, messageObserveApi, chatPageApi, versionApi,
                 transferApi, verifyUserApi, snsApi);
+        if (!WeChatApis.isCoreInitialized()) {
+            throw new IllegalStateException("微信公共 API 初始化不完整，阻止后续功能安装");
+        }
         DexInstallScheduler.scheduleTask("wechat_api:warmup", "微信公共API预热",
                 DexInstallScheduler.Stage.BRIDGE, 1000, () -> {
             boolean resolutionFinished = false;
@@ -191,8 +199,6 @@ public class WechatApiFeature implements Feature {
 
     @Override
     public void onDestroy(FeatureContext context) {
-        WeChatTaskApi taskApi = WeChatApis.tasks();
-        if (taskApi != null) taskApi.shutdown();
         WeChatApis.clear();
     }
 

@@ -134,6 +134,7 @@ public final class WeChatApis {
                             WeChatTransferApi transfer,
                             WeChatVerifyUserApi verifyUser,
                             WeChatSnsApi sns) {
+        releaseCurrentApis();
         init(message, database, account, contact, messageStore, conversation,
                 notify, config, network, user);
         chatroomApi = chatroom;
@@ -469,13 +470,15 @@ public final class WeChatApis {
         return snsApi != null && snsApi.isAvailable();
     }
 
+    /** Core APIs must be published together before any business feature starts. */
+    public static boolean isCoreInitialized() {
+        return messageApi != null && databaseApi != null && accountApi != null
+                && contactApi != null && networkApi != null && messageEventApi != null
+                && messageObserveApi != null && versionApi != null && taskApi != null;
+    }
+
     public static void clear() {
-        WeChatMessageObserveApi observe = messageObserveApi;
-        if (observe != null) observe.destroy();
-        WeChatMessageChangeApi messageChanges = messageChangeApi;
-        if (messageChanges != null) messageChanges.destroy();
-        WeChatMessageEventApi messageEvents = messageEventApi;
-        if (messageEvents != null) messageEvents.destroy();
+        releaseCurrentApis();
         messageApi = null;
         databaseApi = null;
         accountApi = null;
@@ -510,6 +513,17 @@ public final class WeChatApis {
         transferApi = null;
         verifyUserApi = null;
         snsApi = null;
+    }
+
+    private static void releaseCurrentApis() {
+        WeChatMessageObserveApi observe = messageObserveApi;
+        if (observe != null) observe.destroy();
+        WeChatMessageChangeApi messageChanges = messageChangeApi;
+        if (messageChanges != null) messageChanges.destroy();
+        WeChatMessageEventApi messageEvents = messageEventApi;
+        if (messageEvents != null) messageEvents.destroy();
+        WeChatTaskApi tasks = taskApi;
+        if (tasks != null) tasks.shutdown();
     }
 
     public static final class MessageGroup {
