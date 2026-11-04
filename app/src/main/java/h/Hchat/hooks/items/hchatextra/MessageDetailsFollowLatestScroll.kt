@@ -106,17 +106,17 @@ internal object MessageDetailsFollowLatestScroll {
         val clippedBottomPadding = if (parent.clipToPadding) parent.paddingBottom else 0
         val visibleContainer = Rect()
         if (!container.getGlobalVisibleRect(visibleContainer)) return 0
-        val containerBottom = drawnBottomOnScreen(
+        val containerBottom = drawnBottomInWindow(
             container, (container.height - clippedBottomPadding).coerceAtLeast(container.paddingTop)
         )
-        val labelBottom = drawnBottomOnScreen(label, label.height)
+        val labelBottom = drawnBottomInWindow(label, label.height)
         return (labelBottom - minOf(containerBottom, visibleContainer.bottom)).coerceAtLeast(0)
     }
 
-    /** Includes host translations and parent transforms; layout coordinates alone miss animations. */
-    private fun drawnBottomOnScreen(view: View, localBottom: Int): Int {
-        val screen = IntArray(2)
-        view.getLocationOnScreen(screen)
+    /** Matches getGlobalVisibleRect's window coordinates, including host and parent transforms. */
+    private fun drawnBottomInWindow(view: View, localBottom: Int): Int {
+        val location = IntArray(2)
+        view.getLocationInWindow(location)
         val origin = floatArrayOf(0f, 0f)
         val bounds = RectF(0f, 0f, view.width.toFloat(), localBottom.toFloat())
         var ancestor: View? = view
@@ -128,7 +128,7 @@ internal object MessageDetailsFollowLatestScroll {
             }
             ancestor = ancestor.parent as? View
         }
-        return screen[1] + ceil(bounds.bottom - origin[1]).toInt()
+        return location[1] + ceil(bounds.bottom - origin[1]).toInt()
     }
 
     fun correctTailOverflow(

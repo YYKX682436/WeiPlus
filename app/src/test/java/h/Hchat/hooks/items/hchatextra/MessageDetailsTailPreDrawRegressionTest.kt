@@ -1,6 +1,7 @@
 package h.Hchat.hooks.items.hchatextra
 
 import android.app.Activity
+import android.content.Context
 import android.view.View
 import android.view.ViewGroup
 import android.view.Gravity
@@ -83,6 +84,18 @@ class MessageDetailsTailPreDrawRegressionTest {
         val row = fixture.tail()
         row.translationY = 30f
         assertTrue("API 27 uses the actual translated position", fixture.overflow(row) > 0)
+        fixture.destroy()
+    }
+
+    @Test fun `window offset does not create a false overflow`() {
+        // Global visible rectangles are relative to the window, while screen locations also
+        // include the window's placement (for example in split screen or a floating window).
+        val fixture = Fixture(screenOffset = 250)
+        fixture.observeAtNativeEdge()
+        assertEquals("a visible tail remains visible when the whole window is offset", 0,
+            fixture.overflow(fixture.tail()))
+        val grown = fixture.growTail(100)
+        assertTrue("a real overflow is still detected in the offset window", fixture.overflow(grown) > 0)
         fixture.destroy()
     }
 
@@ -249,11 +262,11 @@ class MessageDetailsTailPreDrawRegressionTest {
         fixture.destroy()
     }
 
-    private class Fixture {
+    private class Fixture(screenOffset: Int = 0) {
         private val controller = Robolectric.buildActivity(Activity::class.java).setup()
         private val activity = controller.get()
-        val adapter = Rows()
-        val list = RecyclerView(activity).apply {
+        val adapter = Rows(screenOffset)
+        val list = ScreenOffsetRecycler(activity, screenOffset).apply {
             layoutManager = LinearLayoutManager(activity)
             adapter = this@Fixture.adapter
         }
@@ -311,10 +324,25 @@ class MessageDetailsTailPreDrawRegressionTest {
         fun destroy() { controller.pause().stop().destroy() }
     }
 
-    private class Rows : RecyclerView.Adapter<Rows.Holder>() {
+    private class ScreenOffsetRecycler(activity: Activity, private val screenOffset: Int) : RecyclerView(activity) {
+        override fun getLocationOnScreen(outLocation: IntArray) {
+            super.getLocationOnScreen(outLocation)
+            outLocation[1] += screenOffset
+        }
+    }
+
+    private class ScreenOffsetTextView(context: Context, private val screenOffset: Int) : TextView(context) {
+        override fun getLocationOnScreen(outLocation: IntArray) {
+            super.getLocationOnScreen(outLocation)
+            outLocation[1] += screenOffset
+        }
+    }
+
+    private class Rows(private val screenOffset: Int = 0) : RecyclerView.Adapter<Rows.Holder>() {
         var lastHeight = 40
         class Holder(view: TextView) : RecyclerView.ViewHolder(view)
-        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int) = Holder(TextView(parent.context))
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int) =
+            Holder(ScreenOffsetTextView(parent.context, screenOffset))
         override fun getItemCount() = 16
         override fun onBindViewHolder(holder: Holder, position: Int) {
             (holder.itemView as TextView).text = "22:08:53"
