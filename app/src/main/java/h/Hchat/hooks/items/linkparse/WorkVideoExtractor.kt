@@ -1,0 +1,111 @@
+package h.Hchat.hooks.items.linkparse
+
+import java.net.URI
+import java.util.Locale
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
+
+/** Extracts only the video shapes verified against public samples. No gallery fallback. */
+internal object WorkVideoExtractor {
+    private val json = Json { ignoreUnknownKeys = true }
+    private const val MAX_PAGE_CHARS = 3_000_000
+
+    fun douyin(body: String, expectedId: String): String? = safely {
+        if (!expectedId.matches(Regex("[1-9][0-9]{15,19}"))) return@safely null
+        val root = json.parseToJsonElement(body).obj() ?: return@safely null
+        if (root.str("status_code") != "0") return@safely null
+        val detail = root.obj("aweme_detail") ?: return@safely null
+        if (detail.str("aweme_id") != expectedId || detail.str("aweme_type") != "0") return@safely null
+        if (!detail.array("images").isNullOrEmpty()) return@safely null
+        val urls = detail.obj("video")?.obj("play_addr")?.array("url_list") ?: return@safely null
+        urls.firstNotNullOfOrNull { it.prim()?.contentOrNull?.takeIf { u -> allowedMedia(u, WorkLinkMatcher.Platform.DOUYIN) } }
+    }
+
+    fun xiaohongshu(html: String, expectedId: String): String? = safely {
+        if (!expectedId.matches(Regex("[a-fA-F0-9]{24}"))) return@safely null
+        val root = parseState(html, "__INITIAL_STATE__") ?: return@safely null
+        val note = root.obj("noteData")?.obj("data")?.obj("noteData") ?: return@safely null
+        if (!note.str("noteId").equals(expectedId, true) || note.str("type") != "video") return@safely null
+        val streams = note.obj("video")?.obj("media")?.obj("stream")?.array("h264") ?: return@safely null
+        streams.firstNotNullOfOrNull { it.obj()?.str("masterUrl")?.let(::secureXhsMedia) }
+    }
+
+    fun kuaishou(html: String, expectedNumericId: String): String? = safely {
+        if (!expectedNumericId.matches(Regex("[1-9][0-9]{5,24}"))) return@safely null
+        val root = parseState(html, "INIT_STATE") ?: return@safely null
+        val photos = root.values.mapNotNull { it.obj()?.obj("photo") }
+        if (photos.size != 1) return@safely null
+        val photo = photos.single()
+        if (photo.str("photoId") != expectedNumericId || photo.str("photoType") != "VIDEO") return@safely null
+        val urls = photo.array("mainMvUrls") ?: return@safely null
+        urls.firstNotNullOfOrNull { it.obj()?.str("url")?.takeIf { u -> allowedMedia(u, WorkLinkMatcher.Platform.KUAISHOU) } }
+    }
+
+    private fun secureXhsMedia(raw: String): String? {
+        val uri = runCatching { URI(raw) }.getOrNull() ?: return null
+        val host = uri.host?.lowercase(Locale.ROOT) ?: return null
+        if (uri.userInfo != null || (host != "xhscdn.com" && !host.endsWith(".xhscdn.com"))) return null
+        val secure = if (uri.scheme.equals("http", true) && (uri.port == -1 || uri.port == 80)) {
+            "https://" + raw.substring(raw.indexOf("://") + 3)
+        } else raw
+        return secure.takeIf { allowedMedia(it, WorkLinkMatcher.Platform.XIAOHONGSHU) }
+    }
+
+    fun allowedMedia(raw: String, platform: WorkLinkMatcher.Platform): Boolean {
+        val uri = runCatching { URI(raw) }.getOrNull() ?: return false
+        if (!uri.scheme.equals("https", true) || uri.userInfo != null || (uri.port != -1 && uri.port != 443)) return false
+        val host = uri.host?.lowercase(Locale.ROOT) ?: return false
+        fun domain(d: String) = host == d || host.endsWith(".$d")
+        return when (platform) {
+            WorkLinkMatcher.Platform.DOUYIN -> domain("douyinvod.com") || host == "www.douyin.com"
+            WorkLinkMatcher.Platform.XIAOHONGSHU -> domain("xhscdn.com")
+            WorkLinkMatcher.Platform.KUAISHOU -> domain("kwimgs.com") || domain("yximgs.com")
+        }
+    }
+
+    private fun parseState(html: String, name: String): JsonObject? {
+        if (html.length > MAX_PAGE_CHARS) return null
+        val prefix = Regex("window\\." + Regex.escape(name) + "\\s*=\\s*").find(html) ?: return null
+        val end = html.indexOf("</script>", prefix.range.last + 1, ignoreCase = true)
+        if (end < 0) return null
+        val raw = html.substring(prefix.range.last + 1, end).trim().removeSuffix(";").trim()
+        return json.parseToJsonElement(replaceUndefinedOutsideStrings(raw)).obj()
+    }
+
+    private fun replaceUndefinedOutsideStrings(input: String): String {
+        val out = StringBuilder(input.length)
+        var quoted = false
+        var escaped = false
+        var i = 0
+        while (i < input.length) {
+            val c = input[i]
+            if (quoted) {
+                out.append(c)
+                if (escaped) escaped = false else if (c == '\\') escaped = true else if (c == '"') quoted = false
+                i++
+            } else if (c == '"') {
+                quoted = true
+                out.append(c)
+                i++
+            } else if (input.startsWith("undefined", i) && (i == 0 || input[i - 1] in "[,: \t\r\n") &&
+                (i + 9 == input.length || input[i + 9] in "]}, \t\r\n")) {
+                out.append("null")
+                i += 9
+            } else {
+                out.append(c)
+                i++
+            }
+        }
+        return out.toString()
+    }
+
+    private inline fun safely(block: () -> String?): String? = runCatching(block).getOrNull()
+    private fun kotlinx.serialization.json.JsonElement.obj() = this as? JsonObject
+    private fun kotlinx.serialization.json.JsonElement.prim() = this as? JsonPrimitive
+    private fun JsonObject.obj(key: String) = this[key]?.obj()
+    private fun JsonObject.array(key: String) = this[key] as? JsonArray
+    private fun JsonObject.str(key: String) = this[key]?.prim()?.contentOrNull
+}

@@ -107,6 +107,7 @@ import h.Hchat.hooks.items.miniprogrambaselib.FakeMiniProgramBaseLibFeature
 import h.Hchat.hooks.items.miniprogramsplashad.SkipGlobalMiniProgramSplashAdsFeature
 import h.Hchat.hooks.items.miniprogramvideoad.SkipMiniProgramVideoAdsFeature
 import h.Hchat.hooks.items.musicorder.QQMusicOrderFeature
+import h.Hchat.hooks.items.linkparse.LinkParseFeature
 import h.Hchat.hooks.items.sportstep.SportStepFeature
 import h.Hchat.hooks.items.moments.OriginalMomentsUploadFeature
 import h.Hchat.hooks.items.moments.MomentsAutoCommentFeature
@@ -380,6 +381,7 @@ private fun featureGroups(
                 SkipWebRiskSettingsProvider.FEATURE_ID,
                 StatusTextLimitFeature.ID,
                 QQMusicOrderFeature.ID,
+                LinkParseFeature.ID,
                 SportStepFeature.ID
             )
         )
@@ -910,6 +912,7 @@ private fun featureSubSearchTerms(featureId: String): List<String> {
             "文字转语音播报", "文字转语音", "语音播报", "TTS引擎", "语音引擎", "播报角色", "TTS角色", "声音角色", "音色", "Voice", "自动播放语音", "播放语音消息", "原语音", "音键控制", "音量键控制", "播报发送人", "免打扰", "开始时间", "结束时间", "设置允许名单", "允许名单"
         )
         ZombieCheckFeature.ID -> listOf("僵尸粉检测", "好友关系检测", "单向好友", "删除好友", "异常好友", "好友标签")
+        LinkParseFeature.ID -> listOf("链接解析", "抖音", "小红书", "快手", "群聊触发")
         QQMusicOrderFeature.ID -> listOf("QQ点歌", "点歌", "音乐卡片", "点歌发送卡片", "点歌发送语音", "触发词", "歌手", "封面", "AppID", "允许点歌聊天")
         GroupChatLabelFeature.ID -> listOf("群聊标签", "群组分类", "群聊分类", "标签群聊", "批量选择群聊")
         QuickGroupChatLabelFeature.ID -> listOf("快捷设置群聊标签", "群聊标签", "会话长按菜单", "聊天分组", "群聊分类")
@@ -1591,6 +1594,7 @@ internal fun FeatureSettingsPage(
         TextSpeechFeature.ID -> TextSpeechMiuixPage(context, provider, onBack)
         ZombieCheckFeature.ID -> ZombieCheckMiuixPage(context, provider, onBack)
         QQMusicOrderFeature.ID -> QQMusicOrderMiuixPage(context, provider, onBack)
+        LinkParseFeature.ID -> LinkParseMiuixPage(context, provider, onBack)
         SportStepFeature.ID -> SportStepMiuixPage(context, provider, onBack)
         BackgroundRunAssistFeature.ID -> BackgroundRunAssistMiuixPage(context, provider, onBack)
         QuoteDeleteClearFeature.ID -> QuoteDeleteClearMiuixPage(context, provider, onBack)

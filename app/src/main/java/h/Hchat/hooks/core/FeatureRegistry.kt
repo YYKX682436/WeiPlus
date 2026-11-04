@@ -45,6 +45,7 @@ import h.Hchat.hooks.items.miniprogrambaselib.FakeMiniProgramBaseLibFeature
 import h.Hchat.hooks.items.miniprogramsplashad.SkipGlobalMiniProgramSplashAdsFeature
 import h.Hchat.hooks.items.miniprogramvideoad.SkipMiniProgramVideoAdsFeature
 import h.Hchat.hooks.items.musicorder.QQMusicOrderFeature
+import h.Hchat.hooks.items.linkparse.LinkParseFeature
 import h.Hchat.hooks.items.sportstep.SportStepFeature
 import h.Hchat.hooks.items.moments.OriginalMomentsUploadFeature
 import h.Hchat.hooks.items.moments.MomentsAutoLikeFeature
@@ -158,6 +159,7 @@ object FeatureRegistry {
             .register(SkipMiniProgramVideoAdsFeature())
             .register(SkipGlobalMiniProgramSplashAdsFeature())
             .register(QQMusicOrderFeature())
+            .register(LinkParseFeature())
             .register(SportStepFeature())
             .register(MomentsAutoLikeFeature())
             .register(MomentsAutoCommentFeature())
