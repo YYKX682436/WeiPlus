@@ -14,7 +14,7 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
 class LinkParseWriteHookRegressionTest {
-    class Native(val field_status: Int, val field_isSend: Int)
+    class Native(val field_status: Int, val field_isSend: Int, val field_talker: String = "filehelper")
     class Host { fun write(id: Long, message: Native, notify: Boolean): Int = 1 }
     private val method = Host::class.java.getDeclaredMethod("write", Long::class.javaPrimitiveType, Native::class.java, Boolean::class.javaPrimitiveType)
     private fun msg(id: Long = 42) = WeChatMessage(id, 11, 1, 2, 1, System.currentTimeMillis(), "filehelper", "https://v.douyin.com/_WFxKTl9V78/", "", "", "", 0)

@@ -5,7 +5,7 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class LinkParseWriteGateTest {
-    private class Native(val field_status: Int, val field_isSend: Int)
+    private class Native(val field_status: Int, val field_isSend: Int, val field_talker: String = "filehelper")
     private class Missing
     private fun message(id: Long = 12, status: Int = 2, send: Int = 1) =
         WeChatMessage(id, 0, 1, status, send, System.currentTimeMillis(), "filehelper", "https://v.douyin.com/abc123/", "", "", "", 0)
@@ -19,6 +19,8 @@ class LinkParseWriteGateTest {
         LinkParseWriteGate.observe(1, 12, Native(2, 0), { message() }, accept)
         LinkParseWriteGate.observe(1, 0, Native(2, 1), { message() }, accept)
         LinkParseWriteGate.observe(1, 12, Missing(), { message() }, accept)
+        LinkParseWriteGate.observe(1, 12, Native(2, 1, ""), { message() }, accept)
+        LinkParseWriteGate.observe(1, 12, Native(2, 1, "another-chat"), { message() }, accept)
         LinkParseWriteGate.observe(1, 12, Native(2, 1), { null }, accept)
         LinkParseWriteGate.observe(1, 12, Native(2, 1), { message(id = 13) }, accept)
         LinkParseWriteGate.observe(1, 12, Native(2, 1), { message(status = 5) }, accept)

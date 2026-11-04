@@ -29,8 +29,10 @@ internal object LinkParseWriteGate {
         val status = KavaReflector.findFieldRecursive(native.javaClass, "field_status")?.get(native) as? Number
         val sent = KavaReflector.findFieldRecursive(native.javaClass, "field_isSend")?.get(native) as? Number
         if (status?.toInt() != 2 || sent?.toInt() != 1) return
+        val talker = KavaReflector.findFieldRecursive(native.javaClass, "field_talker")?.get(native) as? String
+        if (talker.isNullOrBlank()) return
         val message = lookup(id) ?: return
-        if (!message.isOutgoing() || message.status != 2 || message.msgId != id) return
+        if (!message.isOutgoing() || message.status != 2 || message.msgId != id || message.talker != talker) return
         accept(message)
     }
 }
