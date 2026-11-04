@@ -441,9 +441,10 @@ class MessageDetailsR5RegressionTest {
     }
 
     /** Production HchatExtraHooker entry, allocated without unrelated host/DexKit setup. */
-    private class ProductionAvatarBindHarness(
+    internal class ProductionAvatarBindHarness(
         private val position: String = "avatar_below",
-        private val gapDp: Int = 0
+        private val gapDp: Int = 0,
+        private val format: String = "\${msgId}"
     ) {
         private val type = Class.forName("h.Hchat.hooks.items.hchatextra.HchatExtraHooker")
         private val target: Any = run {
@@ -477,8 +478,7 @@ class MessageDetailsR5RegressionTest {
             field("messageDetailsColorListeners").set(target, MessageDetailsPreDrawQueue())
             field("messageDetailsBindTokens").set(target, WeakHashMap<View, MessageDetailsBindingGeneration>())
             field("messageDetailsScrollAttachListeners").set(target, WeakHashMap<View, View.OnAttachStateChangeListener>())
-            field("messageDetailsRowGrowthListeners").set(target, WeakHashMap<View, View.OnLayoutChangeListener>())
-            field("messageDetailsTailCheckCallbacks").set(target, WeakHashMap<View, Runnable>())
+            field("messageDetailsTailChecks").set(target, MessageDetailsPreDrawQueue())
             field("logger").set(target, { _: String, _: Throwable? -> Unit })
             field("hideSelfAvatar").setBoolean(target, false)
             field("hideOtherAvatar").setBoolean(target, false)
@@ -490,8 +490,8 @@ class MessageDetailsR5RegressionTest {
             field("messageDetailsInitialRefreshLock").set(target, Any())
         }
 
-        fun details(id: Long): Any = detailsType.declaredConstructors.single().apply { isAccessible = true }
-            .newInstance(1, id, 0L, "filehelper", "", "", "", "", "", "", 0L, true)
+        fun details(id: Long, messageType: Int = 1): Any = detailsType.declaredConstructors.single().apply { isAccessible = true }
+            .newInstance(messageType, id, 0L, "filehelper", "", "", "", "", "", "", 0L, true)
 
         fun bind(root: View, holder: Any, details: Any): Boolean {
             val method = type.getDeclaredMethod(
@@ -499,6 +499,25 @@ class MessageDetailsR5RegressionTest {
                 detailsType, TextView::class.java, Any::class.java, Integer.TYPE
             ).apply { isAccessible = true }
             return method.invoke(target, root, null, holder, details, null, null, 0) as Boolean
+        }
+
+        fun bindNative(root: View, holder: Any, nativeMessage: Any, bindPosition: Int, id: Long,
+                       messageType: Int = 1): Boolean {
+            val method = type.getDeclaredMethod(
+                "insertMessageDetailsLabel", View::class.java, TextView::class.java, Any::class.java,
+                detailsType, TextView::class.java, Any::class.java, Integer.TYPE
+            ).apply { isAccessible = true }
+            return method.invoke(target, root, null, holder, details(id, messageType), null, nativeMessage, bindPosition) as Boolean
+        }
+
+        fun confirmation(container: View, root: View, label: TextView, bindPosition: Int): MessageDetailsTailConfirmation? {
+            val token = type.getDeclaredMethod("messageDetailsBindToken", View::class.java)
+                .apply { isAccessible = true }.invoke(target, root)
+            return type.getDeclaredMethod(
+                "currentMessageDetailsTailConfirmation", View::class.java, View::class.java, TextView::class.java,
+                Integer.TYPE, Any::class.java
+            ).apply { isAccessible = true }.invoke(target, container, root, label, bindPosition, token)
+                as? MessageDetailsTailConfirmation
         }
 
         fun prepareBackfill(adapterClass: Class<*>) {
@@ -539,7 +558,7 @@ class MessageDetailsR5RegressionTest {
         private fun config(enabled: Boolean): Any {
             val configType = Class.forName("h.Hchat.hooks.items.hchatextra.HchatExtraHooker\$MessageDetailsConfig")
             return configType.declaredConstructors.single().apply { isAccessible = true }.newInstance(
-                enabled, position, "\${msgId}", "HH:mm:ss", setOf("msgId"), 10f,
+                enabled, position, format, "HH:mm:ss", if (format == "\${time}") setOf("time") else setOf("msgId"), 10f,
                 gapDp, 0, 0, false, 0xff000000.toInt(), 0xff000000.toInt(), 0, 0
             )
         }

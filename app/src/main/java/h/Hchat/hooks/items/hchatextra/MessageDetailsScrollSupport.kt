@@ -241,6 +241,11 @@ internal object MessageDetailsScrollSupport {
         else -> container.canScrollVertically(-1)
     }
 
+    /** Only observe the native animation; never stop or replace it. */
+    fun isRecyclerSettling(container: View): Boolean =
+        containerKind(container) == ContainerKind.RECYCLER &&
+            (invokeNoArg(container, "getScrollState") as? Number)?.toInt() == 2
+
     fun correctBy(container: View, overflow: Int): Boolean {
         if (overflow <= 0 || !container.canScrollVertically(1)) return false
         return when (containerKind(container)) {

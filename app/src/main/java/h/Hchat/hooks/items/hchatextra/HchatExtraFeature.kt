@@ -219,8 +219,7 @@ private class HchatExtraHooker(
     private val messageDetailsBindStates = ThreadLocal<ArrayDeque<MessageDetailsBindState>>()
     private val messageDetailsBindTokens = WeakHashMap<View, MessageDetailsBindingGeneration>()
     private val messageDetailsScrollAttachListeners = WeakHashMap<View, View.OnAttachStateChangeListener>()
-    private val messageDetailsRowGrowthListeners = WeakHashMap<View, View.OnLayoutChangeListener>()
-    private val messageDetailsTailCheckCallbacks = WeakHashMap<View, Runnable>()
+    private val messageDetailsTailChecks = MessageDetailsPreDrawQueue()
     private val adapterItemAccessCache = ConcurrentHashMap<Class<*>, CachedAdapterItemAccess>()
     private val messageDetailsConfigHandler = Handler(Looper.getMainLooper())
     private val messageDetailsPageReadyGate = MessageDetailsPageReadyGate()
@@ -491,6 +490,9 @@ private class HchatExtraHooker(
                     val talker = WeChatApis.chatPage()?.currentTalker().orEmpty()
                     if (talker.isBlank()) return@schedule false
                     val recycler = findReadyMessageDetailsRecycler(currentDecor, adapterClass) ?: return@schedule false
+                    // Capture the native tail position before refreshing visible rows can grow them.
+                    MessageDetailsFollowLatestRegistry.observe(recycler)
+                    installMessageDetailsRecyclerScrollHook(recycler)
                     val adapter = MessageDetailsScrollSupport.adapter(recycler) ?: return@schedule false
                     val container = recycler as? ViewGroup ?: return@schedule false
                     val visiblePositions = (0 until container.childCount).asSequence()
@@ -876,6 +878,8 @@ private class HchatExtraHooker(
         val holderRoot = findRootView(adapterHolder) ?: return MessageDetailsBindState(null)
         if (isScrollingContainer(holderRoot)) return MessageDetailsBindState(null)
         val root = messageRowRoot(holderRoot)
+        // Observe an attached viewport before the host bind and our label change its scroll range.
+        observeMessageDetailsScrollAttachment(root)
         val holder = holderRoot.tag?.takeIf { isMessageDetailsHolder(it, root) }
         val message = resolveMessageFromBindArgs(args)
         val state = MessageDetailsBindState(holder, root, message)
@@ -1350,7 +1354,7 @@ private class HchatExtraHooker(
         if (isScrollingContainer(holderRoot)) return false
         val root = messageRowRoot(holderRoot)
         messageDetailsRetryListeners.cancel(root)
-        cancelMessageDetailsRowGrowth(root)
+        cancelMessageDetailsRowGrowth(root, forgetTail = false)
         val nativeMessage = capturedMessage ?: resolveMessageFromBindArgs(args)
             ?: resolveMessageFromAdapter(bindObject, messageBindPosition(args))
         if (nativeMessage == null) {
@@ -1455,7 +1459,8 @@ private class HchatExtraHooker(
             } to true
         }
         if (!isNew) return
-        if (root.isAttachedToWindow) listener.onViewAttachedToWindow(root) else root.addOnAttachStateChangeListener(listener)
+        root.addOnAttachStateChangeListener(listener)
+        if (root.isAttachedToWindow) listener.onViewAttachedToWindow(root)
     }
 
     private fun observeMessageDetailsRowLayout(
@@ -1463,30 +1468,7 @@ private class HchatExtraHooker(
         label: TextView,
         bindPosition: Int
     ) {
-        val token = messageDetailsBindToken(root)
-        val rootReference = WeakReference(root)
-        val labelReference = WeakReference(label)
-        val previous = synchronized(messageDetailsRowGrowthListeners) {
-            messageDetailsRowGrowthListeners.remove(root)
-        }
-        previous?.let(root::removeOnLayoutChangeListener)
-        lateinit var listener: View.OnLayoutChangeListener
-        listener = View.OnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
-            val currentRoot = rootReference.get() ?: return@OnLayoutChangeListener
-            currentRoot.removeOnLayoutChangeListener(listener)
-            synchronized(messageDetailsRowGrowthListeners) {
-                if (messageDetailsRowGrowthListeners[currentRoot] === listener) {
-                    messageDetailsRowGrowthListeners.remove(currentRoot)
-                }
-            }
-            val currentLabel = labelReference.get() ?: return@OnLayoutChangeListener
-            scheduleMessageDetailsTailCheck(currentRoot, currentLabel, bindPosition, token)
-        }
-        synchronized(messageDetailsRowGrowthListeners) { messageDetailsRowGrowthListeners[root] = listener }
-        root.addOnLayoutChangeListener(listener)
-        // Check once after this bind even when the row keeps the same outer bounds.
-        // The one-shot layout listener above covers the case where this post precedes measure/layout.
-        scheduleMessageDetailsTailCheck(root, label, bindPosition, token)
+        scheduleMessageDetailsTailCheck(root, label, bindPosition, messageDetailsBindToken(root))
     }
 
     private fun scheduleMessageDetailsTailCheck(
@@ -1497,57 +1479,33 @@ private class HchatExtraHooker(
     ) {
         val rootReference = WeakReference(root)
         val labelReference = WeakReference(label)
-        lateinit var callback: Runnable
-        callback = Runnable {
-            val currentRoot = rootReference.get() ?: return@Runnable
-            synchronized(messageDetailsTailCheckCallbacks) {
-                if (messageDetailsTailCheckCallbacks[currentRoot] !== callback) return@Runnable
-                messageDetailsTailCheckCallbacks.remove(currentRoot)
-            }
-            val currentLabel = labelReference.get() ?: return@Runnable
+        messageDetailsTailChecks.schedule(root, root) {
+            val currentRoot = rootReference.get() ?: return@schedule
+            val currentLabel = labelReference.get() ?: return@schedule
             if (!messageDetailsConfig.enabled || !isCurrentMessageDetailsBind(currentRoot, bindToken) ||
                 !currentRoot.isAttachedToWindow || currentLabel.parent == null ||
                 currentLabel.tag != TAG_MESSAGE_DETAILS_VIEW
-            ) return@Runnable
-            val container = nearestMessageDetailsScrollContainer(currentRoot) ?: return@Runnable
-            if (!MessageDetailsScrollSupport.supportsAutomaticTailCorrection(container)) return@Runnable
+            ) return@schedule
+            val container = nearestMessageDetailsScrollContainer(currentRoot) ?: return@schedule
+            if (!MessageDetailsScrollSupport.supportsAutomaticTailCorrection(container)) return@schedule
             MessageDetailsFollowLatestRegistry.observe(container)
-            val followingLatest = MessageDetailsFollowLatestRegistry.isFollowingLatest(container)
-            if (!followingLatest) return@Runnable
-            if (MessageDetailsFollowLatestScroll.overflowDistance(container, currentRoot, currentLabel) <= 0) {
-                return@Runnable
-            }
             val confirmation = currentMessageDetailsTailConfirmation(
                 container, currentRoot, currentLabel, bindPosition, bindToken
-            ) ?: return@Runnable
-            if (!confirmation.latestMessageConfirmed) return@Runnable
+            ) ?: return@schedule
+            if (!confirmation.latestMessageConfirmed || !confirmation.bindIsCurrent ||
+                !confirmation.rowIsAttached || !confirmation.featureEnabled) return@schedule
             val validator = messageDetailsTailValidator(
                 container, currentRoot, currentLabel, bindPosition, bindToken
             )
             MessageDetailsFollowLatestRegistry.rememberTailRow(
-                container, currentRoot, currentLabel, confirmation, validator
+                container, currentRoot, currentLabel, confirmation, alreadyInPreDraw = true, validator = validator
             )
-        }
-        val previous = synchronized(messageDetailsTailCheckCallbacks) {
-            messageDetailsTailCheckCallbacks.put(root, callback)
-        }
-        previous?.let(root::removeCallbacks)
-        if (!root.post(callback)) {
-            synchronized(messageDetailsTailCheckCallbacks) {
-                if (messageDetailsTailCheckCallbacks[root] === callback) messageDetailsTailCheckCallbacks.remove(root)
-            }
         }
     }
 
-    private fun cancelMessageDetailsRowGrowth(root: View) {
-        val listener = synchronized(messageDetailsRowGrowthListeners) {
-            messageDetailsRowGrowthListeners.remove(root)
-        }
-        listener?.let(root::removeOnLayoutChangeListener)
-        val callback = synchronized(messageDetailsTailCheckCallbacks) {
-            messageDetailsTailCheckCallbacks.remove(root)
-        }
-        callback?.let(root::removeCallbacks)
+    private fun cancelMessageDetailsRowGrowth(root: View, forgetTail: Boolean = true) {
+        messageDetailsTailChecks.cancel(root)
+        if (forgetTail) MessageDetailsFollowLatestRegistry.forgetTailRow(root)
     }
 
     private fun nearestMessageDetailsScrollContainer(row: View): View? {
@@ -1596,7 +1554,10 @@ private class HchatExtraHooker(
         val adapter = MessageDetailsScrollSupport.adapter(container) ?: return null
         val itemCount = MessageDetailsScrollSupport.adapterItemCount(container) ?: return null
         val position = MessageDetailsScrollSupport.childAdapterPosition(container, row) ?: return null
-        if (position !in 0 until itemCount || (bindPosition >= 0 && position != bindPosition)) return null
+        // The host bind can use an inner adapter's position while RecyclerView reports the
+        // outer adapter position (for example, a wrapper with a header). Only the latter is
+        // comparable to the current outer adapter and its item identity below.
+        if (position !in 0 until itemCount) return null
         val latest = MessageDetailsScrollSupport.isConfirmedLatestMessage(
             position = position,
             itemCount = itemCount,
@@ -1699,6 +1660,12 @@ private class HchatExtraHooker(
                             MessageDetailsFollowLatestRegistry.onRecyclerScrolled(view, verticalDelta)
                         }
                     }
+                }
+            }
+            val stateMethod = MessageDetailsScrollSupport.hostMethod(container, "dispatchOnScrollStateChanged", intType)
+            install("scroll_state", stateMethod) { chain ->
+                chain.proceed().also {
+                    (chain.thisObject as? View)?.let(MessageDetailsFollowLatestRegistry::onRecyclerScrollStateChanged)
                 }
             }
         } else if (kind == MessageDetailsScrollSupport.ContainerKind.ABS_LIST) {
@@ -2183,16 +2150,7 @@ private class HchatExtraHooker(
                 .also { messageDetailsScrollAttachListeners.clear() }
         }
         attachListeners.forEach { (root, listener) -> root.removeOnAttachStateChangeListener(listener) }
-        val growthListeners = synchronized(messageDetailsRowGrowthListeners) {
-            messageDetailsRowGrowthListeners.entries.map { it.key to it.value }
-                .also { messageDetailsRowGrowthListeners.clear() }
-        }
-        growthListeners.forEach { (root, listener) -> root.removeOnLayoutChangeListener(listener) }
-        val tailChecks = synchronized(messageDetailsTailCheckCallbacks) {
-            messageDetailsTailCheckCallbacks.entries.map { it.key to it.value }
-                .also { messageDetailsTailCheckCallbacks.clear() }
-        }
-        tailChecks.forEach { (root, callback) -> root.removeCallbacks(callback) }
+        messageDetailsTailChecks.clear()
         MessageDetailsFollowLatestRegistry.clear()
     }
 
@@ -2781,6 +2739,7 @@ private class HchatExtraHooker(
         messageDetailsLayoutCallbacks.cancel(root)
         messageDetailsAvatarGeometryCallbacks.cancel(root)
         messageDetailsRetryListeners.cancel(root)
+        cancelMessageDetailsRowGrowth(root)
         synchronized(messageDetailsBindTokens) {
             messageDetailsBindTokens.getOrPut(root) { MessageDetailsBindingGeneration() }.invalidate()
         }

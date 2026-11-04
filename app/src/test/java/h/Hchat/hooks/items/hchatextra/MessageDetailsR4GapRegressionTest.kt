@@ -172,16 +172,18 @@ class MessageDetailsR4GapRegressionTest {
 
     @Test
     fun `actual RecyclerView and ListView correct measured tail overflow without moving history`() {
-        val recycler = ShortNamedRecycler(context).apply { layoutManager = LinearLayoutManager(context) }
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val recycler = ShortNamedRecycler(activity).apply { layoutManager = LinearLayoutManager(activity) }
         val recyclerAdapter = HeightRecyclerAdapter(rowCount = 16, lastRowHeight = 40)
         recycler.adapter = recyclerAdapter
-        measureAndLayout(recycler, 320, 120)
+        activity.setContentView(recycler)
+        measureWithoutIdle(recycler, 320, 120)
         recycler.scrollToPosition(recyclerAdapter.itemCount - 1)
-        measureAndLayout(recycler, 320, 120)
+        measureWithoutIdle(recycler, 320, 120)
         assertFalse("RecyclerView fixture starts at its old tail", recycler.canScrollVertically(1))
         recyclerAdapter.lastRowHeight = 100
         recyclerAdapter.notifyItemChanged(recyclerAdapter.itemCount - 1)
-        measureAndLayout(recycler, 320, 120)
+        measureWithoutIdle(recycler, 320, 120)
         val recyclerLabel = recycler.findViewHolderForAdapterPosition(recyclerAdapter.itemCount - 1)?.itemView as? TextView
         assertTrue("the actual latest RecyclerView row remains attached", recyclerLabel != null)
         assertTrue("measured RecyclerView row growth creates a real viewport overflow",
@@ -189,20 +191,31 @@ class MessageDetailsR4GapRegressionTest {
         val recyclerCorrection = MessageDetailsFollowLatestScroll.correctTailOverflow(
             recycler, recyclerLabel, recyclerLabel, followingLatest = true, isLatestRow = true
         )
-        measureAndLayout(recycler, 320, 120)
+        measureWithoutIdle(recycler, 320, 120)
         assertTrue("latest RecyclerView timestamp receives the measured correction", recyclerCorrection > 0)
         assertEquals(recyclerLabel.height, visibleHeightWithin(recyclerLabel))
 
-        val list = ListView(context)
+        recycler.scrollToPosition(2)
+        measureWithoutIdle(recycler, 320, 120)
+        val readingHistoryPosition = (recycler.layoutManager as LinearLayoutManager).findFirstVisibleItemPosition()
+        assertEquals("a clipped row never changes history position when follow is false", 0,
+            MessageDetailsFollowLatestScroll.correctTailOverflow(
+                recycler, recyclerLabel, recyclerLabel, followingLatest = false, isLatestRow = true
+            ))
+        assertEquals(readingHistoryPosition,
+            (recycler.layoutManager as LinearLayoutManager).findFirstVisibleItemPosition())
+
+        val list = ListView(activity)
         val listAdapter = HeightListAdapter(rowCount = 16, lastRowHeight = 40)
         list.adapter = listAdapter
-        measureAndLayout(list, 320, 120)
+        activity.setContentView(list)
+        measureWithoutIdle(list, 320, 120)
         list.setSelection(listAdapter.count - 1)
-        measureAndLayout(list, 320, 120)
+        measureWithoutIdle(list, 320, 120)
         assertFalse("ListView fixture starts at its old tail", list.canScrollVertically(1))
         listAdapter.lastRowHeight = 100
         listAdapter.notifyDataSetChanged()
-        measureAndLayout(list, 320, 120)
+        measureWithoutIdle(list, 320, 120)
         val lastIndex = listAdapter.count - 1 - list.firstVisiblePosition
         val listLabel = list.getChildAt(lastIndex) as? TextView
         assertTrue("the actual latest ListView row remains attached", listLabel != null)
@@ -211,19 +224,10 @@ class MessageDetailsR4GapRegressionTest {
         val listCorrection = MessageDetailsFollowLatestScroll.correctTailOverflow(
             list, listLabel, listLabel, followingLatest = true, isLatestRow = true
         )
-        measureAndLayout(list, 320, 120)
+        measureWithoutIdle(list, 320, 120)
         assertTrue("latest ListView timestamp receives the measured correction", listCorrection > 0)
         assertEquals(listLabel.height, visibleHeightWithin(listLabel))
 
-        recycler.scrollToPosition(2)
-        measureAndLayout(recycler, 320, 120)
-        val readingHistoryPosition = (recycler.layoutManager as LinearLayoutManager).findFirstVisibleItemPosition()
-        assertEquals("a clipped row never changes history position when follow is false", 0,
-            MessageDetailsFollowLatestScroll.correctTailOverflow(
-                recycler, recyclerLabel, recyclerLabel, followingLatest = false, isLatestRow = true
-            ))
-        assertEquals(readingHistoryPosition,
-            (recycler.layoutManager as LinearLayoutManager).findFirstVisibleItemPosition())
     }
 
     @Test
@@ -302,7 +306,8 @@ class MessageDetailsR4GapRegressionTest {
             var currentIdentity = identity
             remember(stale, identity, currentIdentity = { currentIdentity }) { true }
             currentIdentity = identity("B", 78L) // The holder reuses position zero for B.
-            shadowOf(Looper.getMainLooper()).idle()
+            stale.scroll.viewTreeObserver.dispatchOnPreDraw()
+            stale.scroll.viewTreeObserver.dispatchOnPreDraw()
             assertEquals("an A callback is inert after adapter identity changes", 0, stale.scroll.scrollY)
             assertTrue("the row and timestamp are measured inside a real Android view tree",
                 stale.label.bottom <= stale.row.measuredHeight)
@@ -320,7 +325,11 @@ class MessageDetailsR4GapRegressionTest {
             val identity = identity("B", 78L)
             var validated = false
             remember(current, identity) { validated = true; true }
-            shadowOf(Looper.getMainLooper()).idle()
+            validated = false // registration supplied the initial confirmation; track later validation only
+            assertFalse("no validation runs merely by registering the target", validated)
+            current.scroll.viewTreeObserver.dispatchOnPreDraw()
+            assertFalse("a wholly hidden row gets one frame for native motion", validated)
+            current.scroll.viewTreeObserver.dispatchOnPreDraw()
             assertTrue("the queued correction revalidates its live row", validated)
             assertTrue("a still-current confirmed tail row receives one viewport correction",
                 current.scroll.scrollY > 0)
@@ -458,6 +467,14 @@ class MessageDetailsR4GapRegressionTest {
         )
         view.layout(0, 0, width, height)
         shadowOf(Looper.getMainLooper()).idle()
+        view.measure(
+            View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY)
+        )
+        view.layout(0, 0, width, height)
+    }
+
+    private fun measureWithoutIdle(view: View, width: Int, height: Int) {
         view.measure(
             View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
             View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY)

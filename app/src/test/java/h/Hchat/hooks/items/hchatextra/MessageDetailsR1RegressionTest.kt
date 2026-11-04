@@ -1,6 +1,7 @@
 package h.Hchat.hooks.items.hchatextra
 
 import android.content.Context
+import android.app.Activity
 import android.graphics.Rect
 import android.view.View
 import android.view.ViewGroup
@@ -19,6 +20,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Robolectric
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 
@@ -267,12 +269,13 @@ class MessageDetailsR1RegressionTest {
 
     @Test
     fun `R2 appended row and label growth can clip the latest time in a real scroll viewport`() {
-        val context = RuntimeEnvironment.getApplication()
+        val context = Robolectric.buildActivity(Activity::class.java).setup().get()
         val scroll = ScrollView(context)
         val messages = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
         scroll.addView(messages, ViewGroup.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ))
+        context.setContentView(scroll)
         repeat(5) {
             messages.addView(RelativeLayout(context).apply {
                 addView(View(context), RelativeLayout.LayoutParams(48, 48).apply {
