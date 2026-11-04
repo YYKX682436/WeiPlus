@@ -13,6 +13,12 @@ class WorkVideoExtractorTest {
         assertNull(WorkVideoExtractor.douyin(video.replace("v9.douyinvod.com", "v9.douyinvod.com.evil.example"), id))
     }
 
+    @Test fun douyinRetainsOnlyTrustedAlternativesInOrder() {
+        val id = "7392565659223248165"
+        val body = """{"status_code":0,"aweme_detail":{"aweme_id":"$id","aweme_type":0,"video":{"play_addr":{"url_list":["https://a.douyinvod.com/one","https://evil.example/bad","https://b.douyinvod.com/two","https://a.douyinvod.com/one"]}}}}"""
+        assertEquals(listOf("https://a.douyinvod.com/one", "https://b.douyinvod.com/two"), WorkVideoExtractor.douyinCandidates(body, id))
+    }
+
     @Test fun xhsChecksTheNoteIdentityAndDoesNotTreatImagesAsVideo() {
         val id = "6a9a9fe70000000011033fd1"
         val html = """<script>window.__INITIAL_STATE__ = {"unused":undefined,"noteData":{"data":{"noteData":{"noteId":"$id","type":"video","title":"undefined is text","video":{"media":{"stream":{"h264":[{"masterUrl":"https://sns-video-v6.xhscdn.com/a.mp4"}]}}}}}}};</script>"""

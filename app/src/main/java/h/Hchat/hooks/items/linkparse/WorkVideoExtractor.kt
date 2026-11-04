@@ -13,7 +13,9 @@ internal object WorkVideoExtractor {
     private val json = Json { ignoreUnknownKeys = true }
     private const val MAX_PAGE_CHARS = 3_000_000
 
-    fun douyin(body: String, expectedId: String): String? = safely {
+    fun douyin(body: String, expectedId: String): String? = douyinCandidates(body, expectedId).firstOrNull()
+
+    fun douyinCandidates(body: String, expectedId: String): List<String> = safely {
         if (!expectedId.matches(Regex("[1-9][0-9]{15,19}"))) return@safely null
         val root = json.parseToJsonElement(body).obj() ?: return@safely null
         if (root.str("status_code") != "0") return@safely null
@@ -21,8 +23,8 @@ internal object WorkVideoExtractor {
         if (detail.str("aweme_id") != expectedId || detail.str("aweme_type") != "0") return@safely null
         if (!detail.array("images").isNullOrEmpty()) return@safely null
         val urls = detail.obj("video")?.obj("play_addr")?.array("url_list") ?: return@safely null
-        urls.firstNotNullOfOrNull { it.prim()?.contentOrNull?.takeIf { u -> allowedMedia(u, WorkLinkMatcher.Platform.DOUYIN) } }
-    }
+        urls.mapNotNull { it.prim()?.contentOrNull?.takeIf { u -> allowedMedia(u, WorkLinkMatcher.Platform.DOUYIN) } }.distinct().take(4)
+    } ?: emptyList()
 
     fun xiaohongshu(html: String, expectedId: String): String? = safely {
         if (!expectedId.matches(Regex("[a-fA-F0-9]{24}"))) return@safely null
@@ -102,7 +104,7 @@ internal object WorkVideoExtractor {
         return out.toString()
     }
 
-    private inline fun safely(block: () -> String?): String? = runCatching(block).getOrNull()
+    private inline fun <T> safely(block: () -> T?): T? = runCatching(block).getOrNull()
     private fun kotlinx.serialization.json.JsonElement.obj() = this as? JsonObject
     private fun kotlinx.serialization.json.JsonElement.prim() = this as? JsonPrimitive
     private fun JsonObject.obj(key: String) = this[key]?.obj()

@@ -4,7 +4,6 @@ import h.Hchat.hooks.api.core.WeChatApis
 import h.Hchat.hooks.api.media.WeChatModernVideoSender
 import h.Hchat.hooks.api.message.WeChatMessageChangeApi
 import h.Hchat.hooks.core.FeatureContext
-import h.Hchat.hooks.items.sendbutton.NativeSendButtonHook
 import h.Hchat.utils.HLog
 import h.Hchat.preferences.HchatStorage
 import java.io.File
@@ -32,11 +31,10 @@ internal class LinkParseRuntime(private val context: FeatureContext) {
 
     fun install(track: (Any) -> Unit) {
         cleaner.scheduleWithFixedDelay({ runCatching { cleanup(File(host.cacheDir, CACHE_DIR)) } }, 0, 30, TimeUnit.MINUTES)
-        track(NativeSendButtonHook.registerHandler(LinkParseFeature.ID, ::onSendButton))
         HLog.i("[Hchat:LinkParse] 监听已注册")
         WeChatApis.message().changes()?.let { changes ->
             runCatching { changes.install() }
-            changes.subscribe({ it.isInsert() && settings.enabled() }, ::onChange)?.let(track)
+            changes.subscribe({ (it.isInsert() || it.isUpdate()) && settings.enabled() }, ::onChange)?.let(track)
         }
     }
 
@@ -49,31 +47,21 @@ internal class LinkParseRuntime(private val context: FeatureContext) {
 
     private fun onChange(change: WeChatMessageChangeApi.MessageChange) {
         val message = change.message ?: return
-        if (!change.isInsert) return
-        if (!LinkParseEntryPolicy.acceptDatabase(message.isOutgoing())) return
+        val values = change.databaseChange?.values
+        val status = if (values?.containsKey("status") == true) runCatching { values.getAsInteger("status") }.getOrNull() else null
+        if (!LinkParseEntryPolicy.acceptDatabase(change.isInsert, change.isUpdate, message.isOutgoing(), message.status, status)) return
         val timestamp = LinkParseMessageGate.eligibleTime(message, System.currentTimeMillis()) ?: return
         val group = message.isGroupChat()
         val self = if (group && settings.groupMode() == LinkParseSettings.GROUP_AT) {
             WeChatApis.contact().account()?.selfWxId().orEmpty()
         } else ""
-        val atMe = self.isNotEmpty() && message.isAtMe(self)
+        val atMe = message.isOutgoing() || (self.isNotEmpty() && message.isAtMe(self))
         val content = message.bodyContent()
         HLog.i("[Hchat:LinkParse] 收到数据库文本")
         val match = WorkLinkMatcher.find(content) ?: run { HLog.i("[Hchat:LinkParse] 未识别作品链接"); return }
         if (!settings.allows(match.platform, group, atMe)) return
         val key = key(message.talker, message.msgId)
         submit(message.talker, match, group, atMe, key, timestamp + LinkParseMessageGate.MAX_AGE + LinkParseMessageGate.FUTURE_TOLERANCE)
-    }
-
-    private fun onSendButton(text: String): Boolean {
-        if (!settings.enabled() || text.length > LinkParseMessageGate.MAX_TEXT) return false
-        HLog.i("[Hchat:LinkParse] 收到发送按钮文本")
-        val talker = WeChatApis.interaction().chatPage()?.currentTalker().orEmpty()
-        if (talker.isBlank()) { HLog.i("[Hchat:LinkParse] 未取得当前聊天"); return false }
-        val match = WorkLinkMatcher.find(text) ?: run { HLog.i("[Hchat:LinkParse] 未识别作品链接"); return false }
-        val group = talker.endsWith("@chatroom") || talker.endsWith("@im.chatroom")
-        if (settings.allows(match.platform, group, true)) submit(talker, match, group, true, null, 0L)
-        return false
     }
 
     private fun submit(talker: String, match: WorkLinkMatcher.Match, group: Boolean, atMe: Boolean, key: String?, expiry: Long) {
@@ -104,11 +92,11 @@ internal class LinkParseRuntime(private val context: FeatureContext) {
         if ((!dir.isDirectory && !dir.mkdirs()) || !dir.canWrite()) return
         cleanup(dir)
         if ((dir.listFiles()?.sumOf { it.length().coerceAtLeast(0) } ?: 0L) > MAX_CACHE_BYTES - MAX_VIDEO_BYTES) return
-        val url = client.resolve(match) ?: run { HLog.i("[Hchat:LinkParse] 解析失败"); return }
+        val urls = client.resolve(match) ?: run { HLog.i("[Hchat:LinkParse] 解析失败"); return }
         val target = File(dir, "video_${System.currentTimeMillis()}_${System.nanoTime()}.mp4")
         var submitted = false
         try {
-            if (!client.download(url, match.platform, target)) { HLog.i("[Hchat:LinkParse] 下载失败"); return }
+            if (!urls.any { url -> !stopped && client.download(url, match.platform, target) }) { HLog.i("[Hchat:LinkParse] 下载失败"); return }
             if (stopped || !settings.allows(match.platform, group, atMe)) return
             val video = WeChatApis.media()?.videos() ?: run { HLog.i("[Hchat:LinkParse] 发送接口不可用"); return }
             submitted = if (video.canSendSilently()) video.send(talker, target.absolutePath) else {

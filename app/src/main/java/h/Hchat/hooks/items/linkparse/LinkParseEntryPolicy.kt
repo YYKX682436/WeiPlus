@@ -1,6 +1,9 @@
 package h.Hchat.hooks.items.linkparse
 
-/** Outgoing text belongs exclusively to the send-button entry. */
+/** Own messages must have an explicit successful database transition. */
 internal object LinkParseEntryPolicy {
-    fun acceptDatabase(outgoing: Boolean): Boolean = !outgoing
+    fun acceptDatabase(insert: Boolean, update: Boolean, outgoing: Boolean, rowStatus: Int, changedStatus: Int?): Boolean =
+        if (outgoing) (insert || update) && changedStatus == SENT && rowStatus == SENT else insert
+
+    private const val SENT = 2
 }

@@ -23,7 +23,7 @@ internal class WorkVideoClient {
         .callTimeout(60, TimeUnit.SECONDS)
         .build()
 
-    fun resolve(match: WorkLinkMatcher.Match): String? = runCatching {
+    fun resolve(match: WorkLinkMatcher.Match): List<String>? = runCatching {
         val input = match.url.toHttpUrlOrNull() ?: return null
         val page = getWorkPage(input, match.platform) ?: return null
         when (match.platform) {
@@ -35,15 +35,15 @@ internal class WorkVideoClient {
                     .addQueryParameter("device_platform", "web").addQueryParameter("version_code", "190500")
                     .addQueryParameter("version_name", "19.5.0").build()
                 val body = request(detail).use { response -> readText(response) } ?: return null
-                WorkVideoExtractor.douyin(body, id)
+                WorkVideoExtractor.douyinCandidates(body, id).takeIf { it.isNotEmpty() }
             }
             WorkLinkMatcher.Platform.XIAOHONGSHU -> {
                 val id = page.url.pathSegments.lastOrNull { it.isNotBlank() } ?: return null
-                WorkVideoExtractor.xiaohongshu(page.body, id)
+                WorkVideoExtractor.xiaohongshu(page.body, id)?.let(::listOf)
             }
             WorkLinkMatcher.Platform.KUAISHOU -> {
                 val id = page.url.queryParameter("shareObjectId") ?: return null
-                WorkVideoExtractor.kuaishou(page.body, id)
+                WorkVideoExtractor.kuaishou(page.body, id)?.let(::listOf)
             }
         }
     }.getOrNull()
