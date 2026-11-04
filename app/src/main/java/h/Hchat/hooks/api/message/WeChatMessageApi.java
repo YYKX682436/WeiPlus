@@ -446,8 +446,14 @@ public final class WeChatMessageApi {
         }
     }
 
+    /** Returns whether the request was enqueued, not whether the server accepted it. */
     public boolean uploadDeviceStep(long step) {
-        if (step <= 0L) {
+        return uploadDeviceStep(step, null);
+    }
+
+    /** Invokes the optional observer before dispatch so it can correlate the exact scene. */
+    public boolean uploadDeviceStep(long step, java.util.function.Predicate<Object> onPrepared) {
+        if (step <= 0L || step > Integer.MAX_VALUE) {
             log("上传步数失败: step无效");
             return false;
         }
@@ -457,7 +463,7 @@ public final class WeChatMessageApi {
         }
         installNetworkHook();
         try {
-            int safeStep = (int) Math.min(step, Integer.MAX_VALUE);
+            int safeStep = (int) step;
             Object scene = KavaReflector.newInstance(
                     dexFinder.uploadDeviceStepCtor,
                     "",
@@ -467,8 +473,9 @@ public final class WeChatMessageApi {
                     safeStep,
                     buildDeviceInfoXml(),
                     1);
+            if (scene == null || (onPrepared != null && !onPrepared.test(scene))) return false;
             boolean result = networkDispatcher.send(scene);
-            log("上传步数" + (result ? "已发送" : "发送失败") + ": step=" + safeStep);
+            log("上传步数" + (result ? "已入队" : "入队失败") + ": step=" + safeStep);
             return result;
         } catch (Throwable e) {
             log("上传步数异常: " + e.getMessage());

@@ -5762,6 +5762,49 @@ public class DexFinder {
         return null;
     }
 
+    /** The native network completion override belonging to the located upload scene. */
+    public Method uploadDeviceStepResponseMethod() {
+        Class<?> cl = uploadDeviceStepClass;
+        if (cl == null) return null;
+        Method result = null;
+        for (Method method : KavaReflector.declaredMethods(cl)) {
+            Class<?>[] p = method.getParameterTypes();
+            if (!"onGYNetEnd".equals(method.getName()) || KavaReflector.isStatic(method)
+                    || method.getReturnType() != void.class || p.length != 6
+                    || p[0] != int.class || p[1] != int.class || p[2] != int.class
+                    || p[3] != String.class || p[4].isPrimitive() || p[5] != byte[].class) continue;
+            if (result != null) return null;
+            result = KavaReflector.accessible(method);
+        }
+        return result;
+    }
+
+    /** Resolve WeChat's sport-day boundary, rejecting ambiguous matches. */
+    public Method sportDayStartMethod() {
+        if (dexQueries == null) return null;
+        try {
+            MethodMatcher matcher = new MethodMatcher();
+            matcher.returnType(long.class);
+            matcher.paramTypes();
+            matcher.declaredClass(new ClassMatcher().usingEqStrings("getMIUIStep"));
+            matcher.invokeMethods(new MethodsMatcher().add(
+                    new MethodMatcher().declaredClass("java.util.Calendar")
+                            .name("getTimeInMillis").paramTypes().returnType(long.class)));
+            Method result = null;
+            for (MethodData data : dexQueries.findMethod(new FindMethod().matcher(matcher))) {
+                Method method = data.getMethodInstance(classLoader);
+                if (method == null || !KavaReflector.isStatic(method)
+                        || method.getReturnType() != long.class || method.getParameterCount() != 0) continue;
+                if (result != null && !result.equals(method)) return null;
+                result = KavaReflector.accessible(method);
+            }
+            return result;
+        } catch (Throwable e) {
+            HLog.e(TAG + " sportDayStartMethod 定位失败: " + e.getMessage(), e);
+            return null;
+        }
+    }
+
     private boolean isLocalMessageInsertMethod(Method method) {
         if (method == null || method.getReturnType() != long.class) return false;
         if (!KavaReflector.isStatic(method)) return false;

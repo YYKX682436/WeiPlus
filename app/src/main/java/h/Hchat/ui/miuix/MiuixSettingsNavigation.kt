@@ -107,6 +107,7 @@ import h.Hchat.hooks.items.miniprogrambaselib.FakeMiniProgramBaseLibFeature
 import h.Hchat.hooks.items.miniprogramsplashad.SkipGlobalMiniProgramSplashAdsFeature
 import h.Hchat.hooks.items.miniprogramvideoad.SkipMiniProgramVideoAdsFeature
 import h.Hchat.hooks.items.musicorder.QQMusicOrderFeature
+import h.Hchat.hooks.items.sportstep.SportStepFeature
 import h.Hchat.hooks.items.moments.OriginalMomentsUploadFeature
 import h.Hchat.hooks.items.moments.MomentsAutoCommentFeature
 import h.Hchat.hooks.items.moments.MomentsAutoLikeFeature
@@ -378,7 +379,8 @@ private fun featureGroups(
                 FinderMediaDownloadFeature.ID,
                 SkipWebRiskSettingsProvider.FEATURE_ID,
                 StatusTextLimitFeature.ID,
-                QQMusicOrderFeature.ID
+                QQMusicOrderFeature.ID,
+                SportStepFeature.ID
             )
         )
     ).filter { it.providers.isNotEmpty() }
@@ -1589,6 +1591,7 @@ internal fun FeatureSettingsPage(
         TextSpeechFeature.ID -> TextSpeechMiuixPage(context, provider, onBack)
         ZombieCheckFeature.ID -> ZombieCheckMiuixPage(context, provider, onBack)
         QQMusicOrderFeature.ID -> QQMusicOrderMiuixPage(context, provider, onBack)
+        SportStepFeature.ID -> SportStepMiuixPage(context, provider, onBack)
         BackgroundRunAssistFeature.ID -> BackgroundRunAssistMiuixPage(context, provider, onBack)
         QuoteDeleteClearFeature.ID -> QuoteDeleteClearMiuixPage(context, provider, onBack)
         EmojiSaveFeature.ID -> EmojiSaveMiuixPage(context, provider, onBack)
