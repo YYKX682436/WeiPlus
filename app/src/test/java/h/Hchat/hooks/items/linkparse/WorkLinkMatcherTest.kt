@@ -13,6 +13,13 @@ class WorkLinkMatcherTest {
         assertEquals(WorkLinkMatcher.Platform.KUAISHOU, WorkLinkMatcher.find("https://v.kuaishou.com/JuuRuozy")?.platform)
     }
 
+    @Test fun findsFullDouyinShareText() {
+        val text = "4.15 复制打开抖音，看看【苹果哥🔥🔥🔥的作品】这小子又买小米 # 米家前置过滤器Pro # 米家... https://v.douyin.com/_WFxKTl9V78/ 07/09 S@y.Tl YZZ:/ :7pm"
+        val match = WorkLinkMatcher.find(text)!!
+        assertEquals(WorkLinkMatcher.Platform.DOUYIN, match.platform)
+        assertEquals("https://v.douyin.com/_WFxKTl9V78/", match.url)
+    }
+
     @Test fun ignoresNonWorkAndConfusableHosts() {
         listOf(
             "https://example.com/video/1234567890123456789",
