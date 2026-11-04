@@ -40,6 +40,7 @@ internal class LinkParseRuntime(private val context: FeatureContext) {
         val changes = WeChatApis.message().changes()
         if (changes == null) HLog.i("[Hchat:LinkParse] 数据库监听不可用") else {
             runCatching { changes.install() }.onFailure { HLog.i("[Hchat:LinkParse] 数据库监听安装失败") }
+            if (!changes.isInstalled) HLog.i("[Hchat:LinkParse] 数据库监听未就绪")
             val subscription = changes.subscribe({ (it.isInsert() || it.isUpdate()) && settings.enabled() }, ::onChange)
             if (subscription == null) HLog.i("[Hchat:LinkParse] 数据库订阅失败") else { track(subscription); HLog.i("[Hchat:LinkParse] 数据库订阅已注册") }
         }
@@ -54,9 +55,12 @@ internal class LinkParseRuntime(private val context: FeatureContext) {
     }
 
     private fun onChange(change: WeChatMessageChangeApi.MessageChange) {
-        val message = change.message ?: return
         val values = change.databaseChange?.values
         val status = if (values?.containsKey("status") == true) runCatching { values.getAsInteger("status") }.getOrNull() else null
+        val message = change.message ?: run {
+            if (status == 2) HLog.i("[Hchat:LinkParse] 消息字段不可用")
+            return
+        }
         if (!LinkParseEntryPolicy.acceptDatabase(change.isInsert, change.isUpdate, message.isOutgoing(), message.status, status)) return
         handleMessage(message)
     }
@@ -75,17 +79,9 @@ internal class LinkParseRuntime(private val context: FeatureContext) {
         } }
         if (candidates.size != 1) { HLog.i("[Hchat:LinkParse] 消息写入定位不可用"); return false }
         HookRegistry.get().hookOnce("link_parse:message_write", candidates.single(), XposedInterface.Hooker { chain ->
-            val args = chain.args
-            val result = chain.proceed()
-            try {
-                if (!stopped && settings.enabled()) {
-                    val id = (args.getOrNull(0) as? Number)?.toLong() ?: 0L
-                    LinkParseWriteGate.observe((result as? Number)?.toInt(), id, args.getOrNull(1), { key ->
-                        WeChatApis.message().store()?.getMessageById(key)
-                    }, ::handleMessage)
-                }
-            } catch (_: Throwable) { HLog.i("[Hchat:LinkParse] 消息写入观察失败") }
-            result
+            LinkParseWriteGate.intercept(chain, { !stopped && settings.enabled() }, { id ->
+                WeChatApis.message().store()?.getMessageById(id)
+            }, ::handleMessage, { HLog.i("[Hchat:LinkParse] 消息写入观察失败") })
         })
         HLog.i("[Hchat:LinkParse] 消息写入观察已安装")
         return true
@@ -101,7 +97,7 @@ internal class LinkParseRuntime(private val context: FeatureContext) {
         val content = message.bodyContent()
         HLog.i("[Hchat:LinkParse] 收到数据库文本")
         val match = WorkLinkMatcher.find(content) ?: run { HLog.i("[Hchat:LinkParse] 未识别作品链接"); return }
-        if (!settings.allows(match.platform, group, atMe)) return
+        if (!settings.allows(match.platform, group, atMe)) { HLog.i("[Hchat:LinkParse] 设置拒绝触发"); return }
         val key = key(message.talker, message.msgId)
         submit(message.talker, match, group, atMe, key, timestamp + LinkParseMessageGate.MAX_AGE + LinkParseMessageGate.FUTURE_TOLERANCE)
     }
