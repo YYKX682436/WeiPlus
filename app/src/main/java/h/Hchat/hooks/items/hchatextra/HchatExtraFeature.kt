@@ -1677,15 +1677,52 @@ private class HchatExtraHooker(
             }
         }
 
-        for (methodName in arrayOf("onInterceptTouchEvent", "onTouchEvent")) {
+        for (methodName in arrayOf("onInterceptTouchEvent", "onTouchEvent", "onGenericMotionEvent")) {
             val touchMethod = MessageDetailsScrollSupport.hostMethod(container, methodName, touchType) ?: continue
             install(methodName, touchMethod) { chain ->
                 val event = chain.args.firstOrNull() as? android.view.MotionEvent
-                chain.proceed().also {
-                    if (event != null) {
+                chain.proceed().also { result ->
+                    if (event != null && (methodName != "onGenericMotionEvent" || result == true)) {
                         (chain.thisObject as? View)?.let { view ->
                             MessageDetailsFollowLatestRegistry.onRecyclerTouch(view, event)
                         }
+                    }
+                }
+            }
+        }
+
+        val keyMethod = MessageDetailsScrollSupport.hostMethod(container, "dispatchKeyEvent", android.view.KeyEvent::class.java)
+        install("key_navigation", keyMethod) { chain ->
+            val event = chain.args.firstOrNull() as? android.view.KeyEvent
+            chain.proceed().also { result ->
+                if (result == true && event?.action == android.view.KeyEvent.ACTION_DOWN) {
+                    val history = when (event.keyCode) {
+                        android.view.KeyEvent.KEYCODE_DPAD_UP, android.view.KeyEvent.KEYCODE_PAGE_UP,
+                        android.view.KeyEvent.KEYCODE_MOVE_HOME -> true
+                        android.view.KeyEvent.KEYCODE_DPAD_DOWN, android.view.KeyEvent.KEYCODE_PAGE_DOWN,
+                        android.view.KeyEvent.KEYCODE_MOVE_END -> false
+                        else -> null
+                    }
+                    if (history != null) (chain.thisObject as? View)?.let {
+                        MessageDetailsFollowLatestRegistry.onUserNavigation(it, history)
+                    }
+                }
+            }
+        }
+        val accessMethod = MessageDetailsScrollSupport.hostMethod(container, "performAccessibilityAction", intType, android.os.Bundle::class.java)
+        install("accessibility_navigation", accessMethod) { chain ->
+            val action = (chain.args.firstOrNull() as? Number)?.toInt()
+            chain.proceed().also { result ->
+                if (result == true) {
+                    val history = when (action) {
+                        android.view.accessibility.AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD,
+                        android.R.id.accessibilityActionScrollUp -> true
+                        android.view.accessibility.AccessibilityNodeInfo.ACTION_SCROLL_FORWARD,
+                        android.R.id.accessibilityActionScrollDown -> false
+                        else -> null
+                    }
+                    if (history != null) (chain.thisObject as? View)?.let {
+                        MessageDetailsFollowLatestRegistry.onUserNavigation(it, history)
                     }
                 }
             }

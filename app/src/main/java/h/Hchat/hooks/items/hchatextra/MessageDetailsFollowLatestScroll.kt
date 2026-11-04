@@ -19,7 +19,7 @@ internal class MessageDetailsFollowLatestState(initiallyFollowingLatest: Boolean
     @Volatile private var userMovedIntoHistory = false
     @Volatile private var userRequestedLatest = false
 
-    fun onScrolled(verticalDelta: Int, atLatestEdge: Boolean) {
+    fun onScrolled(verticalDelta: Int, atLatestEdge: Boolean, userDragging: Boolean = true) {
         if (atLatestEdge) {
             if (!userMovedIntoHistory || userRequestedLatest) {
                 followingLatest = true
@@ -28,7 +28,7 @@ internal class MessageDetailsFollowLatestState(initiallyFollowingLatest: Boolean
             } else {
                 followingLatest = false
             }
-        } else if (verticalDelta < 0) {
+        } else if (verticalDelta < 0 && userDragging) {
             followingLatest = false
             userMovedIntoHistory = true
             userRequestedLatest = false
@@ -40,6 +40,17 @@ internal class MessageDetailsFollowLatestState(initiallyFollowingLatest: Boolean
             followingLatest = false
         } else if (!userMovedIntoHistory) {
             followingLatest = true
+        }
+    }
+
+    fun onUserNavigation(towardHistory: Boolean, atLatestEdge: Boolean) {
+        if (towardHistory) {
+            followingLatest = false
+            userMovedIntoHistory = true
+            userRequestedLatest = false
+        } else if (!towardHistory) {
+            userRequestedLatest = true
+            if (atLatestEdge) onUserTouch(0f, 0, false, atLatestEdge = true)
         }
     }
 
@@ -106,6 +117,11 @@ internal object MessageDetailsFollowLatestScroll {
         val clippedBottomPadding = if (parent.clipToPadding) parent.paddingBottom else 0
         val visibleContainer = Rect()
         if (!container.getGlobalVisibleRect(visibleContainer)) return 0
+        // The visible rectangle is relative to the root view; drawing locations below
+        // are relative to its window. Translate the rectangle to the same origin.
+        val rootLocation = IntArray(2)
+        container.rootView.getLocationInWindow(rootLocation)
+        visibleContainer.offset(rootLocation[0], rootLocation[1])
         val containerBottom = drawnBottomInWindow(
             container, (container.height - clippedBottomPadding).coerceAtLeast(container.paddingTop)
         )
@@ -113,7 +129,7 @@ internal object MessageDetailsFollowLatestScroll {
         return (labelBottom - minOf(containerBottom, visibleContainer.bottom)).coerceAtLeast(0)
     }
 
-    /** Matches getGlobalVisibleRect's window coordinates, including host and parent transforms. */
+    /** Includes host and parent transforms in window coordinates. */
     private fun drawnBottomInWindow(view: View, localBottom: Int): Int {
         val location = IntArray(2)
         view.getLocationInWindow(location)
@@ -181,6 +197,11 @@ internal object MessageDetailsFollowLatestRegistry {
     fun onRecyclerTouch(container: View, event: MotionEvent) {
         val entry = synchronized(entries) { entries[container] } ?: return
         entry.onTouch(event)
+    }
+
+    fun onUserNavigation(container: View, towardHistory: Boolean) {
+        val entry = synchronized(entries) { entries[container] } ?: return
+        entry.onUserNavigation(towardHistory)
     }
 
     fun onPositionRequested(container: View, adapterPosition: Int) {
@@ -283,7 +304,8 @@ internal object MessageDetailsFollowLatestRegistry {
 
         fun recordRecyclerScroll(verticalDelta: Int) {
             val view = container.get() ?: return
-            state.onScrolled(verticalDelta, !view.canScrollVertically(1))
+            state.onScrolled(verticalDelta, !view.canScrollVertically(1),
+                userDragging = MessageDetailsScrollSupport.isRecyclerDragging(view))
             if (state.isFollowingLatest()) scheduleCorrection(view)
         }
 
@@ -294,6 +316,12 @@ internal object MessageDetailsFollowLatestRegistry {
 
         fun onScrollStateChanged() {
             if (state.isFollowingLatest()) container.get()?.let(::scheduleCorrection)
+        }
+
+        fun onUserNavigation(towardHistory: Boolean) {
+            val view = container.get() ?: return
+            state.onUserNavigation(towardHistory, atLatestEdge = !view.canScrollVertically(1))
+            if (state.isFollowingLatest()) scheduleCorrection(view)
         }
 
         fun recordAbsListLayout(view: AbsListView) {
@@ -340,6 +368,10 @@ internal object MessageDetailsFollowLatestRegistry {
                     if (index >= 0 && !gestureStartY.isNaN()) {
                         recordTouchIntent(view, event.getY(index) - gestureStartY)
                     }
+                }
+                MotionEvent.ACTION_SCROLL -> {
+                    val axis = event.getAxisValue(MotionEvent.AXIS_VSCROLL)
+                    if (axis != 0f) onUserNavigation(towardHistory = axis > 0)
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     gesturePointerId = MotionEvent.INVALID_POINTER_ID

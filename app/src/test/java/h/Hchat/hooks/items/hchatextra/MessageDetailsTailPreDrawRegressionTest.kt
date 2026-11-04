@@ -2,9 +2,11 @@ package h.Hchat.hooks.items.hchatextra
 
 import android.app.Activity
 import android.content.Context
+import android.graphics.Rect
 import android.view.View
 import android.view.ViewGroup
 import android.view.Gravity
+import android.view.MotionEvent
 import android.widget.FrameLayout
 import android.widget.TextView
 import androidx.recyclerview.widget.LinearLayoutManager
@@ -99,6 +101,33 @@ class MessageDetailsTailPreDrawRegressionTest {
         fixture.destroy()
     }
 
+    @Test fun `root view offset in a real hierarchy does not create false overflow`() {
+        val fixture = Fixture()
+        fixture.observeAtNativeEdge()
+        fixture.shiftDecor(50)
+        val visible = Rect()
+        assertTrue(fixture.list.getGlobalVisibleRect(visible))
+        val window = IntArray(2)
+        fixture.list.getLocationInWindow(window)
+        assertEquals("the real root offset separates window and root coordinates", 50, window[1] - visible.top)
+        assertEquals("an offset root must not create overflow", 0, fixture.overflow(fixture.tail()))
+        fixture.destroy()
+    }
+
+    @Test fun `root offset retains translated and scaled tail geometry`() {
+        val fixture = Fixture()
+        fixture.observeAtNativeEdge()
+        fixture.shiftDecor(50)
+        val row = fixture.tail()
+        row.translationY = 20f
+        assertEquals("translation is measured against the root-clipped viewport", 20, fixture.overflow(row))
+        row.translationY = 0f
+        row.pivotY = 0f
+        row.scaleY = 1.5f
+        assertEquals("scale is measured against the same viewport", 20, fixture.overflow(row))
+        fixture.destroy()
+    }
+
     @Test fun `a first observation without earlier tail proof does not guess history intent`() {
         val fixture = Fixture()
         fixture.growTail(100)
@@ -109,6 +138,70 @@ class MessageDetailsTailPreDrawRegressionTest {
         val before = fixture.overflow(row)
         fixture.remember(row, fixture.identity(6), inPreDraw = true)
         assertEquals("an ambiguous first observation leaves the viewport unchanged", before, fixture.overflow(row))
+        fixture.destroy()
+    }
+
+    @Test fun `automatic negative recycler scroll after growth keeps following`() {
+        val fixture = Fixture()
+        fixture.observeAtNativeEdge()
+        fixture.growTail(100)
+        assertTrue(fixture.list.canScrollVertically(1))
+        MessageDetailsFollowLatestRegistry.onRecyclerScrolled(fixture.list, -1)
+        assertTrue("a host layout scroll without user input must not revoke tail following", fixture.following())
+        val row = fixture.tail()
+        fixture.remember(row, fixture.identity(70), inPreDraw = true)
+        assertEquals("the measured tail is still corrected before drawing", 0, fixture.overflow(row))
+        fixture.destroy()
+    }
+
+    @Test fun `actual history gesture prevents later automatic correction`() {
+        val fixture = Fixture()
+        fixture.observeAtNativeEdge()
+        val down = MotionEvent.obtain(0, 0, MotionEvent.ACTION_DOWN, 20f, 20f, 0)
+        MessageDetailsFollowLatestRegistry.onRecyclerTouch(fixture.list, down)
+        val row = fixture.growTail(100)
+        val move = MotionEvent.obtain(0, 20, MotionEvent.ACTION_MOVE, 20f, 100f, 0)
+        MessageDetailsFollowLatestRegistry.onRecyclerTouch(fixture.list, move)
+        assertFalse("a deliberate gesture toward history revokes following", fixture.following())
+        val before = fixture.overflow(row)
+        fixture.remember(row, fixture.identity(71), inPreDraw = true)
+        fixture.dispatchPreDraw()
+        assertEquals("layout after a history gesture cannot pull the list back", before, fixture.overflow(row))
+        down.recycle()
+        move.recycle()
+        fixture.destroy()
+    }
+
+    @Test fun `mouse wheel toward history prevents later automatic correction`() {
+        val fixture = Fixture()
+        fixture.observeAtNativeEdge()
+        val row = fixture.growTail(100)
+        val properties = MotionEvent.PointerProperties().apply { id = 0; toolType = MotionEvent.TOOL_TYPE_MOUSE }
+        val coords = MotionEvent.PointerCoords().apply {
+            x = 20f; y = 20f; setAxisValue(MotionEvent.AXIS_VSCROLL, 1f)
+        }
+        val wheel = MotionEvent.obtain(0, 20, MotionEvent.ACTION_SCROLL, 1, arrayOf(properties),
+            arrayOf(coords), 0, 0, 1f, 1f, 0, 0, android.view.InputDevice.SOURCE_MOUSE, 0)
+        MessageDetailsFollowLatestRegistry.onRecyclerTouch(fixture.list, wheel)
+        assertFalse("a mouse wheel toward history revokes following", fixture.following())
+        val before = fixture.overflow(row)
+        fixture.remember(row, fixture.identity(72), inPreDraw = true)
+        assertEquals(before, fixture.overflow(row))
+        wheel.recycle()
+        fixture.destroy()
+    }
+
+    @Test fun `explicit keyboard or accessibility history navigation protects the viewport`() {
+        val fixture = Fixture()
+        fixture.observeAtNativeEdge()
+        MessageDetailsFollowLatestRegistry.onUserNavigation(fixture.list, towardHistory = true)
+        assertFalse("accepted asynchronous history navigation is protected before movement", fixture.following())
+        val row = fixture.growTail(100)
+        MessageDetailsFollowLatestRegistry.onUserNavigation(fixture.list, towardHistory = true)
+        assertFalse("handled history navigation revokes following after movement", fixture.following())
+        val before = fixture.overflow(row)
+        fixture.remember(row, fixture.identity(73), inPreDraw = true)
+        assertEquals(before, fixture.overflow(row))
         fixture.destroy()
     }
 
@@ -243,6 +336,7 @@ class MessageDetailsTailPreDrawRegressionTest {
 
         latest = true
         fixture.remember(row, original, inPreDraw = false)
+        fixture.list.dragging = true
         MessageDetailsFollowLatestRegistry.onRecyclerScrolled(fixture.list, -10)
         assertFalse("the observed movement into history revokes following", fixture.following())
         fixture.dispatchPreDraw()
@@ -291,6 +385,10 @@ class MessageDetailsTailPreDrawRegressionTest {
             assertTrue(following())
         }
         fun following() = MessageDetailsFollowLatestRegistry.isFollowingLatest(list)
+        fun shiftDecor(top: Int) {
+            val decor = activity.window.decorView
+            decor.layout(decor.left, top, decor.right, top + decor.height)
+        }
         fun tail(): TextView = list.findViewHolderForAdapterPosition(adapter.itemCount - 1)!!.itemView as TextView
         fun growTail(height: Int): TextView {
             adapter.lastHeight = height
@@ -325,6 +423,8 @@ class MessageDetailsTailPreDrawRegressionTest {
     }
 
     private class ScreenOffsetRecycler(activity: Activity, private val screenOffset: Int) : RecyclerView(activity) {
+        var dragging = false
+        override fun getScrollState() = if (dragging) SCROLL_STATE_DRAGGING else super.getScrollState()
         override fun getLocationOnScreen(outLocation: IntArray) {
             super.getLocationOnScreen(outLocation)
             outLocation[1] += screenOffset

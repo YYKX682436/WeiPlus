@@ -246,6 +246,10 @@ internal object MessageDetailsScrollSupport {
         containerKind(container) == ContainerKind.RECYCLER &&
             (invokeNoArg(container, "getScrollState") as? Number)?.toInt() == 2
 
+    fun isRecyclerDragging(container: View): Boolean =
+        containerKind(container) == ContainerKind.RECYCLER &&
+            (invokeNoArg(container, "getScrollState") as? Number)?.toInt() == 1
+
     fun correctBy(container: View, overflow: Int): Boolean {
         if (overflow <= 0 || !container.canScrollVertically(1)) return false
         return when (containerKind(container)) {
