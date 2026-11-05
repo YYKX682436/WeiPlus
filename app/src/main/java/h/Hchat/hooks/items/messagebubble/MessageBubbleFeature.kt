@@ -16,7 +16,6 @@ import android.os.Handler
 import android.os.Looper
 import h.Hchat.hooks.api.core.WeChatApis
 import h.Hchat.hooks.api.ui.WeChatChatPageApi
-import h.Hchat.hooks.api.ui.WeChatLifecycleApi
 import h.Hchat.hooks.core.ChatRowRefresh
 import h.Hchat.dexkit.DexMethodCache
 import h.Hchat.hooks.api.model.WeChatMessage
@@ -87,13 +86,14 @@ private class MessageBubbleRenderer(
     @Volatile private var enabled = prefs.getBoolean(MessageBubbleSettings.KEY_ENABLE, MessageBubbleSettings.DEFAULT_ENABLE)
     @Volatile private var destroyed = false
     private var pageSubscription: WeChatChatPageApi.Subscription? = null
-    private var lifecycleSubscription: WeChatLifecycleApi.Subscription? = null
     private fun watchPageTransitions() {
         if (pageSubscription == null) pageSubscription = WeChatApis.chatPage()?.subscribe { event ->
-            if (!destroyed && enabled && event.isEnter) ChatRowRefresh.requestAfterTransition()
-        }
-        if (lifecycleSubscription == null) lifecycleSubscription = WeChatApis.lifecycle()?.subscribe { event ->
-            if (!destroyed && enabled && event.isResume) ChatRowRefresh.requestAfterTransition()
+            if (destroyed) return@subscribe
+            if (event.isExit) {
+                ChatRowRefresh.cancelChatMessageRowsAfterTransition()
+            } else if (enabled && event.isEnter) {
+                ChatRowRefresh.requestChatMessageRowsAfterTransition()
+            }
         }
     }
     private fun onMain(action: () -> Unit) {
@@ -106,9 +106,12 @@ private class MessageBubbleRenderer(
                 // by a cleanup carrying its predecessor's OriginalState. Read the latest config
                 // here so a worker-thread close/reopen cannot leave an obsolete cleanup behind.
                 val next = prefs.getBoolean(MessageBubbleSettings.KEY_ENABLE, MessageBubbleSettings.DEFAULT_ENABLE)
-                if (!next) boundRoots.toList().forEach(::restoreBoundBubble)
+                if (!next) {
+                    ChatRowRefresh.cancelChatMessageRowsAfterTransition()
+                    boundRoots.toList().forEach(::restoreBoundBubble)
+                }
                 enabled = next
-                if (next) ChatRowRefresh.request()
+                if (next) ChatRowRefresh.requestChatMessageRows()
             }
         }
     }
@@ -116,10 +119,9 @@ private class MessageBubbleRenderer(
 
     fun destroy() {
         destroyed = true
+        ChatRowRefresh.cancelChatMessageRowsAfterTransition()
         pageSubscription?.unsubscribe()
-        lifecycleSubscription?.unsubscribe()
         pageSubscription = null
-        lifecycleSubscription = null
         prefs.unregisterOnSharedPreferenceChangeListener(configListener)
         onMain {
             boundRoots.toList().forEach(::restoreBoundBubble)
