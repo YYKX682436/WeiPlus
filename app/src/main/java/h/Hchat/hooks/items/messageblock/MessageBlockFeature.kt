@@ -1,5 +1,6 @@
 package h.Hchat.hooks.items.messageblock
 
+import android.content.Context
 import io.github.libxposed.api.XposedInterface
 import h.Hchat.event.Events
 import h.Hchat.hooks.api.core.WeChatApis
@@ -17,6 +18,7 @@ import java.util.Locale
 
 class MessageBlockFeature : BaseFeature() {
     @Volatile private var hookHandle: HookHandle? = null
+    @Volatile private var voipIncomingHooker: MessageBlockVoipIncomingCallHooker? = null
 
     override fun featureId(): String = ID
 
@@ -30,6 +32,17 @@ class MessageBlockFeature : BaseFeature() {
         DexInstallScheduler.schedule(ID, name(), stage = DexInstallScheduler.Stage.WARMUP) {
             installBlockHook(context)
         }
+        val incomingHooker = MessageBlockVoipIncomingCallHooker(context) { caller, type, selfWxId ->
+            evaluateIncomingVoip(context.hostContext(), caller, type, selfWxId)
+        }
+        voipIncomingHooker = incomingHooker
+        DexInstallScheduler.schedule(VOIP_HOOK_KEY, name(), stage = DexInstallScheduler.Stage.WARMUP) {
+            incomingHooker.install()
+        }
+    }
+
+    override fun onFeatureDestroy(context: FeatureContext) {
+        voipIncomingHooker = null
     }
 
     private fun installBlockHook(context: FeatureContext): Boolean {
@@ -153,6 +166,64 @@ class MessageBlockFeature : BaseFeature() {
         if (templates.isEmpty()) return false
         if (templates.any { templateExcludes(settings, it, parsed) }) return false
         return templates.any { shouldApplyLegacyTemplate(settings, it, parsed, message) }
+    }
+
+    internal fun evaluateIncomingVoip(
+        context: Context,
+        caller: String,
+        messageType: Int,
+        selfWxId: String
+    ): MessageBlockIncomingVoipEvaluation {
+        val settings = MessageBlockSettings(context)
+        val enabled = settings.isEnabled()
+        if (!enabled || messageType !in VOIP_MESSAGE_TYPES) {
+            return MessageBlockIncomingVoipEvaluation(enabled, privateCaller = false, ruleMatched = false)
+        }
+
+        val cleanCaller = caller.trim()
+        val cleanSelf = selfWxId.trim()
+        val message = WeChatMessage.fromTransient(
+            cleanCaller,
+            cleanCaller,
+            "",
+            System.currentTimeMillis(),
+            false,
+            messageType,
+            0L,
+            "",
+            cleanSelf
+        )
+        val privateCaller = cleanCaller.isNotBlank() &&
+            cleanSelf.isNotBlank() &&
+            cleanCaller != cleanSelf &&
+            message.isPrivateChat() &&
+            message.isVoip()
+        if (!privateCaller) {
+            return MessageBlockIncomingVoipEvaluation(enabled, privateCaller = false, ruleMatched = false)
+        }
+
+        val nowSeconds = System.currentTimeMillis() / 1000L
+        val parsed = WeChatParsedMessage(
+            "",
+            "",
+            cleanCaller,
+            cleanSelf,
+            cleanCaller,
+            cleanCaller,
+            "",
+            "",
+            groupMessage = false,
+            redPacketMessage = false,
+            type = messageType,
+            createTimeSeconds = nowSeconds,
+            msgSvrId = 0L,
+            msgSource = "",
+            selfWxId = cleanSelf
+        )
+        val matched = runCatching { shouldBlock(settings, parsed) }
+            .onFailure { logError("呼入 VoIP 屏蔽规则判定异常，继续微信来电流程", it) }
+            .getOrDefault(false)
+        return MessageBlockIncomingVoipEvaluation(enabled, privateCaller = true, ruleMatched = matched)
     }
 
     private fun buildMessage(parsed: WeChatParsedMessage): WeChatMessage {
@@ -323,5 +394,13 @@ class MessageBlockFeature : BaseFeature() {
 
     companion object {
         const val ID = "message_block"
+        internal const val VOIP_HOOK_KEY = "$ID.voip_incoming"
+        private val VOIP_MESSAGE_TYPES = setOf(1000052, 1000053)
     }
 }
+
+internal data class MessageBlockIncomingVoipEvaluation(
+    val featureEnabled: Boolean,
+    val privateCaller: Boolean,
+    val ruleMatched: Boolean
+)
