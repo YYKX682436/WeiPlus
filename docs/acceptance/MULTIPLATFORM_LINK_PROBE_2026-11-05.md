@@ -32,7 +32,7 @@
 
 ### 小红书视频流与水印
 
-- 核对了 `wujunwei928/parse-video`、`ucmao/media-parser` 和 `JoeanAmier/XHS-Downloader` 的当前源码。`parse-video` 优先 `h265[0].masterUrl`，缺失时会回退到 H.264；其源码注释及测试把 H.264 分享流标为带小红书水印、H.265 转码流标为无水印。`media-parser` 优先 `video.consumer.originVideoKey`，再试 `mediaV2`，之后按 `streamType` 挑流；但没有 clean 候选时仍会回退到候选流，不能直接采用这一回退作为无水印保证。`XHS-Downloader` 先用 `consumer.originVideoKey`，缺失时跨 codec 按分辨率、码率或文件大小择优，并未检查 `streamType`。
+- 核对了 `wujunwei928/parse-video`、`ucmao/media-parser` 和 `JoeanAmier/XHS-Downloader` 的源码。`parse-video` 优先 `h265[0].masterUrl`，缺失时会回退到 H.264；其源码注释把 H.264 分享流标为带小红书水印、H.265 转码流标为无水印。`media-parser` 文档优先 `video.consumer.originVideoKey`，再试 `mediaV2`，之后按 `streamType` 挑流；但其后备选择仍需逐作品验证，不能把字段分类当成视觉保证。固定到 `XHS-Downloader` commit `2ab2620b0dd35b04530e70f1e9c7ab3f78c5d6c5` 的 `static/XHS-Downloader.js` 后，可见它先用 `consumer.originVideoKey`；缺失时把各 codec 的 stream 展平，仅按 `height` 排序并取最高项，没有检查 `streamType`。因此本模块继续只接受已下载、画面抽查过的 `originVideoKey`，不照搬这些可能退回水印流的后备逻辑。
 - 使用本轮已有公开短链 `https://xhslink.com/o/ErAlVOTpbg`，Android UA、无 Cookie 请求获得 HTTP 200，作品 ID 匹配。页面含顶层 `video.consumer.originVideoKey`，而 `mediaV2.video.opaque1` 没有 `hd_screencast_stream`，`mediaV2` 内也没有 `consumer.originVideoKey`。原画 key 下载成功；该文件为 48,510,174 字节 MP4，2160×3840，H.264/AVC，25 fps，21.68 秒，含音轨。对文件多个位置抽帧后未见小红书平台标识；源画面自身的 AHC 品牌图样和字幕仍保留。
 - 同作品 H.264 `streamType=259` 下载为 2,491,670 字节、720×1280；实际画面可见小红书标识。H.265 `streamType=309` 为 2,296,064 字节、720×1280，抽帧未见小红书标识，但 codec 为 HEVC，尚未验证微信播放兼容性。当前解析实现只接受已下载并目视检查的原画 key；缺少原画 key 就静默失败，不退回一般 H.264、H.265 或 `mediaV2` 候选。此结论覆盖该公开样本，仍需用户确认，不能标最终 PASS。
 
