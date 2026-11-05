@@ -1,5 +1,7 @@
 package h.Hchat.hooks.items.linkparse
 
+import android.media.MediaMetadataRetriever
+import android.os.SystemClock
 import h.Hchat.hooks.api.core.WeChatApis
 import h.Hchat.hooks.api.media.WeChatModernVideoSender
 import h.Hchat.hooks.api.message.WeChatMessageChangeApi
@@ -13,18 +15,25 @@ import h.Hchat.utils.HLog
 import h.Hchat.preferences.HchatStorage
 import java.io.File
 import java.security.MessageDigest
+import java.util.Locale
 import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentLinkedDeque
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.Executors
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 
 internal class LinkParseRuntime(private val context: FeatureContext) {
     private val host = context.hostContext().applicationContext ?: context.hostContext()
     private val settings = LinkParseSettings(host)
     private val claims = MessageClaims(HchatStorage.preferences(host, HISTORY_PREFS))
     private val client = WorkVideoClient()
+    private val imageClient = WorkImageClient()
     private val pending = HashSet<String>()
+    private val pendingUploads = ConcurrentHashMap<String, ConcurrentLinkedDeque<PendingUpload>>()
+    private val nextTaskId = AtomicLong(0)
     private val executor = ThreadPoolExecutor(1, 1, 0, TimeUnit.SECONDS, ArrayBlockingQueue(3), { r ->
         Thread(r, "HchatLinkParse").apply { isDaemon = true }
     }, ThreadPoolExecutor.AbortPolicy())
@@ -34,15 +43,43 @@ internal class LinkParseRuntime(private val context: FeatureContext) {
     @Volatile private var stopped = false
     private var modern: WeChatModernVideoSender? = null
 
+    private data class VideoMetadata(
+        val durationMs: Long,
+        val width: Int,
+        val height: Int,
+        val rotation: Int,
+        val codec: String
+    )
+
+    private enum class UploadKind(val label: String) { VIDEO("video"), IMAGE("image") }
+
+    private data class PendingUpload(
+        val taskId: Long,
+        val kind: UploadKind,
+        val enqueuedAt: Long,
+        val createdAt: Long,
+        val file: File
+    )
+
     fun install(track: (Any) -> Unit) {
-        cleaner.scheduleWithFixedDelay({ runCatching { cleanup(File(host.cacheDir, CACHE_DIR)) } }, 0, 30, TimeUnit.MINUTES)
+        cleaner.scheduleWithFixedDelay({
+            runCatching {
+                cleanup(File(host.cacheDir, CACHE_DIR))
+                cleanupPendingUploads()
+            }
+        }, 0, 30, TimeUnit.MINUTES)
         DexInstallScheduler.schedule("link_parse_message_write", "链接解析消息写入", DexInstallScheduler.Stage.WARMUP) { installMessageWriteHook() }
         val changes = WeChatApis.message().changes()
         if (changes == null) HLog.i("[Hchat:LinkParse] 数据库监听不可用") else {
             runCatching { changes.install() }.onFailure { HLog.i("[Hchat:LinkParse] 数据库监听安装失败") }
             if (!changes.isInstalled) HLog.i("[Hchat:LinkParse] 数据库监听未就绪")
-            val subscription = changes.subscribe({ (it.isInsert() || it.isUpdate()) && settings.enabled() }, ::onChange)
-            if (subscription == null) HLog.i("[Hchat:LinkParse] 数据库订阅失败") else { track(subscription); HLog.i("[Hchat:LinkParse] 数据库订阅已注册") }
+            val subscription = changes.subscribe({
+                (it.isInsert() || it.isUpdate()) && (settings.enabled() || pendingUploads.isNotEmpty())
+            }, ::onChange)
+            if (subscription == null) HLog.i("[Hchat:LinkParse] 数据库订阅失败") else {
+                track(subscription)
+                HLog.i("[Hchat:LinkParse] 数据库订阅已注册")
+            }
         }
     }
 
@@ -52,9 +89,11 @@ internal class LinkParseRuntime(private val context: FeatureContext) {
         executor.shutdownNow()
         cleaner.shutdownNow()
         synchronized(pending) { pending.clear() }
+        pendingUploads.clear()
     }
 
     private fun onChange(change: WeChatMessageChangeApi.MessageChange) {
+        observeUploadCompletion(change)
         val values = change.databaseChange?.values
         val status = if (values?.containsKey("status") == true) runCatching { values.getAsInteger("status") }.getOrNull() else null
         val message = change.message ?: run {
@@ -99,10 +138,26 @@ internal class LinkParseRuntime(private val context: FeatureContext) {
         val match = WorkLinkMatcher.find(content) ?: run { HLog.i("[Hchat:LinkParse] 未识别作品链接"); return }
         if (!settings.allows(match.platform, group, atMe)) { HLog.i("[Hchat:LinkParse] 设置拒绝触发"); return }
         val key = key(message.talker, message.msgId)
-        submit(message.talker, match, group, atMe, key, timestamp + LinkParseMessageGate.MAX_AGE + LinkParseMessageGate.FUTURE_TOLERANCE)
+        submit(
+            message.talker,
+            match,
+            group,
+            atMe,
+            key,
+            timestamp + LinkParseMessageGate.MAX_AGE + LinkParseMessageGate.FUTURE_TOLERANCE,
+            SystemClock.elapsedRealtime()
+        )
     }
 
-    private fun submit(talker: String, match: WorkLinkMatcher.Match, group: Boolean, atMe: Boolean, key: String?, expiry: Long) {
+    private fun submit(
+        talker: String,
+        match: WorkLinkMatcher.Match,
+        group: Boolean,
+        atMe: Boolean,
+        key: String?,
+        expiry: Long,
+        enqueuedAt: Long
+    ) {
         if (key != null) synchronized(pending) {
             if (stopped || !pending.add(key)) return
         }
@@ -110,7 +165,8 @@ internal class LinkParseRuntime(private val context: FeatureContext) {
             executor.execute {
                 try {
                     if (!stopped && (key == null || claims.claim(key, expiry, System.currentTimeMillis()))) {
-                        process(talker, match, group, atMe)
+                        val queueWaitMs = (SystemClock.elapsedRealtime() - enqueuedAt).coerceAtLeast(0L)
+                        process(talker, match, group, atMe, enqueuedAt, queueWaitMs)
                     }
                 } catch (_: Throwable) {
                     HLog.i("[Hchat:LinkParse] 处理异常")
@@ -124,36 +180,293 @@ internal class LinkParseRuntime(private val context: FeatureContext) {
         }
     }
 
-    private fun process(talker: String, match: WorkLinkMatcher.Match, group: Boolean, atMe: Boolean) {
+    private fun process(
+        talker: String,
+        match: WorkLinkMatcher.Match,
+        group: Boolean,
+        atMe: Boolean,
+        enqueuedAt: Long,
+        queueWaitMs: Long
+    ) {
         if (stopped || !settings.allows(match.platform, group, atMe)) return
         val dir = File(host.cacheDir, CACHE_DIR)
         if ((!dir.isDirectory && !dir.mkdirs()) || !dir.canWrite()) return
         cleanup(dir)
         if ((dir.listFiles()?.sumOf { it.length().coerceAtLeast(0) } ?: 0L) > MAX_CACHE_BYTES - MAX_VIDEO_BYTES) return
-        val urls = client.resolve(match) ?: run { HLog.i("[Hchat:LinkParse] 解析失败"); return }
+
+        val resolveStart = SystemClock.elapsedRealtime()
+        val resolved = client.resolve(match)
+        val resolveMs = (SystemClock.elapsedRealtime() - resolveStart).coerceAtLeast(0L)
+        if (resolved == null) {
+            HLog.i("[Hchat:LinkParse] 解析失败 platform=${match.platform} queue_ms=$queueWaitMs resolve_ms=$resolveMs")
+            return
+        }
+        when (resolved) {
+            is WorkResolution.Video -> processVideo(talker, match, group, atMe, enqueuedAt, queueWaitMs, resolveMs, resolved.candidates, dir)
+            is WorkResolution.Gallery -> processGallery(talker, match, group, atMe, enqueuedAt, queueWaitMs, resolveMs, resolved.images, dir)
+        }
+    }
+
+    private fun processVideo(
+        talker: String,
+        match: WorkLinkMatcher.Match,
+        group: Boolean,
+        atMe: Boolean,
+        enqueuedAt: Long,
+        queueWaitMs: Long,
+        resolveMs: Long,
+        urls: List<String>,
+        dir: File
+    ) {
         val target = File(dir, "video_${System.currentTimeMillis()}_${System.nanoTime()}.mp4")
         var submitted = false
+        var tracked: PendingUpload? = null
         try {
-            if (!urls.any { url -> !stopped && client.download(url, match.platform, target) }) { HLog.i("[Hchat:LinkParse] 下载失败"); return }
+            val downloadStart = SystemClock.elapsedRealtime()
+            for (url in urls) {
+                if (!stopped && client.download(url, match.platform, target)) break
+            }
+            val downloadMs = (SystemClock.elapsedRealtime() - downloadStart).coerceAtLeast(0L)
+            if (!target.isFile) {
+                HLog.i("[Hchat:LinkParse] 下载失败 platform=${match.platform} queue_ms=$queueWaitMs resolve_ms=$resolveMs download_ms=$downloadMs")
+                return
+            }
             if (stopped || !settings.allows(match.platform, group, atMe)) return
-            val video = WeChatApis.media()?.videos() ?: run { HLog.i("[Hchat:LinkParse] 发送接口不可用"); return }
-            submitted = if (video.canSendSilently()) video.send(talker, target.absolutePath) else {
-                val sender = modern ?: WeChatModernVideoSender(context.dexBridgeHolder(), video).also { modern = it }
+
+            val bytes = target.length()
+            val metadata = readVideoMetadata(target)
+            val rate = if (downloadMs > 0) bytes.toDouble() / 1024.0 / (downloadMs / 1000.0) else 0.0
+            HLog.i(
+                "[Hchat:LinkParse] timing media=video platform=${match.platform} queue_ms=$queueWaitMs " +
+                    "resolve_ms=$resolveMs download_ms=$downloadMs bytes=$bytes avg_kib_s=${String.format(Locale.US, "%.1f", rate)} " +
+                    "width=${metadata.width} height=${metadata.height} rotation=${metadata.rotation} codec=${metadata.codec} duration_ms=${metadata.durationMs}"
+            )
+
+            val videos = WeChatApis.media()?.videos() ?: run { HLog.i("[Hchat:LinkParse] 发送接口不可用"); return }
+            val digestStart = SystemClock.elapsedRealtime()
+            val fileMd5 = md5File(target)
+            val digestMs = (SystemClock.elapsedRealtime() - digestStart).coerceAtLeast(0L)
+            val taskId = nextTaskId.incrementAndGet()
+            tracked = fileMd5?.let { registerUpload(talker, UploadKind.VIDEO, it, taskId, enqueuedAt, target) }
+            val submitStart = SystemClock.elapsedRealtime()
+            submitted = if (videos.canSendSilently()) videos.send(talker, target.absolutePath) else {
+                val sender = modern ?: WeChatModernVideoSender(context.dexBridgeHolder(), videos).also { modern = it }
                 sender.send(talker, target.absolutePath)
             }
-            if (!submitted) HLog.i("[Hchat:LinkParse] 发送失败")
+            val submitMs = (SystemClock.elapsedRealtime() - submitStart).coerceAtLeast(0L)
+            HLog.i(
+                "[Hchat:LinkParse] timing send_submit media=video platform=${match.platform} " +
+                    "submit_ms=$submitMs digest_ms=$digestMs accepted=$submitted bytes=$bytes task=$taskId"
+            )
+            if (!submitted) {
+                tracked?.let(::removeUpload)
+                HLog.i("[Hchat:LinkParse] 发送失败")
+            }
         } finally {
-            // Host sending is asynchronous; keep successful files for later age-based cleanup.
+            // Host sending is asynchronous; accepted files stay until a completion event or age cleanup.
             if (!submitted && target.exists()) target.delete()
+        }
+    }
+
+    private fun processGallery(
+        talker: String,
+        match: WorkLinkMatcher.Match,
+        group: Boolean,
+        atMe: Boolean,
+        enqueuedAt: Long,
+        queueWaitMs: Long,
+        resolveMs: Long,
+        sources: List<WorkImageSource>,
+        dir: File
+    ) {
+        if (!gallerySendVerified(match.platform)) {
+            HLog.i("[Hchat:LinkParse] 图集发送未验收 platform=${match.platform}")
+            return
+        }
+        if (sources.isEmpty() || sources.size > WorkImageExtractor.MAX_IMAGES) return
+        val images = ArrayList<DownloadedWorkImage>(sources.size)
+        var totalBytes = 0L
+        var submittedCount = 0
+        try {
+            val downloadStart = SystemClock.elapsedRealtime()
+            for ((index, source) in sources.withIndex()) {
+                if (stopped || !settings.allows(match.platform, group, atMe)) return
+                val base = File(dir, "image_${System.currentTimeMillis()}_${System.nanoTime()}_$index")
+                val downloaded = imageClient.download(source, match.platform, base) ?: run {
+                    HLog.i("[Hchat:LinkParse] 图集下载失败 platform=${match.platform} index=${index + 1}")
+                    return
+                }
+                totalBytes += downloaded.bytes
+                if (totalBytes > MAX_GALLERY_BYTES) {
+                    downloaded.file.delete()
+                    HLog.i("[Hchat:LinkParse] 图集超出字节上限 platform=${match.platform}")
+                    return
+                }
+                images += downloaded
+            }
+            val downloadMs = (SystemClock.elapsedRealtime() - downloadStart).coerceAtLeast(0L)
+            val rate = if (downloadMs > 0) totalBytes.toDouble() / 1024.0 / (downloadMs / 1000.0) else 0.0
+            HLog.i(
+                "[Hchat:LinkParse] timing media=gallery platform=${match.platform} queue_ms=$queueWaitMs " +
+                    "resolve_ms=$resolveMs download_ms=$downloadMs images=${images.size} bytes=$totalBytes " +
+                    "avg_kib_s=${String.format(Locale.US, "%.1f", rate)}"
+            )
+            if (stopped || !settings.allows(match.platform, group, atMe)) return
+            val imageApi = WeChatApis.media()?.images() ?: run { HLog.i("[Hchat:LinkParse] 图片发送接口不可用"); return }
+            if (!imageApi.canSendSilently()) { HLog.i("[Hchat:LinkParse] 图片发送接口未就绪"); return }
+
+            for ((index, image) in images.withIndex()) {
+                if (stopped || !settings.allows(match.platform, group, atMe)) return
+                val digestStart = SystemClock.elapsedRealtime()
+                val fileMd5 = md5File(image.file)
+                val digestMs = (SystemClock.elapsedRealtime() - digestStart).coerceAtLeast(0L)
+                val taskId = nextTaskId.incrementAndGet()
+                val tracked = fileMd5?.let { registerUpload(talker, UploadKind.IMAGE, it, taskId, enqueuedAt, image.file) }
+                val submitStart = SystemClock.elapsedRealtime()
+                val accepted = imageApi.sendOriginal(talker, image.file.absolutePath)
+                val submitMs = (SystemClock.elapsedRealtime() - submitStart).coerceAtLeast(0L)
+                HLog.i(
+                    "[Hchat:LinkParse] timing send_submit media=image platform=${match.platform} " +
+                        "index=${index + 1}/${images.size} format=${image.format} bytes=${image.bytes} " +
+                        "submit_ms=$submitMs digest_ms=$digestMs accepted=$accepted task=$taskId"
+                )
+                if (!accepted) {
+                    tracked?.let(::removeUpload)
+                    HLog.i("[Hchat:LinkParse] 图片发送失败 platform=${match.platform} index=${index + 1}")
+                    return
+                }
+                submittedCount++
+                if (index < images.lastIndex) Thread.sleep(300)
+            }
+        } finally {
+            // Accepted images remain available to WeChat's asynchronous sender; unsent files are removed now.
+            images.drop(submittedCount).forEach { image -> if (image.file.exists()) image.file.delete() }
+        }
+    }
+
+    private fun readVideoMetadata(file: File): VideoMetadata {
+        val retriever = MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(file.absolutePath)
+            VideoMetadata(
+                durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L,
+                width = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0,
+                height = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0,
+                rotation = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0,
+                codec = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_MIMETYPE).orEmpty().ifBlank { "unknown" }
+            )
+        } catch (_: Throwable) {
+            VideoMetadata(0L, 0, 0, 0, "unknown")
+        } finally {
+            runCatching { retriever.release() }
+        }
+    }
+
+    private fun registerUpload(
+        talker: String,
+        kind: UploadKind,
+        fileMd5: String,
+        taskId: Long,
+        enqueuedAt: Long,
+        file: File
+    ): PendingUpload? {
+        val digest = fileMd5.lowercase(Locale.ROOT).takeIf { it.matches(Regex("[a-f0-9]{32}")) } ?: return null
+        val key = uploadKey(talker, kind, digest)
+        val upload = PendingUpload(taskId, kind, enqueuedAt, SystemClock.elapsedRealtime(), file)
+        pendingUploads.computeIfAbsent(key) { ConcurrentLinkedDeque() }.addLast(upload)
+        return upload
+    }
+
+    private fun removeUpload(upload: PendingUpload) {
+        for ((key, queue) in pendingUploads.entries) {
+            queue.remove(upload)
+            if (queue.isEmpty()) pendingUploads.remove(key, queue)
+        }
+    }
+
+    private fun observeUploadCompletion(change: WeChatMessageChangeApi.MessageChange) {
+        if (!change.isUpdate()) return
+        val message = change.message ?: return
+        if (!message.isOutgoing()) return
+        val statusFromChange = change.databaseChange?.values?.let { values ->
+            if (values.containsKey("status")) runCatching { values.getAsInteger("status") }.getOrNull() else null
+        }
+        val status = statusFromChange ?: message.status
+        if (status != 2 && status != 5) return
+        val kind: UploadKind
+        val digests: List<String>
+        when {
+            message.isVideo() || message.type == 62 -> {
+                kind = UploadKind.VIDEO
+                val video = message.getVideoMsg() ?: return
+                digests = listOf(video.md5, video.newMd5)
+            }
+            message.isImage() -> {
+                kind = UploadKind.IMAGE
+                digests = listOf(message.getImageMsg()?.md5.orEmpty())
+            }
+            else -> return
+        }
+        val upload = digests.asSequence()
+            .filter { it.isNotBlank() }
+            .map { uploadKey(message.talker, kind, it.lowercase(Locale.ROOT)) }
+            .mapNotNull { key ->
+                val queue = pendingUploads[key] ?: return@mapNotNull null
+                val first = queue.pollFirst() ?: return@mapNotNull null
+                if (queue.isEmpty()) pendingUploads.remove(key, queue)
+                first
+            }
+            .firstOrNull() ?: return
+        val result = if (status == 2) "success" else "failed"
+        val elapsed = (SystemClock.elapsedRealtime() - upload.createdAt).coerceAtLeast(0L)
+        val totalElapsed = (SystemClock.elapsedRealtime() - upload.enqueuedAt).coerceAtLeast(0L)
+        HLog.i(
+            "[Hchat:LinkParse] timing send_complete media=${kind.label} result=$result " +
+                "after_submit_ms=$elapsed total_ms=$totalElapsed task=${upload.taskId}"
+        )
+        if (status == 5 && upload.file.exists()) upload.file.delete()
+    }
+
+    private fun cleanupPendingUploads() {
+        val now = SystemClock.elapsedRealtime()
+        for ((key, queue) in pendingUploads.entries) {
+            queue.removeIf { now - it.createdAt > CACHE_TTL }
+            if (queue.isEmpty()) pendingUploads.remove(key, queue)
         }
     }
 
     private fun cleanup(dir: File) {
         val cutoff = System.currentTimeMillis() - CACHE_TTL
-        dir.listFiles()?.forEach { f ->
-            if (f.isFile && f.name.startsWith("video_") && f.lastModified() in 1 until cutoff) f.delete()
+        dir.listFiles()?.forEach { file ->
+            if (file.isFile && (file.name.startsWith("video_") || file.name.startsWith("image_")) &&
+                file.lastModified() in 1 until cutoff) file.delete()
         }
     }
+
+    private fun uploadKey(talker: String, kind: UploadKind, digest: String): String =
+        sha256("${kind.label}\u0000$talker\u0000$digest")
+
+    private fun gallerySendVerified(platform: WorkLinkMatcher.Platform): Boolean = when (platform) {
+        WorkLinkMatcher.Platform.DOUYIN,
+        WorkLinkMatcher.Platform.XIAOHONGSHU,
+        WorkLinkMatcher.Platform.KUAISHOU -> false
+    }
+
+    private fun md5File(file: File): String? = runCatching {
+        val digest = MessageDigest.getInstance("MD5")
+        file.inputStream().buffered().use { input ->
+            val buffer = ByteArray(64 * 1024)
+            while (true) {
+                val read = input.read(buffer)
+                if (read < 0) break
+                digest.update(buffer, 0, read)
+            }
+        }
+        digest.digest().joinToString("") { "%02x".format(it) }
+    }.getOrNull()
+
+    private fun sha256(value: String): String = MessageDigest.getInstance("SHA-256")
+        .digest(value.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
 
     private fun key(talker: String, id: Long): String = MessageDigest.getInstance("SHA-256")
         .digest("$talker\u0000$id".toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
@@ -164,5 +477,6 @@ internal class LinkParseRuntime(private val context: FeatureContext) {
         private const val CACHE_TTL = 6 * 60 * 60 * 1000L
         private const val MAX_CACHE_BYTES = 256L * 1024 * 1024
         private const val MAX_VIDEO_BYTES = 50L * 1024 * 1024
+        private const val MAX_GALLERY_BYTES = 40L * 1024 * 1024
     }
 }

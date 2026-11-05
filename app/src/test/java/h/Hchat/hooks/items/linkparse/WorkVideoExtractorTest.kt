@@ -19,15 +19,18 @@ class WorkVideoExtractorTest {
         assertEquals(listOf("https://a.douyinvod.com/one", "https://b.douyinvod.com/two"), WorkVideoExtractor.douyinCandidates(body, id))
     }
 
-    @Test fun xhsChecksTheNoteIdentityAndDoesNotTreatImagesAsVideo() {
+    @Test fun xhsUsesVerifiedOriginalVideoKeyAndRejectsUnverifiedStreams() {
         val id = "6a9a9fe70000000011033fd1"
-        val html = """<script>window.__INITIAL_STATE__ = {"unused":undefined,"noteData":{"data":{"noteData":{"noteId":"$id","type":"video","title":"undefined is text","video":{"media":{"stream":{"h264":[{"masterUrl":"https://sns-video-v6.xhscdn.com/a.mp4"}]}}}}}}};</script>"""
-        assertEquals("https://sns-video-v6.xhscdn.com/a.mp4", WorkVideoExtractor.xiaohongshu(html, id))
-        assertEquals("https://sns-video-v6.xhscdn.com/a.mp4", WorkVideoExtractor.xiaohongshu(html.replace("https://sns-video", "http://sns-video"), id))
-        assertNull(WorkVideoExtractor.xiaohongshu(html.replace("sns-video-v6.xhscdn.com", "sns-video-v6.xhscdn.com.evil.example"), id))
+        val html = """<script>window.__INITIAL_STATE__ = {"unused":undefined,"noteData":{"data":{"noteData":{"noteId":"$id","type":"video","title":"undefined is text","video":{"consumer":{"originVideoKey":"/original/hash.mp4"},"media":{"stream":{"h264":[{"masterUrl":"https://sns-video-v6.xhscdn.com/watermarked.mp4","streamType":259}],"h265":[{"masterUrl":"https://sns-video-v6.xhscdn.com/other.mp4","streamType":309}]}}}}}}};</script>"""
+        assertEquals("https://sns-video-bd.xhscdn.com/original/hash.mp4", WorkVideoExtractor.xiaohongshu(html, id))
         assertNull(WorkVideoExtractor.xiaohongshu(html, "6ad9e5320000000014012d15"))
         assertNull(WorkVideoExtractor.xiaohongshu(html.replace("\"type\":\"video\"", "\"type\":\"normal\""), id))
         assertNull(WorkVideoExtractor.xiaohongshu("<html>login</html>", id))
+
+        val streamOnly = html.replace("\"consumer\":{\"originVideoKey\":\"/original/hash.mp4\"},", "")
+        assertNull(WorkVideoExtractor.xiaohongshu(streamOnly, id))
+        val untrustedKey = html.replace("/original/hash.mp4", "https://evil.example/video.mp4")
+        assertNull(WorkVideoExtractor.xiaohongshu(untrustedKey, id))
     }
 
     @Test fun kuaishouRejectsWrongOrAmbiguousWorkAndAtlas() {

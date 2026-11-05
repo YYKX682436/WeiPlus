@@ -12,6 +12,11 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
 
+internal sealed interface WorkResolution {
+    data class Video(val candidates: List<String>) : WorkResolution
+    data class Gallery(val images: List<WorkImageSource>) : WorkResolution
+}
+
 /** Isolated anonymous requests: no shared cookie jar, automatic redirects, or third-party parser. */
 internal class WorkVideoClient {
     private val client = OkHttpClient.Builder()
@@ -23,7 +28,7 @@ internal class WorkVideoClient {
         .callTimeout(60, TimeUnit.SECONDS)
         .build()
 
-    fun resolve(match: WorkLinkMatcher.Match): List<String>? = runCatching {
+    fun resolve(match: WorkLinkMatcher.Match): WorkResolution? = runCatching {
         val input = match.url.toHttpUrlOrNull() ?: return null
         val page = getWorkPage(input, match.platform) ?: return null
         when (match.platform) {
@@ -35,15 +40,19 @@ internal class WorkVideoClient {
                     .addQueryParameter("device_platform", "web").addQueryParameter("version_code", "190500")
                     .addQueryParameter("version_name", "19.5.0").build()
                 val body = request(detail).use { response -> readText(response) } ?: return null
-                WorkVideoExtractor.douyinCandidates(body, id).takeIf { it.isNotEmpty() }
+                val videos = WorkVideoExtractor.douyinCandidates(body, id)
+                if (videos.isNotEmpty()) WorkResolution.Video(videos)
+                else WorkImageExtractor.douyin(body, id)?.let { WorkResolution.Gallery(it) }
             }
             WorkLinkMatcher.Platform.XIAOHONGSHU -> {
                 val id = page.url.pathSegments.lastOrNull { it.isNotBlank() } ?: return null
-                WorkVideoExtractor.xiaohongshu(page.body, id)?.let(::listOf)
+                val video = WorkVideoExtractor.xiaohongshu(page.body, id)
+                if (video != null) WorkResolution.Video(listOf(video))
+                else WorkImageExtractor.xiaohongshu(page.body, id)?.let { WorkResolution.Gallery(it) }
             }
             WorkLinkMatcher.Platform.KUAISHOU -> {
                 val id = page.url.queryParameter("shareObjectId") ?: return null
-                WorkVideoExtractor.kuaishou(page.body, id)?.let(::listOf)
+                WorkVideoExtractor.kuaishou(page.body, id)?.let { WorkResolution.Video(listOf(it)) }
             }
         }
     }.getOrNull()

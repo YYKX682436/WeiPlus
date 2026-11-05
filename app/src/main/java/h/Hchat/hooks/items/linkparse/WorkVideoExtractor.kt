@@ -8,7 +8,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 
-/** Extracts only the video shapes verified against public samples. No gallery fallback. */
+/** Extracts only the media shapes verified against public samples. */
 internal object WorkVideoExtractor {
     private val json = Json { ignoreUnknownKeys = true }
     private const val MAX_PAGE_CHARS = 3_000_000
@@ -31,8 +31,16 @@ internal object WorkVideoExtractor {
         val root = parseState(html, "__INITIAL_STATE__") ?: return@safely null
         val note = root.obj("noteData")?.obj("data")?.obj("noteData") ?: return@safely null
         if (!note.str("noteId").equals(expectedId, true) || note.str("type") != "video") return@safely null
-        val streams = note.obj("video")?.obj("media")?.obj("stream")?.array("h264") ?: return@safely null
-        streams.firstNotNullOfOrNull { it.obj()?.str("masterUrl")?.let(::secureXhsMedia) }
+        val video = note.obj("video") ?: return@safely null
+        val originKey = video.obj("consumer")?.str("originVideoKey")
+            ?: video.str("originVideoKey")
+            ?: return@safely null
+        val originUrl = if (originKey.startsWith("http://", true) || originKey.startsWith("https://", true)) {
+            originKey
+        } else {
+            "https://sns-video-bd.xhscdn.com/${originKey.trimStart('/')}"
+        }
+        secureXhsMedia(originUrl)
     }
 
     fun kuaishou(html: String, expectedNumericId: String): String? = safely {

@@ -27,3 +27,34 @@
 - `:app:testDebugUnitTest`：191 项，0 失败、0 错误、0 跳过；`:app:lintRelease` 和 `:app:assembleRelease` 成功；APK 签名验证通过。单测覆盖链接过滤、作品 ID、图集排除、开关、群聊模式和持久去重。
 - 新设置页和三个私聊视频样本已经真机检查；实际群聊的关闭 / @我 / 自动触发、其他联系人接收、QQ 点歌和自动回复的真机回归 **NOT_VERIFIED**。单测及未拦截原有消息不等于这些运行路径已验收。
 - 只向文件传输助手发送测试消息；逐条核对后删除本次消息和本次生成的媒体缓存，恢复本功能开关为关闭、群聊模式为关闭。没有卸载或清除微信，也没有修改其他用户设置。预先存在的搜抖音研究文件不属于本轮改动。
+
+## 2026-11-05 后续多媒体复核
+
+### 小红书视频流与水印
+
+- 核对了 `wujunwei928/parse-video`、`ucmao/media-parser` 和 `JoeanAmier/XHS-Downloader` 的当前源码。`parse-video` 优先 `h265[0].masterUrl`，缺失时会回退到 H.264；其源码注释及测试把 H.264 分享流标为带小红书水印、H.265 转码流标为无水印。`media-parser` 优先 `video.consumer.originVideoKey`，再试 `mediaV2`，之后按 `streamType` 挑流；但没有 clean 候选时仍会回退到候选流，不能直接采用这一回退作为无水印保证。`XHS-Downloader` 先用 `consumer.originVideoKey`，缺失时跨 codec 按分辨率、码率或文件大小择优，并未检查 `streamType`。
+- 使用本轮已有公开短链 `https://xhslink.com/o/ErAlVOTpbg`，Android UA、无 Cookie 请求获得 HTTP 200，作品 ID 匹配。页面含顶层 `video.consumer.originVideoKey`，而 `mediaV2.video.opaque1` 没有 `hd_screencast_stream`，`mediaV2` 内也没有 `consumer.originVideoKey`。原画 key 下载成功；该文件为 48,510,174 字节 MP4，2160×3840，H.264/AVC，25 fps，21.68 秒，含音轨。对文件多个位置抽帧后未见小红书平台标识；源画面自身的 AHC 品牌图样和字幕仍保留。
+- 同作品 H.264 `streamType=259` 下载为 2,491,670 字节、720×1280；实际画面可见小红书标识。H.265 `streamType=309` 为 2,296,064 字节、720×1280，抽帧未见小红书标识，但 codec 为 HEVC，尚未验证微信播放兼容性。当前解析实现只接受已下载并目视检查的原画 key；缺少原画 key 就静默失败，不退回一般 H.264、H.265 或 `mediaV2` 候选。此结论覆盖该公开样本，仍需用户确认，不能标最终 PASS。
+
+### 抖音与小红书图集获取
+
+- 抖音公开作品 `7616399587141737704` 的匿名详情返回作品类型 68 和 2 张图片。两张图都从 `download_url_list` 下载成功，原始 WebP 尺寸分别为 2132×4096、2876×2160；服务端也给出同分辨率 JPEG 候选。`url_list` 的 q75 WebP 也是相同尺寸但字节较少。图序依详情数组保留。
+- 小红书图文短链 `https://xhslink.com/o/6A6YKVkqAP2` 当前仍匿名返回匹配 note `6ad9e5320000000014012d15` 和 15 个 `imageList` 项。按每项 `fileId` 请求 `sns-img-qc.xhscdn.com/{fileId}?imageView2/2/w/1920/format/jpg`，15/15 张为 JPEG，合计 5,441,401 字节，返回图像长边最大 2048 像素；抽查首尾文件未见小红书平台角标。此处使用文件 ID 的高清 JPEG 形式，不依赖 Cookie。
+- 以上只验证了获取与下载。当前连接手机执行一次生产 `WeChatImageApi.sendOriginal`，本地 API 返回已受理；只读消息回查发现文件传输助手有 1 条近期自己发送的图片消息，`status=5`。没有取得服务端错误码。先前探测记录里，同一 JPEG 经微信原生相册发送也失败。由于账号限制与发送 API 故障仍无法区分，且用户要求暂保持 **NOT_VERIFIED**，本轮停止该设备上的后续实际发送。WebP 微信发送及 JPEG/WebP 必要转换尚未验证；所有平台图集发送功能继续关闭。
+
+### 快手样本数量
+
+- 对 `https://v.kuaishou.com/EYhNCZ` 用无 Cookie Android UA 重取页面。`photoType=VERTICAL_ATLAS`、`singlePicture=true`，`ext_params.atlas.list` 与 `size` 都各含 16 项；16/16 个 WebP 地址均可匿名下载。尺寸中 13 项为竖幅图片，另有 3 项是 898×316、940×246 和 938×134 的窄横条。分享页将内容标成“长图”，表明此列表含长图/atlas 的组成素材；将全部 16 项都当作互相独立的原作品图片会造成数量和内容误报。当前实现拒绝 `VERTICAL_ATLAS` 图集，不对这 3 项作经验性过滤，也不启用快手图集发送。
+
+### 视频测速样本和运行日志
+
+- 无 Cookie 网络探针复测短样本 Kuaishou video `5239093935709739099`：解析分享页约 1.342 秒，下载 982,430 字节约 518 ms，平均 1,853 KiB/s；文件元数据 720×1280、AVC、16.634 秒、含音轨。
+- 抖音 video `7392565659223248165`：作品页约 145 ms、详情约 392 ms，下载 14,960,507 字节约 539 ms，平均 27,104 KiB/s；文件元数据 720×1280、AVC、219.366 秒、含音轨。
+- 小红书已检查的原画视频为 21.68 秒、48,510,174 字节；首次匿名下载约 11.619 秒，平均约 4,075 KiB/s。外部 CDN 时间会受缓存和网络变化影响，这些值只描述本轮桌面网络的解析/下载阶段，不代表手机体验或微信发送速度。
+- 生产运行日志已加入队列等待、作品解析、下载耗时/字节数/平均速度、视频文件宽高/rotation/codec/时长、微信发送 API 提交耗时；对于可由相同本地 MD5、会话及媒体类型关联的 status 2/5 数据库更新，会额外记录发送完成/失败总耗时。本轮未通过受限/失败账号发送视频，真实短视频与较大视频的微信上传及服务端完成耗时仍为 **NOT_VERIFIED**。
+
+### 构建与设备状态
+
+- `:app:testDebugUnitTest`：207 项，0 失败、0 错误、0 跳过；`:app:lintRelease` 和 `:app:assembleRelease` 成功，R8 与正式签名构建完成。Lint 成功；它报告的 3 条既有 `firstOrNull()` 非唯一性提示位于 HchatExtra 和平板功能文件。
+- 候选包：`dist/Hchat-1.2.1-link-parse-multimedia-candidate.apk`，SHA-256 `f1466d304fc20b2b4e5e93b38c847bdc07516c51df4cc56648930e8a78f04dde`；APK v2 签名通过，证书 SHA-256 `5de821feb8cf9dc1be4f1a656664f5d4d88755465d390b0a32a4050d0922a3fd`。已对测试手机执行同签名 `adb install -r`，安装后 APK 哈希与候选一致；官方微信仍为 8.0.80 / 3220。微信启动日志显示数据库订阅及消息写入观察点已安装。
+- 全程没有卸载微信或清除其数据；链接解析总开关保持关闭，未修改用户设置。微信图片 API 的一次失败测试消息仍留在文件传输助手，其余测试图片文件、探针文件和临时 APK 均已清理。图片失败的账号/接口归因、抖音与小红书图集真实发送、WebP 微信兼容、视频真实发送完成耗时均 **NOT_VERIFIED**。小红书视频无水印和图集功能均未标为最终 PASS，等待用户确认。
