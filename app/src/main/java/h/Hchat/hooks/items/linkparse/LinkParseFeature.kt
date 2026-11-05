@@ -23,5 +23,5 @@ class LinkParseFeature : BaseFeature() {
 }
 
 private class LinkParseSettingsProvider : SimpleFeatureSettingsProvider(
-    LinkParseFeature.ID, "链接解析", "解析公开作品视频并发送小红书和抖音原图图集", FeatureSettingsProvider.CATEGORY_PRACTICAL
+    LinkParseFeature.ID, "链接解析", "识别抖音、小红书公开作品链接", FeatureSettingsProvider.CATEGORY_PRACTICAL
 )

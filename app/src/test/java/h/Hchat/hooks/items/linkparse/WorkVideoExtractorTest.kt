@@ -36,16 +36,4 @@ class WorkVideoExtractorTest {
         val h264Only = """<script>window.__INITIAL_STATE__={"noteData":{"data":{"noteData":{"noteId":"$id","type":"video","video":{"consumer":{"originVideoKey":"/original/hash.mp4"},"media":{"stream":{"h264":[{"masterUrl":"https://sns-video-v6.xhscdn.com/watermarked.mp4","streamType":259}],"h265":[]}}}}}}};</script>"""
         assertNull(WorkVideoExtractor.xiaohongshu(h264Only, id))
     }
-
-    @Test fun kuaishouRejectsWrongOrAmbiguousWorkAndAtlas() {
-        val id = "5239093935709739099"
-        val entry = """{"photo":{"photoId":"$id","photoType":"VIDEO","mainMvUrls":[{"url":"https://txmov2.a.kwimgs.com/a.mp4"}]}}"""
-        val html = "<script>window.INIT_STATE = {\"sample\":$entry};</script>"
-        assertEquals("https://txmov2.a.kwimgs.com/a.mp4", WorkVideoExtractor.kuaishou(html, id))
-        assertNull(WorkVideoExtractor.kuaishou(html, "5188428409809700258"))
-        assertNull(WorkVideoExtractor.kuaishou(html.replace("VIDEO", "VERTICAL_ATLAS"), id))
-        assertNull(WorkVideoExtractor.kuaishou(html.replace("\"sample\":$entry", "\"sample\":$entry,\"other\":$entry"), id))
-        assertFalse(WorkVideoExtractor.allowedMedia("http://txmov2.a.kwimgs.com/a.mp4", WorkLinkMatcher.Platform.KUAISHOU))
-        assertFalse(WorkVideoExtractor.allowedMedia("https://txmov2.a.kwimgs.com.evil.example/a.mp4", WorkLinkMatcher.Platform.KUAISHOU))
-    }
 }

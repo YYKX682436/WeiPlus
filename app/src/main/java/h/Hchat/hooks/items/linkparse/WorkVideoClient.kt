@@ -57,10 +57,6 @@ internal class WorkVideoClient {
                 if (videos.isNotEmpty()) WorkResolution.Video(videos)
                 else WorkImageExtractor.xiaohongshu(page.body, id)?.let { WorkResolution.Gallery(it) }
             }
-            WorkLinkMatcher.Platform.KUAISHOU -> {
-                val id = page.workId
-                WorkVideoExtractor.kuaishou(page.body, id)?.let { WorkResolution.Video(listOf(it)) }
-            }
         }
     }.onFailure { HLog.i("[Hchat:LinkParse] resolver_exception=${it.javaClass.simpleName}") }.getOrNull()
 

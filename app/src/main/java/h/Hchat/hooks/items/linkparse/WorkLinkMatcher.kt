@@ -5,7 +5,7 @@ import java.util.Locale
 
 /** Recognizes possible work links; short links still require a verified work redirect. */
 internal object WorkLinkMatcher {
-    enum class Platform { DOUYIN, XIAOHONGSHU, KUAISHOU }
+    enum class Platform { DOUYIN, XIAOHONGSHU }
     data class Match(val platform: Platform, val url: String, val requiresRedirect: Boolean)
 
     private val urls = Regex("https?://[^\\s\\u0000-\\u001f<>\\\"'（）【】《》，。；：！？、]+", RegexOption.IGNORE_CASE)
@@ -16,8 +16,6 @@ internal object WorkLinkMatcher {
     private val shortCode = Regex("^/[A-Za-z0-9_-]{3,80}/?$")
     private val xhsShort = Regex("^/(?:a|o)/[A-Za-z0-9_-]{3,80}/?$")
     private val xhsWork = Regex("^/(?:explore|discovery/item)/[a-fA-F0-9]{24}/?$")
-    private val kuaishouWork = Regex("^/short-video/[A-Za-z0-9]{8,40}/?$")
-    private val kuaishouShare = Regex("^/fw/(?:photo|long-video)/[A-Za-z0-9]{8,40}/?$")
 
     fun find(text: String): Match? = urls.findAll(normalizeEscapedScheme(text)).firstNotNullOfOrNull { result ->
         parse(result.value.trimEnd(*trailingPunctuation.toCharArray()))
@@ -37,9 +35,6 @@ internal object WorkLinkMatcher {
             host in setOf("www.iesdouyin.com", "iesdouyin.com", "m.douyin.com") && douyinShare.matches(path) -> Match(Platform.DOUYIN, normalized, false)
             host in setOf("xhslink.com", "www.xhslink.com", "xhslink.cn", "www.xhslink.cn") && (xhsShort.matches(path) || shortCode.matches(path)) -> Match(Platform.XIAOHONGSHU, normalized, true)
             host in setOf("www.xiaohongshu.com", "xiaohongshu.com") && xhsWork.matches(path) -> Match(Platform.XIAOHONGSHU, normalized, false)
-            host == "v.kuaishou.com" && shortCode.matches(path) -> Match(Platform.KUAISHOU, normalized, true)
-            host in setOf("www.kuaishou.com", "kuaishou.com") && kuaishouWork.matches(path) -> Match(Platform.KUAISHOU, normalized, false)
-            (host == "m.gifshow.com" || host == "m.chenzhongtech.com" || host.endsWith(".m.chenzhongtech.com")) && kuaishouShare.matches(path) -> Match(Platform.KUAISHOU, normalized, false)
             else -> null
         }
     }

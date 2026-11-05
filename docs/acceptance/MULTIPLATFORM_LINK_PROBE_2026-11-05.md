@@ -99,3 +99,8 @@
 - `WorkImageExtractorTest` 回归用例确认只保留 `url_list` 中经过域名校验的候选，不会把带水印的 `download_url_list` 用作首选或后备；`LinkParseGallerySupportTest` 仅对已验证的小红书和抖音图集开放发送，快手保持关闭。
 - 最终构建 `:app:testDebugUnitTest` 为 211 项通过、0 失败 / 错误 / 跳过；`:app:lintRelease` 与 `:app:assembleRelease` 成功。Lint 有 3 条未改动文件中的既有 `firstOrNull()` 非唯一性提示。最终 APK 为 `dist/Hchat-1.2.1-link-parse-multimedia-final-signed.apk`，SHA-256 `b7ef5563a004e1c8f48cc6ccdb5b4a5fa996045002f24734f14a28d212dbb76c`，签名证书 SHA-256 `5de821feb8cf9dc1be4f1a656664f5d4d88755465d390b0a32a4050d0922a3fd`。APK v2 签名验证通过。
 - 已用同签名 `adb install -r` 安装；设备端已安装包 SHA-256 与交付 APK 一致。没有卸载微信、清除微信数据或改动链接解析总开关 / 平台开关 / 群聊模式。快手图集和 QQ 点歌、自动回复的独立业务真机回归未在本次执行；本次改动仅涉及链接解析模块及其设置说明，不能把未执行的业务路径记为已验证。
+
+## 当前代码范围调整
+
+- 后续实现已彻底移除快手链接识别、跳转策略、媒体抽取、设置项和专属测试。本文前面的快手视频样本数据仅保留为历史探测记录，不代表当前版本支持快手解析。
+- 当前链接解析只保留抖音与小红书。本人发送的有效作品链接在任意聊天均可解析；其他成员仅能在链接解析独立白名单中的私聊和群聊触发，可选限制群聊成员必须 @我。QQ 点歌的白名单与触发逻辑不参与链接解析。

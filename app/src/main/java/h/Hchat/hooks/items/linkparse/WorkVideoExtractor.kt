@@ -39,17 +39,6 @@ internal object WorkVideoExtractor {
         streams.mapNotNull { it.obj()?.str("masterUrl")?.let(::secureXhsMedia) }.distinct().take(MAX_CANDIDATES)
     } ?: emptyList()
 
-    fun kuaishou(html: String, expectedNumericId: String): String? = safely {
-        if (!expectedNumericId.matches(Regex("[1-9][0-9]{5,24}"))) return@safely null
-        val root = parseState(html, "INIT_STATE") ?: return@safely null
-        val photos = root.values.mapNotNull { it.obj()?.obj("photo") }
-        if (photos.size != 1) return@safely null
-        val photo = photos.single()
-        if (photo.str("photoId") != expectedNumericId || photo.str("photoType") != "VIDEO") return@safely null
-        val urls = photo.array("mainMvUrls") ?: return@safely null
-        urls.firstNotNullOfOrNull { it.obj()?.str("url")?.takeIf { u -> allowedMedia(u, WorkLinkMatcher.Platform.KUAISHOU) } }
-    }
-
     private fun secureXhsMedia(raw: String): String? {
         val uri = runCatching { URI(raw) }.getOrNull() ?: return null
         val host = uri.host?.lowercase(Locale.ROOT) ?: return null
@@ -70,7 +59,6 @@ internal object WorkVideoExtractor {
         return when (platform) {
             WorkLinkMatcher.Platform.DOUYIN -> domain("douyinvod.com") || host == "www.douyin.com"
             WorkLinkMatcher.Platform.XIAOHONGSHU -> domain("xhscdn.com")
-            WorkLinkMatcher.Platform.KUAISHOU -> domain("kwimgs.com") || domain("yximgs.com")
         }
     }
 

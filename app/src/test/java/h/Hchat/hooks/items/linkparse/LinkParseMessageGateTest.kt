@@ -6,7 +6,7 @@ import org.junit.Test
 
 class LinkParseMessageGateTest {
     private val now = 1_770_000_000_000L
-    private fun msg(type: Int = 1, id: Long = 4, time: Long = now, text: String = "https://v.kuaishou.com/JuuRuozy") =
+    private fun msg(type: Int = 1, id: Long = 4, time: Long = now, text: String = "https://v.douyin.com/bg9DH--cvOc/") =
         WeChatMessage(id, 0, type, 0, 1, time, "filehelper", text, "", "", "", 0)
 
     @Test fun onlyFreshTextWithStableIdentityIsEligible() {

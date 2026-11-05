@@ -116,7 +116,6 @@ internal class WorkImageClient {
         when (platform) {
             WorkLinkMatcher.Platform.DOUYIN -> WorkImageExtractor.allowedDouyinImage(url.toString())
             WorkLinkMatcher.Platform.XIAOHONGSHU -> WorkImageExtractor.allowedXhsImage(url.toString())
-            WorkLinkMatcher.Platform.KUAISHOU -> false
         }
 
     private fun request(url: HttpUrl): Response = client.newCall(
