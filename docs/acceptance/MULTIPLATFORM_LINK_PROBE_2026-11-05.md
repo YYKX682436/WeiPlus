@@ -62,3 +62,40 @@
 - `:app:testDebugUnitTest`：208 项，0 失败、0 错误、0 跳过；`:app:lintRelease` 和 `:app:assembleRelease` 成功，R8 与正式签名构建完成。Lint 成功；它报告的 3 条既有 `firstOrNull()` 非唯一性提示位于 HchatExtra 和平板功能文件。
 - 当前候选包：`dist/Hchat-1.2.1-link-parse-multimedia-candidate.apk`，SHA-256 `85d62fd3317e7ae274783b4b1ddafe6108dc7d7b8dc537f54fefafbe32040ebe`；APK v2 签名通过，证书 SHA-256 `5de821feb8cf9dc1be4f1a656664f5d4d88755465d390b0a32a4050d0922a3fd`。已对连接测试手机执行同签名 `adb install -r`，安装后 APK 哈希与候选一致；官方微信仍为 8.0.80 / 3220。微信启动日志显示数据库订阅及消息写入观察点已安装。另一台未受限设备上的视频结果来自用户报告。
 - 全程没有卸载微信或清除其数据；链接解析总开关保持关闭，未修改用户设置。微信图片 API 的一次失败测试消息仍留在文件传输助手，其余测试图片文件、探针文件和临时 APK 均已清理。图片失败的账号/接口归因、抖音与小红书图集真实发送、WebP 微信兼容、视频真实发送完成耗时均 **NOT_VERIFIED**。小红书视频无水印和图集功能均未标为最终 PASS，等待用户确认。
+
+## 2026-11-05 后续用户设备真机复测（覆盖较早的未验收状态）
+
+### 小红书视频：H.265 无水印流和微信发送
+
+- 用户提供的小红书视频短链在本机当前微信 8.0.80 中触发后，匿名作品页可见 `video.consumer.originVideoKey` 指向 635,943,001 字节原画，超过当前 50 MiB 单视频上限；所以旧版直接取原画会在下载阶段失败。该样本 `media.stream.h264[0]` 是 720×1280、35,434,230 字节，实际抽帧看到小红书角标与作者头像，已排除；`media.stream.h265[0]` 是 720×1280、29,611,080 字节，取视频开头及多个时间点的帧未见平台角标。
+- `wujunwei928/parse-video` 注释与 `jiuhunwl/short_videos` 实际解析代码都优先取 `h265`，并把 `h264` 作为缺少 H.265 时的回退；本实现依据 H.264 的实际画面证据拒绝该回退。只保留经过 XHS CDN 域名校验的 H.265 流，并将该 CDN 默认 HTTP 地址升级到 HTTPS。解析源代码参考 [parse-video `redbook.go`](https://github.com/wujunwei928/parse-video/blob/main/parser/redbook.go) 与 [short_videos `XiaohongshuParser.php`](https://github.com/jiuhunwl/short_videos/blob/main/api/xiaohongshu/XiaohongshuParser.php)。
+- 微信实际运行日志：H.265 文件 29,611,080 字节，首次下载 723 ms、提交 310 ms，微信数据库回调 `result=success`，提交后 5,407 ms、全流程 6,786 ms。用户随后在设备上确认视频无小红书水印。第二次同码率样本提交后 6,162 ms 完成，结果同为 `success`。因此小红书 H.265 视频的免登录获取、下载、微信发送和水印目视检查均通过此样本验收。
+
+### 小红书图文：真实图片发送回调
+
+- 用户原分享短链 `https://xhslink.cn/o/9dORNEMXaP2` 在普通浏览器打不开是用户报告；本次不以浏览器打开作为解析成功条件。微信消息监听收到分享后，本模块通过匿名作品页读取到 3 张图片，按序下载 3/3 张 JPEG，共 951,682 字节，不使用 Cookie、登录或远程解析服务。
+- 在用户授权的置顶聊天测试中，微信图片 API 对 3 张图片逐张返回 `accepted=true`；数据库状态回调对每张都记录 `result=success`。两次发送批次均完成。第一次总解析/下载为 540/762 ms，3 张图片在提交后 1,036/1,388/1,800 ms 完成；第二次为 354/197 ms，提交后 975/1,368/1,786 ms 完成。截图可见三张图均出现在聊天中。
+- 因此只将小红书图文发送打开。抖音图集和快手图集继续关闭；本轮没有验证它们的真实微信图片发送。图文平台开关及群聊触发模式沿用用户设置，没有清除或重置微信数据。
+
+### 最终候选构建与安装
+
+- `:app:testDebugUnitTest`：209 项，0 失败、0 错误、0 跳过；`:app:lintRelease` 与 `:app:assembleRelease` 成功。Lint 保留 3 条本次未改动文件中的 `firstOrNull()` 非唯一性提示（HchatExtra 两处、平板一处）。`git diff --check` 通过。
+- 正式签名 APK：`dist/Hchat-1.2.1-link-parse-xhs-gallery-verified-signed.apk`，SHA-256 `480edd658bc3eca9fa5d94698f834e0593c0c96942fc32c40d679b3ae46a004f`；签名证书 SHA-256 `5de821feb8cf9dc1be4f1a656664f5d4d88755465d390b0a32a4050d0922a3fd`。
+- 已通过同签名 `adb install -r` 安装最终 APK，并核对设备已安装 `base.apk` SHA-256 与交付包一致；微信仍为官方 8.0.80 / 3220。没有卸载微信或清除其数据，用户设置保持原值。临时诊断 APK 不作为交付版本。
+- 小红书视频选择策略与图集平台策略都有回归单测；小红书图集发送开关为已验证，抖音/快手图集仍关闭。抖音视频真机状态沿用较早验收记录和用户本轮反馈；本轮不对抖音图集作 PASS 声明。
+
+### 本次代码、构建与边界
+
+- 解析器现在只从小红书 `media.stream.h265` 选取候选，不在缺少 H.265 时回退到有水印的 H.264 或未经目视检查的 `originVideoKey`。小红书图文发送策略单独测试为启用；抖音、快手图文策略单测保持关闭。
+- 设置页说明已更新为小红书支持视频和图文，抖音/快手图集尚未验收。
+- 上述设备数据来自微信 8.0.80 / 3220；页面触发、下载、微信图片/视频发送及成功状态回调均为真机证据。普通浏览器无法打开该短链与模块匿名请求成功是两个不同观察结果，短链在其他浏览器/网络环境的行为仍未验证。
+
+### 抖音图集平台水印修正及最终复测
+
+以下结果更新并覆盖本记录前文中“抖音图集仍关闭 / 未验收”的状态。
+
+- 对短链 `https://v.douyin.com/bg9DH--cvOc/` 的匿名详情确认作品 ID `7703078494070829032`、类型 `aweme_type=68`。此前发送路径优先选择 `download_url_list`，微信中可见抖音号水印。现在仅使用同一详情中的 `url_list` 原图候选，彻底排除 `download_url_list`；原图候选失效时整组静默失败，不回退到带平台水印的图片。图像按原数组顺序发送，原图里创作者自带签名、字幕和其他内容不做修改。
+- 用户在安装最终候选包后，通过官方微信 8.0.80 / 3220 的置顶私聊 `im` 对抖音分享图集真机复测，确认解析和发送正常，**抖音平台账号水印已去除**。这是对该公开作品样本的用户真机确认，不代表所有抖音作品或后续平台版本都提供相同的无水印原图。
+- `WorkImageExtractorTest` 回归用例确认只保留 `url_list` 中经过域名校验的候选，不会把带水印的 `download_url_list` 用作首选或后备；`LinkParseGallerySupportTest` 仅对已验证的小红书和抖音图集开放发送，快手保持关闭。
+- 最终构建 `:app:testDebugUnitTest` 为 211 项通过、0 失败 / 错误 / 跳过；`:app:lintRelease` 与 `:app:assembleRelease` 成功。Lint 有 3 条未改动文件中的既有 `firstOrNull()` 非唯一性提示。最终 APK 为 `dist/Hchat-1.2.1-link-parse-multimedia-final-signed.apk`，SHA-256 `b7ef5563a004e1c8f48cc6ccdb5b4a5fa996045002f24734f14a28d212dbb76c`，签名证书 SHA-256 `5de821feb8cf9dc1be4f1a656664f5d4d88755465d390b0a32a4050d0922a3fd`。APK v2 签名验证通过。
+- 已用同签名 `adb install -r` 安装；设备端已安装包 SHA-256 与交付 APK 一致。没有卸载微信、清除微信数据或改动链接解析总开关 / 平台开关 / 群聊模式。快手图集和 QQ 点歌、自动回复的独立业务真机回归未在本次执行；本次改动仅涉及链接解析模块及其设置说明，不能把未执行的业务路径记为已验证。

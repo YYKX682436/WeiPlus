@@ -25,16 +25,19 @@ internal object WorkImageExtractor {
         if (images.isEmpty() || images.size > MAX_IMAGES) return@safely null
         images.map { element ->
             val image = element.obj() ?: return@safely null
-            val candidates = sequenceOf(image.array("download_url_list"), image.array("url_list"))
-                .filterNotNull()
-                .flatMap { it.asSequence() }
+            // Douyin's download_url_list is a rendered/share copy with the account watermark.
+            // url_list contains the original image variants; never fall back to the marked copy.
+            val candidates = image.array("url_list")
+                ?.asSequence()
+                ?: return@safely null
+            val safeCandidates = candidates
                 .mapNotNull { it.prim()?.contentOrNull }
                 .filter(::allowedDouyinImage)
                 .distinct()
                 .take(MAX_CANDIDATES_PER_IMAGE)
                 .toList()
-            if (candidates.isEmpty()) return@safely null
-            WorkImageSource(candidates)
+            if (safeCandidates.isEmpty()) return@safely null
+            WorkImageSource(safeCandidates)
         }
     }
 

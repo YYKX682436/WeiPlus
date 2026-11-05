@@ -12,6 +12,7 @@ import kotlinx.serialization.json.contentOrNull
 internal object WorkVideoExtractor {
     private val json = Json { ignoreUnknownKeys = true }
     private const val MAX_PAGE_CHARS = 3_000_000
+    private const val MAX_CANDIDATES = 4
 
     fun douyin(body: String, expectedId: String): String? = douyinCandidates(body, expectedId).firstOrNull()
 
@@ -26,22 +27,17 @@ internal object WorkVideoExtractor {
         urls.mapNotNull { it.prim()?.contentOrNull?.takeIf { u -> allowedMedia(u, WorkLinkMatcher.Platform.DOUYIN) } }.distinct().take(4)
     } ?: emptyList()
 
-    fun xiaohongshu(html: String, expectedId: String): String? = safely {
+    fun xiaohongshu(html: String, expectedId: String): String? = xiaohongshuCandidates(html, expectedId).firstOrNull()
+
+    /** H.264 share streams carry the Xiaohongshu logo and author watermark; only use H.265 streams. */
+    fun xiaohongshuCandidates(html: String, expectedId: String): List<String> = safely {
         if (!expectedId.matches(Regex("[a-fA-F0-9]{24}"))) return@safely null
         val root = parseState(html, "__INITIAL_STATE__") ?: return@safely null
         val note = root.obj("noteData")?.obj("data")?.obj("noteData") ?: return@safely null
         if (!note.str("noteId").equals(expectedId, true) || note.str("type") != "video") return@safely null
-        val video = note.obj("video") ?: return@safely null
-        val originKey = video.obj("consumer")?.str("originVideoKey")
-            ?: video.str("originVideoKey")
-            ?: return@safely null
-        val originUrl = if (originKey.startsWith("http://", true) || originKey.startsWith("https://", true)) {
-            originKey
-        } else {
-            "https://sns-video-bd.xhscdn.com/${originKey.trimStart('/')}"
-        }
-        secureXhsMedia(originUrl)
-    }
+        val streams = note.obj("video")?.obj("media")?.obj("stream")?.array("h265") ?: return@safely null
+        streams.mapNotNull { it.obj()?.str("masterUrl")?.let(::secureXhsMedia) }.distinct().take(MAX_CANDIDATES)
+    } ?: emptyList()
 
     fun kuaishou(html: String, expectedNumericId: String): String? = safely {
         if (!expectedNumericId.matches(Regex("[1-9][0-9]{5,24}"))) return@safely null
@@ -58,9 +54,11 @@ internal object WorkVideoExtractor {
         val uri = runCatching { URI(raw) }.getOrNull() ?: return null
         val host = uri.host?.lowercase(Locale.ROOT) ?: return null
         if (uri.userInfo != null || (host != "xhscdn.com" && !host.endsWith(".xhscdn.com"))) return null
-        val secure = if (uri.scheme.equals("http", true) && (uri.port == -1 || uri.port == 80)) {
-            "https://" + raw.substring(raw.indexOf("://") + 3)
-        } else raw
+        val secure = when {
+            uri.scheme.equals("https", true) && (uri.port == -1 || uri.port == 443) -> raw
+            uri.scheme.equals("http", true) && uri.port == -1 -> "https://" + raw.substring(raw.indexOf("://") + 3)
+            else -> return null
+        }
         return secure.takeIf { allowedMedia(it, WorkLinkMatcher.Platform.XIAOHONGSHU) }
     }
 

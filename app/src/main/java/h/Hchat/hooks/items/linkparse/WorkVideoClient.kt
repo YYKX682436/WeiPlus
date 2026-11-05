@@ -5,6 +5,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.util.concurrent.TimeUnit
+import h.Hchat.utils.HLog
 import okhttp3.CookieJar
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
@@ -29,33 +30,44 @@ internal class WorkVideoClient {
         .build()
 
     fun resolve(match: WorkLinkMatcher.Match): WorkResolution? = runCatching {
-        val input = match.url.toHttpUrlOrNull() ?: return null
-        val page = getWorkPage(input, match.platform) ?: return null
+        val input = match.url.toHttpUrlOrNull() ?: return fail("url")
+        val page = getWorkPage(input, match) ?: return fail("work_page")
         when (match.platform) {
             WorkLinkMatcher.Platform.DOUYIN -> {
-                val id = page.url.pathSegments.lastOrNull { it.isNotBlank() } ?: return null
-                if (!id.matches(Regex("[1-9][0-9]{15,19}"))) return null
+                val id = page.workId
+                if (!id.matches(Regex("[1-9][0-9]{15,19}"))) return fail("douyin_id_invalid")
                 val detail = "https://api.amemv.com/aweme/v1/aweme/detail/".toHttpUrlOrNull()!!.newBuilder()
                     .addQueryParameter("aweme_id", id).addQueryParameter("aid", "6383")
                     .addQueryParameter("device_platform", "web").addQueryParameter("version_code", "190500")
                     .addQueryParameter("version_name", "19.5.0").build()
-                val body = request(detail).use { response -> readText(response) } ?: return null
+                val body = request(detail).use { response ->
+                    if (response.isSuccessful) readText(response) else {
+                        HLog.i("[Hchat:LinkParse] resolver douyin_detail_http=${response.code}")
+                        null
+                    }
+                } ?: return fail("douyin_detail_body")
                 val videos = WorkVideoExtractor.douyinCandidates(body, id)
                 if (videos.isNotEmpty()) WorkResolution.Video(videos)
                 else WorkImageExtractor.douyin(body, id)?.let { WorkResolution.Gallery(it) }
+                    ?: fail("douyin_detail_shape")
             }
             WorkLinkMatcher.Platform.XIAOHONGSHU -> {
-                val id = page.url.pathSegments.lastOrNull { it.isNotBlank() } ?: return null
-                val video = WorkVideoExtractor.xiaohongshu(page.body, id)
-                if (video != null) WorkResolution.Video(listOf(video))
+                val id = page.workId
+                val videos = WorkVideoExtractor.xiaohongshuCandidates(page.body, id)
+                if (videos.isNotEmpty()) WorkResolution.Video(videos)
                 else WorkImageExtractor.xiaohongshu(page.body, id)?.let { WorkResolution.Gallery(it) }
             }
             WorkLinkMatcher.Platform.KUAISHOU -> {
-                val id = page.url.queryParameter("shareObjectId") ?: return null
+                val id = page.workId
                 WorkVideoExtractor.kuaishou(page.body, id)?.let { WorkResolution.Video(listOf(it)) }
             }
         }
-    }.getOrNull()
+    }.onFailure { HLog.i("[Hchat:LinkParse] resolver_exception=${it.javaClass.simpleName}") }.getOrNull()
+
+    private fun fail(stage: String): Nothing? {
+        HLog.i("[Hchat:LinkParse] resolver_stage=$stage")
+        return null
+    }
 
     /** Caller owns [target]; a failed or incomplete download never leaves it behind. */
     fun download(mediaUrl: String, platform: WorkLinkMatcher.Platform, target: File): Boolean {
@@ -108,28 +120,54 @@ internal class WorkVideoClient {
         return false
     }
 
-    private fun getWorkPage(start: HttpUrl, platform: WorkLinkMatcher.Platform): Page? {
+    private fun getWorkPage(start: HttpUrl, initialMatch: WorkLinkMatcher.Match): Page? {
+        val platform = initialMatch.platform
+        val pageUserAgent = if (platform == WorkLinkMatcher.Platform.DOUYIN && initialMatch.requiresRedirect) {
+            DOUYIN_REDIRECT_USER_AGENT
+        } else USER_AGENT
         var url = start
+        var workId = WorkLinkRedirectPolicy.workId(start, platform)
+        val visited = HashSet<String>()
         repeat(MAX_REDIRECTS + 1) { hop ->
-            val work = WorkLinkMatcher.parse(url.toString()) ?: return null
-            if (work.platform != platform) return null
-            request(url).use { response ->
+            if (!visited.add(url.toString())) return pageFailure("redirect_loop")
+            if (!WorkLinkRedirectPolicy.allows(url, platform)) return pageFailure("redirect_host_rejected")
+            val hopMatch = WorkLinkMatcher.parse(url.toString())
+            if (hopMatch != null && hopMatch.platform != platform) return pageFailure("platform_mismatch")
+            val hopId = WorkLinkRedirectPolicy.workId(url, platform)
+            if (hopId != null && workId != null && hopId != workId) return pageFailure("work_id_changed")
+            if (hopId != null) workId = hopId
+            request(url, pageUserAgent).use { response ->
                 if (response.isRedirect) {
-                    if (hop == MAX_REDIRECTS) return null
-                    url = response.header("Location")?.let { url.resolve(it) } ?: return null
+                    if (hop == MAX_REDIRECTS) return pageFailure("redirect_limit")
+                    val location = response.header("Location") ?: return pageFailure("redirect_location_missing")
+                    val next = url.resolve(location) ?: return pageFailure("redirect_location_invalid")
+                    if (!WorkLinkRedirectPolicy.allows(next, platform)) return pageFailure("redirect_host_rejected")
+                    val nextId = WorkLinkRedirectPolicy.workId(next, platform)
+                    if (nextId != null && workId != null && nextId != workId) return pageFailure("work_id_changed")
+                    if (nextId != null) workId = nextId
+                    url = next
                     return@use
                 }
-                if (!response.isSuccessful || work.requiresRedirect) return null
-                val body = readText(response) ?: return null
-                return Page(url, body)
+                if (!response.isSuccessful) {
+                    HLog.i("[Hchat:LinkParse] resolver page_http=${response.code}")
+                    return pageFailure("http_status")
+                }
+                if (workId == null) return pageFailure("work_id_missing")
+                val body = readText(response) ?: return pageFailure("body_invalid")
+                return Page(url, body, workId)
             }
         }
+        return pageFailure("loop_end")
+    }
+
+    private fun pageFailure(stage: String): Page? {
+        HLog.i("[Hchat:LinkParse] resolver_page_stage=$stage")
         return null
     }
 
-    private fun request(url: HttpUrl): Response = client.newCall(
+    private fun request(url: HttpUrl, userAgent: String = USER_AGENT): Response = client.newCall(
         Request.Builder().url(url)
-            .header("User-Agent", USER_AGENT)
+            .header("User-Agent", userAgent)
             .header("Accept", "text/html,application/json,*/*")
             .header("Accept-Encoding", "identity")
             .get().build()
@@ -152,10 +190,11 @@ internal class WorkVideoClient {
         return output.toString(Charsets.UTF_8.name())
     }
 
-    private data class Page(val url: HttpUrl, val body: String)
+    private data class Page(val url: HttpUrl, val body: String, val workId: String)
 
     companion object {
         private const val USER_AGENT = "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36"
+        private const val DOUYIN_REDIRECT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
         private const val MAX_REDIRECTS = 4
         private const val MAX_PAGE_BYTES = 3 * 1024 * 1024
         private const val MAX_VIDEO_BYTES = 50L * 1024 * 1024

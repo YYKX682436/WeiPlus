@@ -135,7 +135,13 @@ internal class LinkParseRuntime(private val context: FeatureContext) {
         val atMe = message.isOutgoing() || (self.isNotEmpty() && message.isAtMe(self))
         val content = message.bodyContent()
         HLog.i("[Hchat:LinkParse] 收到数据库文本")
-        val match = WorkLinkMatcher.find(content) ?: run { HLog.i("[Hchat:LinkParse] 未识别作品链接"); return }
+        val match = WorkLinkMatcher.find(content) ?: run {
+            HLog.i(
+                "[Hchat:LinkParse] 未识别作品链接 chars=${content.length} " +
+                    "has_http=${content.contains("http", true)} has_douyin=${content.contains("douyin", true)}"
+            )
+            return
+        }
         if (!settings.allows(match.platform, group, atMe)) { HLog.i("[Hchat:LinkParse] 设置拒绝触发"); return }
         val key = key(message.talker, message.msgId)
         submit(
@@ -279,7 +285,7 @@ internal class LinkParseRuntime(private val context: FeatureContext) {
         sources: List<WorkImageSource>,
         dir: File
     ) {
-        if (!gallerySendVerified(match.platform)) {
+        if (!LinkParseGallerySupport.isVerified(match.platform)) {
             HLog.i("[Hchat:LinkParse] 图集发送未验收 platform=${match.platform}")
             return
         }
@@ -445,12 +451,6 @@ internal class LinkParseRuntime(private val context: FeatureContext) {
 
     private fun uploadKey(talker: String, kind: UploadKind, digest: String): String =
         sha256("${kind.label}\u0000$talker\u0000$digest")
-
-    private fun gallerySendVerified(platform: WorkLinkMatcher.Platform): Boolean = when (platform) {
-        WorkLinkMatcher.Platform.DOUYIN,
-        WorkLinkMatcher.Platform.XIAOHONGSHU,
-        WorkLinkMatcher.Platform.KUAISHOU -> false
-    }
 
     private fun md5File(file: File): String? = runCatching {
         val digest = MessageDigest.getInstance("MD5")

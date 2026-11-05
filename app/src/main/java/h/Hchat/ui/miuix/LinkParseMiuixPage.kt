@@ -31,13 +31,13 @@ internal fun LinkParseMiuixPage(context: Context, provider: FeatureSettingsProvi
             item { SmallTitle(text = "链接解析") }
             item {
                 SettingsCard {
-                    SwitchRow(prefs, LinkParseSettings.KEY_ENABLE, "启用链接解析", "私聊自动识别；仅发送公开视频，图集暂不可用", false)
+                    SwitchRow(prefs, LinkParseSettings.KEY_ENABLE, "启用链接解析", "私聊自动识别；小红书支持视频和图文，抖音图集发送原图", false)
                     InsetDivider()
-                    SwitchRow(prefs, LinkParseSettings.KEY_DOUYIN, "抖音", "识别公开作品链接", false)
+                    SwitchRow(prefs, LinkParseSettings.KEY_DOUYIN, "抖音", "支持公开视频和原图图集，不带平台账号水印", false)
                     InsetDivider()
-                    SwitchRow(prefs, LinkParseSettings.KEY_XHS, "小红书", "识别公开作品链接", false)
+                    SwitchRow(prefs, LinkParseSettings.KEY_XHS, "小红书", "支持公开作品视频和图文", false)
                     InsetDivider()
-                    SwitchRow(prefs, LinkParseSettings.KEY_KUAISHOU, "快手", "识别公开作品链接", false)
+                    SwitchRow(prefs, LinkParseSettings.KEY_KUAISHOU, "快手", "识别公开视频；图集尚未验收", false)
                     InsetDivider()
                     PopupChoiceRow("群聊触发模式", modes.firstOrNull { it.value == mode }?.label ?: "关闭", modes, mode, {
                         mode = it

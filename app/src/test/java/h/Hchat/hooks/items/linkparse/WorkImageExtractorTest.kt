@@ -7,16 +7,16 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class WorkImageExtractorTest {
-    @Test fun douyinKeepsImageOrderAndDownloadQualityCandidates() {
+    @Test fun douyinUsesOnlyWatermarkFreeOriginalImageCandidatesInOrder() {
         val id = "7616399587141737704"
         val body = """{"status_code":0,"aweme_detail":{"aweme_id":"$id","aweme_type":68,"images":[
-            {"download_url_list":["https://p3-pc-sign.douyinpic.com/a.webp","https://p3-pc-sign.douyinpic.com/a.jpeg"],"url_list":["https://p3-pc-sign.douyinpic.com/a-q75.webp"]},
-            {"download_url_list":["https://p9-pc-sign.douyinpic.com/b.webp"],"url_list":["https://p3-pc-sign.douyinpic.com/b-q75.webp"]}
+            {"download_url_list":["https://p3-pc-sign.douyinpic.com/a-watermarked.webp"],"url_list":["https://p3-pc-sign.douyinpic.com/a-q75.webp","https://p9-pc-sign.douyinpic.com/a-origin.webp"]},
+            {"download_url_list":["https://p9-pc-sign.douyinpic.com/b-watermarked.webp"],"url_list":["https://p3-pc-sign.douyinpic.com/b-q75.webp"]}
         ]}}"""
         assertEquals(
             listOf(
-                listOf("https://p3-pc-sign.douyinpic.com/a.webp", "https://p3-pc-sign.douyinpic.com/a.jpeg", "https://p3-pc-sign.douyinpic.com/a-q75.webp"),
-                listOf("https://p9-pc-sign.douyinpic.com/b.webp", "https://p3-pc-sign.douyinpic.com/b-q75.webp")
+                listOf("https://p3-pc-sign.douyinpic.com/a-q75.webp", "https://p9-pc-sign.douyinpic.com/a-origin.webp"),
+                listOf("https://p3-pc-sign.douyinpic.com/b-q75.webp")
             ),
             WorkImageExtractor.douyin(body, id)?.map { it.candidates }
         )
@@ -27,7 +27,7 @@ class WorkImageExtractorTest {
 
     @Test fun douyinRejectsNonAlbumOversizedAndPartialGalleries() {
         val id = "7616399587141737704"
-        val item = """{"download_url_list":["https://p3-pc-sign.douyinpic.com/a.webp"]}"""
+        val item = """{"download_url_list":["https://p3-pc-sign.douyinpic.com/a-watermarked.webp"],"url_list":["https://p3-pc-sign.douyinpic.com/a.webp"]}"""
         val oversized = (0..WorkImageExtractor.MAX_IMAGES).joinToString(",") { item }
         val tooMany = """{"status_code":0,"aweme_detail":{"aweme_id":"$id","aweme_type":68,"images":[$oversized]}}"""
         assertNull(WorkImageExtractor.douyin(tooMany, id))

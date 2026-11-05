@@ -10,6 +10,7 @@ class WorkLinkMatcherTest {
         assertEquals("https://xhslink.com/o/6A6YKVkqAP2?x=1", match.url)
         assertTrue(match.requiresRedirect)
         assertEquals(WorkLinkMatcher.Platform.DOUYIN, WorkLinkMatcher.find("https://www.douyin.com/note/7616399587141737704")?.platform)
+        assertEquals(WorkLinkMatcher.Platform.DOUYIN, WorkLinkMatcher.find("https://www.douyin.com/video/7616399587141737704")?.platform)
         assertEquals(WorkLinkMatcher.Platform.KUAISHOU, WorkLinkMatcher.find("https://v.kuaishou.com/JuuRuozy")?.platform)
     }
 
@@ -23,10 +24,10 @@ class WorkLinkMatcherTest {
     }
 
     @Test fun findsFullDouyinShareText() {
-        val text = "4.15 复制打开抖音，看看【苹果哥🔥🔥🔥的作品】这小子又买小米 # 米家前置过滤器Pro # 米家... https://v.douyin.com/_WFxKTl9V78/ 07/09 S@y.Tl YZZ:/ :7pm"
+        val text = "4.35 不必奔赴动漫世界，因为喜欢的风景，已经住进了我的屏幕 # 动漫壁纸 # 动态壁纸 # 二次元 # 手机壁纸 # 动漫美图 https://v.douyin.com/bg9DH--cvOc/ 复制此链接，打开抖音搜索，直接观看视频！ ChB:/ :2pm 03/22 K@W.Zz"
         val match = WorkLinkMatcher.find(text)!!
         assertEquals(WorkLinkMatcher.Platform.DOUYIN, match.platform)
-        assertEquals("https://v.douyin.com/_WFxKTl9V78/", match.url)
+        assertEquals("https://v.douyin.com/bg9DH--cvOc/", match.url)
     }
 
     @Test fun ignoresNonWorkAndConfusableHosts() {
