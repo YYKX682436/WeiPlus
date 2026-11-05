@@ -142,7 +142,8 @@ const jar=path.join(output,'production.jar');
 run(process.env.JAVA || 'java', ['-Xmx384m','-cp',jars.join(path.delimiter),'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler',
  '-no-stdlib','-no-reflect','-classpath',[output,stdlib,api.classpath].join(path.delimiter),'-d',jar,
  ...['hooks/api/model/WeChatMessage.kt','hooks/api/model/WeChatMessageTypes.kt','hooks/api/model/DatabaseChange.kt',
- 'hooks/items/groupmonitor/GroupSnapshotState.kt','hooks/items/hchatextra/MessageDetailsBindingIndex.kt','hooks/items/antirecall/RecallCachePolicy.kt','hooks/core/ChatAdapterRefresh.kt'].map(x=>source+x), tests+'StateRegression.kt',tests+'AdapterRefreshRegression.kt',rowHooks]);
+ 'hooks/items/groupmonitor/GroupSnapshotState.kt','hooks/items/hchatextra/MessageDetailsBindingIndex.kt','hooks/items/antirecall/RecallCachePolicy.kt','hooks/core/ChatAdapterRefresh.kt'].map(x=>source+x),
+ tests+'row_refresh/ChatMessageHolder.kt',tests+'row_refresh/ContactHolder.kt',tests+'StateRegression.kt',tests+'AdapterRefreshRegression.kt',rowHooks]);
 const entry = fs.readFileSync(path.join(root, source+'ModuleEntry.java'),'utf8');
 const start = entry.indexOf('chain -> {',entry.indexOf('private void installMsgDescTextFallback'));
 if(start<0)throw Error('Production summary interceptor missing');

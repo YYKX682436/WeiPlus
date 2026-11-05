@@ -11,23 +11,20 @@ import h.Hchat.utils.KavaReflector
 /** Configuration/page transitions only; never walk a tree on an idle row bind. */
 internal object ChatRowRefresh {
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val afterTransition = Runnable { request() }
-    private val afterChatTransition = Runnable { requestChatMessageRows() }
-
-    fun requestAfterTransition() {
-        // onEnterBegin runs before the chat view is shown. Coalesce one refresh after its animation.
-        mainHandler.removeCallbacks(afterTransition)
-        mainHandler.postDelayed(afterTransition, 300L)
-    }
+    private val chatMessageRefreshLock = Any()
+    private var chatMessageRefreshTask: Runnable? = null
 
     /** Message-bubble refreshes are limited to RecyclerViews whose rows are native chat items. */
     fun requestChatMessageRowsAfterTransition() {
-        mainHandler.removeCallbacks(afterChatTransition)
-        mainHandler.postDelayed(afterChatTransition, 300L)
+        scheduleChatMessageRows(300L)
     }
 
-    fun cancelChatMessageRowsAfterTransition() {
-        mainHandler.removeCallbacks(afterChatTransition)
+    /** Cancels a chat refresh whether it is delayed or already queued on the main Handler. */
+    fun cancelChatMessageRows() {
+        synchronized(chatMessageRefreshLock) {
+            chatMessageRefreshTask?.let(mainHandler::removeCallbacks)
+            chatMessageRefreshTask = null
+        }
     }
 
     /** Current Activity without requiring focus; readiness observers wait for focus themselves. */
@@ -65,32 +62,52 @@ internal object ChatRowRefresh {
     }
 
     fun request() {
-        refreshVisibleRecyclerViews(chatMessagesOnly = false)
+        mainHandler.post { refreshVisibleRecyclerViewsOnMain(chatMessagesOnly = false) }
     }
 
     fun requestChatMessageRows() {
-        mainHandler.removeCallbacks(afterChatTransition)
-        refreshVisibleRecyclerViews(chatMessagesOnly = true)
+        scheduleChatMessageRows(0L)
     }
 
-    private fun refreshVisibleRecyclerViews(chatMessagesOnly: Boolean) {
-        mainHandler.post {
-            val decor = visibleActivity()?.window?.decorView ?: return@post
-            fun refresh(view: View) {
-                if (!view.isShown) return
-                if (isRecyclerView(view) &&
-                    (!chatMessagesOnly || hasChatMessageRows(view))
-                ) {
-                    val adapter = KavaReflector.invokeMethod(view, "getAdapter")
-                    if (adapter != null && ChatAdapterRefresh.notifyChanged(adapter)) {
-                        view.requestLayout()
-                        return
+    private fun scheduleChatMessageRows(delayMillis: Long) {
+        val task = object : Runnable {
+            override fun run() {
+                val isCurrentTask = synchronized(chatMessageRefreshLock) {
+                    if (chatMessageRefreshTask !== this) {
+                        false
+                    } else {
+                        chatMessageRefreshTask = null
+                        true
                     }
                 }
-                if (view is ViewGroup) for (i in 0 until view.childCount) refresh(view.getChildAt(i))
+                if (isCurrentTask) refreshVisibleRecyclerViewsOnMain(chatMessagesOnly = true)
             }
-            refresh(decor)
         }
+
+        synchronized(chatMessageRefreshLock) {
+            chatMessageRefreshTask?.let(mainHandler::removeCallbacks)
+            chatMessageRefreshTask = task
+            if (delayMillis > 0L) mainHandler.postDelayed(task, delayMillis) else mainHandler.post(task)
+        }
+    }
+
+    /** Called on the main thread by either the shared request or the single chat-owned task. */
+    private fun refreshVisibleRecyclerViewsOnMain(chatMessagesOnly: Boolean) {
+        val decor = visibleActivity()?.window?.decorView ?: return
+        fun refresh(view: View) {
+            if (!view.isShown) return
+            if (isRecyclerView(view) &&
+                (!chatMessagesOnly || hasChatMessageRows(view))
+            ) {
+                val adapter = KavaReflector.invokeMethod(view, "getAdapter")
+                if (adapter != null && ChatAdapterRefresh.notifyChanged(adapter)) {
+                    view.requestLayout()
+                    return
+                }
+            }
+            if (view is ViewGroup) for (i in 0 until view.childCount) refresh(view.getChildAt(i))
+        }
+        refresh(decor)
     }
 
     private fun isRecyclerView(view: View): Boolean =

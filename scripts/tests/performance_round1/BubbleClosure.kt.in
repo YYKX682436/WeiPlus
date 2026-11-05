@@ -17,13 +17,26 @@ class Prefs: SharedPreferences {
     fun change(value: Boolean) {enabled=value;listener!!.changed(this,"enable")}
 }
 object MessageBubbleSettings {const val KEY_ENABLE="enable";const val DEFAULT_ENABLE=false}
-object ChatRowRefresh {var delayed=0;fun request() {};fun requestAfterTransition(){delayed++}}
-class PageEvent(val isEnter:Boolean=false,val isResume:Boolean=false)
+private const val LAUNCHER_UI_ACTIVITY="com.tencent.mm.ui.LauncherUI"
+object ChatRowRefresh {
+    var immediate=0;var delayed=0;var cancelled=0
+    fun requestChatMessageRows(){immediate++}
+    fun requestChatMessageRowsAfterTransition(){delayed++}
+    fun cancelChatMessageRows(){cancelled++}
+}
+class PageEvent(
+ val isEnter:Boolean=false,
+ val isExit:Boolean=false,
+ val isResume:Boolean=false,
+ val activityName:String=""
+) { val isChatting get()=activityName.contains(".ui.chatting.") }
 class WeChatChatPageApi {
+ var inChatPage=false
  val listeners=ArrayList<(PageEvent)->Unit>()
  inner class Subscription(val action:(PageEvent)->Unit){fun unsubscribe(){listeners.remove(action)}}
  fun subscribe(action:(PageEvent)->Unit):Subscription{listeners.add(action);return Subscription(action)}
- fun emit(event:PageEvent){listeners.toList().forEach{it(event)}}
+ fun isInChatPage()=inChatPage
+ fun emit(event:PageEvent){if(event.isEnter)inChatPage=true;if(event.isExit)inChatPage=false;listeners.toList().forEach{it(event)}}
 }
 class WeChatLifecycleApi {
  val listeners=ArrayList<(PageEvent)->Unit>()
@@ -78,7 +91,7 @@ private class BubbleHarness {
     fun bind(row:TextView,native:()->Unit) {val chain=ChainFixture(String::class.java.getMethod("length"),null,arrayOf(row)) { _, _ -> native(); null };chain.run(hook);check(chain.proceeds==1)}
 }
 fun main(args:Array<String>) {
-    val h=BubbleHarness();val row=TextView();val A=Drawable("A");val B=Drawable("B");val C=Drawable("C")
+    val h=BubbleHarness();val row=TextView().apply { tag=Any() };val A=Drawable("A");val B=Drawable("B");val C=Drawable("C")
     fun native(bg:Drawable,pad:Int,text:Int) {row.background=bg;row.setPadding(pad,pad+1,pad+2,pad+3);row.setTextColor(text);row.setLinkTextColor(text+1)}
     fun assertNative(bg:Drawable,pad:Int,text:Int){check(row.background===bg){"background ${row.background?.name}, expected ${bg.name}"};check(listOf(row.paddingLeft,row.paddingTop,row.paddingRight,row.paddingBottom)==listOf(pad,pad+1,pad+2,pad+3));check(row.currentTextColor==text && row.linkTextColors.defaultColor==text+1);check(row.getTag(2)==null && row.getTag(1)==null)}
     h.bind(row){native(A,3,101)};check(row.background?.name=="custom" && row.currentTextColor==999)
@@ -87,7 +100,37 @@ fun main(args:Array<String>) {
         "equal-text" -> {Handler(Looper.main).post{h.prefs.change(false)};Handler(Looper.main).post{h.bind(row){native(B,12,999)}};Handler.drain();assertNative(B,12,999);println("PASS: new native text/link colors equal to the old contrast color are not mistaken for old custom text state")}
         "text-owner" -> {row.setTextColor(771);row.setLinkTextColor(772);row.setTag(R.id.hchat_message_text_color_applied,true);h.prefs.change(false);Handler.drain();check(row.background===A && row.paddingLeft==3 && row.currentTextColor==771 && row.linkTextColors.defaultColor==772);println("PASS: close restores native styling while preserving independently owned text/link colors")}
         "worker-rapid" -> {Looper.onMain=false;h.prefs.change(false);h.prefs.change(true);Looper.onMain=true;Handler(Looper.main).post{h.bind(row){native(C,20,301)}};Handler.drain();check(row.background?.name=="custom");h.prefs.change(false);Handler.drain();assertNative(C,20,301);println("PASS: queued worker close/reopen reads current config and cannot clear newer custom styling")}
-        "page" -> {val scans=h.scans;WeChatApis.pages.emit(PageEvent(isEnter=true));WeChatApis.life.emit(PageEvent(isResume=true));check(ChatRowRefresh.delayed==2){"Enabled cached rows are not refreshed after page/activity transitions"};val old=WeChatApis.life.listeners.toList();h.prefs.change(false);WeChatApis.pages.emit(PageEvent(isEnter=true));WeChatApis.life.emit(PageEvent(isResume=true));check(ChatRowRefresh.delayed==2&&h.scans==scans);h.destroy();check(WeChatApis.pages.listeners.isEmpty()&&WeChatApis.life.listeners.isEmpty());old.forEach{it(PageEvent(isResume=true))};check(ChatRowRefresh.delayed==2);println("PASS: real page/resume subscriptions refresh enabled cached rows, skip closed state, and unsubscribe/ignore stale dispatch on destroy")}
+        "page" -> {
+            val scans=h.scans
+            WeChatApis.pages.emit(PageEvent(isEnter=true))
+            check(ChatRowRefresh.delayed==1) { "chat entry should schedule one scoped refresh" }
+            WeChatApis.life.emit(PageEvent(isResume=true,activityName="com.tencent.mm.ui.chatting.ChattingUI"))
+            check(ChatRowRefresh.delayed==2) { "resuming standalone ChattingUI while in chat should schedule a scoped refresh" }
+            WeChatApis.life.emit(PageEvent(isResume=true,activityName="com.tencent.mm.ui.LauncherUI"))
+            check(ChatRowRefresh.delayed==3) { "resuming LauncherUI with an inline chat should schedule a scoped refresh" }
+            WeChatApis.life.emit(PageEvent(isResume=true,activityName="com.tencent.mm.ui.mvvm.MvvmContactListUI"))
+            check(ChatRowRefresh.delayed==3) { "contact-picker resume must not schedule a chat refresh from stale talker state" }
+            WeChatApis.pages.emit(PageEvent(isExit=true))
+            check(ChatRowRefresh.cancelled==1) { "chat exit cancels pending work" }
+            WeChatApis.life.emit(PageEvent(isResume=true,activityName="com.tencent.mm.ui.LauncherUI"))
+            check(ChatRowRefresh.delayed==3) { "non-chat resume must not schedule a bubble refresh" }
+            val stalePage=WeChatApis.pages.listeners.toList()
+            val staleLifecycle=WeChatApis.life.listeners.toList()
+            h.prefs.change(false)
+            check(ChatRowRefresh.cancelled==2) { "closing bubbles cancels pending immediate or delayed work" }
+            WeChatApis.pages.emit(PageEvent(isEnter=true))
+            WeChatApis.life.emit(PageEvent(isResume=true,activityName="com.tencent.mm.ui.LauncherUI"))
+            check(ChatRowRefresh.delayed==3 && ChatRowRefresh.immediate==0 && h.scans==scans)
+            h.prefs.change(true)
+            check(ChatRowRefresh.immediate==1) { "opening bubbles refreshes the chat rows immediately through the scoped API" }
+            h.destroy()
+            check(ChatRowRefresh.cancelled==3) { "destroy cancels any queued chat refresh" }
+            check(WeChatApis.pages.listeners.isEmpty() && WeChatApis.life.listeners.isEmpty())
+            stalePage.forEach { it(PageEvent(isEnter=true)) }
+            staleLifecycle.forEach { it(PageEvent(isResume=true,activityName="com.tencent.mm.ui.LauncherUI")) }
+            check(ChatRowRefresh.delayed==3 && ChatRowRefresh.immediate==1)
+            println("PASS: chat entry, ChattingUI resume, and inline LauncherUI resume use chat-only refresh; contact resume, exit, close, destroy, and stale callbacks skip or cancel work")
+        }
         "worker" -> {Handler(Looper.main).post{h.bind(row){native(B,12,271)}};Looper.onMain=false;h.prefs.change(false);Looper.onMain=true;Handler.drain();assertNative(B,12,271);println("PASS: worker config transition preserves native bind already ahead of it on the main queue")}
         "rapid" -> {Handler(Looper.main).post{h.prefs.change(false)};Handler(Looper.main).post{h.bind(row){native(B,12,271)}};Handler(Looper.main).post{h.prefs.change(true);h.bind(row){native(C,20,301)}};Handler.drain();check(row.background?.name=="custom" && row.currentTextColor==999);h.prefs.change(false);Handler.drain();assertNative(C,20,301);println("PASS: quick close/reopen cannot restore an obsolete background/padding/text state over new custom or native rows")}
     }

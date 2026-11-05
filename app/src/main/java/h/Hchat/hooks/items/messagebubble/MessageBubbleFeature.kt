@@ -16,6 +16,7 @@ import android.os.Handler
 import android.os.Looper
 import h.Hchat.hooks.api.core.WeChatApis
 import h.Hchat.hooks.api.ui.WeChatChatPageApi
+import h.Hchat.hooks.api.ui.WeChatLifecycleApi
 import h.Hchat.hooks.core.ChatRowRefresh
 import h.Hchat.dexkit.DexMethodCache
 import h.Hchat.hooks.api.model.WeChatMessage
@@ -86,12 +87,21 @@ private class MessageBubbleRenderer(
     @Volatile private var enabled = prefs.getBoolean(MessageBubbleSettings.KEY_ENABLE, MessageBubbleSettings.DEFAULT_ENABLE)
     @Volatile private var destroyed = false
     private var pageSubscription: WeChatChatPageApi.Subscription? = null
+    private var lifecycleSubscription: WeChatLifecycleApi.Subscription? = null
     private fun watchPageTransitions() {
         if (pageSubscription == null) pageSubscription = WeChatApis.chatPage()?.subscribe { event ->
             if (destroyed) return@subscribe
             if (event.isExit) {
-                ChatRowRefresh.cancelChatMessageRowsAfterTransition()
+                ChatRowRefresh.cancelChatMessageRows()
             } else if (enabled && event.isEnter) {
+                ChatRowRefresh.requestChatMessageRowsAfterTransition()
+            }
+        }
+        if (lifecycleSubscription == null) lifecycleSubscription = WeChatApis.lifecycle()?.subscribe { event ->
+            val isChatHost = event.isChatting || event.activityName == LAUNCHER_UI_ACTIVITY
+            if (!destroyed && enabled && event.isResume && isChatHost &&
+                WeChatApis.chatPage()?.isInChatPage() == true
+            ) {
                 ChatRowRefresh.requestChatMessageRowsAfterTransition()
             }
         }
@@ -107,7 +117,7 @@ private class MessageBubbleRenderer(
                 // here so a worker-thread close/reopen cannot leave an obsolete cleanup behind.
                 val next = prefs.getBoolean(MessageBubbleSettings.KEY_ENABLE, MessageBubbleSettings.DEFAULT_ENABLE)
                 if (!next) {
-                    ChatRowRefresh.cancelChatMessageRowsAfterTransition()
+                    ChatRowRefresh.cancelChatMessageRows()
                     boundRoots.toList().forEach(::restoreBoundBubble)
                 }
                 enabled = next
@@ -119,9 +129,11 @@ private class MessageBubbleRenderer(
 
     fun destroy() {
         destroyed = true
-        ChatRowRefresh.cancelChatMessageRowsAfterTransition()
+        ChatRowRefresh.cancelChatMessageRows()
         pageSubscription?.unsubscribe()
+        lifecycleSubscription?.unsubscribe()
         pageSubscription = null
+        lifecycleSubscription = null
         prefs.unregisterOnSharedPreferenceChangeListener(configListener)
         onMain {
             boundRoots.toList().forEach(::restoreBoundBubble)
@@ -169,6 +181,7 @@ private class MessageBubbleRenderer(
                     val binding = state ?: return@run
                     if (enabled) {
                         val boundHolder = binding.root?.tag?.takeIf(::isNativeMessageHolder) ?: binding.nativeHolder
+                        if (boundHolder == null) return@run
                         applyBubble(args, binding.copy(nativeHolder = boundHolder))
                     }
                 }
@@ -1064,6 +1077,7 @@ private class MessageBubbleRenderer(
 
     private companion object {
         const val TAG = "[Hchat:MessageBubble]"
+        const val LAUNCHER_UI_ACTIVITY = "com.tencent.mm.ui.LauncherUI"
         const val CHATTING_VIEW_ITEMS_PACKAGE = "com.tencent.mm.ui.chatting.viewitems."
         const val FOLD_SYSTEM_VIEW_CLASS =
             "com.tencent.mm.ui.chatting.viewitems.foldItem.ChattingItemFoldSys\$ExpandTextView"
