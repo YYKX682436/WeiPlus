@@ -37,3 +37,6 @@ reverse_case/
 # Temporary media/test output
 tmp_video_frames/
 .hermes/
+
+# Read-only upstream reference checkout; not an application dependency
+/references/WeKit/
