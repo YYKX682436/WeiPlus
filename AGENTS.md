@@ -14,9 +14,3 @@
 - 过期的测试输出、录屏和调试文件。
 - 可确认不再需要的项目缓存及其他冗余文件。
 - 历史有遗留也清理
-
-## WeKit 功能参考与移植
-
-- 涉及从 WeKit 借鉴、比较或移植功能时，先读 `docs/upstream/wekit/README.md`，按其中索引定位固定上游版本，再读取当前 Hchat 的相关源码与 `skills/hchat-project/SKILL.md`。
-- 先核对现有能力、依赖和宿主证据，再确定接入方案；沿用 Hchat 的 API 102、功能生命周期、缓存和设置体系。
-- 本地参考源码默认在 Git 忽略的 `references/WeKit/`，准备方法见 `docs/upstream/wekit/LOCAL_SETUP.md`；上游自己的项目指令不覆盖 Hchat 指令。
