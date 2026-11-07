@@ -1,6 +1,7 @@
 import h.Hchat.hooks.api.contact.ContactLabelIds;
 import h.Hchat.hooks.items.batch.BatchSelectionPolicy;
 import h.Hchat.hooks.items.batch.BatchStatePolicy;
+import h.Hchat.hooks.items.batch.BatchTaskLifecycle;
 import h.Hchat.hooks.items.batch.BatchTaskRunner;
 
 import java.util.Arrays;
@@ -17,14 +18,17 @@ public final class BatchOperationRegression {
         serialResultsAndPartialFailure();
         stopPreventsLaterSubmissions();
         accountSwitchPreventsLaterSubmissions();
+        lifecycleSurvivesStateTransitionsAndRestarts();
+        progressCountsOnlyCompletedItems();
         System.out.println("Batch operation regression assertions passed");
     }
 
     private static void selectionFiltering() {
         List<String> candidates = Arrays.asList(
-                "friend1", "group1@chatroom", "no-session", "wxid_hchat_group_abc",
-                "filehelper", "", "friend1");
-        Set<String> sessions = new HashSet<>(Arrays.asList("friend1", "group1@chatroom", "no-session"));
+                "friend1", "group1@chatroom", "nonfriend@chat", "not-home",
+                "wxid_hchat_group_abc", "filehelper", "message_fold", "", "friend1");
+        Set<String> sessions = new HashSet<>(Arrays.asList(
+                "friend1", "group1@chatroom", "nonfriend@chat", "filehelper", "message_fold"));
         Set<String> friends = new HashSet<>(Arrays.asList("friend1"));
         Set<String> groups = new HashSet<>(Arrays.asList("group1@chatroom"));
         List<String> chats = BatchSelectionPolicy.filterCandidateIds(
@@ -35,9 +39,17 @@ public final class BatchOperationRegression {
                 candidates, sessions, friends, groups, false, true, false);
         assertEquals(Arrays.asList("friend1"), strictFriends,
                 "friend label selection must keep only valid friends");
+        List<String> nativeHome = BatchSelectionPolicy.filterCandidateIds(
+                candidates, sessions, friends, groups, true, false, false);
+        assertEquals(Arrays.asList("friend1", "group1@chatroom", "nonfriend@chat", "filehelper"), nativeHome,
+                "native home rows must keep non-friend chats and operable system chats while filtering virtual/pseudo rows");
     }
 
     private static void labelMembershipEdits() {
+        assertEquals(Boolean.FALSE, ContactLabelIds.membershipState("", "first"),
+                "a successfully-read empty label list is a valid nonmembership state");
+        assertEquals(null, ContactLabelIds.membershipState(null, "first"),
+                "a failed label-row read remains unknown rather than becoming an empty list");
         String original = "keep1,removeMe,unknown99\u0000";
         assertEquals("keep1,removeMe,unknown99,addMe\u0000",
                 ContactLabelIds.setMembership(original, "addMe", true),
@@ -116,6 +128,60 @@ public final class BatchOperationRegression {
                 }, null);
         assertEquals(1, submissions.get(), "account switch must stop later submissions");
         assertEquals(1, report.skipped, "remaining items after account switch should be skipped");
+    }
+
+    private static void lifecycleSurvivesStateTransitionsAndRestarts() {
+        BatchTaskLifecycle lifecycle = new BatchTaskLifecycle();
+        BatchTaskLifecycle.Session first = lifecycle.begin();
+        AtomicInteger firstStarts = new AtomicInteger();
+        BatchTaskRunner.Report firstReport = BatchTaskRunner.run(
+                Arrays.asList("first-task"), "account", () -> "account", first.stopSignal(), 0,
+                (id, stop) -> {
+                    firstStarts.incrementAndGet();
+                    return BatchTaskRunner.TaskResult.of(BatchTaskRunner.Outcome.SUCCESS, "executed");
+                }, null);
+        assertEquals(1, firstStarts.get(), "a newly-created session must start its first task");
+        assertEquals(1, firstReport.attempted, "the first session should complete its task");
+        assertTrue(lifecycle.finish(first), "finishing the current session should succeed");
+
+        BatchTaskLifecycle.Session second = lifecycle.begin();
+        assertTrue(!lifecycle.stop(first), "disposing the old effect must not stop a newer session");
+        assertTrue(!second.stopSignal().isStopped(), "a normal state transition must not stop the new task");
+        AtomicInteger secondStarts = new AtomicInteger();
+        BatchTaskRunner.Report secondReport = BatchTaskRunner.run(
+                Arrays.asList("restart-task"), "account", () -> "account", second.stopSignal(), 0,
+                (id, stop) -> {
+                    secondStarts.incrementAndGet();
+                    return BatchTaskRunner.TaskResult.of(BatchTaskRunner.Outcome.SUCCESS, "executed");
+                }, null);
+        assertEquals(1, secondStarts.get(), "a completed page must be able to start another task");
+        assertEquals(1, secondReport.attempted, "the restarted session should execute");
+        assertTrue(lifecycle.finish(second), "the restarted session should finish cleanly");
+
+        BatchTaskLifecycle.Session third = lifecycle.begin();
+        assertTrue(lifecycle.stop(third), "active session stop should be accepted");
+        assertEquals(0, BatchTaskRunner.run(
+                Arrays.asList("must-not-start"), "account", () -> "account", third.stopSignal(), 0,
+                (id, stop) -> BatchTaskRunner.TaskResult.of(BatchTaskRunner.Outcome.SUCCESS, "unexpected"),
+                null).attempted, "stop before startup must prevent the first submission");
+    }
+
+    private static void progressCountsOnlyCompletedItems() {
+        AtomicInteger completed = new AtomicInteger();
+        BatchTaskRunner.Report report = BatchTaskRunner.run(
+                Arrays.asList("one", "two"), "account", () -> "account", new BatchTaskRunner.StopSignal(), 0,
+                (id, stop) -> BatchTaskRunner.TaskResult.of(BatchTaskRunner.Outcome.SUCCESS, "done"),
+                new BatchTaskRunner.ProgressListener() {
+                    @Override public void onStart(int index, String id) {
+                        assertEquals(index - 1, completed.get(), "onStart must not count an unfinished task");
+                    }
+
+                    @Override public void onResult(int index, String id, BatchTaskRunner.TaskResult result) {
+                        completed.set(index);
+                    }
+                });
+        assertEquals(2, report.attempted, "both progress test tasks should run");
+        assertEquals(2, completed.get(), "completed count should advance after each result callback");
     }
 
     private static void assertTrue(boolean value, String message) {

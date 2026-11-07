@@ -15,6 +15,12 @@ public final class ContactLabelIds {
         return false;
     }
 
+    /** Returns null for an unreadable/missing value, keeping it distinct from a valid empty list. */
+    public static Boolean membershipState(String readableValue, String targetId) {
+        if (readableValue == null || targetId == null || targetId.trim().isEmpty()) return null;
+        return contains(readableValue, targetId);
+    }
+
     /** Returns null for invalid arguments, the original value for a no-op, or the updated value. */
     public static String setMembership(String currentValue, String targetId, boolean enabled) {
         if (targetId == null || targetId.trim().isEmpty()) return null;

@@ -2,6 +2,7 @@ package h.Hchat.hooks.api.contact;
 
 import android.text.TextUtils;
 import android.content.ContentValues;
+import android.database.Cursor;
 
 import h.Hchat.dexkit.DexFinder;
 import h.Hchat.hooks.api.media.WeChatInternalServices;
@@ -38,6 +39,10 @@ import io.github.libxposed.api.XposedInterface;
  */
 public final class WeChatContactApi {
     public enum ContactLabelMutationResult {
+        CONFIRMED,
+        SERVER_ACCEPTED,
+        SUBMITTED_UNCONFIRMED,
+        SERVER_REJECTED,
         SUBMITTED,
         NOT_SUBMITTED,
         ALREADY_SATISFIED
@@ -601,6 +606,28 @@ public final class WeChatContactApi {
         return result;
     }
 
+    /** Reads only the label table; used once as a batch preflight before per-friend requests. */
+    public Boolean hasContactLabelId(String labelId) {
+        if (TextUtils.isEmpty(labelId) || databaseApi == null || !databaseApi.isAvailable()) return null;
+        LabelTableInfo info = findContactLabelTable();
+        if (info == null) return null;
+        Cursor cursor = databaseApi.rawQuery(
+                "SELECT 1 FROM " + databaseApi.quoteTable(info.table)
+                        + " WHERE " + quoteColumn(info.idColumn) + "=? LIMIT 1",
+                new String[]{labelId.trim()});
+        if (cursor == null) return null;
+        try {
+            return cursor.moveToFirst();
+        } catch (Throwable e) {
+            log("检查好友标签是否存在失败: " + e.getMessage());
+            return null;
+        } finally {
+            try {
+                cursor.close();
+            } catch (Throwable ignored) {}
+        }
+    }
+
     public List<String> getContactByLabelId(String labelId) {
         List<String> result = new ArrayList<>();
         if (TextUtils.isEmpty(labelId)) return result;
@@ -643,14 +670,16 @@ public final class WeChatContactApi {
         if (TextUtils.isEmpty(username) || TextUtils.isEmpty(labelName)) return null;
         List<String> labelIds = labelIdsByNames(java.util.Collections.singletonList(labelName.trim()));
         if (labelIds.size() != 1) return null;
+        return getContactLabelMembershipStateById(username, labelIds.get(0));
+    }
+
+    /** Reads one friend's current label IDs without rescanning the label list. */
+    public Boolean getContactLabelMembershipStateById(String username, String labelId) {
+        if (TextUtils.isEmpty(username) || TextUtils.isEmpty(labelId) || databaseApi == null) return null;
         String labelIdsColumn = findRcontactLabelIdsColumn();
-        if (TextUtils.isEmpty(labelIdsColumn) || databaseApi == null) return null;
-        List<Map<String, Object>> rows = databaseApi.query(
-                "SELECT " + quoteColumn(labelIdsColumn) + " AS labelIds "
-                        + "FROM rcontact WHERE username=? LIMIT 1",
-                new String[]{username});
-        if (rows.isEmpty()) return null;
-        return ContactLabelIds.contains(str(rows.get(0), "labelIds"), labelIds.get(0));
+        if (TextUtils.isEmpty(labelIdsColumn)) return null;
+        String currentLabelIds = readContactLabelIds(username, labelIdsColumn);
+        return ContactLabelIds.membershipState(currentLabelIds, labelId.trim());
     }
 
     public String addContactLabel(String labelName) {
@@ -716,18 +745,17 @@ public final class WeChatContactApi {
         }
         String labelIdsColumn = findRcontactLabelIdsColumn();
         if (TextUtils.isEmpty(labelIdsColumn)) return ContactLabelMutationResult.NOT_SUBMITTED;
-        String currentLabelIds = databaseApi.queryFirstString(
-                "SELECT " + quoteColumn(labelIdsColumn) + " AS labelIds "
-                        + "FROM rcontact WHERE username=? LIMIT 1",
-                new String[]{username},
-                "labelIds");
+        String currentLabelIds = readContactLabelIds(username, labelIdsColumn);
+        if (currentLabelIds == null) {
+            log("读取好友原有标签失败，未提交修改: username=" + username);
+            return ContactLabelMutationResult.NOT_SUBMITTED;
+        }
         String targetId = targetIds.get(0);
         if (ContactLabelIds.contains(currentLabelIds, targetId) == enabled) {
             return ContactLabelMutationResult.ALREADY_SATISFIED;
         }
         String updatedLabelIds = ContactLabelIds.setMembership(currentLabelIds, targetId, enabled);
-        if (updatedLabelIds == null) return ContactLabelMutationResult.NOT_SUBMITTED;
-        if (!sendModifyContactLabelList(username, updatedLabelIds)) {
+        if (updatedLabelIds == null || !sendModifyContactLabelList(username, updatedLabelIds)) {
             return ContactLabelMutationResult.NOT_SUBMITTED;
         }
         ContentValues values = new ContentValues();
@@ -737,6 +765,63 @@ public final class WeChatContactApi {
             log("好友标签请求已接受但本地列表刷新失败: username=" + username + " rows=" + rows);
         }
         return ContactLabelMutationResult.SUBMITTED;
+    }
+
+    /** Updates one ID after a successful row read, preserving every unrelated stored label ID. */
+    public ContactLabelMutationResult setContactLabelMembershipById(
+            String username, String labelId, boolean enabled) {
+        if (TextUtils.isEmpty(username) || TextUtils.isEmpty(labelId)
+                || databaseApi == null || !databaseApi.isAvailable() || !isFriend(username)) {
+            return ContactLabelMutationResult.NOT_SUBMITTED;
+        }
+        String labelIdsColumn = findRcontactLabelIdsColumn();
+        if (TextUtils.isEmpty(labelIdsColumn)) return ContactLabelMutationResult.NOT_SUBMITTED;
+        String currentLabelIds = readContactLabelIds(username, labelIdsColumn);
+        if (currentLabelIds == null) {
+            log("读取好友原有标签失败，未提交修改: username=" + username);
+            return ContactLabelMutationResult.NOT_SUBMITTED;
+        }
+        String targetId = labelId.trim();
+        if (ContactLabelIds.contains(currentLabelIds, targetId) == enabled) {
+            return ContactLabelMutationResult.ALREADY_SATISFIED;
+        }
+        String updatedLabelIds = ContactLabelIds.setMembership(currentLabelIds, targetId, enabled);
+        if (updatedLabelIds == null) return ContactLabelMutationResult.NOT_SUBMITTED;
+        ContactRequestDispatch.Result dispatch = sendModifyContactLabelListDispatch(username, updatedLabelIds);
+        if (dispatch == null) return ContactLabelMutationResult.NOT_SUBMITTED;
+        if (dispatch.outcome == ContactRequestDispatch.Outcome.SERVER_REJECTED) {
+            return ContactLabelMutationResult.SERVER_REJECTED;
+        }
+        if (dispatch.outcome == ContactRequestDispatch.Outcome.SERVER_ACCEPTED) {
+            Boolean finalMembership = getContactLabelMembershipStateById(username, targetId);
+            if (Boolean.valueOf(enabled).equals(finalMembership)) {
+                return ContactLabelMutationResult.CONFIRMED;
+            }
+            return ContactLabelMutationResult.SERVER_ACCEPTED;
+        }
+        return dispatch.wasSubmitted()
+                ? ContactLabelMutationResult.SUBMITTED_UNCONFIRMED
+                : ContactLabelMutationResult.NOT_SUBMITTED;
+    }
+
+    private String readContactLabelIds(String username, String labelIdsColumn) {
+        Cursor cursor = databaseApi.rawQuery(
+                "SELECT IFNULL(" + quoteColumn(labelIdsColumn) + ", '') AS labelIds "
+                        + "FROM rcontact WHERE username=? LIMIT 1",
+                new String[]{username});
+        if (cursor == null) return null;
+        try {
+            if (!cursor.moveToFirst()) return null;
+            int index = cursor.getColumnIndex("labelIds");
+            return index >= 0 ? cursor.getString(index) : null;
+        } catch (Throwable e) {
+            log("读取好友标签列表失败: " + e.getMessage() + " username=" + username);
+            return null;
+        } finally {
+            try {
+                cursor.close();
+            } catch (Throwable ignored) {}
+        }
     }
 
     private boolean applyContactLabelIds(String username, String labelIdsColumn, String labelIdsValue) {
@@ -1037,6 +1122,12 @@ public final class WeChatContactApi {
     }
 
     private boolean sendModifyContactLabelList(String username, String labelIdsValue) {
+        ContactRequestDispatch.Result result = sendModifyContactLabelListDispatch(username, labelIdsValue);
+        return result != null && result.serverAccepted();
+    }
+
+    private ContactRequestDispatch.Result sendModifyContactLabelListDispatch(
+            String username, String labelIdsValue) {
         Constructor<?> ctor = dexFinder != null ? dexFinder.modifyContactLabelListCtor : null;
         if (ctor != null && networkDispatcher != null && dexFinder != null) {
             installNetworkHook();
@@ -1047,11 +1138,14 @@ public final class WeChatContactApi {
                     list.add(item);
                     Object scene = KavaReflector.newInstance(ctor, list);
                     ContactRequestDispatch.Result nativeResult = sendNativeContactScene(scene);
-                    if (nativeResult.serverAccepted()) return true;
-                    if (nativeResult.outcome != ContactRequestDispatch.Outcome.NOT_SUBMITTED) {
-                        log("修改好友标签原生请求未获服务端确认: username=" + username
-                                + " outcome=" + nativeResult.outcome);
-                        return false;
+                    if (nativeResult != null
+                            && nativeResult.outcome != ContactRequestDispatch.Outcome.NOT_SUBMITTED
+                            && nativeResult.outcome != ContactRequestDispatch.Outcome.DISPATCH_FAILED) {
+                        if (!nativeResult.serverAccepted()) {
+                            log("修改好友标签原生请求未获服务端确认: username=" + username
+                                    + " outcome=" + nativeResult.outcome);
+                        }
+                        return nativeResult;
                     }
                     log("修改好友标签原生请求未提交，尝试联系人请求通道: username=" + username);
                 } else {
@@ -1059,10 +1153,10 @@ public final class WeChatContactApi {
                 }
             } catch (Throwable e) {
                 log("修改好友标签原生请求异常: " + e.getMessage());
-                return false;
+                return ContactRequestDispatch.dispatchFailed();
             }
         }
-        return sendModifyContactLabelListByPb(username, labelIdsValue).serverAccepted();
+        return sendModifyContactLabelListByPb(username, labelIdsValue);
     }
 
     private ContactRequestDispatch.Result sendModifyContactLabelListByPb(String username, String labelIdsValue) {

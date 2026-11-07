@@ -5,12 +5,13 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.Set;
 
-/** Shared eligibility rules for user conversations that support native batch actions. */
+/**
+ * Rejects Hchat virtual talks and structural folder rows while preserving real special talks
+ * returned by WeChat's native home query (for example, filehelper).
+ */
 public final class WeChatConversationIdentity {
     private static final String HCHAT_VIRTUAL_PREFIX = "wxid_hchat_group_";
-    private static final Set<String> NON_OPERABLE = Collections.unmodifiableSet(new HashSet<>(Arrays.asList(
-            "filehelper", "fmessage", "tmessage", "qqmail", "weixin", "floatbottle",
-            "medianote", "medianote@chatroom", "newsapp", "masssend", "feedsapp", "blogapp",
+    private static final Set<String> STRUCTURAL_ROWS = Collections.unmodifiableSet(new HashSet<>(Arrays.asList(
             "message_fold", "conversationboxservice", "@placeholder_foldgroup"
     )));
 
@@ -21,6 +22,6 @@ public final class WeChatConversationIdentity {
         String value = username.trim();
         return !value.isEmpty()
                 && !value.startsWith(HCHAT_VIRTUAL_PREFIX)
-                && !NON_OPERABLE.contains(value);
+                && !STRUCTURAL_ROWS.contains(value);
     }
 }

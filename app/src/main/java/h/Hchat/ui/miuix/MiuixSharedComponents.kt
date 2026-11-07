@@ -2376,7 +2376,8 @@ internal fun BottomActionBar(
     secondaryText: String? = null,
     onSecondaryClick: (() -> Unit)? = null,
     middleText: String? = null,
-    onMiddleClick: (() -> Unit)? = null
+    onMiddleClick: (() -> Unit)? = null,
+    primaryEnabled: Boolean = true
 ) {
     val backAction = when {
         secondaryText == "取消" && onSecondaryClick != null -> onSecondaryClick
@@ -2417,7 +2418,8 @@ internal fun BottomActionBar(
             text = primaryText,
             modifier = Modifier.weight(1f),
             filled = true,
-            onClick = onPrimaryClick
+            onClick = onPrimaryClick,
+            enabled = primaryEnabled
         )
     }
 }
@@ -2462,16 +2464,22 @@ private fun isGestureNavigationMode(context: Context): Boolean {
 }
 
 @Composable
-private fun BottomBarButton(text: String, modifier: Modifier, filled: Boolean, onClick: () -> Unit) {
+private fun BottomBarButton(
+    text: String,
+    modifier: Modifier,
+    filled: Boolean,
+    onClick: () -> Unit,
+    enabled: Boolean = true
+) {
     val bg = if (filled) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.secondaryVariant
     val fg = if (filled) Color.White else MiuixTheme.colorScheme.onSecondaryVariant
     Text(
         modifier = modifier.clip(RoundedCornerShape(14.dp))
-            .background(bg)
-            .clickable(onClick = onClick)
+            .background(bg.copy(alpha = if (enabled) 1f else 0.45f))
+            .clickable(enabled = enabled, onClick = onClick)
             .padding(vertical = 13.dp),
         text = text,
-        color = fg,
+        color = fg.copy(alpha = if (enabled) 1f else 0.65f),
         fontWeight = FontWeight.Medium,
         textAlign = TextAlign.Center
     )
@@ -2747,7 +2755,12 @@ internal data class ContactPickerRequest(
     val onlyExistingConversations: Boolean = false,
     val strictFriendsOnly: Boolean = false,
     val strictFriendsAndGroupsOnly: Boolean = false,
-    val showSelectedCount: Boolean = false
+    val showSelectedCount: Boolean = false,
+    val nativeHomeConversationList: Boolean = false,
+    val flatBatchSelection: Boolean = false,
+    val multiSelectConfirmPrefix: String? = null,
+    val operationHeader: (@Composable () -> Unit)? = null,
+    val confirmEnabled: () -> Boolean = { true }
 )
 
 internal enum class AutoMessageForwardRoute {
@@ -4014,6 +4027,7 @@ internal fun loadContacts(
     onlyExistingConversations: Boolean = false,
     strictFriendsOnly: Boolean = false,
     strictFriendsAndGroupsOnly: Boolean = false,
+    nativeHomeConversationList: Boolean = false,
     callback: (List<ContactOption>, Throwable?) -> Unit
 ) {
     val api = WeChatApis.contact().contacts()
@@ -4026,8 +4040,16 @@ internal fun loadContacts(
         try {
             val rows = mutableListOf<ContactOption>()
             val conversations = WeChatApis.conversations()
-            val sessionIds = if (onlyExistingConversations) {
+            val nativeHomeIds = if (nativeHomeConversationList) {
+                conversations?.getNativeHomeConversationUsernames()
+                    ?: throw IllegalStateException("读取微信首页原生会话列表失败")
+            } else {
+                emptyList()
+            }
+            val sessionIds = if (onlyExistingConversations && !nativeHomeConversationList) {
                 conversations?.getRecentConversationUsernames(10000)?.toSet().orEmpty()
+            } else if (nativeHomeConversationList) {
+                nativeHomeIds.toSet()
             } else {
                 emptySet()
             }
@@ -4048,22 +4070,62 @@ internal fun loadContacts(
                     }
                 }
             }
-            if (mode == ContactPickerMode.FRIENDS || mode == ContactPickerMode.BOTH || mode == ContactPickerMode.ALL_CHATS) {
-                val contacts = if (strictFriendsOnly || strictFriendsAndGroupsOnly) api.getFriends() else api.getPickerContacts()
-                rows += contacts.mapNotNull { it.toOption(false, labelsByUser[it.wxId].orEmpty()) }
+            val nativeHomeGroupIds = nativeHomeIds.filter {
+                it.endsWith("@chatroom") || it.endsWith("@im.chatroom")
+            }.toSet()
+            if (nativeHomeConversationList) {
+                val eligibleNativeIds = BatchSelectionPolicy.filterCandidateIds(
+                    nativeHomeIds,
+                    sessionIds,
+                    validFriendIds,
+                    nativeHomeGroupIds,
+                    true,
+                    strictFriendsOnly,
+                    strictFriendsAndGroupsOnly
+                )
+                val contactById = eligibleNativeIds.chunked(400)
+                    .flatMap(api::getContactsByIds)
+                    .associateBy { it.wxId }
+                eligibleNativeIds.forEach { id ->
+                    val group = id.endsWith("@chatroom") || id.endsWith("@im.chatroom")
+                    val contact = contactById[id]
+                    rows += contact?.toOption(
+                        group = group,
+                        labels = labelsByUser[id].orEmpty(),
+                        official = id.startsWith("gh_")
+                    ) ?: ContactOption(
+                        id = id,
+                        label = conversations?.getConversationTitle(id)?.ifBlank { id } ?: id,
+                        group = group,
+                        avatarUrl = "",
+                        avatarBackupUrl = "",
+                        labels = labelsByUser[id].orEmpty(),
+                        official = id.startsWith("gh_")
+                    )
+                }
+            } else {
+                if (mode == ContactPickerMode.FRIENDS || mode == ContactPickerMode.BOTH || mode == ContactPickerMode.ALL_CHATS) {
+                    val contacts = if (strictFriendsOnly || strictFriendsAndGroupsOnly) api.getFriends() else api.getPickerContacts()
+                    rows += contacts.mapNotNull { it.toOption(false, labelsByUser[it.wxId].orEmpty()) }
+                }
+                if (mode == ContactPickerMode.GROUPS || mode == ContactPickerMode.BOTH || mode == ContactPickerMode.ALL_CHATS) {
+                    rows += api.getPickerGroups().mapNotNull { it.toOption(true) }
+                }
+                if (mode == ContactPickerMode.ALL_CHATS) {
+                    rows += api.getPickerOfficialAccounts().mapNotNull { it.toOption(false, official = true) }
+                }
             }
-            if (mode == ContactPickerMode.GROUPS || mode == ContactPickerMode.BOTH || mode == ContactPickerMode.ALL_CHATS) {
-                rows += api.getPickerGroups().mapNotNull { it.toOption(true) }
+            val conversationOrder = if (nativeHomeConversationList) {
+                nativeHomeIds.mapIndexed { index, username -> username to index }.toMap()
+            } else {
+                conversations?.getRecentConversationUsernames(10000)
+                    .orEmpty()
+                    .mapIndexed { index, username -> username to index }
+                    .toMap()
             }
-            if (mode == ContactPickerMode.ALL_CHATS) {
-                rows += api.getPickerOfficialAccounts().mapNotNull { it.toOption(false, official = true) }
-            }
-            val conversationOrder = conversations
-                ?.getRecentConversationUsernames(10000)
-                .orEmpty()
-                .mapIndexed { index, username -> username to index }
-                .toMap()
-            val eligibleRows = if (onlyExistingConversations || strictFriendsOnly) {
+            val eligibleRows = if (!nativeHomeConversationList &&
+                (onlyExistingConversations || strictFriendsOnly || strictFriendsAndGroupsOnly)
+            ) {
                 val eligibleIds = BatchSelectionPolicy.filterCandidateIds(
                     rows.map { it.id },
                     sessionIds,
@@ -4077,7 +4139,8 @@ internal fun loadContacts(
             } else {
                 rows
             }
-            val sorted = eligibleRows.distinctBy { it.id }.sortedWith(
+            val deduplicated = eligibleRows.distinctBy { it.id }
+            val sorted = if (nativeHomeConversationList) deduplicated else deduplicated.sortedWith(
                 compareBy<ContactOption> { conversationOrder[it.id] ?: Int.MAX_VALUE }
                     .thenBy { it.group }
                     .thenBy { it.official }

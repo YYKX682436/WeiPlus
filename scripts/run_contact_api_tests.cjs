@@ -33,10 +33,16 @@ try {
         'native label persistence must require server acceptance');
     assert.doesNotMatch(api, /modifyContactRemarkByNativeStorage/,
         'failed remark requests must not mutate local native storage');
-    assert.match(api, /if \(!sendModifyContactLabelList\(username, updatedLabelIds\)\)\s*\{\s*return ContactLabelMutationResult\.NOT_SUBMITTED;/,
-        'batch label changes must distinguish an unsubmitted native request');
-    assert.match(api, /return ContactLabelMutationResult\.SUBMITTED;/,
-        'accepted label requests remain submitted until final state is confirmed');
+    assert.match(api, /public Boolean hasContactLabelId\(String labelId\)/,
+        'batch label preflight must resolve one label ID before iterating friends');
+    assert.match(api, /public ContactLabelMutationResult setContactLabelMembershipById\([\s\S]*?readContactLabelIds\(username, labelIdsColumn\)[\s\S]*?ContactLabelIds\.setMembership\(currentLabelIds, targetId, enabled\)/,
+        'each friend update must read only that row and preserve other label IDs');
+    assert.match(api, /if \(currentLabelIds == null\)\s*\{[\s\S]*?return ContactLabelMutationResult\.NOT_SUBMITTED;/,
+        'failed row reads must block requests instead of being treated as empty labels');
+    assert.match(api, /if \(dispatch\.outcome == ContactRequestDispatch\.Outcome\.SERVER_ACCEPTED\)[\s\S]*?getContactLabelMembershipStateById\(username, targetId\)[\s\S]*?ContactLabelMutationResult\.CONFIRMED/,
+        'server acceptance and final label state confirmation must remain separate');
+    assert.match(api, /dispatch\.wasSubmitted\(\)[\s\S]*?ContactLabelMutationResult\.SUBMITTED_UNCONFIRMED/,
+        'submitted requests without an accepted final state must be reported as unconfirmed');
     console.log('Contact API call-chain regression assertions passed');
 } finally {
     fs.rmSync(output, { recursive: true, force: true });

@@ -60,7 +60,6 @@ object ConversationGroupRuntime {
     private const val CACHE_NATIVE_UNSET_PINNED = "conversation_unset_placed_top"
     private const val CACHE_NATIVE_HIDE_CONVERSATION = "hide_conversation"
     private const val CACHE_CLICK = "main_conversation_click"
-    private const val CACHE_NATIVE_GROUP_QUERY = "fold_group_conversation_query"
     private const val CACHE_NATIVE_GROUP_CLICK = "fold_group_conversation_click"
     private const val CACHE_NATIVE_GROUP_REFRESH = "fold_group_adapter_refresh"
     private const val CACHE_NATIVE_GROUP_MARK_READ = "fold_group_mark_read"
@@ -74,8 +73,6 @@ object ConversationGroupRuntime {
     private const val SHARE_RECENT_FORWARD_ORDER_ANCHOR =
         "order by case rconversation.username "
     private const val SHARE_RECENT_ERROR_LOG_COOLDOWN_MS = 10_000L
-    private const val NATIVE_GROUP_QUERY_ANCHOR = "select * from rconversation where"
-    private const val NATIVE_GROUP_PARENT_ANCHOR = "parentRef = '"
     private const val NATIVE_GROUP_REFRESH_ANCHOR = "conversationboxservice"
     private const val NATIVE_GROUP_MARK_READ_ANCHOR = "updateUnreadByTalker %s"
     private const val NATIVE_GROUP_STATUS_ANCHOR = "enterSession %s %s"
@@ -2366,18 +2363,9 @@ object ConversationGroupRuntime {
     }
 
     private fun locateNativeGroupQueryMethod(context: FeatureContext): Method? {
-        return loadCached(context, CACHE_NATIVE_GROUP_QUERY, ::isNativeGroupQueryMethod)
-            ?: locateAndCache(
-                context,
-                CACHE_NATIVE_GROUP_QUERY,
-                FindMethod().apply {
-                    matcher(MethodMatcher().apply {
-                        declaredClass("com.tencent.mm.storage.", StringMatchType.Contains, false)
-                        usingStrings(listOf(NATIVE_GROUP_QUERY_ANCHOR, NATIVE_GROUP_PARENT_ANCHOR))
-                    })
-                },
-                ::isNativeGroupQueryMethod
-            )
+        context.dexFinder().resolveNativeConversationHomeListQueryApi()
+        return context.dexFinder().nativeConversationHomeListQueryMethod
+            ?.takeIf(::isNativeGroupQueryMethod)
     }
 
     private fun locateNativeGroupClickMethod(context: FeatureContext): Method? {

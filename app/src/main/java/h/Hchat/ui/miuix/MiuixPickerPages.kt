@@ -308,14 +308,14 @@ internal fun ContactPickerPage(
     var query by remember(request) { mutableStateOf("") }
     val initialSelectedIds = remember(request) { parseIds(request.existingValue) }
     var selectedIds by remember(request) { mutableStateOf(initialSelectedIds) }
-    val scopeSelectionEnabled = request.enableScopeSelection &&
+    val scopeSelectionEnabled = !request.flatBatchSelection && request.enableScopeSelection &&
         request.multiSelect &&
         request.mode == ContactPickerMode.FRIENDS
     var scopeTab by remember(request) { mutableStateOf(ContactPickerScopeTab.FRIENDS) }
     var selectedConversationGroupId by remember(request) { mutableStateOf("") }
     var contactFilter by remember(request) {
         mutableStateOf(
-            if (request.mode == ContactPickerMode.FRIENDS && request.enableLabels) {
+            if (!request.flatBatchSelection && request.mode == ContactPickerMode.FRIENDS && request.enableLabels) {
                 ContactPickerFilter.FRIENDS
             } else {
                 ContactPickerFilter.ALL
@@ -324,7 +324,7 @@ internal fun ContactPickerPage(
     }
     var selectedLabel by remember(request) { mutableStateOf("") }
     val groupLabels = remember(request) {
-        if (request.multiSelect && request.enableGroupLabels && request.mode.supportsGroups()) {
+        if (!request.flatBatchSelection && request.multiSelect && request.enableGroupLabels && request.mode.supportsGroups()) {
             GroupChatLabelStore.load(context)
         } else {
             emptyList()
@@ -340,7 +340,8 @@ internal fun ContactPickerPage(
             includeLabels = request.enableLabels,
             onlyExistingConversations = request.onlyExistingConversations,
             strictFriendsOnly = request.strictFriendsOnly,
-            strictFriendsAndGroupsOnly = request.strictFriendsAndGroupsOnly
+            strictFriendsAndGroupsOnly = request.strictFriendsAndGroupsOnly,
+            nativeHomeConversationList = request.nativeHomeConversationList
         ) { result, throwable ->
             loading = false
             if (throwable != null) {
@@ -351,7 +352,8 @@ internal fun ContactPickerPage(
         }
     }
     val conversationGroupFilters = remember(contacts) {
-        ConversationGroupPickerSupport.filters(context, contacts.map { it.id })
+        if (request.flatBatchSelection) emptyList()
+        else ConversationGroupPickerSupport.filters(context, contacts.map { it.id })
     }
     val conversationGroupChoices = remember(conversationGroupFilters) {
         listOf(PopupChoice("全部会话", "")) + conversationGroupFilters.map {
@@ -393,8 +395,8 @@ internal fun ContactPickerPage(
             label.copy(groupIds = ids).takeIf { ids.isNotEmpty() }
         }
     }
-    val showGroupLabels = request.mode == ContactPickerMode.GROUPS ||
-        contactFilter == ContactPickerFilter.GROUPS
+    val showGroupLabels = !request.flatBatchSelection && (request.mode == ContactPickerMode.GROUPS ||
+        contactFilter == ContactPickerFilter.GROUPS)
     LaunchedEffect(contactFilter, labels) {
         if (contactFilter == ContactPickerFilter.LABELS) {
             if (selectedLabel.isBlank() || !labels.contains(selectedLabel)) {
@@ -460,6 +462,11 @@ internal fun ContactPickerPage(
         }
     }
     val bottomVisibleAllSelected = bottomVisibleIds.isNotEmpty() && bottomVisibleIds.all { selectedIds.contains(it) }
+    val selectedContactCount = remember(selectedIds, contacts) {
+        contacts.count { it.id in selectedIds }
+    }
+    val batchConfirmEnabled = request.multiSelectConfirmPrefix == null ||
+        (request.confirmEnabled() && selectedContactCount > 0)
 
     PageScaffold(
         title = request.title,
@@ -468,6 +475,7 @@ internal fun ContactPickerPage(
         bottomBar = {
             BottomActionBar(
                 primaryText = when {
+                    request.multiSelectConfirmPrefix != null -> "${request.multiSelectConfirmPrefix}（$selectedContactCount）"
                     request.showSelectedCount -> "下一步 · 已选 ${selectedIds.intersect(contacts.map { it.id }.toSet()).size} 项"
                     request.multiSelect -> "保存选择"
                     else -> request.singleConfirmText
@@ -476,6 +484,8 @@ internal fun ContactPickerPage(
                     val picked = contacts.filter { selectedIds.contains(it.id) }
                     if (picked.isEmpty() && (!request.multiSelect || request.showSelectedCount)) {
                         Toast.makeText(context, "请选择对象", Toast.LENGTH_SHORT).show()
+                    } else if (!request.confirmEnabled()) {
+                        Toast.makeText(context, "请先选择一个有效好友标签", Toast.LENGTH_SHORT).show()
                     } else {
                         onConfirm(picked)
                     }
@@ -497,7 +507,8 @@ internal fun ContactPickerPage(
                     }
                 } else {
                     null
-                }
+                },
+                primaryEnabled = batchConfirmEnabled
             )
         }
     ) { padding ->
@@ -509,6 +520,9 @@ internal fun ContactPickerPage(
                 bottom = padding.calculateBottomPadding() + 84.dp
             )
         ) {
+            request.operationHeader?.let { header ->
+                item { header() }
+            }
             if (scopeSelectionEnabled) {
                 item {
                     SettingsCard {
@@ -522,7 +536,7 @@ internal fun ContactPickerPage(
                         )
                     }
                 }
-            } else if (request.mode == ContactPickerMode.FRIENDS && request.enableLabels) {
+            } else if (!request.flatBatchSelection && request.mode == ContactPickerMode.FRIENDS && request.enableLabels) {
                 item {
                     SettingsCard {
                         FriendContactFilterRow(
@@ -534,7 +548,7 @@ internal fun ContactPickerPage(
                         )
                     }
                 }
-            } else if (request.mode == ContactPickerMode.BOTH || request.mode == ContactPickerMode.ALL_CHATS) {
+            } else if (!request.flatBatchSelection && (request.mode == ContactPickerMode.BOTH || request.mode == ContactPickerMode.ALL_CHATS)) {
                 item {
                     SettingsCard {
                         ContactFilterRow(
@@ -549,7 +563,7 @@ internal fun ContactPickerPage(
                     }
                 }
             }
-            if (!scopeSelectionEnabled && request.enableLabels && contactFilter == ContactPickerFilter.LABELS) {
+            if (!request.flatBatchSelection && !scopeSelectionEnabled && request.enableLabels && contactFilter == ContactPickerFilter.LABELS) {
                 item {
                     SettingsCard {
                         ContactLabelFilterRow(
@@ -563,7 +577,7 @@ internal fun ContactPickerPage(
                     }
                 }
             }
-            if (!scopeSelectionEnabled && conversationGroupChoices.size > 1) {
+            if (!request.flatBatchSelection && !scopeSelectionEnabled && conversationGroupChoices.size > 1) {
                 item {
                     SettingsCard {
                         PopupChoiceRow(
@@ -608,6 +622,7 @@ internal fun ContactPickerPage(
                         summary = when {
                             scopeSelectionEnabled && scopeTab == ContactPickerScopeTab.LABELS -> "好友标签名称"
                             scopeSelectionEnabled && scopeTab == ContactPickerScopeTab.CONVERSATION_GROUPS -> "聊天分组名称"
+                            request.flatBatchSelection -> "昵称 / 备注 / 微信号"
                             else -> "昵称 / 群聊备注 / wxid"
                         },
                         value = query,
@@ -618,6 +633,7 @@ internal fun ContactPickerPage(
             item {
                 PickerSectionHeader(
                     text = when {
+                        request.flatBatchSelection -> "${if (request.mode == ContactPickerMode.FRIENDS) "好友" else "会话"} · ${visibleContacts.size} 项 · 已选 $selectedContactCount"
                         scopeSelectionEnabled && scopeTab == ContactPickerScopeTab.LABELS -> {
                             if (visibleLabelScopes.isEmpty()) "好友标签" else "好友标签 · ${visibleLabelScopes.size} 项"
                         }

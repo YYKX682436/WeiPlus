@@ -67,6 +67,9 @@ public class DexFinder {
     private static final String LOCATOR_MSG_DESC_COMPLETE = "locator.msg.desc.complete";
     private static final String MSG_DESC_LOCATOR_VERSION_KEY = "locator.msg.desc.version";
     private static final String MSG_DESC_LOCATOR_VERSION = "2";
+    private static final long NATIVE_CONVERSATION_LOCATOR_RETRY_MS = 30_000L;
+    private static final String NATIVE_HOME_QUERY_ANCHOR = "select * from rconversation where";
+    private static final String NATIVE_HOME_PARENT_ANCHOR = "parentRef = '";
     private static final String RED_PACKET_UNION_LOCATOR_VERSION_KEY = "redpacket.union.locator.version";
     private static final String RED_PACKET_UNION_LOCATOR_VERSION = "1";
     private static final String NETWORK_QUEUE_LOCATOR_VERSION_KEY = "network.queue.locator.version";
@@ -243,6 +246,7 @@ public class DexFinder {
     public Class<?> configStorageClass;
     public Class<?> sqliteDbWrapperClass;
     public Method conversationDeleteMethod;
+    public Method nativeConversationHomeListQueryMethod;
     public Method conversationSetPlacedTopMethod;
     public Method conversationUnsetPlacedTopMethod;
     public Method conversationHideFromHomeMethod;
@@ -298,7 +302,10 @@ public class DexFinder {
     private boolean packetCompatLocatorResolved;
     private boolean ecsGiftLocatorResolved;
     private boolean msgDescLocatorResolved;
-    private boolean nativeConversationActionLookupResolved;
+    private long nativeConversationHomeQueryRetryAfterMs;
+    private long conversationSetPlacedTopRetryAfterMs;
+    private long conversationUnsetPlacedTopRetryAfterMs;
+    private long conversationHideFromHomeRetryAfterMs;
 
     public DexFinder(DexKitBridge dexKit, ClassLoader classLoader) {
         this(dexKit, classLoader, null);
@@ -2987,29 +2994,96 @@ public class DexFinder {
      */
     public synchronized void resolveNativeConversationActionsApi() {
         ensureSnapshotLoaded();
-        if (nativeConversationActionLookupResolved) return;
-        nativeConversationActionLookupResolved = true;
-        try {
-            if (!isNativePlacedTopMethod(conversationSetPlacedTopMethod)) {
-                conversationSetPlacedTopMethod = findUniqueNativeConversationAction(
+        long now = System.currentTimeMillis();
+        boolean cacheChanged = false;
+        if (!isNativePlacedTopMethod(conversationSetPlacedTopMethod)) {
+            conversationSetPlacedTopMethod = null;
+            if (now >= conversationSetPlacedTopRetryAfterMs) {
+                conversationSetPlacedTopMethod = resolveConversationActionWithRetry(
                         "[setPlacedTop] flag=%s result=%s", false, boolean.class,
-                        "com.tencent.mm.storage.");
+                        "com.tencent.mm.storage.", now);
+                conversationSetPlacedTopRetryAfterMs = conversationSetPlacedTopMethod != null
+                        ? 0L : now + NATIVE_CONVERSATION_LOCATOR_RETRY_MS;
+                cacheChanged |= conversationSetPlacedTopMethod != null;
             }
-            if (!isNativePlacedTopMethod(conversationUnsetPlacedTopMethod)) {
-                conversationUnsetPlacedTopMethod = findUniqueNativeConversationAction(
+        }
+        if (!isNativePlacedTopMethod(conversationUnsetPlacedTopMethod)) {
+            conversationUnsetPlacedTopMethod = null;
+            if (now >= conversationUnsetPlacedTopRetryAfterMs) {
+                conversationUnsetPlacedTopMethod = resolveConversationActionWithRetry(
                         "unSetPlacedTop conversation failed", false, boolean.class,
-                        "com.tencent.mm.storage.");
+                        "com.tencent.mm.storage.", now);
+                conversationUnsetPlacedTopRetryAfterMs = conversationUnsetPlacedTopMethod != null
+                        ? 0L : now + NATIVE_CONVERSATION_LOCATOR_RETRY_MS;
+                cacheChanged |= conversationUnsetPlacedTopMethod != null;
             }
-            if (!isNativeHideFromHomeMethod(conversationHideFromHomeMethod)) {
-                conversationHideFromHomeMethod = findUniqueNativeConversationAction(
-                        "hidden_conv_parent", true, void.class, null);
+        }
+        if (!isNativeHideFromHomeMethod(conversationHideFromHomeMethod)) {
+            conversationHideFromHomeMethod = null;
+            if (now >= conversationHideFromHomeRetryAfterMs) {
+                conversationHideFromHomeMethod = resolveConversationActionWithRetry(
+                        "hidden_conv_parent", true, void.class, null, now);
+                conversationHideFromHomeRetryAfterMs = conversationHideFromHomeMethod != null
+                        ? 0L : now + NATIVE_CONVERSATION_LOCATOR_RETRY_MS;
+                cacheChanged |= conversationHideFromHomeMethod != null;
             }
-            if (resolutionFinished) saveCache();
-            logDetail("会话原生操作API: setPlacedTop=" + methodName(conversationSetPlacedTopMethod)
-                    + " unSetPlacedTop=" + methodName(conversationUnsetPlacedTopMethod)
-                    + " hide=" + methodName(conversationHideFromHomeMethod));
+        }
+        if (cacheChanged && resolutionFinished) saveCache();
+        logDetail("会话原生操作API: setPlacedTop=" + methodName(conversationSetPlacedTopMethod)
+                + " unSetPlacedTop=" + methodName(conversationUnsetPlacedTopMethod)
+                + " hide=" + methodName(conversationHideFromHomeMethod));
+    }
+
+    /** Resolves the native root-list query already shared with ConversationGroupRuntime. */
+    public synchronized void resolveNativeConversationHomeListQueryApi() {
+        ensureSnapshotLoaded();
+        if (isNativeConversationHomeListQueryMethod(nativeConversationHomeListQueryMethod)) return;
+        nativeConversationHomeListQueryMethod = null;
+        long now = System.currentTimeMillis();
+        if (now < nativeConversationHomeQueryRetryAfterMs) return;
+        try {
+            List<Method> candidates = new ArrayList<>();
+            FindMethod find = new FindMethod();
+            find.matcher(new MethodMatcher()
+                    .declaredClass("com.tencent.mm.storage.", StringMatchType.StartsWith, false)
+                    .usingStrings(Arrays.asList(NATIVE_HOME_QUERY_ANCHOR, NATIVE_HOME_PARENT_ANCHOR)));
+            for (MethodData data : dexQueries.findMethod(find)) {
+                try {
+                    Method candidate = data.getMethodInstance(classLoader);
+                    if (isNativeConversationHomeListQueryMethod(candidate) && !candidates.contains(candidate)) {
+                        candidates.add(candidate);
+                    }
+                } catch (Throwable ignored) {}
+            }
+            if (candidates.size() == 1) {
+                nativeConversationHomeListQueryMethod = KavaReflector.accessible(candidates.get(0));
+                nativeConversationHomeQueryRetryAfterMs = 0L;
+                if (resolutionFinished) saveCache();
+            } else {
+                nativeConversationHomeQueryRetryAfterMs = now + NATIVE_CONVERSATION_LOCATOR_RETRY_MS;
+                logDetail("微信首页会话查询入口定位不唯一: candidates=" + candidates.size());
+            }
         } catch (Throwable e) {
-            h.Hchat.utils.HLog.e(TAG + " resolveNativeConversationActionsApi 失败: " + e.getMessage(), e);
+            nativeConversationHomeQueryRetryAfterMs = now + NATIVE_CONVERSATION_LOCATOR_RETRY_MS;
+            h.Hchat.utils.HLog.e(TAG + " 定位微信首页会话查询入口失败: " + e.getMessage(), e);
+        }
+    }
+
+    private Method resolveConversationActionWithRetry(String anchor,
+                                                      boolean isStatic,
+                                                      Class<?> returnType,
+                                                      String ownerPrefix,
+                                                      long now) {
+        try {
+            Method method = findUniqueNativeConversationAction(anchor, isStatic, returnType, ownerPrefix);
+            if (method == null) {
+                logDetail("会话原生操作入口将在冷却后重试: anchor=" + anchor
+                        + " retryAfterMs=" + (now + NATIVE_CONVERSATION_LOCATOR_RETRY_MS));
+            }
+            return method;
+        } catch (Throwable e) {
+            h.Hchat.utils.HLog.e(TAG + " 定位会话原生操作入口失败: anchor=" + anchor, e);
+            return null;
         }
     }
 
@@ -3052,6 +3126,16 @@ public class DexFinder {
         if (method == null || !KavaReflector.isStatic(method) || Modifier.isAbstract(method.getModifiers())
                 || method.getReturnType() != void.class) return false;
         return method.getParameterTypes().length == 1 && method.getParameterTypes()[0] == String.class;
+    }
+
+    private boolean isNativeConversationHomeListQueryMethod(Method method) {
+        if (method == null || KavaReflector.isStatic(method) || Modifier.isAbstract(method.getModifiers())
+                || !Cursor.class.isAssignableFrom(method.getReturnType())
+                || !method.getDeclaringClass().getName().startsWith("com.tencent.mm.storage.")) return false;
+        Class<?>[] types = method.getParameterTypes();
+        return types.length == 4 && types[0] == int.class
+                && List.class.isAssignableFrom(types[1])
+                && types[2] == String.class && types[3] == int.class;
     }
 
     private boolean isConversationDeleteMethod(Method method) {
@@ -4166,6 +4250,7 @@ public class DexFinder {
                 sqliteDbWrapperClass = null;
             }
             conversationDeleteMethod = loadMethod("conversationDeleteMethod");
+            nativeConversationHomeListQueryMethod = loadMethod("nativeConversationHomeListQueryMethod");
             conversationSetPlacedTopMethod = loadMethod("conversationSetPlacedTopMethod");
             conversationUnsetPlacedTopMethod = loadMethod("conversationUnsetPlacedTopMethod");
             conversationHideFromHomeMethod = loadMethod("conversationHideFromHomeMethod");
@@ -5500,6 +5585,7 @@ public class DexFinder {
                             ? SQLITE_WRAPPER_LOCATOR_VERSION : "");
             putMethod(editor, "coreStorageGetter", coreStorageGetter);
             putMethod(editor, "conversationDeleteMethod", conversationDeleteMethod);
+            putMethod(editor, "nativeConversationHomeListQueryMethod", nativeConversationHomeListQueryMethod);
             putMethod(editor, "conversationSetPlacedTopMethod", conversationSetPlacedTopMethod);
             putMethod(editor, "conversationUnsetPlacedTopMethod", conversationUnsetPlacedTopMethod);
             putMethod(editor, "conversationHideFromHomeMethod", conversationHideFromHomeMethod);

@@ -13,6 +13,7 @@ import h.Hchat.utils.KavaReflector;
 
 import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 
@@ -91,6 +92,47 @@ public final class WeChatConversationApi {
             log("会话用户名查询失败: " + e.getMessage());
         }
         return result;
+    }
+
+    /**
+     * Returns the full root conversation list from WeChat's native ConversationStorage.s query.
+     * The native query applies the current parentRef/fold setting and flag/time ordering; a
+     * non-null result means the query ran successfully, while null means its locator or cursor
+     * could not be read.
+     */
+    public List<String> getNativeHomeConversationUsernames() {
+        if (databaseApi == null || dexFinder == null || !databaseApi.isAvailable()) return null;
+        dexFinder.resolveNativeConversationHomeListQueryApi();
+        Method method = dexFinder.nativeConversationHomeListQueryMethod;
+        if (method == null) return null;
+        Object storage = databaseApi.storageObjectForMethod(method);
+        if (storage == null || !method.getDeclaringClass().isInstance(storage)) return null;
+        Cursor cursor = null;
+        try {
+            Object value = KavaReflector.invokeOrThrow(
+                    method, storage, 0, new ArrayList<String>(), null, 0);
+            if (!(value instanceof Cursor)) return null;
+            cursor = (Cursor) value;
+            int usernameIndex = cursor.getColumnIndex("username");
+            if (usernameIndex < 0) return null;
+            LinkedHashSet<String> usernames = new LinkedHashSet<>();
+            while (cursor.moveToNext()) {
+                String username = cursor.getString(usernameIndex);
+                if (WeChatConversationIdentity.isBatchOperableUsername(username)) {
+                    usernames.add(username);
+                }
+            }
+            return new ArrayList<>(usernames);
+        } catch (Throwable e) {
+            log("读取微信首页原生会话列表失败: " + e.getMessage());
+            return null;
+        } finally {
+            if (cursor != null) {
+                try {
+                    cursor.close();
+                } catch (Throwable ignored) {}
+            }
+        }
     }
 
     /**

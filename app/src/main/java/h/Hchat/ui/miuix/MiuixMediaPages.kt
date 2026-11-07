@@ -1404,7 +1404,7 @@ internal fun FeatureGroupRow(group: FeatureGroupEntry, onClick: () -> Unit) {
         Column(modifier = Modifier.weight(1f)) {
             Text(text = group.title, color = MiuixTheme.colorScheme.onSurface, fontWeight = FontWeight.Medium)
             Text(
-                text = if (group.batchOperations) "4 项功能" else "${group.providers.size} 项功能",
+                text = if (group.batchOperations) "${batchOperationsFeatureCount()} 项功能" else "${group.providers.size} 项功能",
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 fontSize = 12.sp
             )
