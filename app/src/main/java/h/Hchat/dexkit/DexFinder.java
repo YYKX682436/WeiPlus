@@ -243,6 +243,9 @@ public class DexFinder {
     public Class<?> configStorageClass;
     public Class<?> sqliteDbWrapperClass;
     public Method conversationDeleteMethod;
+    public Method conversationSetPlacedTopMethod;
+    public Method conversationUnsetPlacedTopMethod;
+    public Method conversationHideFromHomeMethod;
     public Method messageClearByTalkerMethod;
     public Method messageClearBatchMethod;
     // 微信原生消息免打扰
@@ -295,6 +298,7 @@ public class DexFinder {
     private boolean packetCompatLocatorResolved;
     private boolean ecsGiftLocatorResolved;
     private boolean msgDescLocatorResolved;
+    private boolean nativeConversationActionLookupResolved;
 
     public DexFinder(DexKitBridge dexKit, ClassLoader classLoader) {
         this(dexKit, classLoader, null);
@@ -2977,6 +2981,79 @@ public class DexFinder {
         }
     }
 
+    /**
+     * Resolve the same native conversation storage actions used by
+     * ConversationGroupRuntime so callers share one version-scoped locator.
+     */
+    public synchronized void resolveNativeConversationActionsApi() {
+        ensureSnapshotLoaded();
+        if (nativeConversationActionLookupResolved) return;
+        nativeConversationActionLookupResolved = true;
+        try {
+            if (!isNativePlacedTopMethod(conversationSetPlacedTopMethod)) {
+                conversationSetPlacedTopMethod = findUniqueNativeConversationAction(
+                        "[setPlacedTop] flag=%s result=%s", false, boolean.class,
+                        "com.tencent.mm.storage.");
+            }
+            if (!isNativePlacedTopMethod(conversationUnsetPlacedTopMethod)) {
+                conversationUnsetPlacedTopMethod = findUniqueNativeConversationAction(
+                        "unSetPlacedTop conversation failed", false, boolean.class,
+                        "com.tencent.mm.storage.");
+            }
+            if (!isNativeHideFromHomeMethod(conversationHideFromHomeMethod)) {
+                conversationHideFromHomeMethod = findUniqueNativeConversationAction(
+                        "hidden_conv_parent", true, void.class, null);
+            }
+            if (resolutionFinished) saveCache();
+            logDetail("会话原生操作API: setPlacedTop=" + methodName(conversationSetPlacedTopMethod)
+                    + " unSetPlacedTop=" + methodName(conversationUnsetPlacedTopMethod)
+                    + " hide=" + methodName(conversationHideFromHomeMethod));
+        } catch (Throwable e) {
+            h.Hchat.utils.HLog.e(TAG + " resolveNativeConversationActionsApi 失败: " + e.getMessage(), e);
+        }
+    }
+
+    private Method findUniqueNativeConversationAction(String anchor,
+                                                       boolean isStatic,
+                                                       Class<?> returnType,
+                                                       String ownerPrefix) {
+        List<Method> candidates = new ArrayList<>();
+        FindMethod find = new FindMethod();
+        find.matcher(new MethodMatcher().usingEqStrings(anchor));
+        for (MethodData methodData : dexQueries.findMethod(find)) {
+            try {
+                Method method = methodData.getMethodInstance(classLoader);
+                if (method == null || method.getReturnType() != returnType
+                        || Modifier.isStatic(method.getModifiers()) != isStatic
+                        || Modifier.isAbstract(method.getModifiers())
+                        || method.getParameterTypes().length != 1
+                        || method.getParameterTypes()[0] != String.class
+                        || (ownerPrefix != null && !method.getDeclaringClass().getName().startsWith(ownerPrefix))) {
+                    continue;
+                }
+                if (!candidates.contains(method)) candidates.add(method);
+            } catch (Throwable ignored) {}
+        }
+        if (candidates.size() != 1) {
+            logDetail("会话原生操作API定位不唯一: anchor=" + anchor + " candidates=" + candidates.size());
+            return null;
+        }
+        return KavaReflector.accessible(candidates.get(0));
+    }
+
+    private boolean isNativePlacedTopMethod(Method method) {
+        if (method == null || KavaReflector.isStatic(method) || Modifier.isAbstract(method.getModifiers())
+                || method.getReturnType() != boolean.class) return false;
+        return method.getParameterTypes().length == 1 && method.getParameterTypes()[0] == String.class
+                && method.getDeclaringClass().getName().startsWith("com.tencent.mm.storage.");
+    }
+
+    private boolean isNativeHideFromHomeMethod(Method method) {
+        if (method == null || !KavaReflector.isStatic(method) || Modifier.isAbstract(method.getModifiers())
+                || method.getReturnType() != void.class) return false;
+        return method.getParameterTypes().length == 1 && method.getParameterTypes()[0] == String.class;
+    }
+
     private boolean isConversationDeleteMethod(Method method) {
         if (method == null || KavaReflector.isStatic(method) || method.getReturnType() != void.class) {
             return false;
@@ -4089,6 +4166,9 @@ public class DexFinder {
                 sqliteDbWrapperClass = null;
             }
             conversationDeleteMethod = loadMethod("conversationDeleteMethod");
+            conversationSetPlacedTopMethod = loadMethod("conversationSetPlacedTopMethod");
+            conversationUnsetPlacedTopMethod = loadMethod("conversationUnsetPlacedTopMethod");
+            conversationHideFromHomeMethod = loadMethod("conversationHideFromHomeMethod");
             messageClearByTalkerMethod = loadMethod("messageClearByTalkerMethod");
             messageClearBatchMethod = loadMethod("messageClearBatchMethod");
             contactMuteStateMethod = loadMethod("contactMuteStateMethod");
@@ -5420,6 +5500,9 @@ public class DexFinder {
                             ? SQLITE_WRAPPER_LOCATOR_VERSION : "");
             putMethod(editor, "coreStorageGetter", coreStorageGetter);
             putMethod(editor, "conversationDeleteMethod", conversationDeleteMethod);
+            putMethod(editor, "conversationSetPlacedTopMethod", conversationSetPlacedTopMethod);
+            putMethod(editor, "conversationUnsetPlacedTopMethod", conversationUnsetPlacedTopMethod);
+            putMethod(editor, "conversationHideFromHomeMethod", conversationHideFromHomeMethod);
             putMethod(editor, "messageClearByTalkerMethod", messageClearByTalkerMethod);
             putMethod(editor, "messageClearBatchMethod", messageClearBatchMethod);
             putMethod(editor, "contactMuteStateMethod", contactMuteStateMethod);

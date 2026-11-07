@@ -284,6 +284,11 @@ private fun featureGroups(
             )
         ),
         FeatureGroupEntry(
+            title = "批量操作",
+            providers = emptyList(),
+            batchOperations = true
+        ),
+        FeatureGroupEntry(
             title = "语音",
             providers = practicalProviders.filterByIds(
                 AudioTransformFeature.ID,
@@ -385,7 +390,7 @@ private fun featureGroups(
                 SportStepFeature.ID
             )
         )
-    ).filter { it.providers.isNotEmpty() }
+    ).filter { it.providers.isNotEmpty() || it.batchOperations }
 }
 
 @Composable
@@ -691,6 +696,10 @@ internal fun FeatureGroupSettingsPage(
     onBack: () -> Unit,
     onOpenProvider: (FeatureSettingsProvider) -> Unit
 ) {
+    if (group.batchOperations) {
+        BatchOperationsPage(onBack = onBack)
+        return
+    }
     val scrollBehavior = MiuixScrollBehavior()
     PageScaffold(
         title = group.title,
@@ -716,7 +725,8 @@ internal fun FeatureGroupSettingsPage(
 
 internal data class FeatureGroupEntry(
     val title: String,
-    val providers: List<FeatureSettingsProvider>
+    val providers: List<FeatureSettingsProvider>,
+    val batchOperations: Boolean = false
 )
 
 private data class FeatureSearchResult(

@@ -37,6 +37,12 @@ import io.github.libxposed.api.XposedInterface;
  * 微信联系人/群聊 API。
  */
 public final class WeChatContactApi {
+    public enum ContactLabelMutationResult {
+        SUBMITTED,
+        NOT_SUBMITTED,
+        ALREADY_SATISFIED
+    }
+
     private static final int SELF_FIELD_WXID = 2;
     private static final int SELF_FIELD_GENDER = 12290;
     private static final int SELF_FIELD_CITY = 12292;
@@ -629,19 +635,22 @@ public final class WeChatContactApi {
     }
 
     public boolean hasContactLabel(String username, String labelName) {
-        if (TextUtils.isEmpty(username) || TextUtils.isEmpty(labelName)) return false;
+        return Boolean.TRUE.equals(getContactLabelMembershipState(username, labelName));
+    }
+
+    /** Returns null when the contact row, label mapping, or label-id column cannot be read. */
+    public Boolean getContactLabelMembershipState(String username, String labelName) {
+        if (TextUtils.isEmpty(username) || TextUtils.isEmpty(labelName)) return null;
         List<String> labelIds = labelIdsByNames(java.util.Collections.singletonList(labelName.trim()));
-        if (labelIds.size() != 1) return false;
+        if (labelIds.size() != 1) return null;
         String labelIdsColumn = findRcontactLabelIdsColumn();
-        if (TextUtils.isEmpty(labelIdsColumn)) return false;
-        String value =
-                databaseApi.queryFirstString(
-                        "SELECT "
-                                + quoteColumn(labelIdsColumn)
-                                + " AS labelIds FROM rcontact WHERE username=? LIMIT 1",
-                        new String[] {username},
-                        "labelIds");
-        return splitLabelIds(value).contains(labelIds.get(0));
+        if (TextUtils.isEmpty(labelIdsColumn) || databaseApi == null) return null;
+        List<Map<String, Object>> rows = databaseApi.query(
+                "SELECT " + quoteColumn(labelIdsColumn) + " AS labelIds "
+                        + "FROM rcontact WHERE username=? LIMIT 1",
+                new String[]{username});
+        if (rows.isEmpty()) return null;
+        return ContactLabelIds.contains(str(rows.get(0), "labelIds"), labelIds.get(0));
     }
 
     public String addContactLabel(String labelName) {
@@ -686,6 +695,48 @@ public final class WeChatContactApi {
         String labelIdsValue = buildContactLabelIdsValue("", labelNames);
         if (labelIdsValue == null) return false;
         return applyContactLabelIds(username, labelIdsColumn, labelIdsValue);
+    }
+
+    /**
+     * Adds or removes exactly one native friend label while retaining every other stored label ID.
+     * A true return means the native request was accepted and the local contact row was refreshed;
+     * callers must not treat it as final server-side state confirmation.
+     */
+    public ContactLabelMutationResult setContactLabelMembership(
+            String username, String labelName, boolean enabled) {
+        if (TextUtils.isEmpty(username) || TextUtils.isEmpty(labelName)
+                || databaseApi == null || !databaseApi.isAvailable() || !isFriend(username)) {
+            return ContactLabelMutationResult.NOT_SUBMITTED;
+        }
+        String cleanName = labelName.trim();
+        List<String> targetIds = labelIdsByNames(java.util.Collections.singletonList(cleanName));
+        if (targetIds.size() != 1 || TextUtils.isEmpty(targetIds.get(0))) {
+            log("修改好友标签失败: 标签尚未同步 name=" + cleanName);
+            return ContactLabelMutationResult.NOT_SUBMITTED;
+        }
+        String labelIdsColumn = findRcontactLabelIdsColumn();
+        if (TextUtils.isEmpty(labelIdsColumn)) return ContactLabelMutationResult.NOT_SUBMITTED;
+        String currentLabelIds = databaseApi.queryFirstString(
+                "SELECT " + quoteColumn(labelIdsColumn) + " AS labelIds "
+                        + "FROM rcontact WHERE username=? LIMIT 1",
+                new String[]{username},
+                "labelIds");
+        String targetId = targetIds.get(0);
+        if (ContactLabelIds.contains(currentLabelIds, targetId) == enabled) {
+            return ContactLabelMutationResult.ALREADY_SATISFIED;
+        }
+        String updatedLabelIds = ContactLabelIds.setMembership(currentLabelIds, targetId, enabled);
+        if (updatedLabelIds == null) return ContactLabelMutationResult.NOT_SUBMITTED;
+        if (!sendModifyContactLabelList(username, updatedLabelIds)) {
+            return ContactLabelMutationResult.NOT_SUBMITTED;
+        }
+        ContentValues values = new ContentValues();
+        values.put(labelIdsColumn, updatedLabelIds);
+        int rows = databaseApi.update("rcontact", values, "username=?", new String[]{username});
+        if (rows <= 0) {
+            log("好友标签请求已接受但本地列表刷新失败: username=" + username + " rows=" + rows);
+        }
+        return ContactLabelMutationResult.SUBMITTED;
     }
 
     private boolean applyContactLabelIds(String username, String labelIdsColumn, String labelIdsValue) {

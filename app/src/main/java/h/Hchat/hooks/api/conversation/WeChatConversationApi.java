@@ -23,6 +23,8 @@ import java.util.Map;
  */
 public final class WeChatConversationApi {
     private static final String HCHAT_INTERNAL_PREFIX = "wxid_hchat_group_";
+    private static final String HIDDEN_CONVERSATION_PARENT = "hidden_conv_parent";
+    private static final long CONVERSATION_TOP_FLAG = 1L << 62;
 
     public interface Logger {
         void log(String message);
@@ -250,6 +252,94 @@ public final class WeChatConversationApi {
 
     public boolean isOfficialAccount(String username) {
         return !TextUtils.isEmpty(username) && username.startsWith("gh_");
+    }
+
+    /** Whether this ID is a real, non-system talker that batch actions can address. */
+    public boolean isBatchOperableConversation(String username) {
+        String target = username != null ? username.trim() : "";
+        return WeChatConversationIdentity.isBatchOperableUsername(target)
+                && getConversation(target) != null;
+    }
+
+    /** Reads the native conversation pin bit from rconversation.flag; null means unavailable. */
+    public Boolean getWechatPlacedTopState(String username) {
+        WeChatConversation conversation = getConversation(username);
+        if (conversation == null) return null;
+        return (conversation.flag & CONVERSATION_TOP_FLAG) != 0L;
+    }
+
+    /** Calls the same ConversationStorage setPlacedTop/unSetPlacedTop methods used by WeChat. */
+    public boolean setWechatPlacedTop(String username, boolean enabled) {
+        String target = username != null ? username.trim() : "";
+        if (!WeChatConversationIdentity.isBatchOperableUsername(target)
+                || databaseApi == null || dexFinder == null || getConversation(target) == null) return false;
+        dexFinder.resolveNativeConversationActionsApi();
+        Method method = enabled
+                ? dexFinder.conversationSetPlacedTopMethod
+                : dexFinder.conversationUnsetPlacedTopMethod;
+        if (method == null) {
+            log("微信原生会话置顶API尚未就绪: enabled=" + enabled);
+            return false;
+        }
+        Object storage = databaseApi.storageObjectForMethod(method);
+        if (storage == null || !method.getDeclaringClass().isInstance(storage)) {
+            log("未找到微信原生 ConversationStorage 实例: method=" + method.toGenericString());
+            return false;
+        }
+        if (getConversation(target) == null) return false;
+        try {
+            Object result = KavaReflector.invokeOrThrow(method, storage, target);
+            return Boolean.TRUE.equals(result);
+        } catch (Throwable e) {
+            log("微信原生会话置顶设置失败: " + e.getMessage()
+                    + " talker=" + target + " enabled=" + enabled);
+            return false;
+        }
+    }
+
+    /** Calls WeChat's native helper that moves a conversation under hidden_conv_parent. */
+    public boolean hideConversationFromHome(String username) {
+        String target = username != null ? username.trim() : "";
+        if (!WeChatConversationIdentity.isBatchOperableUsername(target)
+                || databaseApi == null || dexFinder == null || getConversation(target) == null) {
+            return false;
+        }
+        dexFinder.resolveNativeConversationActionsApi();
+        Method method = dexFinder.conversationHideFromHomeMethod;
+        if (method == null) {
+            log("微信原生会话隐藏API尚未就绪");
+            return false;
+        }
+        try {
+            KavaReflector.invokeOrThrow(method, null, target);
+            return true;
+        } catch (Throwable e) {
+            log("微信原生会话隐藏失败: " + e.getMessage() + " talker=" + target);
+            return false;
+        }
+    }
+
+    /** True when the row moved to WeChat's hidden parent or the native group hook removed the row. */
+    public Boolean getConversationHomeHiddenState(String username) {
+        String target = username != null ? username.trim() : "";
+        if (!WeChatConversationIdentity.isBatchOperableUsername(target) || databaseApi == null) return null;
+        Cursor cursor = databaseApi.rawQuery(
+                "SELECT IFNULL(parentRef,'') AS parentRef FROM rconversation WHERE username=? LIMIT 1",
+                new String[]{target});
+        if (cursor == null) return null;
+        try {
+            if (!cursor.moveToFirst()) return Boolean.TRUE;
+            int index = cursor.getColumnIndex("parentRef");
+            if (index < 0) return null;
+            return HIDDEN_CONVERSATION_PARENT.equals(cursor.getString(index));
+        } catch (Throwable e) {
+            log("读取会话隐藏状态失败: " + e.getMessage() + " talker=" + target);
+            return null;
+        } finally {
+            try {
+                cursor.close();
+            } catch (Throwable ignored) {}
+        }
     }
 
     public boolean openChat(String username) {

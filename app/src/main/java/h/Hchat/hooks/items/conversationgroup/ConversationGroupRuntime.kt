@@ -2340,33 +2340,15 @@ object ConversationGroupRuntime {
     }
 
     private fun locateNativeSetPinnedMethod(context: FeatureContext): Method? {
-        return loadCached(context, CACHE_NATIVE_SET_PINNED, ::isNativePinnedUpdateMethod)
-            ?: locateAndCache(
-                context,
-                CACHE_NATIVE_SET_PINNED,
-                FindMethod().apply {
-                    matcher(MethodMatcher().apply {
-                        declaredClass("com.tencent.mm.storage.", StringMatchType.Contains, false)
-                        usingEqStrings("[setPlacedTop] flag=%s result=%s")
-                    })
-                },
-                ::isNativePinnedUpdateMethod
-            )
+        context.dexFinder().resolveNativeConversationActionsApi()
+        return context.dexFinder().conversationSetPlacedTopMethod
+            ?.takeIf(::isNativePinnedUpdateMethod)
     }
 
     private fun locateNativeUnsetPinnedMethod(context: FeatureContext): Method? {
-        return loadCached(context, CACHE_NATIVE_UNSET_PINNED, ::isNativePinnedUpdateMethod)
-            ?: locateAndCache(
-                context,
-                CACHE_NATIVE_UNSET_PINNED,
-                FindMethod().apply {
-                    matcher(MethodMatcher().apply {
-                        declaredClass("com.tencent.mm.storage.", StringMatchType.Contains, false)
-                        usingEqStrings("unSetPlacedTop conversation failed")
-                    })
-                },
-                ::isNativePinnedUpdateMethod
-            )
+        context.dexFinder().resolveNativeConversationActionsApi()
+        return context.dexFinder().conversationUnsetPlacedTopMethod
+            ?.takeIf(::isNativePinnedUpdateMethod)
     }
 
     private fun locateClickMethod(context: FeatureContext): Method? {
@@ -2544,17 +2526,9 @@ object ConversationGroupRuntime {
     }
 
     private fun locateNativeHideConversationMethod(context: FeatureContext): Method? {
-        return loadCached(context, CACHE_NATIVE_HIDE_CONVERSATION, ::isNativeHideConversationMethod)
-            ?: locateAndCache(
-                context,
-                CACHE_NATIVE_HIDE_CONVERSATION,
-                FindMethod().apply {
-                    matcher(MethodMatcher().apply {
-                        usingEqStrings(NATIVE_HIDDEN_PARENT)
-                    })
-                },
-                ::isNativeHideConversationMethod
-            )
+        context.dexFinder().resolveNativeConversationActionsApi()
+        return context.dexFinder().conversationHideFromHomeMethod
+            ?.takeIf(::isNativeHideConversationMethod)
     }
 
     private fun loadCached(context: FeatureContext, key: String, predicate: (Method) -> Boolean): Method? {

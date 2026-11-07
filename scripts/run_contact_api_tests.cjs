@@ -33,6 +33,10 @@ try {
         'native label persistence must require server acceptance');
     assert.doesNotMatch(api, /modifyContactRemarkByNativeStorage/,
         'failed remark requests must not mutate local native storage');
+    assert.match(api, /if \(!sendModifyContactLabelList\(username, updatedLabelIds\)\)\s*\{\s*return ContactLabelMutationResult\.NOT_SUBMITTED;/,
+        'batch label changes must distinguish an unsubmitted native request');
+    assert.match(api, /return ContactLabelMutationResult\.SUBMITTED;/,
+        'accepted label requests remain submitted until final state is confirmed');
     console.log('Contact API call-chain regression assertions passed');
 } finally {
     fs.rmSync(output, { recursive: true, force: true });

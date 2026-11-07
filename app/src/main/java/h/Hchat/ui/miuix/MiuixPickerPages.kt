@@ -334,7 +334,14 @@ internal fun ContactPickerPage(
     val scrollBehavior = MiuixScrollBehavior()
 
     LaunchedEffect(request) {
-        loadContacts(context, request.mode, request.enableLabels) { result, throwable ->
+        loadContacts(
+            context = context,
+            mode = request.mode,
+            includeLabels = request.enableLabels,
+            onlyExistingConversations = request.onlyExistingConversations,
+            strictFriendsOnly = request.strictFriendsOnly,
+            strictFriendsAndGroupsOnly = request.strictFriendsAndGroupsOnly
+        ) { result, throwable ->
             loading = false
             if (throwable != null) {
                 error = throwable.message ?: "读取联系人失败"
@@ -460,11 +467,15 @@ internal fun ContactPickerPage(
         scrollBehavior = scrollBehavior,
         bottomBar = {
             BottomActionBar(
-                primaryText = if (request.multiSelect) "保存选择" else request.singleConfirmText,
+                primaryText = when {
+                    request.showSelectedCount -> "下一步 · 已选 ${selectedIds.intersect(contacts.map { it.id }.toSet()).size} 项"
+                    request.multiSelect -> "保存选择"
+                    else -> request.singleConfirmText
+                },
                 onPrimaryClick = {
                     val picked = contacts.filter { selectedIds.contains(it.id) }
-                    if (picked.isEmpty() && !request.multiSelect) {
-                        Toast.makeText(context, "请选择联系人", Toast.LENGTH_SHORT).show()
+                    if (picked.isEmpty() && (!request.multiSelect || request.showSelectedCount)) {
+                        Toast.makeText(context, "请选择对象", Toast.LENGTH_SHORT).show()
                     } else {
                         onConfirm(picked)
                     }
@@ -613,8 +624,8 @@ internal fun ContactPickerPage(
                         scopeSelectionEnabled && scopeTab == ContactPickerScopeTab.CONVERSATION_GROUPS -> {
                             if (visibleConversationGroupScopes.isEmpty()) "聊天分组" else "聊天分组 · ${visibleConversationGroupScopes.size} 项"
                         }
-                        visibleContacts.isNotEmpty() -> "${contactFilter.title} · ${visibleContacts.size} 项"
-                        else -> contactFilter.title
+                        visibleContacts.isNotEmpty() -> "${contactFilter.title} · ${visibleContacts.size} 项${if (request.showSelectedCount) " · 已选 ${selectedIds.intersect(contacts.map { it.id }.toSet()).size}" else ""}"
+                        else -> "${contactFilter.title}${if (request.showSelectedCount) " · 已选 ${selectedIds.intersect(contacts.map { it.id }.toSet()).size}" else ""}"
                     }
                 )
             }

@@ -104,6 +104,7 @@ import androidx.savedstate.SavedStateRegistry
 import androidx.savedstate.SavedStateRegistryController
 import androidx.savedstate.SavedStateRegistryOwner
 import h.Hchat.hooks.api.core.WeChatApis
+import h.Hchat.hooks.items.batch.BatchSelectionPolicy
 import h.Hchat.hooks.api.media.WeChatFavoriteItem
 import h.Hchat.hooks.api.model.WeChatContact
 import h.Hchat.hooks.items.antirecall.AntiRecallSettings
@@ -2742,7 +2743,11 @@ internal data class ContactPickerRequest(
     val enableLabels: Boolean = false,
     val enableGroupLabels: Boolean = true,
     val enableScopeSelection: Boolean = false,
-    val singleConfirmText: String = "发送"
+    val singleConfirmText: String = "发送",
+    val onlyExistingConversations: Boolean = false,
+    val strictFriendsOnly: Boolean = false,
+    val strictFriendsAndGroupsOnly: Boolean = false,
+    val showSelectedCount: Boolean = false
 )
 
 internal enum class AutoMessageForwardRoute {
@@ -4006,6 +4011,9 @@ internal fun loadContacts(
     context: Context,
     mode: ContactPickerMode,
     includeLabels: Boolean = false,
+    onlyExistingConversations: Boolean = false,
+    strictFriendsOnly: Boolean = false,
+    strictFriendsAndGroupsOnly: Boolean = false,
     callback: (List<ContactOption>, Throwable?) -> Unit
 ) {
     val api = WeChatApis.contact().contacts()
@@ -4017,6 +4025,17 @@ internal fun loadContacts(
     Thread({
         try {
             val rows = mutableListOf<ContactOption>()
+            val conversations = WeChatApis.conversations()
+            val sessionIds = if (onlyExistingConversations) {
+                conversations?.getRecentConversationUsernames(10000)?.toSet().orEmpty()
+            } else {
+                emptySet()
+            }
+            val validFriendIds = if (strictFriendsOnly || strictFriendsAndGroupsOnly) {
+                api.getFriends().mapNotNull { it.wxId.takeIf(String::isNotBlank) }.toSet()
+            } else {
+                emptySet()
+            }
             val labelsByUser = linkedMapOf<String, MutableList<String>>()
             if (includeLabels) {
                 runCatching { api.getContactLabelList() }.getOrDefault(emptyList()).forEach { label ->
@@ -4030,7 +4049,8 @@ internal fun loadContacts(
                 }
             }
             if (mode == ContactPickerMode.FRIENDS || mode == ContactPickerMode.BOTH || mode == ContactPickerMode.ALL_CHATS) {
-                rows += api.getPickerContacts().mapNotNull { it.toOption(false, labelsByUser[it.wxId].orEmpty()) }
+                val contacts = if (strictFriendsOnly || strictFriendsAndGroupsOnly) api.getFriends() else api.getPickerContacts()
+                rows += contacts.mapNotNull { it.toOption(false, labelsByUser[it.wxId].orEmpty()) }
             }
             if (mode == ContactPickerMode.GROUPS || mode == ContactPickerMode.BOTH || mode == ContactPickerMode.ALL_CHATS) {
                 rows += api.getPickerGroups().mapNotNull { it.toOption(true) }
@@ -4038,12 +4058,26 @@ internal fun loadContacts(
             if (mode == ContactPickerMode.ALL_CHATS) {
                 rows += api.getPickerOfficialAccounts().mapNotNull { it.toOption(false, official = true) }
             }
-            val conversationOrder = WeChatApis.conversations()
+            val conversationOrder = conversations
                 ?.getRecentConversationUsernames(10000)
                 .orEmpty()
                 .mapIndexed { index, username -> username to index }
                 .toMap()
-            val sorted = rows.distinctBy { it.id }.sortedWith(
+            val eligibleRows = if (onlyExistingConversations || strictFriendsOnly) {
+                val eligibleIds = BatchSelectionPolicy.filterCandidateIds(
+                    rows.map { it.id },
+                    sessionIds,
+                    validFriendIds,
+                    rows.asSequence().filter { it.group }.map { it.id }.toSet(),
+                    onlyExistingConversations,
+                    strictFriendsOnly,
+                    strictFriendsAndGroupsOnly
+                ).toSet()
+                rows.filter { it.id in eligibleIds }
+            } else {
+                rows
+            }
+            val sorted = eligibleRows.distinctBy { it.id }.sortedWith(
                 compareBy<ContactOption> { conversationOrder[it.id] ?: Int.MAX_VALUE }
                     .thenBy { it.group }
                     .thenBy { it.official }
