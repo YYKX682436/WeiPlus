@@ -439,6 +439,13 @@ public final class WeChatConversationApi {
         return !remains;
     }
 
+    /** Returns null only when the local conversation row cannot be queried. */
+    public Boolean conversationEntryExistsState(String username) {
+        String target = username != null ? username.trim() : "";
+        if (TextUtils.isEmpty(target) || databaseApi == null) return null;
+        return conversationEntryExists(target);
+    }
+
     private Boolean conversationEntryExists(String username) {
         Cursor cursor = databaseApi.rawQuery(
                 "SELECT 1 FROM rconversation WHERE username=? LIMIT 1",

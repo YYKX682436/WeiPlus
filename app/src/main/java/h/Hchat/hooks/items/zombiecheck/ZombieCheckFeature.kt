@@ -4,7 +4,6 @@ import io.github.libxposed.api.XposedInterface
 import h.Hchat.dexkit.DexMethodCache
 import h.Hchat.event.Events
 import h.Hchat.hooks.api.core.WeChatApis
-import h.Hchat.hooks.api.media.WeChatInternalServices
 import h.Hchat.hooks.core.BaseFeature
 import h.Hchat.hooks.core.DexInstallScheduler
 import h.Hchat.hooks.core.FeatureContext
@@ -68,8 +67,6 @@ internal class ZombieCheckHooker(
 ) {
     private val cache = DexMethodCache.prefs(context.hostContext(), CACHE_PREFS)
     @Volatile private var probeConstructor: Constructor<*>? = null
-    @Volatile private var deleteMethod: Method? = null
-    @Volatile private var deleteService: Any? = null
     @Volatile private var installed = false
 
     @Synchronized
@@ -78,7 +75,6 @@ internal class ZombieCheckHooker(
         return runCatching {
             val constructor = locateProbeConstructor() ?: return false
             val callback = locateCallbackMethod(constructor) ?: return false
-            locateDeleteMethod()
             WeChatApis.network()?.installNetworkHook(context.dexFinder())
             HookRegistry.get().hook(callback, XposedInterface.Hooker { chain ->
                 val args = chain.args.toTypedArray()
@@ -131,23 +127,8 @@ internal class ZombieCheckHooker(
     }
 
     fun deleteFriend(wxid: String, clearRecord: Boolean): Boolean {
-        val method = deleteMethod ?: locateDeleteMethod() ?: return false
-        return runCatching {
-            val service = resolveDeleteService(method) ?: run {
-                logger("删除好友服务实例获取失败: ${method.toGenericString()}", null)
-                return false
-            }
-            val args = if (method.parameterTypes.size == 2) {
-                arrayOf<Any?>(wxid, shouldClearRecord(wxid, clearRecord))
-            } else {
-                arrayOf<Any?>(wxid)
-            }
-            KavaReflector.invokeOrThrow(method, service, *args)
-            true
-        }.getOrElse {
-            logger("删除异常好友失败: $wxid", it)
-            false
-        }
+        val contacts = WeChatApis.contacts() ?: return false
+        return contacts.submitDeleteFriend(wxid, shouldClearRecord(wxid, clearRecord))
     }
 
     private fun shouldClearRecord(wxid: String, requested: Boolean): Boolean {
@@ -155,32 +136,6 @@ internal class ZombieCheckHooker(
         val store = WeChatApis.messageStore() ?: return false
         if (!store.isAvailable) return false
         return runCatching { store.getLatestMessage(wxid) == null }.getOrDefault(false)
-    }
-
-    private fun resolveDeleteService(method: Method): Any? {
-        val owner = method.declaringClass
-        deleteService?.takeIf(owner::isInstance)?.let {
-            return it
-        }
-        val finder = context.dexFinder()
-        if (finder.serviceGetterMethod == null) {
-            finder.resolveServiceManagerApi()
-        }
-        WeChatInternalServices.getService(finder, owner)?.let {
-            deleteService = it
-            return it
-        }
-        KavaReflector.staticInstance(owner)?.takeIf(owner::isInstance)?.let {
-            deleteService = it
-            return it
-        }
-        val constructor = KavaReflector.declaredConstructors(owner)
-            .firstOrNull { it.parameterTypes.isEmpty() }
-        val service = constructor?.let { KavaReflector.newInstance(it) }
-        if (service != null) {
-            deleteService = service
-        }
-        return service
     }
 
     private fun locateProbeConstructor(): Constructor<*>? {
@@ -236,67 +191,6 @@ internal class ZombieCheckHooker(
         return method
     }
 
-    private fun locateDeleteMethod(): Method? {
-        val runtimeKey = runtimeKey()
-        val cached = DexMethodCache.load(cache, runtimeKey, context.hostClassLoader(), CACHE_DELETE_METHOD)
-        cached
-            ?.takeIf(::isDeleteMethod)
-            ?.let {
-                deleteMethod = it
-                return it
-            }
-        val candidates = runCatching {
-            val clearRecordFound = context.dexKitBridge().findMethod(
-                FindMethod().apply {
-                    matcher(
-                        MethodMatcher().apply {
-                            usingEqStrings(
-                                "MicroMsg.DeleteContactService",
-                                "delete contact %s isClearRecord:%s"
-                            )
-                        }
-                    )
-                }
-            )
-            val clearRecordMethods = clearRecordFound.mapNotNull { data ->
-                runCatching { data.getMethodInstance(context.hostClassLoader()) }.getOrNull()
-            }
-            val clearRecordCandidates = clearRecordMethods
-                .filter(::isDeleteMethod)
-                .distinctBy { it.toGenericString() }
-            if (clearRecordCandidates.isNotEmpty()) {
-                clearRecordCandidates
-            } else {
-                val legacyFound = context.dexKitBridge().findMethod(
-                    FindMethod().apply {
-                        matcher(
-                            MethodMatcher().apply {
-                                usingEqStrings("MicroMsg.DeleteContactService", "delete contact %s")
-                            }
-                        )
-                    }
-                )
-                val legacyMethods = legacyFound.mapNotNull { data ->
-                    runCatching { data.getMethodInstance(context.hostClassLoader()) }.getOrNull()
-                }
-                legacyMethods.filter(::isDeleteMethod)
-                    .distinctBy { it.toGenericString() }
-            }
-        }.getOrElse {
-            logger("定位删除好友方法失败", it)
-            emptyList()
-        }
-        val method = candidates.singleOrNull()
-        if (method != null) {
-            DexMethodCache.save(cache, runtimeKey, CACHE_DELETE_METHOD, method)
-            deleteMethod = method
-        } else {
-            DexMethodCache.clear(cache, runtimeKey, CACHE_DELETE_METHOD)
-            if (candidates.size > 1) logger("删除好友方法候选不唯一", null)
-        }
-        return method
-    }
-
     private fun isProbeConstructor(constructor: Constructor<*>): Boolean {
         val types = constructor.parameterTypes
         if (types.size != 29 && types.size != 30) return false
@@ -318,16 +212,6 @@ internal class ZombieCheckHooker(
             types[2] == JSONObject::class.java
     }
 
-    private fun isDeleteMethod(method: Method): Boolean {
-        if (KavaReflector.isStatic(method) || method.returnType != java.lang.Void.TYPE) return false
-        val types = method.parameterTypes
-        if (types.size == 2 && types[0] == String::class.java && types[1] == java.lang.Boolean.TYPE) {
-            return true
-        }
-        if (types.size != 1 || types[0] != String::class.java) return false
-        return KavaReflector.declaredConstructors(method.declaringClass).any { it.parameterTypes.isEmpty() }
-    }
-
     private fun defaultValue(type: Class<*>): Any? = when (type) {
         java.lang.Boolean.TYPE, java.lang.Boolean::class.java -> false
         java.lang.Byte.TYPE, java.lang.Byte::class.java -> 0.toByte()
@@ -347,6 +231,5 @@ internal class ZombieCheckHooker(
         private const val CACHE_PREFS = "Hchat_zombie_check_method_cache"
         private const val CACHE_PROBE_CONSTRUCTOR = "probe_constructor_v1"
         private const val CACHE_CALLBACK = "probe_callback_v1"
-        private const val CACHE_DELETE_METHOD = "delete_contact_method_v2"
     }
 }

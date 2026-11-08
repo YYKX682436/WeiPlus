@@ -17,7 +17,9 @@ internal enum class BatchOperation(val title: String) {
     STAR_FRIEND("批量设置星标朋友"),
     FRIEND_PERMISSION("批量设置好友权限"),
     GROUP_SAVE_TO_CONTACTS("批量保存群聊到通讯录"),
-    GROUP_NICKNAME("批量修改我在群里的昵称")
+    GROUP_NICKNAME("批量修改我在群里的昵称"),
+    DELETE_CHATS("批量删除聊天"),
+    DELETE_FRIENDS("批量删除好友")
 }
 
 internal enum class BatchFriendAccessChoice(val label: String) {

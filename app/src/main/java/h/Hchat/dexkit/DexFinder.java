@@ -252,6 +252,7 @@ public class DexFinder {
     public Method conversationHideFromHomeMethod;
     public Method messageClearByTalkerMethod;
     public Method messageClearBatchMethod;
+    public Method deleteContactServiceMethod;
     // 微信原生消息免打扰
     public Method contactMuteStateMethod;
     public Method contactMuteEnableMethod;
@@ -3201,6 +3202,61 @@ public class DexFinder {
         } catch (Throwable e) {
             h.Hchat.utils.HLog.e(TAG + " resolveMessageClearApi 失败: " + e.getMessage(), e);
         }
+    }
+
+    /** Locates WeChat's native DeleteContactService request that carries isClearRecord. */
+    public synchronized void resolveDeleteContactServiceApi() {
+        if (isDeleteContactServiceMethod(deleteContactServiceMethod)) return;
+        deleteContactServiceMethod = null;
+        try {
+            FindMethod find = new FindMethod();
+            find.matcher(new MethodMatcher().usingEqStrings(
+                    "MicroMsg.DeleteContactService", "delete contact %s isClearRecord:%s"));
+            List<Method> candidates = new ArrayList<>();
+            for (MethodData data : dexQueries.findMethod(find)) {
+                try {
+                    Method method = data.getMethodInstance(classLoader);
+                    if (isDeleteContactServiceMethod(method) && !candidates.contains(method)) {
+                        candidates.add(KavaReflector.accessible(method));
+                    }
+                } catch (Throwable ignored) {}
+            }
+            if (candidates.isEmpty()) {
+                FindMethod legacyFind = new FindMethod();
+                legacyFind.matcher(new MethodMatcher().usingEqStrings(
+                        "MicroMsg.DeleteContactService", "delete contact %s"));
+                for (MethodData data : dexQueries.findMethod(legacyFind)) {
+                    try {
+                        Method method = data.getMethodInstance(classLoader);
+                        if (isLegacyDeleteContactServiceMethod(method) && !candidates.contains(method)) {
+                            candidates.add(KavaReflector.accessible(method));
+                        }
+                    } catch (Throwable ignored) {}
+                }
+            }
+            if (candidates.size() == 1) {
+                deleteContactServiceMethod = candidates.get(0);
+                logDetail("原生好友删除API: " + methodName(deleteContactServiceMethod));
+            } else {
+                h.Hchat.utils.HLog.e(TAG + " 原生好友删除API定位失败: candidates=" + candidates.size());
+            }
+        } catch (Throwable e) {
+            h.Hchat.utils.HLog.e(TAG + " resolveDeleteContactServiceApi 失败: " + e.getMessage(), e);
+        }
+    }
+
+    private boolean isDeleteContactServiceMethod(Method method) {
+        if (method == null || KavaReflector.isStatic(method) || method.getReturnType() != void.class) return false;
+        Class<?>[] params = method.getParameterTypes();
+        return method.getDeclaringClass().getName().startsWith("com.tencent.mm.")
+                && params.length == 2 && params[0] == String.class && params[1] == boolean.class;
+    }
+
+    private boolean isLegacyDeleteContactServiceMethod(Method method) {
+        return method != null && !KavaReflector.isStatic(method) && method.getReturnType() == void.class
+                && method.getDeclaringClass().getName().startsWith("com.tencent.mm.")
+                && method.getParameterTypes().length == 1
+                && method.getParameterTypes()[0] == String.class;
     }
 
     private boolean isMessageClearBatchMethod(Method method) {

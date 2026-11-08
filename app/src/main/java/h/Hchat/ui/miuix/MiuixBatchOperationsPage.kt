@@ -55,6 +55,7 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
     var labelsLoaded by remember { mutableStateOf(false) }
     var labelsError by remember { mutableStateOf("") }
     var selectedLabelId by remember { mutableStateOf("") }
+    var pendingDeleteTargets by remember { mutableStateOf<List<ContactOption>?>(null) }
     var accountIdentity by remember { mutableStateOf("") }
     var accountReady by remember { mutableStateOf(false) }
     val labelLoadGeneration = remember { AtomicLong() }
@@ -140,7 +141,7 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
         ContactPickerRequest(
             title = currentFeature?.title ?: "选择对象",
             mode = when (currentFeature) {
-                BatchOperation.FRIEND_LABEL -> ContactPickerMode.FRIENDS
+                BatchOperation.FRIEND_LABEL, BatchOperation.DELETE_FRIENDS -> ContactPickerMode.FRIENDS
                 else -> ContactPickerMode.ALL_CHATS
             },
             multiSelect = true,
@@ -150,8 +151,14 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
             enableGroupLabels = false,
             showSelectedCount = true,
             flatBatchSelection = true,
-            multiSelectConfirmPrefix = if (currentFeature == BatchOperation.HIDE) "确定不显示" else "确定",
-            operationHeader = if (currentFeature == BatchOperation.HIDE) null else {
+            multiSelectConfirmPrefix = when (currentFeature) {
+                BatchOperation.HIDE -> "确定不显示"
+                BatchOperation.DELETE_CHATS, BatchOperation.DELETE_FRIENDS -> "删除"
+                else -> "确定"
+            },
+            operationHeader = if (currentFeature == BatchOperation.HIDE ||
+                currentFeature == BatchOperation.DELETE_CHATS ||
+                currentFeature == BatchOperation.DELETE_FRIENDS) null else {
                 {
                     BatchPickerControls(
                         feature = latestFeature.value,
@@ -180,11 +187,12 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
     }
 
     fun returnHome() {
+        pendingDeleteTargets = null
         feature = null
         phase = BatchPage.HOME
     }
 
-    fun submitSelection(picked: List<ContactOption>) {
+    fun startSelectionTask(picked: List<ContactOption>) {
         if (picked.isEmpty()) {
             Toast.makeText(context, "请至少选择一个对象", Toast.LENGTH_SHORT).show()
             return
@@ -231,6 +239,30 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
                 Toast.makeText(context, "选择对象或操作参数无效，未启动", Toast.LENGTH_SHORT).show()
         }
     }
+
+    fun submitSelection(picked: List<ContactOption>) {
+        if (currentFeature == BatchOperation.DELETE_CHATS || currentFeature == BatchOperation.DELETE_FRIENDS) {
+            pendingDeleteTargets = picked.toList()
+        } else {
+            startSelectionTask(picked)
+        }
+    }
+
+    BatchDeleteConfirmDialog(
+        show = pendingDeleteTargets != null,
+        message = when (currentFeature) {
+            BatchOperation.DELETE_CHATS -> "将删除所选 ${pendingDeleteTargets?.size ?: 0} 个聊天，并清理对应聊天记录。好友关系与群成员关系会保留。此操作不可恢复。"
+            BatchOperation.DELETE_FRIENDS -> "将删除所选 ${pendingDeleteTargets?.size ?: 0} 位好友及对应聊天记录。此操作不可恢复。"
+            else -> ""
+        },
+        labels = pendingDeleteTargets.orEmpty().map { it.label },
+        onDismiss = { pendingDeleteTargets = null },
+        onConfirm = {
+            val confirmed = pendingDeleteTargets
+            pendingDeleteTargets = null
+            if (!confirmed.isNullOrEmpty()) startSelectionTask(confirmed)
+        }
+    )
 
     if (phase == BatchPage.PICKER) {
         ContactPickerPage(
@@ -476,6 +508,8 @@ private fun candidateMode(
     }
     BatchOperation.FRIEND_PERMISSION -> BatchCandidateMode.ALL_FRIENDS
     BatchOperation.GROUP_SAVE_TO_CONTACTS, BatchOperation.GROUP_NICKNAME -> BatchCandidateMode.ALL_GROUPS
+    BatchOperation.DELETE_CHATS -> BatchCandidateMode.HOME_CONVERSATIONS
+    BatchOperation.DELETE_FRIENDS -> BatchCandidateMode.ALL_FRIENDS
     null -> null
 }
 
@@ -488,6 +522,8 @@ private fun operationSummary(operation: BatchOperation): String = when (operatio
     BatchOperation.FRIEND_PERMISSION -> "修改仅聊天和朋友圈权限"
     BatchOperation.GROUP_SAVE_TO_CONTACTS -> "保存群聊到通讯录或取消保存"
     BatchOperation.GROUP_NICKNAME -> "为所选群聊设置我在群里的昵称"
+    BatchOperation.DELETE_CHATS -> "删除微信首页当前聊天，并清理对应聊天记录；保留好友与群成员关系"
+    BatchOperation.DELETE_FRIENDS -> "删除全部有效好友及其聊天记录，不含自己、公众号和群聊"
 }
 
 private fun validGroupNickname(value: String): Boolean =

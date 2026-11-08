@@ -519,6 +519,54 @@ public final class WeChatContactApi {
         return new ContactStateResult(true, true, validFriend, type, "");
     }
 
+    /** Submits WeChat's native friend deletion request. This confirms submission only. */
+    public boolean submitDeleteFriend(String username, boolean clearRecord) {
+        String target = username == null ? "" : username.trim();
+        if (target.isEmpty() || dexFinder == null || !isAvailable()) return false;
+        String self = databaseApi.queryFirstString(
+                "SELECT value FROM userinfo WHERE id=? LIMIT 1",
+                new String[]{String.valueOf(SELF_FIELD_WXID)}, "value");
+        if (target.equals(self == null ? "" : self.trim())) return false;
+        ContactStateResult state = getContactStateResult(target);
+        if (!state.success || !state.found || !state.validFriend || isGroup(target)
+                || target.startsWith("gh_")) return false;
+
+        dexFinder.resolveDeleteContactServiceApi();
+        Method method = dexFinder.deleteContactServiceMethod;
+        if (method == null) return false;
+        if (dexFinder.serviceGetterMethod == null) dexFinder.resolveServiceManagerApi();
+        Object service = WeChatInternalServices.getService(dexFinder, method.getDeclaringClass());
+        if (service == null) service = KavaReflector.staticInstance(method.getDeclaringClass());
+        if (service == null) {
+            Constructor<?> constructor = KavaReflector.declaredConstructors(method.getDeclaringClass())
+                    .stream().filter(candidate -> candidate.getParameterTypes().length == 0)
+                    .findFirst().orElse(null);
+            if (constructor != null) service = KavaReflector.newInstance(constructor);
+        }
+        if (service == null || !method.getDeclaringClass().isInstance(service)) return false;
+        try {
+            if (method.getParameterTypes().length == 2) {
+                KavaReflector.invokeOrThrow(method, service, target, clearRecord);
+            } else {
+                KavaReflector.invokeOrThrow(method, service, target);
+            }
+            return true;
+        } catch (Throwable e) {
+            log("原生删除好友请求提交失败: " + e.getMessage());
+            return false;
+        }
+    }
+
+    /** Batch removal requires the native explicit history-cleanup switch. */
+    public boolean supportsDeleteFriendRecordClear() {
+        if (dexFinder == null) return false;
+        dexFinder.resolveDeleteContactServiceApi();
+        Method method = dexFinder.deleteContactServiceMethod;
+        return method != null && method.getParameterTypes().length == 2
+                && method.getParameterTypes()[0] == String.class
+                && method.getParameterTypes()[1] == boolean.class;
+    }
+
     /**
      * Uses the same native friend-profile operation as WeChat's Add/Remove Star menu.
      * The native operation mutates the local contact type and queues cmd 2 for server sync;

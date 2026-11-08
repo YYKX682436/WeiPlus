@@ -15,6 +15,9 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
 
 /**
  * 微信消息存储 API。
@@ -22,6 +25,7 @@ import java.util.Map;
  * 49/58/66/68/72/74/76 均确认 message 表字段稳定，优先通过数据库读取，避免绑定混淆类。
  */
 public final class WeChatMessageStoreApi {
+    public enum ConversationClearResult { COMPLETED, NOT_SUBMITTED, UNCONFIRMED, STOPPED }
     public interface Logger {
         void log(String message);
     }
@@ -115,6 +119,97 @@ public final class WeChatMessageStoreApi {
         } catch (Throwable e) {
             log("原生消息清理提交失败: " + e.getMessage() + " count=" + targets.size());
             return false;
+        }
+    }
+
+    /**
+     * Clears one chat through WeChat's asynchronous native stages and confirms the message
+     * table is empty before a caller removes the conversation index. The native callback marks
+     * completion of stage 1; the row check waits for stage 2 to finish deleting message rows.
+     */
+    public ConversationClearResult clearConversationMessagesAndWait(
+            String talker, BooleanSupplier shouldStop) {
+        String target = talker == null ? "" : talker.trim();
+        if (target.isEmpty() || dexFinder == null) return ConversationClearResult.NOT_SUBMITTED;
+        dexFinder.resolveMessageClearApi();
+        Method method = dexFinder.messageClearBatchMethod;
+        if (method == null || method.getParameterTypes().length < 2) {
+            return ConversationClearResult.NOT_SUBMITTED;
+        }
+        Class<?> callbackType = method.getParameterTypes()[1];
+        if (!callbackType.isInterface()) return ConversationClearResult.NOT_SUBMITTED;
+        CountDownLatch stageOne = new CountDownLatch(1);
+        Object callback = Proxy.newProxyInstance(callbackType.getClassLoader(),
+                new Class<?>[]{callbackType}, (proxy, callbackMethod, args) -> {
+                    if (callbackMethod.getDeclaringClass() == Object.class) {
+                        switch (callbackMethod.getName()) {
+                            case "toString": return "HchatMessageClearCallback";
+                            case "hashCode": return System.identityHashCode(proxy);
+                            case "equals": return proxy == (args != null && args.length > 0 ? args[0] : null);
+                        }
+                    }
+                    if ("b".equals(callbackMethod.getName())
+                            && callbackMethod.getParameterTypes().length == 0) stageOne.countDown();
+                    return defaultPrimitiveValue(callbackMethod.getReturnType());
+                });
+        try {
+            if (method.getParameterTypes().length == 3) {
+                KavaReflector.invokeOrThrow(method, null, java.util.Collections.singletonList(target), callback,
+                        Long.MAX_VALUE);
+            } else {
+                KavaReflector.invokeOrThrow(method, null, java.util.Collections.singletonList(target), callback);
+            }
+        } catch (Throwable e) {
+            log("原生消息清理提交失败: " + e.getMessage() + " talker=" + target);
+            return ConversationClearResult.NOT_SUBMITTED;
+        }
+
+        long deadline = System.nanoTime() + TimeUnit.MINUTES.toNanos(5);
+        try {
+            while (stageOne.getCount() != 0) {
+                if (shouldStop != null && shouldStop.getAsBoolean()) return ConversationClearResult.STOPPED;
+                if (System.nanoTime() >= deadline) return ConversationClearResult.UNCONFIRMED;
+                stageOne.await(200, TimeUnit.MILLISECONDS);
+            }
+            while (true) {
+                if (shouldStop != null && shouldStop.getAsBoolean()) return ConversationClearResult.STOPPED;
+                Boolean remains = hasConversationMessagesState(target);
+                if (Boolean.FALSE.equals(remains)) return ConversationClearResult.COMPLETED;
+                if (remains == null || System.nanoTime() >= deadline) {
+                    return ConversationClearResult.UNCONFIRMED;
+                }
+                TimeUnit.MILLISECONDS.sleep(200);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return ConversationClearResult.STOPPED;
+        } catch (Throwable e) {
+            log("核验原生消息清理失败: " + e.getMessage() + " talker=" + target);
+            return ConversationClearResult.UNCONFIRMED;
+        }
+    }
+
+    /** null means the message store could not be queried reliably. */
+    public Boolean hasConversationMessagesState(String talker) {
+        if (databaseApi == null || !databaseApi.isAvailable()) return null;
+        String partition = messageTable(talker);
+        if (TextUtils.isEmpty(partition)) return null;
+        Boolean partitionRows = tableHasTalkerRows(partition, talker);
+        if (!Boolean.FALSE.equals(partitionRows)) return partitionRows;
+        if ("\"message\"".equalsIgnoreCase(partition)) return false;
+        return tableHasTalkerRows("\"message\"", talker);
+    }
+
+    private Boolean tableHasTalkerRows(String table, String talker) {
+        Cursor cursor = databaseApi.rawQuery("SELECT 1 FROM " + table + " WHERE talker=? LIMIT 1",
+                new String[]{talker});
+        if (cursor == null) return null;
+        try {
+            return cursor.moveToFirst();
+        } catch (Throwable e) {
+            return null;
+        } finally {
+            try { cursor.close(); } catch (Throwable ignored) {}
         }
     }
 

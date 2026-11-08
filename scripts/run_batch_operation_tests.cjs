@@ -53,6 +53,8 @@ try {
     const groupRuntime = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/items/conversationgroup/ConversationGroupRuntime.kt'), 'utf8');
     const conversationApi = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/api/conversation/WeChatConversationApi.java'), 'utf8');
     const contactApi = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/api/contact/WeChatContactApi.java'), 'utf8');
+    const messageStore = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/api/message/WeChatMessageStoreApi.java'), 'utf8');
+    const zombieFeature = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/items/zombiecheck/ZombieCheckFeature.kt'), 'utf8');
     const chatroomApi = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/api/contact/WeChatChatroomApi.java'), 'utf8');
     const databaseApi = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/api/runtime/WeChatDatabaseApi.java'), 'utf8');
     const executor = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/items/batch/BatchOperationExecutor.kt'), 'utf8');
@@ -71,7 +73,15 @@ try {
         'the selector must submit to the process-owned task manager');
     assert.match(batchUi, /BatchOperation\.entries\.forEachIndexed/,
         'the home feature count and list must come from implemented operations');
-    for (const operation of ['STAR_FRIEND', 'FRIEND_PERMISSION', 'GROUP_SAVE_TO_CONTACTS', 'GROUP_NICKNAME']) {
+    assert.match(manager, /DELETE_CHATS\("批量删除聊天"\)[\s\S]*?DELETE_FRIENDS\("批量删除好友"\)/,
+        'the production entry list must add both requested delete operations');
+    assert.match(batchUi, /BatchOperation\.DELETE_CHATS, BatchOperation\.DELETE_FRIENDS -> "删除"[\s\S]*?BatchDeleteConfirmDialog/,
+        'deletion uses a counted footer and one final consequence confirmation');
+    assert.match(batchUi, /将删除所选[\s\S]*?聊天记录[\s\S]*?好友关系与群成员关系会保留[\s\S]*?此操作不可恢复/,
+        'chat deletion confirmation must state message cleanup and preserved relationships');
+    assert.match(batchUi, /BatchOperation\.DELETE_CHATS -> BatchCandidateMode\.HOME_CONVERSATIONS[\s\S]*?BatchOperation\.DELETE_FRIENDS -> BatchCandidateMode\.ALL_FRIENDS/,
+        'delete candidates must use the ordered home chats and valid friends data sets');
+    for (const operation of ['STAR_FRIEND', 'FRIEND_PERMISSION', 'GROUP_SAVE_TO_CONTACTS', 'GROUP_NICKNAME', 'DELETE_CHATS', 'DELETE_FRIENDS']) {
         assert.match(manager, new RegExp(`\\b${operation}\\b`), `missing production task kind ${operation}`);
         assert.match(executor, new RegExp(`BatchOperation\\.${operation}`), `executor does not route ${operation}`);
     }
@@ -202,6 +212,20 @@ try {
         'pin and unpin must use the native placed-top path');
     assert.match(executor, /hideConversationFromHome\(id\)/,
         'hide must use WeChat native hide behavior');
+    const deleteChatMethod = methodBody(executor, 'private fun deleteChat(');
+    assert.ok(deleteChatMethod.indexOf('clearConversationMessagesAndWait') < deleteChatMethod.indexOf('deleteConversation(id)'),
+        'chat index removal must happen only after confirmed native message cleanup');
+    assert.match(deleteChatMethod, /getNativeHomeConversationUsernames\(\)[\s\S]*?home\.contains\(id\)/,
+        'a chat must still be in the current root home list when its delete begins');
+    const deleteFriendMethod = methodBody(executor, 'private fun deleteFriend(');
+    assert.match(deleteFriendMethod, /submitDeleteFriend\(id, true\)[\s\S]*?hasConversationMessagesState\(id\)/,
+        'friend deletion must confirm the relation and message rows after native submission');
+    assert.match(contactApi, /resolveDeleteContactServiceApi\(\)[\s\S]*?KavaReflector\.invokeOrThrow\(method, service, target, clearRecord\)/,
+        'native DeleteContactService must live in the common contact API with its clear-record argument');
+    assert.match(zombieFeature, /submitDeleteFriend\(wxid, shouldClearRecord\(wxid, clearRecord\)\)/,
+        'zombie-check deletion must reuse the common native entry');
+    assert.match(messageStore, /stageOne\.await[\s\S]*?hasConversationMessagesState\(target\)[\s\S]*?ConversationClearResult\.COMPLETED/,
+        'message clear must await native stage 1 and confirm the message table is empty');
     assert.match(executor, /setStarredFriend\([\s\S]*?setFriendPermission\([\s\S]*?setGroupSavedToContacts\([\s\S]*?setMyGroupNickname\(/,
         'the four new actions must enter their public WeChat APIs');
     assert.match(executor, /BatchFriendPermissionExecution\.executeOne\([\s\S]*?request\.friendPermissionSelection[\s\S]*?setFriendPermission\(/,

@@ -13,7 +13,32 @@ import java.util.concurrent.atomic.AtomicReference
 
 class BatchTaskManagerRegressionTest {
     @Test
-    fun allEightProductionTaskKindsStartImmediatelyAndPreserveSelectedState() {
+    fun destructiveSelectionsDeduplicateRepeatedRowsBeforeQueueing() {
+        val accepted = LinkedBlockingQueue<BatchTaskRequest>()
+        val manager = BatchTaskManager.createForTesting(BatchTaskProcessor { request, _ ->
+            accepted.put(request)
+            BatchTaskRunner.fromResults(
+                request.targetIds,
+                request.targetIds.map { BatchTaskRunner.TaskResult.of(BatchTaskRunner.Outcome.SUCCESS, "test") },
+                ""
+            )
+        })
+        try {
+            assertEquals(BatchTaskSubmitResult.STARTED, manager.submit(BatchTaskRequest(
+                BatchOperation.DELETE_FRIENDS,
+                listOf("friend-a", "friend-a", "friend-b"),
+                "account-A",
+                true
+            )))
+            assertEquals(listOf("friend-a", "friend-b"), accepted.poll(5, TimeUnit.SECONDS)?.targetIds)
+            awaitStatus(manager, BatchTaskStatus.COMPLETED)
+        } finally {
+            manager.shutdownForTesting()
+        }
+    }
+
+    @Test
+    fun allTenProductionTaskKindsStartImmediatelyAndPreserveSelectedState() {
         val accepted = LinkedBlockingQueue<BatchTaskRequest>()
         val manager = BatchTaskManager.createForTesting(BatchTaskProcessor { request, _ ->
             accepted.put(request)
@@ -73,6 +98,8 @@ class BatchTaskManagerRegressionTest {
             ),
             BatchTaskRequest(BatchOperation.GROUP_SAVE_TO_CONTACTS, listOf("room-save"), "account-A", true),
             BatchTaskRequest(BatchOperation.GROUP_SAVE_TO_CONTACTS, listOf("room-unsave"), "account-A", false),
+            BatchTaskRequest(BatchOperation.DELETE_CHATS, listOf("chat-delete"), "account-A", true),
+            BatchTaskRequest(BatchOperation.DELETE_FRIENDS, listOf("friend-delete"), "account-A", true),
             BatchTaskRequest(
                 BatchOperation.GROUP_NICKNAME,
                 listOf("room-nickname"),

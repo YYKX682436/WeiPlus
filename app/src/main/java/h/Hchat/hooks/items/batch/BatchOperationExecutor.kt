@@ -3,6 +3,8 @@ package h.Hchat.hooks.items.batch
 import h.Hchat.hooks.api.contact.WeChatContactApi
 import h.Hchat.hooks.api.contact.WeChatNativeMutationResult
 import h.Hchat.hooks.api.core.WeChatApis
+import h.Hchat.hooks.api.message.WeChatMessageStoreApi
+import java.util.concurrent.TimeUnit
 
 /**
  * Stateless process-side executor. It uses only WeiPlus APIs and immutable task data.
@@ -92,7 +94,7 @@ internal object BatchOperationExecutor : BatchTaskProcessor {
         val conversations = WeChatApis.conversations()
         val contacts = WeChatApis.contacts()
         val chatrooms = WeChatApis.chatrooms()
-        when (request.operation) {
+        return when (request.operation) {
             BatchOperation.HIDE -> {
                 if (conversations == null) return result(BatchTaskRunner.Outcome.FAILED, "微信会话 API 不可用")
                 if (!conversations.isBatchOperableConversation(id)) {
@@ -215,6 +217,108 @@ internal object BatchOperationExecutor : BatchTaskProcessor {
                     nativeSubmissionGuard(request, stopSignal),
                     WeChatContactApi.BatchSubmissionGuard { isAccountCurrent(request.expectedAccount) }
                 ), request, stopSignal)
+            }
+            BatchOperation.DELETE_CHATS -> deleteChat(id, request, stopSignal)
+            BatchOperation.DELETE_FRIENDS -> deleteFriend(id, request, stopSignal)
+        }
+    }
+
+    private fun deleteChat(
+        id: String,
+        request: BatchTaskRequest,
+        stopSignal: BatchTaskRunner.StopSignal
+    ): BatchTaskRunner.TaskResult {
+        val conversations = WeChatApis.conversations()
+            ?: return result(BatchTaskRunner.Outcome.FAILED, "微信会话 API 不可用")
+        val home = conversations.getNativeHomeConversationUsernames()
+            ?: return result(BatchTaskRunner.Outcome.FAILED, "无法读取微信首页当前聊天列表")
+        if (!home.contains(id) || !conversations.isBatchOperableConversation(id)) {
+            return result(BatchTaskRunner.Outcome.SKIPPED, "聊天已隐藏、分组或失效，未删除")
+        }
+        if (!mayStartNativeOperation(request, stopSignal)) {
+            return result(BatchTaskRunner.Outcome.SKIPPED, stopReason(stopSignal))
+        }
+        val messages = WeChatApis.messageStore()
+            ?: return result(BatchTaskRunner.Outcome.FAILED, "微信消息清理 API 不可用")
+        if (!messages.isAvailable) return result(BatchTaskRunner.Outcome.FAILED, "微信消息清理 API 不可用")
+        return BatchDeleteOutcomePolicy.deleteChat(
+            clearMessages = {
+                when (messages.clearConversationMessagesAndWait(id) {
+                    stopSignal.isStopped() || !isAccountCurrent(request.expectedAccount)
+                }) {
+                    WeChatMessageStoreApi.ConversationClearResult.COMPLETED ->
+                        BatchDeleteOutcomePolicy.ChatClearState.COMPLETED
+                    WeChatMessageStoreApi.ConversationClearResult.NOT_SUBMITTED ->
+                        BatchDeleteOutcomePolicy.ChatClearState.NOT_SUBMITTED
+                    WeChatMessageStoreApi.ConversationClearResult.UNCONFIRMED ->
+                        BatchDeleteOutcomePolicy.ChatClearState.UNCONFIRMED
+                    WeChatMessageStoreApi.ConversationClearResult.STOPPED ->
+                        BatchDeleteOutcomePolicy.ChatClearState.STOPPED
+                }
+            },
+            mayDeleteConversation = {
+                if (!mayStartNativeOperation(request, stopSignal)) false
+                else conversations.getNativeHomeConversationUsernames()?.let { it.contains(id) }
+            },
+            deleteConversation = {
+                if (conversations.deleteConversation(id)) true
+                else when (conversations.conversationEntryExistsState(id)) {
+                    false -> true
+                    true -> false
+                    null -> null
+                }
+            }
+        )
+    }
+
+    private fun deleteFriend(
+        id: String,
+        request: BatchTaskRequest,
+        stopSignal: BatchTaskRunner.StopSignal
+    ): BatchTaskRunner.TaskResult {
+        val contacts = WeChatApis.contacts()
+            ?: return result(BatchTaskRunner.Outcome.FAILED, "微信联系人 API 不可用")
+        val messages = WeChatApis.messageStore()
+            ?: return result(BatchTaskRunner.Outcome.FAILED, "微信消息清理 API 不可用")
+        if (!messages.isAvailable) return result(BatchTaskRunner.Outcome.FAILED, "微信消息清理 API 不可用")
+        val state = contacts.getContactStateResult(id)
+        if (!state.success) return result(BatchTaskRunner.Outcome.FAILED, state.error.ifBlank { "读取好友关系失败" })
+        val self = accountSelfId()
+        if (!state.found || !state.validFriend || id == self || id.startsWith("gh_") ||
+            id.endsWith("@chatroom") || id.endsWith("@im.chatroom")) {
+            return result(BatchTaskRunner.Outcome.SKIPPED, "不是有效好友或对象已失效")
+        }
+        if (!contacts.supportsDeleteFriendRecordClear()) {
+            return result(BatchTaskRunner.Outcome.FAILED, "当前微信未提供带聊天记录清理选项的原生删除接口")
+        }
+        if (!mayStartNativeOperation(request, stopSignal)) {
+            return result(BatchTaskRunner.Outcome.SKIPPED, stopReason(stopSignal))
+        }
+        if (!contacts.submitDeleteFriend(id, true)) {
+            return result(BatchTaskRunner.Outcome.FAILED, "微信原生删除好友请求未提交")
+        }
+
+        val deadline = System.nanoTime() + TimeUnit.MINUTES.toNanos(5)
+        while (true) {
+            if (stopSignal.isStopped() || !isAccountCurrent(request.expectedAccount)) {
+                return result(BatchTaskRunner.Outcome.UNCONFIRMED, "删除请求已提交；因停止或账号切换未确认")
+            }
+            val current = contacts.getContactStateResult(id)
+            val outcome = BatchDeleteOutcomePolicy.friendState(
+                validFriend = if (current.success) current.found && current.validFriend else null,
+                messagesRemain = if (current.success && (!current.found || !current.validFriend)) {
+                    messages.hasConversationMessagesState(id)
+                } else null
+            )
+            if (outcome != null) return outcome
+            if (System.nanoTime() >= deadline) {
+                return result(BatchTaskRunner.Outcome.UNCONFIRMED, "删除请求已提交；好友关系或聊天记录未确认")
+            }
+            try {
+                Thread.sleep(200)
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return result(BatchTaskRunner.Outcome.UNCONFIRMED, "删除请求已提交；任务中断，结果未确认")
             }
         }
     }
