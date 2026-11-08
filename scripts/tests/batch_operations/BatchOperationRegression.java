@@ -1,6 +1,8 @@
 import h.Hchat.hooks.api.contact.ContactLabelIds;
 import h.Hchat.hooks.api.contact.WeChatContactTypeState;
 import h.Hchat.hooks.items.batch.BatchCandidateLoadGate;
+import h.Hchat.hooks.items.batch.BatchGroupCleanupPolicy;
+import h.Hchat.hooks.items.batch.BatchGroupSchemaPolicy;
 import h.Hchat.hooks.items.batch.BatchGroupStatePolicy;
 import h.Hchat.hooks.items.batch.BatchSelectionPolicy;
 import h.Hchat.hooks.items.batch.BatchSelectionState;
@@ -25,6 +27,8 @@ public final class BatchOperationRegression {
         labelMembershipEdits();
         stateTransitions();
         groupStatusEvidenceFailsClosed();
+        groupSchemaFailuresAreDistinctFromOptionalColumns();
+        groupCleanupConversationStatesFailClosed();
         friendPermissionTypeBitsAreIndependent();
         serialResultsAndPartialFailure();
         stopPreventsLaterSubmissions();
@@ -250,6 +254,40 @@ public final class BatchOperationRegression {
         assertTrue(BatchGroupStatePolicy.resolvesPendingRequest(
                         BatchGroupStatePolicy.State.NOT_MEMBER),
                 "a native membership change resolves the pending leave guard");
+    }
+
+    private static void groupSchemaFailuresAreDistinctFromOptionalColumns() {
+        BatchGroupSchemaPolicy.Result noStatus = BatchGroupSchemaPolicy.evaluate(
+                true, new HashSet<>(Arrays.asList("username")),
+                true, new HashSet<>(Arrays.asList("chatroomname", "memberlist", "roomowner")));
+        assertTrue(noStatus.success && noStatus.hasRoomOwner && !noStatus.hasChatroomStatus,
+                "a missing optional disband bit must not invalidate normal membership reads");
+
+        BatchGroupSchemaPolicy.Result failed = BatchGroupSchemaPolicy.evaluate(
+                false, new HashSet<>(), true, new HashSet<>(Arrays.asList("chatroomname", "memberlist")));
+        assertTrue(!failed.success && "rcontact 表结构读取失败".equals(failed.error),
+                "a failed table metadata read must remain different from a successful empty group result");
+
+        BatchGroupSchemaPolicy.Result missingMembers = BatchGroupSchemaPolicy.evaluate(
+                true, new HashSet<>(Arrays.asList("username")),
+                true, new HashSet<>(Arrays.asList("chatroomname")));
+        assertTrue(!missingMembers.success && missingMembers.error.contains("memberlist"),
+                "missing required member data must report its required column");
+    }
+
+    private static void groupCleanupConversationStatesFailClosed() {
+        assertEquals(BatchGroupCleanupPolicy.Action.DELETE_CONVERSATION_THEN_GROUP,
+                BatchGroupCleanupPolicy.decide(true, BatchGroupCleanupPolicy.ConversationState.EXISTS),
+                "an existing session must use the native conversation removal path first");
+        assertEquals(BatchGroupCleanupPolicy.Action.DELETE_GROUP_ONLY,
+                BatchGroupCleanupPolicy.decide(true, BatchGroupCleanupPolicy.ConversationState.ABSENT),
+                "an absent session must not block native residual group cleanup");
+        assertEquals(BatchGroupCleanupPolicy.Action.ABORT,
+                BatchGroupCleanupPolicy.decide(true, BatchGroupCleanupPolicy.ConversationState.READ_FAILED),
+                "an unread session state must stop cleanup");
+        assertEquals(BatchGroupCleanupPolicy.Action.ABORT,
+                BatchGroupCleanupPolicy.decide(false, BatchGroupCleanupPolicy.ConversationState.ABSENT),
+                "a group that no longer proves invalid must stop cleanup");
     }
 
     private static void friendPermissionTypeBitsAreIndependent() {

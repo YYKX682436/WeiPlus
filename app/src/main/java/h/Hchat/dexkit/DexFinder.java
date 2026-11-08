@@ -4079,7 +4079,7 @@ public class DexFinder {
         }
     }
 
-    /** Resolve WeChat's native already-quit state check from the chatroom-membership helper. */
+    /** Resolve WeChat's native already-quit state check independently of the deletion helper. */
     public synchronized boolean resolveChatroomAlreadyQuitApi() {
         ensureSnapshotLoaded();
         if (chatroomAlreadyQuitMethod != null
@@ -4088,15 +4088,25 @@ public class DexFinder {
                 && Arrays.equals(chatroomAlreadyQuitMethod.getParameterTypes(), new Class<?>[]{String.class})) {
             return true;
         }
-        if (!resolveDeleteWholeChatroomApi()) return false;
         try {
-            Class<?> owner = deleteWholeChatroomMethod.getDeclaringClass();
-            chatroomAlreadyQuitMethod = uniqueMethod(
-                    KavaReflector.declaredMethods(owner), method ->
-                            Modifier.isStatic(method.getModifiers())
-                                    && method.getName().equals("E")
-                                    && method.getReturnType() == boolean.class
-                                    && Arrays.equals(method.getParameterTypes(), new Class<?>[]{String.class}));
+            Method dismissState = uniqueMethod(findMethodsUsingString("isChatroomDismiss = "), method ->
+                    Modifier.isStatic(method.getModifiers())
+                            && method.getReturnType() == boolean.class
+                            && Arrays.equals(method.getParameterTypes(), new Class<?>[]{String.class}));
+            if (dismissState == null) return false;
+            Class<?> owner = dismissState.getDeclaringClass();
+            List<Method> methods = KavaReflector.declaredMethods(owner);
+            Method memberState = uniqueMethod(methods, method ->
+                    Modifier.isStatic(method.getModifiers())
+                            && method.getName().equals("y")
+                            && method.getReturnType() == boolean.class
+                            && Arrays.equals(method.getParameterTypes(), new Class<?>[]{String.class, boolean.class}));
+            if (memberState == null) return false;
+            chatroomAlreadyQuitMethod = uniqueMethod(methods, method ->
+                    Modifier.isStatic(method.getModifiers())
+                            && method.getName().equals("E")
+                            && method.getReturnType() == boolean.class
+                            && Arrays.equals(method.getParameterTypes(), new Class<?>[]{String.class}));
             return chatroomAlreadyQuitMethod != null;
         } catch (Throwable e) {
             HLog.e(TAG + " resolveChatroomAlreadyQuitApi failed: " + e.getMessage(), e);

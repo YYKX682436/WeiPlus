@@ -93,6 +93,20 @@ class BatchGroupStatePolicyTest {
     }
 
     @Test
+    fun `missing optional chatroom status does not become zero or disband evidence`() {
+        assertEquals(BatchGroupStatePolicy.State.JOINED, BatchGroupStatePolicy.classify(
+            true, true, true, "self", "member-a;self", null, false
+        ))
+        assertEquals(BatchGroupStatePolicy.State.NOT_MEMBER, BatchGroupStatePolicy.classify(
+            true, true, true, "self", "member-a;member-b", null, true
+        ))
+        assertEquals(BatchGroupStatePolicy.State.UNKNOWN, BatchGroupStatePolicy.classify(
+            true, true, true, "self", "", null, true
+        ))
+        assertNull(BatchGroupStatePolicy.cleanupReason(BatchGroupStatePolicy.State.UNKNOWN))
+    }
+
+    @Test
     fun `rejoined state or changed invalid reason stops cleanup`() {
         assertFalse(BatchGroupStatePolicy.stillMatchesCleanupReason(
             BatchGroupStatePolicy.State.JOINED,

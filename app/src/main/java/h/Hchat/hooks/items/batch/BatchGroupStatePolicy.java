@@ -25,10 +25,21 @@ public final class BatchGroupStatePolicy {
                                  String selfId,
                                  String memberList,
                                  int chatroomStatus) {
+        return classify(readSucceeded, contactPresent, chatroomRowPresent,
+                selfId, memberList, Integer.valueOf(chatroomStatus));
+    }
+
+    /** A missing optional status column stays unknown for disband detection, never flag value 0. */
+    public static State classify(boolean readSucceeded,
+                                 boolean contactPresent,
+                                 boolean chatroomRowPresent,
+                                 String selfId,
+                                 String memberList,
+                                 Integer chatroomStatus) {
         if (!readSucceeded) return State.UNKNOWN;
         if (!contactPresent) return State.CONTACT_MISSING;
         if (!chatroomRowPresent) return State.UNKNOWN;
-        if ((chatroomStatus & DISBANDED_STATUS_FLAG) != 0) return State.DISBANDED;
+        if (chatroomStatus != null && (chatroomStatus & DISBANDED_STATUS_FLAG) != 0) return State.DISBANDED;
         if (selfId == null || selfId.trim().isEmpty()
                 || memberList == null || memberList.trim().isEmpty()) {
             return State.UNKNOWN;
@@ -49,7 +60,7 @@ public final class BatchGroupStatePolicy {
                                  boolean chatroomRowPresent,
                                  String selfId,
                                  String memberList,
-                                 int chatroomStatus,
+                                 Integer chatroomStatus,
                                  Boolean nativeAlreadyQuit) {
         State rosterState = classify(readSucceeded, contactPresent, chatroomRowPresent,
                 selfId, memberList, chatroomStatus);

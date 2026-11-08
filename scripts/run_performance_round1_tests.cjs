@@ -112,9 +112,11 @@ const fixtures = {
  public Subscription subscribe(Listener l){listener=l::onDatabaseChanged;return new Subscription();}}`,
 'h/Hchat/hooks/core/HookRegistry.java': `package h.Hchat.hooks.core; public class HookRegistry {private static final HookRegistry INSTANCE=new HookRegistry();private long generation;public static HookRegistry get(){return INSTANCE;}public long installationGeneration(){return generation;}public boolean isInstallationGenerationActive(long value){return value==generation;}public AutoCloseable registerGenerationCleanup(Runnable action){return ()->{};}}`,
 'h/Hchat/hooks/api/runtime/WeChatDatabaseApi.java': `package h.Hchat.hooks.api.runtime; import java.util.*; import android.database.Cursor; public class WeChatDatabaseApi {
+ public static final class QueryResult {public final boolean success;public final List<Map<String,Object>> rows;public final String error;public QueryResult(boolean s,List<Map<String,Object>> r,String e){success=s;rows=r;error=e;}}
  public final List<String> queries=new ArrayList<>();public Map<String,Object> row=new HashMap<>();public boolean isAvailable(){return true;}public List<Map<String,Object>> query(String sql,String[] args){queries.add(sql);return row.isEmpty()?new ArrayList<>():List.of(new HashMap<>(row));}
+ public QueryResult queryWithStatus(String sql,String[] args){queries.add(sql);return new QueryResult(true,row.isEmpty()?new ArrayList<>():List.of(new HashMap<>(row)),"");}
  public String quoteTable(String t){return t.matches("[a-zA-Z0-9_]+")?'"'+t+'"':"";} public List<String> messageTables(){throw new AssertionError("cross-table probe");}public String messageTableForTalker(String t){return "message";}public String queryFirstString(String s,String[] a,String c){return "";}public Cursor rawQuery(String s,String[] a){return null;}}`,
-'h/Hchat/dexkit/DexFinder.java': `package h.Hchat.dexkit; public class DexFinder {public java.lang.reflect.Method messageClearBatchMethod;}`,
+'h/Hchat/dexkit/DexFinder.java': `package h.Hchat.dexkit; public class DexFinder {public java.lang.reflect.Method messageClearBatchMethod;public void resolveMessageClearApi(){}}`,
 'h/Hchat/hooks/api/message/WeChatMessageApi.java': `package h.Hchat.hooks.api.message;public class WeChatMessageApi {public static int cancellations;public static void cancelPendingLocalSend(String t,String c){cancellations++;}}`,
 'h/Hchat/hooks/api/message/WeChatLvBufferMsgSource.java': `package h.Hchat.hooks.api.message;public final class WeChatLvBufferMsgSource {public static String extractXml(byte[] buffer){return "";}}`,
 'h/Hchat/hooks/api/message/WeChatMessageEventApi.java': `package h.Hchat.hooks.api.message; import h.Hchat.event.Events; import h.Hchat.event.EventBus; import java.util.function.Consumer; public class WeChatMessageEventApi {
@@ -155,6 +157,7 @@ const cp=[output,jar,stdlib,api.classpath].join(path.delimiter);
 run(process.env.JAVAC || 'javac', ['-cp',cp,'-d',output,...Object.keys(fixtures).map(x=>path.join(output,x)),
  path.join(output,'android/text/TextUtils.java'),source+'hooks/api/message/WeChatMessageChangeApi.java',
  source+'hooks/api/message/WeChatMessageStoreApi.java',source+'hooks/api/message/WeChatMessageObserveApi.java',
+ source+'hooks/api/message/MessageClearCompletionPolicy.java',
  source+'hooks/core/MsgDescFallback.java',path.join(output,'ActualSummaryHook.java'),tests+'MessageRegression.java']);
 run(process.env.JAVA || 'java',['-cp',cp,'h.Hchat.hooks.items.groupmonitor.StateRegressionKt']);
 run(process.env.JAVA || 'java',['-cp',cp,'MessageRegression']);

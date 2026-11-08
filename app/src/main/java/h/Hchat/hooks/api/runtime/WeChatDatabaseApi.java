@@ -39,6 +39,24 @@ public final class WeChatDatabaseApi {
         }
     }
 
+    private static final class CursorQueryResult {
+        final Cursor cursor;
+        final String error;
+
+        private CursorQueryResult(Cursor cursor, String error) {
+            this.cursor = cursor;
+            this.error = error == null ? "" : error;
+        }
+
+        static CursorQueryResult success(Cursor cursor) {
+            return new CursorQueryResult(cursor, "");
+        }
+
+        static CursorQueryResult failure(String error) {
+            return new CursorQueryResult(null, error);
+        }
+    }
+
     public interface Logger {
         void log(String message);
     }
@@ -113,8 +131,12 @@ public final class WeChatDatabaseApi {
     public QueryResult queryWithStatus(String sql, String[] args) {
         if (TextUtils.isEmpty(sql)) return new QueryResult(false, null, "SQL 为空");
         if (!ensureReady()) return new QueryResult(false, null, "微信数据库不可用");
-        Cursor cursor = rawQuery(sql, args);
-        if (cursor == null) return new QueryResult(false, null, "微信数据库读取失败");
+        CursorQueryResult query = executeRawQuery(sql, args);
+        if (query.cursor == null) {
+            log("SQL 状态查询失败: " + query.error + " sql=" + sql);
+            return new QueryResult(false, null, query.error.isEmpty() ? "微信数据库读取失败" : query.error);
+        }
+        Cursor cursor = query.cursor;
         List<Map<String, Object>> rows = new ArrayList<>();
         try {
             String[] columns = cursor.getColumnNames();
@@ -377,12 +399,25 @@ public final class WeChatDatabaseApi {
     }
 
     private Cursor rawQueryInternal(String sql, String[] args, boolean logError) {
+        CursorQueryResult query = executeRawQuery(sql, args);
+        if (query.cursor == null && logError) log("SQL 查询异常: " + query.error + " sql=" + sql);
+        return query.cursor;
+    }
+
+    private CursorQueryResult executeRawQuery(String sql, String[] args) {
         try {
-            Object result = KavaReflector.invoke(queryMethod, dbWrapper, sql, args);
-            return result instanceof Cursor ? (Cursor) result : null;
+            Object result = KavaReflector.invokeOrThrow(queryMethod, dbWrapper, sql, args);
+            if (result instanceof Cursor) return CursorQueryResult.success((Cursor) result);
+            return CursorQueryResult.failure(result == null
+                    ? "SqliteDB 查询返回空游标"
+                    : "SqliteDB 查询返回非 Cursor: " + result.getClass().getName());
         } catch (Throwable e) {
-            if (logError) log("SQL 查询异常: " + e.getMessage() + " sql=" + sql);
-            return null;
+            Throwable cause = e;
+            while (cause.getCause() != null && cause.getCause() != cause) cause = cause.getCause();
+            String message = cause.getMessage();
+            String detail = cause.getClass().getSimpleName()
+                    + (TextUtils.isEmpty(message) ? "" : ": " + message);
+            return CursorQueryResult.failure(detail);
         }
     }
 

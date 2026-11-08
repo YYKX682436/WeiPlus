@@ -228,7 +228,12 @@ public class WechatApiFeature implements Feature {
     private boolean isBatchDeleteDiagnostic(String message) {
         return message != null && (message.startsWith("[WeChatContactApi] 批量删除好友诊断 phase=")
                 || message.startsWith("[WeChatMessageStoreApi] 批量删除聊天核验 phase=")
-                || message.startsWith("[WeChatConversationApi] 批量删除聊天核验 phase="));
+                || message.startsWith("[WeChatConversationApi] 批量删除聊天核验 phase=")
+                || message.startsWith("[WeChatChatroomApi] 已核验群状态 SQLite 表结构")
+                || message.startsWith("[WeChatChatroomApi] 群状态 JOIN")
+                || message.startsWith("[WeChatChatroomApi] 群聊退群候选读取完成")
+                || message.startsWith("[WeChatChatroomApi] 群聊失效候选读取完成")
+                || message.startsWith("[WeChatChatroomApi] 群状态脱敏普通群样本"));
     }
 
     private void installApiHook(String name, Runnable runnable) {

@@ -34,6 +34,8 @@ try {
         'app/src/main/java/h/Hchat/hooks/api/conversation/WeChatConversationIdentity.java',
         'app/src/main/java/h/Hchat/hooks/api/contact/ContactLabelIds.java',
         'app/src/main/java/h/Hchat/hooks/items/batch/BatchCandidateLoadGate.java',
+        'app/src/main/java/h/Hchat/hooks/items/batch/BatchGroupCleanupPolicy.java',
+        'app/src/main/java/h/Hchat/hooks/items/batch/BatchGroupSchemaPolicy.java',
         'app/src/main/java/h/Hchat/hooks/items/batch/BatchGroupStatePolicy.java',
         'app/src/main/java/h/Hchat/hooks/items/batch/BatchSelectionPolicy.java',
         'app/src/main/java/h/Hchat/hooks/items/batch/BatchSelectionState.java',
@@ -64,6 +66,8 @@ try {
     const chatroomApi = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/api/contact/WeChatChatroomApi.java'), 'utf8');
     const nativeBatchQuit = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/api/contact/NativeBatchQuitChatroomProcess.java'), 'utf8');
     const groupStatePolicy = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/items/batch/BatchGroupStatePolicy.java'), 'utf8');
+    const groupSchemaPolicy = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/items/batch/BatchGroupSchemaPolicy.java'), 'utf8');
+    const groupCleanupPolicy = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/items/batch/BatchGroupCleanupPolicy.java'), 'utf8');
     const groupQuitPolicy = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/items/batch/BatchGroupQuitOutcomePolicy.kt'), 'utf8');
     const databaseApi = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/api/runtime/WeChatDatabaseApi.java'), 'utf8');
     const executor = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/items/batch/BatchOperationExecutor.kt'), 'utf8');
@@ -201,12 +205,15 @@ try {
         'the two new group selectors must use the evidence-filtered candidate APIs');
     assert.match(groupStatePolicy, /if \(!readSucceeded\) return State\.UNKNOWN[\s\S]*?if \(!chatroomRowPresent\) return State\.UNKNOWN[\s\S]*?memberList == null \|\| memberList\.trim\(\)\.isEmpty\(\)/,
         'failed reads, missing room rows and empty rosters must not become invalid cleanup candidates');
-    assert.match(groupStatePolicy, /DISBANDED_STATUS_FLAG = 0x2[\s\S]*?State\.DISBANDED/,
+    assert.match(groupStatePolicy, /chatroomStatus != null && \(chatroomStatus & DISBANDED_STATUS_FLAG\)/,
         'the dismissed state must come from the native chatroomStatus bit');
     assert.match(groupStatePolicy, /Boolean nativeAlreadyQuit[\s\S]*?State\.NOT_MEMBER && !Boolean\.TRUE\.equals\(nativeAlreadyQuit\)/,
         'left or removed state must agree with WeChat’s native already-quit predicate');
-    assert.match(dexFinder, /resolveChatroomAlreadyQuitApi\(\)[\s\S]*?deleteWholeChatroomMethod\.getDeclaringClass\(\)[\s\S]*?method\.getName\(\)\.equals\("E"\)/,
-        'the group-state check must resolve WeChat’s native already-quit method from its verified helper class');
+    const nativeQuitResolver = methodBody(dexFinder, 'public synchronized boolean resolveChatroomAlreadyQuitApi()');
+    assert.match(nativeQuitResolver, /findMethodsUsingString\("isChatroomDismiss = "\)[\s\S]*?method\.getName\(\)\.equals\("y"\)[\s\S]*?method\.getName\(\)\.equals\("E"\)/,
+        'the group-state check must independently resolve E(String) against the verified dismissal/member-state helper');
+    assert.doesNotMatch(nativeQuitResolver, /resolveDeleteWholeChatroomApi|deleteWholeChatroomMethod/,
+        'membership-state resolution must not depend on the group deletion resolver');
     assert.match(groupStatePolicy, /isLeaveCandidate[\s\S]*?!owner\.equals\(self\)/,
         'the current room owner must never enter the automated leave request');
     assert.match(groupQuitPolicy, /REQUEST_RESULT_UNKNOWN[\s\S]*?LEFT_CONFIRMED[\s\S]*?SERVER_ACCEPTED_STATE_UNKNOWN/,
@@ -223,11 +230,25 @@ try {
         'late native completion must release the retained retry and completion hooks');
     assert.doesNotMatch(nativeBatchQuit, /stopWithoutRetry|writeField\(running/,
         'a timeout must not cut off WeChat’s late native reconciliation callback');
+    assert.match(chatroomApi, /PRAGMA table_info\(rcontact\)[\s\S]*?PRAGMA table_info\(chatroom\)/,
+        'the live rcontact and chatroom schemas must be checked independently');
+    assert.match(chatroomApi, /c\.chatroomStatus/,
+        'chatroomStatus must be selected from the chatroom table');
+    assert.doesNotMatch(chatroomApi, /r\.chatroomStatus/,
+        'chatroomStatus must not be assumed to exist on rcontact');
+    assert.match(databaseApi, /KavaReflector\.invokeOrThrow\(queryMethod, dbWrapper, sql, args\)[\s\S]*?cause\.getMessage\(\)/,
+        'queryWithStatus must preserve the actual SQLite exception instead of replacing it with a generic null-cursor error');
+    assert.match(groupSchemaPolicy, /hasRoomOwner[\s\S]*?hasChatroomStatus/,
+        'roomowner and chatroomStatus must be optional metadata, while required columns fail explicitly');
     assert.doesNotMatch(chatroomApi, /delChatroomMember\([^\n]*selfWxId/,
         'active exit must not masquerade as removing the current user from the member list');
     const invalidGroupDelete = methodBody(chatroomApi, 'public WeChatNativeMutationResult deleteInvalidGroupNative(');
-    assert.match(invalidGroupDelete, /stillMatchesCleanupReason[\s\S]*?conversations\.deleteConversation\(roomId\)[\s\S]*?beforeRoomRemoval[\s\S]*?stillMatchesCleanupReason[\s\S]*?deleteWholeChatroomMethod/,
-        'invalid cleanup must recheck the same evidence before conversation and group-storage deletion');
+    assert.match(invalidGroupDelete, /stillMatchesCleanupReason[\s\S]*?conversationEntryExistsState\(roomId\)[\s\S]*?BatchGroupCleanupPolicy\.decide[\s\S]*?DELETE_CONVERSATION_THEN_GROUP[\s\S]*?conversations\.deleteConversation\(roomId\)[\s\S]*?beforeRoomRemoval[\s\S]*?stillMatchesCleanupReason[\s\S]*?deleteWholeChatroomMethod/,
+        'invalid cleanup must distinguish absent conversation rows and recheck the same invalid evidence before group deletion');
+    assert.match(groupCleanupPolicy, /conversationState == ConversationState\.READ_FAILED/,
+        'an unread conversation state must abort cleanup');
+    assert.match(groupCleanupPolicy, /conversationState == ConversationState\.EXISTS[\s\S]*?DELETE_CONVERSATION_THEN_GROUP[\s\S]*?DELETE_GROUP_ONLY/,
+        'a confirmed absent conversation row must skip only session deletion');
     assert.doesNotMatch(invalidGroupDelete, /databaseApi\.delete\(|DELETE FROM (rcontact|chatroom)|clearConversationMessages/,
         'invalid cleanup must not directly delete group tables or message rows');
     assert.match(shared, /!labelSnapshot\.success[\s\S]*?读取好友标签成员失败/,
