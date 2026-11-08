@@ -2758,6 +2758,7 @@ internal enum class BatchCandidateMode {
     PINNABLE_FRIENDS_AND_GROUPS,
     CURRENT_FRIENDS,
     ALL_FRIENDS,
+    ALL_GROUPS,
     ALL_FRIENDS_WITH_LABEL
 }
 
@@ -4089,15 +4090,32 @@ internal fun loadContacts(
                     BatchCandidateMode.CURRENT_FRIENDS_AND_GROUPS,
                     BatchCandidateMode.CURRENT_FRIENDS
                 )
-            val friends = if (needsAllFriends || needsFriendIds) api.getFriends() else emptyList()
+            val friendResult = if (needsAllFriends || needsFriendIds) api.getFriendsResult() else null
+            if (friendResult != null && !friendResult.success) {
+                throw IllegalStateException(friendResult.error.ifBlank { "读取有效好友失败" })
+            }
+            val friends = friendResult?.contacts.orEmpty()
             val friendIds = friends.mapNotNull { it.wxId.takeIf(String::isNotBlank) }.toSet()
             val needsGroups = batchCandidateMode in setOf(
                     BatchCandidateMode.CURRENT_FRIENDS_AND_GROUPS,
                     BatchCandidateMode.ALL_FRIENDS_AND_GROUPS,
-                    BatchCandidateMode.PINNABLE_FRIENDS_AND_GROUPS
+                    BatchCandidateMode.PINNABLE_FRIENDS_AND_GROUPS,
+                    BatchCandidateMode.ALL_GROUPS
                 ) || strictFriendsAndGroupsOnly
-            val groups = if (needsGroups) api.getPickerGroups() else emptyList()
+            val groupResult = if (needsGroups) api.getGroupsResult() else null
+            if (groupResult != null && !groupResult.success) {
+                throw IllegalStateException(groupResult.error.ifBlank { "读取有效群聊失败" })
+            }
+            val groups = groupResult?.contacts.orEmpty()
             val allGroupIds = groups.mapNotNull { it.wxId.takeIf(String::isNotBlank) }.toSet()
+            val batchValidFriendIds = BatchSelectionPolicy.filterCandidateIds(
+                friends.mapNotNull { it.wxId.takeIf(String::isNotBlank) },
+                emptySet(), friendIds, emptySet(), false, true, false
+            ).toSet()
+            val batchValidGroupIds = BatchSelectionPolicy.filterCandidateIds(
+                groups.mapNotNull { it.wxId.takeIf(String::isNotBlank) },
+                emptySet(), emptySet(), allGroupIds, false, false, true
+            ).toSet()
             val labelMemberIds = if (batchCandidateMode == BatchCandidateMode.ALL_FRIENDS_WITH_LABEL) {
                 val targetLabelId = batchLabelFilterId?.trim().orEmpty()
                 if (targetLabelId.isBlank()) {
@@ -4157,7 +4175,12 @@ internal fun loadContacts(
                         rows += nativeContactOptions(eligible, api, conversations)
                     }
                     BatchCandidateMode.ALL_FRIENDS -> {
-                        rows += friends.mapNotNull { it.toOption(false) }
+                        rows += friends.asSequence().filter { it.wxId in batchValidFriendIds }
+                            .mapNotNull { it.toOption(false) }.toList()
+                    }
+                    BatchCandidateMode.ALL_GROUPS -> {
+                        rows += groups.asSequence().filter { it.wxId in batchValidGroupIds }
+                            .mapNotNull { it.toOption(true) }.toList()
                     }
                     BatchCandidateMode.ALL_FRIENDS_WITH_LABEL -> {
                         val memberFriends = BatchSelectionPolicy.filterFriendLabelMembers(
@@ -4170,13 +4193,18 @@ internal fun loadContacts(
                             .toList()
                     }
                     BatchCandidateMode.ALL_FRIENDS_AND_GROUPS -> {
-                        rows += friends.mapNotNull { it.toOption(false) }
-                        rows += groups.mapNotNull { it.toOption(true) }
+                        rows += friends.asSequence().filter { it.wxId in batchValidFriendIds }
+                            .mapNotNull { it.toOption(false) }.toList()
+                        rows += groups.asSequence().filter { it.wxId in batchValidGroupIds }
+                            .mapNotNull { it.toOption(true) }.toList()
                     }
                     BatchCandidateMode.PINNABLE_FRIENDS_AND_GROUPS -> {
                         val existingIds = conversations?.getExistingConversationUsernames()?.toSet()
                             ?: throw IllegalStateException("无法核对全部候选对象的现有会话记录")
-                        val options = friends.mapNotNull { it.toOption(false) } + groups.mapNotNull { it.toOption(true) }
+                        val options = friends.asSequence().filter { it.wxId in batchValidFriendIds }
+                            .mapNotNull { it.toOption(false) }.toList() +
+                            groups.asSequence().filter { it.wxId in batchValidGroupIds }
+                                .mapNotNull { it.toOption(true) }.toList()
                         rows += options.map { option ->
                             if (option.id in existingIds) option
                             else option.copy(

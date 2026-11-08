@@ -17,6 +17,7 @@ import java.nio.ByteBuffer;
 import java.lang.reflect.Field;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
 import java.util.ArrayList;
@@ -30,6 +31,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import io.github.libxposed.api.XposedInterface;
@@ -38,6 +40,12 @@ import io.github.libxposed.api.XposedInterface;
  * 微信联系人/群聊 API。
  */
 public final class WeChatContactApi {
+    public enum FriendPermissionSetting {
+        ONLY_CHAT,
+        DONT_SEE_MOMENTS,
+        DONT_LET_SEE_MOMENTS
+    }
+
     public enum ContactLabelMutationResult {
         CONFIRMED,
         SERVER_ACCEPTED,
@@ -76,6 +84,36 @@ public final class WeChatContactApi {
                 boolean success, List<ContactLabelBean> labels, String error) {
             this.success = success;
             this.labels = labels == null ? Collections.emptyList() : new ArrayList<>(labels);
+            this.error = error == null ? "" : error;
+        }
+    }
+
+    /** Result for batch candidate reads. Empty rows and database failure are different states. */
+    public static final class ContactListResult {
+        public final boolean success;
+        public final List<WeChatContact> contacts;
+        public final String error;
+
+        private ContactListResult(boolean success, List<WeChatContact> contacts, String error) {
+            this.success = success;
+            this.contacts = contacts == null ? Collections.emptyList() : new ArrayList<>(contacts);
+            this.error = error == null ? "" : error;
+        }
+    }
+
+    /** Verified local state for one friend record, including whether the row is a valid friend. */
+    public static final class ContactStateResult {
+        public final boolean success;
+        public final boolean found;
+        public final boolean validFriend;
+        public final int type;
+        public final String error;
+
+        private ContactStateResult(boolean success, boolean found, boolean validFriend, int type, String error) {
+            this.success = success;
+            this.found = found;
+            this.validFriend = validFriend;
+            this.type = type;
             this.error = error == null ? "" : error;
         }
     }
@@ -423,6 +461,394 @@ public final class WeChatContactApi {
                         + " id=2)) AND r.verifyFlag=0 AND (r.type & 1)!=0 AND (r.type & 8)=0 AND"
                         + " (r.type & 32)=0 AND r.username NOT LIKE '%chatroom'",
                 null);
+    }
+
+    public ContactListResult getFriendsResult() {
+        ContactListResult result = queryContactsWithStatus(
+                "SELECT " + contactFields()
+                        + " FROM rcontact r LEFT JOIN img_flag i ON r.username = i.username WHERE"
+                        + " (r.encryptUsername!='' OR r.username=(SELECT value FROM userinfo WHERE id=2))"
+                        + " AND r.verifyFlag=0 AND (r.type & 1)!=0 AND"
+                        + " (r.type & 8)=0 AND (r.type & 32)=0 AND r.username NOT LIKE '%chatroom'"
+                        + " AND r.username NOT LIKE 'gh\\_%' ESCAPE '\\'",
+                null);
+        if (!result.success) return result;
+        WeChatDatabaseApi.QueryResult selfQuery = databaseApi.queryWithStatus(
+                "SELECT value FROM userinfo WHERE id=? LIMIT 1", new String[]{String.valueOf(SELF_FIELD_WXID)});
+        if (!selfQuery.success || selfQuery.rows.isEmpty()) {
+            return new ContactListResult(false, Collections.emptyList(), "无法确认当前微信账号，未读取好友列表");
+        }
+        String selfId = str(selfQuery.rows.get(0), "value").trim();
+        if (selfId.isEmpty()) return new ContactListResult(false, Collections.emptyList(), "当前微信账号标识为空");
+        List<WeChatContact> friends = new ArrayList<>();
+        for (WeChatContact contact : result.contacts) {
+            if (!selfId.equals(contact.wxId)) friends.add(contact);
+        }
+        return new ContactListResult(true, friends, "");
+    }
+
+    public ContactListResult getGroupsResult() {
+        return queryContactsWithStatus(
+                "SELECT " + contactFields()
+                        + " FROM rcontact r LEFT JOIN img_flag i ON r.username = i.username WHERE"
+                        + " r.username LIKE '%@chatroom' OR r.username LIKE '%@im.chatroom'",
+                null);
+    }
+
+    public ContactStateResult getContactStateResult(String wxId) {
+        if (TextUtils.isEmpty(wxId) || databaseApi == null || !databaseApi.isAvailable()) {
+            return new ContactStateResult(false, false, false, 0, "联系人数据库不可用");
+        }
+        WeChatDatabaseApi.QueryResult query = databaseApi.queryWithStatus(
+                "SELECT username, type, verifyFlag, encryptUsername FROM rcontact WHERE username=? LIMIT 1",
+                new String[]{wxId.trim()});
+        if (!query.success) {
+            return new ContactStateResult(false, false, false, 0,
+                    query.error.isBlank() ? "读取联系人状态失败" : query.error);
+        }
+        if (query.rows.isEmpty()) return new ContactStateResult(true, false, false, 0, "");
+        Map<String, Object> row = query.rows.get(0);
+        int type = intValue(row, "type");
+        boolean validFriend = !isGroup(wxId)
+                && !wxId.startsWith("gh_")
+                && intValue(row, "verifyFlag") == 0
+                && (type & 1) != 0
+                && (type & 8) == 0
+                && (type & 32) == 0
+                && !TextUtils.isEmpty(str(row, "encryptUsername"));
+        return new ContactStateResult(true, true, validFriend, type, "");
+    }
+
+    /**
+     * Uses the same native friend-profile operation as WeChat's Add/Remove Star menu.
+     * The native operation mutates the local contact type and queues cmd 2 for server sync;
+     * because that route has no result callback, this method never reports server confirmation.
+     */
+    public WeChatNativeMutationResult setStarredFriend(
+            String username, boolean starred, BatchSubmissionGuard guard) {
+        return setLocalContactPermission(username, starred, WeChatContactTypeState.STARRED_FRIEND,
+                starred ? "r0" : "C0", guard, "星标");
+    }
+
+    /** Executes one verified native friend-permission operation. */
+    public WeChatNativeMutationResult setFriendPermission(
+            String username,
+            FriendPermissionSetting setting,
+            boolean enabled,
+            BatchSubmissionGuard guard) {
+        if (setting == null) {
+            return nativeResult(WeChatNativeMutationResult.Outcome.NOT_SUBMITTED, "好友权限项无效");
+        }
+        if (setting == FriendPermissionSetting.DONT_LET_SEE_MOMENTS) {
+            return setLocalContactPermission(username, enabled, WeChatContactTypeState.DO_NOT_LET_SEE_MOMENTS,
+                    "B0", guard, "不让对方看我的朋友圈");
+        }
+        if (setting == FriendPermissionSetting.DONT_SEE_MOMENTS) {
+            return setSnsTagPermission(username, enabled, guard);
+        }
+        final int bit = WeChatContactTypeState.ONLY_CHAT;
+        final String feature = "仅聊天权限";
+        ContactStateResult before = getContactStateResult(username);
+        if (!before.success) return nativeResult(WeChatNativeMutationResult.Outcome.READ_FAILED,
+                before.error.isBlank() ? "读取好友权限失败" : before.error);
+        if (!before.found || !before.validFriend) {
+            return nativeResult(WeChatNativeMutationResult.Outcome.INVALID_TARGET, "好友关系已失效");
+        }
+        if (WeChatContactTypeState.matches(before.type, bit, enabled)) {
+            return nativeResult(WeChatNativeMutationResult.Outcome.ALREADY_SATISFIED, feature + "已符合目标");
+        }
+        if (!maySubmit(guard)) {
+            return nativeResult(WeChatNativeMutationResult.Outcome.NOT_SUBMITTED, "账号已切换或任务已停止");
+        }
+        Object nativeContact = getNativeContactObject(username);
+        if (nativeContact == null) {
+            return nativeResult(WeChatNativeMutationResult.Outcome.READ_FAILED, "读取微信原生好友对象失败");
+        }
+        ClassLoader loader = nativeContact.getClass().getClassLoader();
+        if (loader == null || networkDispatcher == null) {
+            return nativeResult(WeChatNativeMutationResult.Outcome.NOT_SUBMITTED, "微信原生请求 API 不可用");
+        }
+        try {
+            // 8.0.80 OnlyChatContactMgrUI creates q61.i0(users, 0x800000, op, maxNum).
+            Class<?> sceneClass = Class.forName("q61.i0", false, loader);
+            Constructor<?> ctor = sceneClass.getDeclaredConstructor(List.class, int.class, int.class, int.class);
+            ctor.setAccessible(true);
+            Object scene = ctor.newInstance(Collections.singletonList(username), bit, enabled ? 1 : 0, 1);
+            ContactStateResult latest = getContactStateResult(username);
+            if (!latest.success) return nativeResult(WeChatNativeMutationResult.Outcome.READ_FAILED,
+                    latest.error.isBlank() ? "提交前复核好友权限失败" : latest.error);
+            if (!latest.found || !latest.validFriend) {
+                return nativeResult(WeChatNativeMutationResult.Outcome.INVALID_TARGET, "好友关系已失效，未提交");
+            }
+            if (WeChatContactTypeState.matches(latest.type, bit, enabled)) {
+                return nativeResult(WeChatNativeMutationResult.Outcome.ALREADY_SATISFIED, feature + "已符合目标");
+            }
+            if (!maySubmit(guard)) {
+                return nativeResult(WeChatNativeMutationResult.Outcome.NOT_SUBMITTED, "账号已切换或任务已停止");
+            }
+            installNetworkHook();
+            ContactRequestDispatch.Result dispatch = NativeSceneDispatch.submitAndAwait(
+                    scene, networkDispatcher, () -> maySubmit(guard), (errorType, errorCode) -> {});
+            ContactStateResult after = getContactStateResult(username);
+            if (!after.success) return nativeResult(WeChatNativeMutationResult.Outcome.READ_FAILED,
+                    "原生请求已结束，但读取权限状态失败");
+            if (after.found && WeChatContactTypeState.matches(after.type, bit, enabled)) {
+                return nativeResult(WeChatNativeMutationResult.Outcome.CONFIRMED, feature + "状态已确认");
+            }
+            if (dispatch.outcome == ContactRequestDispatch.Outcome.SERVER_REJECTED) {
+                return nativeResult(WeChatNativeMutationResult.Outcome.SERVER_REJECTED, feature + "服务端拒绝");
+            }
+            if (dispatch.outcome == ContactRequestDispatch.Outcome.SERVER_ACCEPTED) {
+                return nativeResult(WeChatNativeMutationResult.Outcome.SERVER_ACCEPTED,
+                        "服务端已接受，最终状态未确认");
+            }
+            if (dispatch.wasSubmitted()) {
+                return nativeResult(WeChatNativeMutationResult.Outcome.SUBMITTED_UNCONFIRMED,
+                        "已提交／未确认");
+            }
+            if (dispatch.outcome == ContactRequestDispatch.Outcome.DISPATCH_FAILED) {
+                return nativeResult(WeChatNativeMutationResult.Outcome.SUBMITTED_UNCONFIRMED,
+                        "请求调用结果未知，未重试");
+            }
+            return nativeResult(WeChatNativeMutationResult.Outcome.NOT_SUBMITTED, "微信原生权限请求未提交");
+        } catch (Throwable e) {
+            log("提交好友权限失败: " + e.getMessage());
+            return nativeResult(WeChatNativeMutationResult.Outcome.NOT_SUBMITTED, "微信原生权限请求不可用");
+        }
+    }
+
+    /**
+     * The native "don't see their Moments" switch is membership in SNS tag 5, not a
+     * rcontact.type bit. Reuses SnsPermissionUI's exact storage read and NetSceneSnsTagMemberOption
+     * request so a local contact flag can never be mistaken for the remotely-synced state.
+     */
+    private WeChatNativeMutationResult setSnsTagPermission(
+            String username, boolean enabled, BatchSubmissionGuard guard) {
+        if (TextUtils.isEmpty(username)) {
+            return nativeResult(WeChatNativeMutationResult.Outcome.INVALID_TARGET, "好友 ID 为空");
+        }
+        ContactStateResult before = getContactStateResult(username);
+        if (!before.success) return nativeResult(WeChatNativeMutationResult.Outcome.READ_FAILED,
+                before.error.isBlank() ? "读取好友权限失败" : before.error);
+        if (!before.found || !before.validFriend) {
+            return nativeResult(WeChatNativeMutationResult.Outcome.INVALID_TARGET, "好友关系已失效");
+        }
+        Boolean currentMembership = readSnsTagMembership(username, 5L);
+        if (currentMembership == null) return nativeResult(WeChatNativeMutationResult.Outcome.READ_FAILED,
+                "读取微信朋友圈权限标签失败，未提交");
+        if (currentMembership == enabled) return nativeResult(
+                WeChatNativeMutationResult.Outcome.ALREADY_SATISFIED, "不看对方朋友圈已符合目标");
+        if (!maySubmit(guard)) return nativeResult(
+                WeChatNativeMutationResult.Outcome.NOT_SUBMITTED, "账号已切换或任务已停止");
+
+        Object nativeContact = getNativeContactObject(username);
+        if (nativeContact == null || nativeContact.getClass().getClassLoader() == null
+                || networkDispatcher == null) {
+            return nativeResult(WeChatNativeMutationResult.Outcome.READ_FAILED,
+                    "微信朋友圈权限 API 不可用，未提交");
+        }
+        try {
+            ContactStateResult latest = getContactStateResult(username);
+            if (!latest.success) return nativeResult(WeChatNativeMutationResult.Outcome.READ_FAILED,
+                    latest.error.isBlank() ? "提交前复核好友权限失败" : latest.error);
+            if (!latest.found || !latest.validFriend) return nativeResult(
+                    WeChatNativeMutationResult.Outcome.INVALID_TARGET, "好友关系已失效，未提交");
+            Boolean latestMembership = readSnsTagMembership(username, 5L);
+            if (latestMembership == null) return nativeResult(WeChatNativeMutationResult.Outcome.READ_FAILED,
+                    "提交前读取微信朋友圈权限标签失败，未提交");
+            if (latestMembership == enabled) return nativeResult(
+                    WeChatNativeMutationResult.Outcome.ALREADY_SATISFIED, "不看对方朋友圈已符合目标");
+            if (!maySubmit(guard)) return nativeResult(
+                    WeChatNativeMutationResult.Outcome.NOT_SUBMITTED, "账号已切换或任务已停止");
+
+            ClassLoader loader = nativeContact.getClass().getClassLoader();
+            Class<?> sceneClass = Class.forName("com.tencent.mm.plugin.sns.model.j3", false, loader);
+            Constructor<?> ctor = sceneClass.getDeclaredConstructor(
+                    int.class, long.class, String.class, int.class, List.class, int.class);
+            ctor.setAccessible(true);
+            // Native SnsPermissionUI uses op=1 to add and op=2 to remove exactly this wxid from tag 5.
+            Object scene = ctor.newInstance(enabled ? 1 : 2, 5L, "", 1,
+                    Collections.singletonList(username), 0);
+            installNetworkHook();
+            ContactRequestDispatch.Result dispatch = NativeSceneDispatch.submitAndAwait(
+                    scene, networkDispatcher, () -> maySubmit(guard), (errorType, errorCode) -> {});
+            Boolean after = readSnsTagMembership(username, 5L);
+            if (after == null) {
+                return nativeResult(dispatch.wasSubmitted()
+                                ? WeChatNativeMutationResult.Outcome.SUBMITTED_UNCONFIRMED
+                                : WeChatNativeMutationResult.Outcome.READ_FAILED,
+                        "朋友圈权限请求已结束，但标签成员状态读取失败");
+            }
+            if (after == enabled) return nativeResult(
+                    WeChatNativeMutationResult.Outcome.CONFIRMED, "不看对方朋友圈状态已确认");
+            if (dispatch.outcome == ContactRequestDispatch.Outcome.SERVER_REJECTED) {
+                return nativeResult(WeChatNativeMutationResult.Outcome.SERVER_REJECTED,
+                        "微信服务端拒绝朋友圈权限修改");
+            }
+            if (dispatch.outcome == ContactRequestDispatch.Outcome.SERVER_ACCEPTED) {
+                return nativeResult(WeChatNativeMutationResult.Outcome.SERVER_ACCEPTED,
+                        "服务端已接受，朋友圈权限标签状态未确认");
+            }
+            if (dispatch.wasSubmitted()) return nativeResult(
+                    WeChatNativeMutationResult.Outcome.SUBMITTED_UNCONFIRMED, "已提交／未确认");
+            if (dispatch.outcome == ContactRequestDispatch.Outcome.DISPATCH_FAILED) {
+                return nativeResult(WeChatNativeMutationResult.Outcome.SUBMITTED_UNCONFIRMED,
+                        "请求调用结果未知，未重试");
+            }
+            return nativeResult(WeChatNativeMutationResult.Outcome.NOT_SUBMITTED,
+                    "微信原生朋友圈权限请求未提交");
+        } catch (Throwable e) {
+            log("提交不看对方朋友圈失败: " + e.getMessage());
+            return nativeResult(WeChatNativeMutationResult.Outcome.NOT_SUBMITTED,
+                    "微信原生朋友圈权限 API 不可用");
+        }
+    }
+
+    /** Exact read path used by SnsPermissionUI.G7(username, 5L). */
+    private Boolean readSnsTagMembership(String username, long tagId) {
+        Object nativeContact = getNativeContactObject(username);
+        if (nativeContact == null || nativeContact.getClass().getClassLoader() == null) return null;
+        try {
+            ClassLoader loader = nativeContact.getClass().getClassLoader();
+            Class<?> tagStoreGetter = Class.forName("com.tencent.mm.plugin.sns.model.p4", false, loader);
+            Method getTagStore = tagStoreGetter.getDeclaredMethod("sk");
+            if (!Modifier.isStatic(getTagStore.getModifiers()) || getTagStore.getParameterTypes().length != 0
+                    || !"com.tencent.mm.plugin.sns.storage.t2".equals(getTagStore.getReturnType().getName())) {
+                return null;
+            }
+            getTagStore.setAccessible(true);
+            Object tagStore = KavaReflector.invokeOrThrow(getTagStore, null);
+            if (tagStore == null) return null;
+            Method contains = KavaReflector.findMethodRecursive(
+                    tagStore.getClass(), "P1", String.class, long.class);
+            if (contains == null || contains.getReturnType() != boolean.class
+                    || contains.getParameterTypes().length != 2
+                    || contains.getParameterTypes()[0] != String.class
+                    || contains.getParameterTypes()[1] != long.class) return null;
+            Object value = KavaReflector.invokeOrThrow(contains, tagStore, username, tagId);
+            return value instanceof Boolean ? (Boolean) value : null;
+        } catch (Throwable e) {
+            log("读取微信朋友圈权限标签失败: " + e.getMessage());
+            return null;
+        }
+    }
+
+    private WeChatNativeMutationResult setLocalContactPermission(
+            String username,
+            boolean enabled,
+            int bit,
+            String helperName,
+            BatchSubmissionGuard guard,
+            String feature) {
+        if (TextUtils.isEmpty(username)) {
+            return nativeResult(WeChatNativeMutationResult.Outcome.INVALID_TARGET, "好友 ID 为空");
+        }
+        ContactStateResult before = getContactStateResult(username);
+        if (!before.success) return nativeResult(WeChatNativeMutationResult.Outcome.READ_FAILED,
+                before.error.isBlank() ? "读取好友状态失败" : before.error);
+        if (!before.found || !before.validFriend) {
+            return nativeResult(WeChatNativeMutationResult.Outcome.INVALID_TARGET, "好友关系已失效");
+        }
+        if (WeChatContactTypeState.matches(before.type, bit, enabled)) {
+            return nativeResult(WeChatNativeMutationResult.Outcome.ALREADY_SATISFIED, feature + "已符合目标");
+        }
+        if (!maySubmit(guard)) {
+            return nativeResult(WeChatNativeMutationResult.Outcome.NOT_SUBMITTED, "账号已切换或任务已停止");
+        }
+        Object nativeContact = getNativeContactObject(username);
+        if (nativeContact == null) {
+            return nativeResult(WeChatNativeMutationResult.Outcome.READ_FAILED, "读取微信原生好友对象失败");
+        }
+        Method action = findNativeContactHelper(nativeContact, helperName);
+        if (action == null) {
+            return nativeResult(WeChatNativeMutationResult.Outcome.NOT_SUBMITTED,
+                    "微信原生好友设置入口不可用");
+        }
+        AtomicBoolean nativeCallStarted = new AtomicBoolean(false);
+        try {
+            Boolean submitted = WeChatMainThread.call(() -> {
+                if (!maySubmit(guard)) throw new IllegalStateException("账号已切换或任务已停止");
+                Object currentContact = getNativeContactObject(username);
+                if (currentContact == null) throw new IllegalStateException("微信原生好友对象不可用");
+                if (!action.getParameterTypes()[0].isInstance(currentContact)) {
+                    throw new IllegalStateException("微信原生好友对象类型已变化");
+                }
+                Boolean currentState = readNativeFriendFlag(currentContact, bit);
+                if (currentState == null) throw new IllegalStateException("读取微信原生好友状态失败");
+                if (currentState == enabled) return Boolean.FALSE;
+                nativeCallStarted.set(true);
+                if ("B0".equals(helperName)) {
+                    action.invoke(null, currentContact, enabled, true);
+                } else {
+                    action.invoke(null, currentContact);
+                }
+                return Boolean.TRUE;
+            });
+            if (!Boolean.TRUE.equals(submitted)) {
+                return nativeResult(WeChatNativeMutationResult.Outcome.ALREADY_SATISFIED,
+                        feature + "已符合目标");
+            }
+            ContactStateResult after = getContactStateResult(username);
+            if (!after.success) return nativeResult(WeChatNativeMutationResult.Outcome.SUBMITTED_UNCONFIRMED,
+                    "已提交／状态读取失败");
+            if (after.found && WeChatContactTypeState.matches(after.type, bit, enabled)) {
+                return nativeResult(WeChatNativeMutationResult.Outcome.SUBMITTED_UNCONFIRMED,
+                        "微信原生入口已提交，服务端结果未确认");
+            }
+            return nativeResult(WeChatNativeMutationResult.Outcome.SUBMITTED_UNCONFIRMED,
+                    "已提交／未确认");
+        } catch (Throwable e) {
+            log("提交" + feature + "失败: " + e.getMessage());
+            if (nativeCallStarted.get()) {
+                return nativeResult(WeChatNativeMutationResult.Outcome.SUBMITTED_UNCONFIRMED,
+                        "原生入口已调用，请求结果未确认");
+            }
+            return nativeResult(WeChatNativeMutationResult.Outcome.NOT_SUBMITTED,
+                    e.getMessage() != null && e.getMessage().contains("已切换")
+                            ? e.getMessage() : "微信原生" + feature + "入口不可用");
+        }
+    }
+
+    private Method findNativeContactHelper(Object nativeContact, String methodName) {
+        if (nativeContact == null) return null;
+        try {
+            Class<?> owner = Class.forName("w41.e2", false, nativeContact.getClass().getClassLoader());
+            for (Method method : owner.getDeclaredMethods()) {
+                Class<?>[] params = method.getParameterTypes();
+                boolean valid = Modifier.isStatic(method.getModifiers()) && method.getReturnType() == void.class
+                        && methodName.equals(method.getName());
+                if ("B0".equals(methodName)) {
+                    valid &= params.length == 3 && params[0].isInstance(nativeContact)
+                            && params[1] == boolean.class && params[2] == boolean.class;
+                } else {
+                    valid &= params.length == 1 && params[0].isInstance(nativeContact);
+                }
+                if (valid) {
+                    method.setAccessible(true);
+                    return method;
+                }
+            }
+        } catch (Throwable e) {
+            log("定位微信原生好友入口失败: " + e.getMessage());
+        }
+        return null;
+    }
+
+    private Boolean readNativeFriendFlag(Object nativeContact, int bit) throws Exception {
+        String getterName = bit == WeChatContactTypeState.STARRED_FRIEND ? "t2"
+                : bit == WeChatContactTypeState.DO_NOT_LET_SEE_MOMENTS ? "x2" : "";
+        if (getterName.isEmpty()) return null;
+        Method getter = KavaReflector.findMethodRecursive(nativeContact.getClass(), getterName);
+        if (getter == null || getter.getReturnType() != boolean.class || getter.getParameterTypes().length != 0) {
+            throw new IllegalStateException("微信联系人权限状态读取入口不可用");
+        }
+        Object value = KavaReflector.invokeOrThrow(getter, nativeContact);
+        return value instanceof Boolean ? (Boolean) value : null;
+    }
+
+    private static WeChatNativeMutationResult nativeResult(
+            WeChatNativeMutationResult.Outcome outcome, String message) {
+        return WeChatNativeMutationResult.of(outcome, message);
     }
 
     /**
@@ -1309,6 +1735,25 @@ public final class WeChatContactApi {
             result.add(toContact(row));
         }
         return result;
+    }
+
+    private ContactListResult queryContactsWithStatus(String sql, String[] args) {
+        if (databaseApi == null || !databaseApi.isAvailable()) {
+            return new ContactListResult(false, Collections.emptyList(), "微信联系人数据库不可用");
+        }
+        WeChatDatabaseApi.QueryResult query = databaseApi.queryWithStatus(sql, args);
+        if (!query.success) {
+            return new ContactListResult(false, Collections.emptyList(),
+                    query.error.isBlank() ? "读取联系人列表失败" : query.error);
+        }
+        List<WeChatContact> contacts = new ArrayList<>(query.rows.size());
+        try {
+            for (Map<String, Object> row : query.rows) contacts.add(toContact(row));
+            return new ContactListResult(true, contacts, "");
+        } catch (Throwable e) {
+            log("解析批量联系人列表失败: " + e.getMessage());
+            return new ContactListResult(false, Collections.emptyList(), "解析联系人列表失败");
+        }
     }
 
     private List<WeChatContact> queryPickerContacts(String sql, String[] args) {

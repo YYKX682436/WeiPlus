@@ -7,15 +7,24 @@ import h.Hchat.hooks.api.model.WeChatChatroom;
 import h.Hchat.hooks.api.model.WeChatContact;
 import h.Hchat.hooks.api.net.WeChatNetworkDispatcher;
 import h.Hchat.hooks.api.runtime.WeChatDatabaseApi;
+import h.Hchat.hooks.api.media.WeChatInternalServices;
 import h.Hchat.utils.KavaReflector;
 
+import java.lang.reflect.Field;
+import java.lang.reflect.InvocationHandler;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
+import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.lang.reflect.Method;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * 微信群聊 API。
@@ -128,6 +137,193 @@ public final class WeChatChatroomApi {
         return getMemberIds(chatroomId).size();
     }
 
+    /**
+     * Reuses ChatroomInfoUI's RoomSDK service method (interface k(contact, save)). The native
+     * method owns the local contact update and sends the group-contact operation; it exposes no
+     * response callback, so this API reports submission as unconfirmed even if local type changes.
+     */
+    public WeChatNativeMutationResult setGroupSavedToContacts(
+            String chatroomId, boolean saved, WeChatContactApi.BatchSubmissionGuard guard) {
+        GroupContactState before = readGroupContactState(chatroomId);
+        if (!before.success) return mutation(WeChatNativeMutationResult.Outcome.READ_FAILED, before.error);
+        if (!before.found) return mutation(WeChatNativeMutationResult.Outcome.INVALID_TARGET, "群聊联系人已失效");
+        if (((before.type & 1) != 0) == saved) {
+            return mutation(WeChatNativeMutationResult.Outcome.ALREADY_SATISFIED, "保存通讯录状态已符合目标");
+        }
+        if (!maySubmit(guard)) return mutation(WeChatNativeMutationResult.Outcome.NOT_SUBMITTED, "账号已切换或任务已停止");
+        Object preloadedContact = contactApi.getNativeContactObject(chatroomId);
+        if (preloadedContact == null) {
+            return mutation(WeChatNativeMutationResult.Outcome.READ_FAILED, "读取微信原生群聊联系人对象失败");
+        }
+        GroupContactState current = readGroupContactState(chatroomId);
+        if (!current.success) return mutation(WeChatNativeMutationResult.Outcome.READ_FAILED,
+                "提交前读取群聊状态失败");
+        if (!current.found) return mutation(WeChatNativeMutationResult.Outcome.INVALID_TARGET,
+                "群聊联系人已失效");
+        if (((current.type & 1) != 0) == saved) {
+            return mutation(WeChatNativeMutationResult.Outcome.ALREADY_SATISFIED, "保存通讯录状态已符合目标");
+        }
+        Object roomApi;
+        Method save;
+        try {
+            roomApi = nativeRoomApi(chatroomId);
+            save = findRoomSaveMethod(roomApi, preloadedContact);
+            if (save == null) throw new IllegalStateException("微信原生保存群聊入口不可用");
+        } catch (Throwable e) {
+            log("准备群聊通讯录请求失败: " + e.getMessage());
+            return mutation(WeChatNativeMutationResult.Outcome.NOT_SUBMITTED,
+                    "微信原生保存群聊入口不可用");
+        }
+        AtomicBoolean nativeCallStarted = new AtomicBoolean(false);
+        try {
+            Boolean submitted = WeChatMainThread.call(() -> {
+                if (!maySubmit(guard)) throw new IllegalStateException("账号已切换或任务已停止");
+                Object nativeContact = contactApi.getNativeContactObject(chatroomId);
+                if (nativeContact == null) throw new IllegalStateException("微信原生群聊联系人对象不可用");
+                Boolean currentSaved = readNativeGroupSavedFlag(nativeContact);
+                if (currentSaved == null) throw new IllegalStateException("读取微信原生群保存状态失败");
+                if (currentSaved == saved) return Boolean.FALSE;
+                nativeCallStarted.set(true);
+                KavaReflector.invokeOrThrow(save, roomApi, nativeContact, saved);
+                return Boolean.TRUE;
+            });
+            if (!Boolean.TRUE.equals(submitted)) {
+                return mutation(WeChatNativeMutationResult.Outcome.ALREADY_SATISFIED, "保存通讯录状态已符合目标");
+            }
+            return mutation(WeChatNativeMutationResult.Outcome.SUBMITTED_UNCONFIRMED,
+                    "微信原生保存请求已提交，服务端结果未确认");
+        } catch (Throwable e) {
+            log("保存群聊到通讯录失败: " + e.getMessage());
+            if (nativeCallStarted.get()) {
+                return mutation(WeChatNativeMutationResult.Outcome.SUBMITTED_UNCONFIRMED,
+                        "原生保存入口已调用，请求结果未确认");
+            }
+            return mutation(WeChatNativeMutationResult.Outcome.NOT_SUBMITTED,
+                    e.getMessage() != null && e.getMessage().contains("已切换")
+                            ? e.getMessage() : "微信原生保存群聊入口不可用");
+        }
+    }
+
+    private Boolean readNativeGroupSavedFlag(Object nativeContact) throws Exception {
+        Method getter = KavaReflector.findMethodRecursive(nativeContact.getClass(), "r2");
+        if (getter == null || getter.getReturnType() != boolean.class || getter.getParameterTypes().length != 0) {
+            return null;
+        }
+        Object value = KavaReflector.invokeOrThrow(getter, nativeContact);
+        return value instanceof Boolean ? (Boolean) value : null;
+    }
+
+    /**
+     * Reuses the ModRemarkRoomNameUI RoomSDK n(roomId, currentWxId, nickname) operation. The
+     * native callback receives the server response. Only after a zero error code does this method
+     * run the same local chatroom-row update that the native b6 callback performs.
+     */
+    public WeChatNativeMutationResult setMyGroupNickname(
+            String chatroomId,
+            String requestedNickname,
+            String selfWxId,
+            WeChatContactApi.BatchSubmissionGuard guard,
+            WeChatContactApi.BatchSubmissionGuard accountGuard) {
+        if (!isGroup(chatroomId)) return mutation(WeChatNativeMutationResult.Outcome.INVALID_TARGET, "群聊 ID 无效");
+        String roomId = chatroomId.trim();
+        String selfId = selfWxId == null ? "" : selfWxId.trim();
+        if (selfId.isEmpty()) return mutation(WeChatNativeMutationResult.Outcome.READ_FAILED, "无法确认当前微信账号");
+        GroupContactState contactState = readGroupContactState(roomId);
+        if (!contactState.success) return mutation(WeChatNativeMutationResult.Outcome.READ_FAILED, contactState.error);
+        if (!contactState.found) return mutation(WeChatNativeMutationResult.Outcome.INVALID_TARGET, "群聊联系人已失效");
+
+        String nickname;
+        try {
+            nickname = normalizeNativeRoomNickname(requestedNickname, roomId);
+        } catch (Throwable e) {
+            return mutation(WeChatNativeMutationResult.Outcome.NOT_SUBMITTED, "微信昵称校验 API 不可用");
+        }
+        if (nickname.trim().isEmpty()) {
+            return mutation(WeChatNativeMutationResult.Outcome.INVALID_TARGET, "群聊昵称不允许为空");
+        }
+        if (nickname.length() > 16) {
+            return mutation(WeChatNativeMutationResult.Outcome.INVALID_TARGET, "群聊昵称不允许超过16个汉字");
+        }
+
+        RoomNicknameState before = readMyNicknameState(roomId, selfId);
+        if (!before.success) return mutation(WeChatNativeMutationResult.Outcome.READ_FAILED, before.error);
+        if (!before.member) return mutation(WeChatNativeMutationResult.Outcome.INVALID_TARGET, "当前账号已不在该群聊");
+        if (nickname.equals(before.nickname)) {
+            return mutation(WeChatNativeMutationResult.Outcome.ALREADY_SATISFIED, "我在群里的昵称已符合目标");
+        }
+        if (!maySubmit(guard)) return mutation(WeChatNativeMutationResult.Outcome.NOT_SUBMITTED, "账号已切换或任务已停止");
+
+        PendingNickname pending = new PendingNickname();
+        final Object factory;
+        final Method submit;
+        try {
+            // Keep database reads, service lookup, and callback wiring off the main looper.
+            // The native editor calls the factory submission method from its click listener, so
+            // only that short request handoff is marshalled to the UI thread below.
+            GroupContactState currentContact = readGroupContactState(roomId);
+            if (!currentContact.success || !currentContact.found) {
+                throw new IllegalStateException("提交前无法确认群聊联系人");
+            }
+            RoomNicknameState current = readMyNicknameState(roomId, selfId);
+            if (!current.success) throw new IllegalStateException(current.error);
+            if (!current.member) throw new IllegalStateException("当前账号已不在该群聊");
+            if (nickname.equals(current.nickname)) {
+                return mutation(WeChatNativeMutationResult.Outcome.ALREADY_SATISFIED,
+                        "我在群里的昵称已符合目标");
+            }
+            Object roomApi = nativeRoomApi(roomId);
+            Method modify = findRoomNicknameMethod(roomApi);
+            if (modify == null) throw new IllegalStateException("微信原生群昵称入口不可用");
+            factory = KavaReflector.invokeOrThrow(modify, roomApi, roomId, selfId, nickname);
+            if (factory == null) throw new IllegalStateException("微信原生群昵称请求构造失败");
+            installNicknameCallback(factory, roomId, selfId, nickname, accountGuard, pending);
+            submit = findRoomFactorySubmitMethod(factory);
+            if (submit == null) {
+                throw new IllegalStateException("RoomSDK 群昵称提交方法不可用");
+            }
+        } catch (Throwable e) {
+            log("准备群昵称请求失败: " + e.getMessage());
+            return mutation(WeChatNativeMutationResult.Outcome.NOT_SUBMITTED,
+                    e.getMessage() != null && e.getMessage().contains("已切换")
+                            ? e.getMessage() : "微信原生群昵称入口不可用");
+        }
+
+        try {
+            Boolean submitted = WeChatMainThread.call(() -> {
+                if (!maySubmit(guard)) throw new IllegalStateException("账号已切换或任务已停止");
+                pending.submitted.set(true);
+                KavaReflector.invokeOrThrow(submit, factory);
+                return Boolean.TRUE;
+            });
+            if (!Boolean.TRUE.equals(submitted)) {
+                return mutation(WeChatNativeMutationResult.Outcome.ALREADY_SATISFIED, "我在群里的昵称已符合目标");
+            }
+        } catch (Throwable e) {
+            log("提交群昵称失败: " + e.getMessage());
+            WeChatNativeMutationResult completed = pending.result.get();
+            if (completed != null) return completed;
+            if (pending.submitted.get()) {
+                return mutation(WeChatNativeMutationResult.Outcome.SUBMITTED_UNCONFIRMED,
+                        "RoomSDK 提交结果未知，未重试");
+            }
+            return mutation(WeChatNativeMutationResult.Outcome.NOT_SUBMITTED,
+                    e.getMessage() != null && e.getMessage().contains("已切换")
+                            ? e.getMessage() : "微信原生群昵称入口不可用");
+        }
+
+        try {
+            if (!pending.completed.await(ContactRequestDispatch.DEFAULT_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)) {
+                return mutation(WeChatNativeMutationResult.Outcome.SUBMITTED_UNCONFIRMED, "已提交／未确认");
+            }
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return mutation(WeChatNativeMutationResult.Outcome.SUBMITTED_UNCONFIRMED, "已提交／等待确认中断");
+        }
+        WeChatNativeMutationResult result = pending.result.get();
+        return result != null ? result
+                : mutation(WeChatNativeMutationResult.Outcome.SUBMITTED_UNCONFIRMED, "已提交／未确认");
+    }
+
     public boolean isMember(String chatroomId, String memberWxId) {
         if (TextUtils.isEmpty(memberWxId)) return false;
         for (String member : getMemberIds(chatroomId)) {
@@ -151,6 +347,242 @@ public final class WeChatChatroomApi {
         if (!TextUtils.isEmpty(owner) && owner.equals(memberWxId)) return ROLE_OWNER;
         RoomDataMember member = getRoomDataMembers(chatroomId).get(memberWxId);
         return member != null && (member.roomFlag & ROOM_FLAG_ADMIN) != 0 ? ROLE_ADMIN : ROLE_MEMBER;
+    }
+
+    private GroupContactState readGroupContactState(String chatroomId) {
+        if (!isGroup(chatroomId) || databaseApi == null || !databaseApi.isAvailable()) {
+            return new GroupContactState(false, false, 0, "微信群数据库不可用");
+        }
+        WeChatDatabaseApi.QueryResult query = databaseApi.queryWithStatus(
+                "SELECT username, type FROM rcontact WHERE username=? "
+                        + "AND (username LIKE '%@chatroom' OR username LIKE '%@im.chatroom') LIMIT 1",
+                new String[]{chatroomId.trim()});
+        if (!query.success) return new GroupContactState(false, false, 0,
+                query.error.isBlank() ? "读取群聊联系人失败" : query.error);
+        if (query.rows.isEmpty()) return new GroupContactState(true, false, 0, "");
+        return new GroupContactState(true, true, intValue(query.rows.get(0), "type"), "");
+    }
+
+    private RoomNicknameState readMyNicknameState(String roomId, String selfId) {
+        if (databaseApi == null || !databaseApi.isAvailable()) {
+            return new RoomNicknameState(false, false, "", "微信群数据库不可用");
+        }
+        WeChatDatabaseApi.QueryResult query = databaseApi.queryWithStatus(
+                "SELECT memberlist, selfDisplayName FROM chatroom WHERE chatroomname=? LIMIT 1",
+                new String[]{roomId});
+        if (!query.success) return new RoomNicknameState(false, false, "",
+                query.error.isBlank() ? "读取群成员状态失败" : query.error);
+        if (query.rows.isEmpty()) {
+            return new RoomNicknameState(false, false, "", "群聊成员资料不可用，无法确认当前账号身份");
+        }
+        Map<String, Object> row = query.rows.get(0);
+        String rawMembers = str(row, "memberlist");
+        if (rawMembers.trim().isEmpty()) {
+            return new RoomNicknameState(false, false, "", "群成员资料为空，无法确认当前账号身份");
+        }
+        boolean member = false;
+        for (String memberId : splitMembers(rawMembers)) {
+            if (selfId.equals(memberId.trim())) {
+                member = true;
+                break;
+            }
+        }
+        return new RoomNicknameState(true, member, str(row, "selfDisplayName"), "");
+    }
+
+    private Object nativeRoomApi(String roomId) throws Exception {
+        if (dexFinder == null) throw new IllegalStateException("DexFinder 不可用");
+        Method getter = dexFinder.chatroomMuteServiceGetterMethod;
+        if (getter == null || getter.getParameterTypes().length != 1
+                || getter.getParameterTypes()[0] != String.class
+                || getter.getReturnType().isPrimitive()
+                || getter.getReturnType() == void.class) {
+            dexFinder.resolveConversationMuteApi();
+            getter = dexFinder.chatroomMuteServiceGetterMethod;
+        }
+        if (getter == null || getter.getParameterTypes().length != 1
+                || getter.getParameterTypes()[0] != String.class) {
+            throw new IllegalStateException("微信 RoomSDK 群服务定位失败");
+        }
+        Object service = WeChatInternalServices.getService(dexFinder, getter.getDeclaringClass());
+        if (service == null) throw new IllegalStateException("微信 RoomSDK 群服务不可用");
+        Object roomApi = KavaReflector.invokeOrThrow(getter, service, roomId);
+        if (roomApi == null || !getter.getReturnType().isInstance(roomApi)) {
+            throw new IllegalStateException("微信 RoomSDK 群服务返回对象无效");
+        }
+        return roomApi;
+    }
+
+    private Method findRoomSaveMethod(Object roomApi, Object nativeContact) {
+        if (roomApi == null || nativeContact == null) return null;
+        Method method = KavaReflector.findMethodRecursive(
+                roomApi.getClass(), "k", nativeContact.getClass(), boolean.class);
+        if (method == null || method.getReturnType() != void.class
+                || method.getParameterTypes().length != 2
+                || !method.getParameterTypes()[0].isInstance(nativeContact)
+                || method.getParameterTypes()[1] != boolean.class) return null;
+        return method;
+    }
+
+    private Method findRoomNicknameMethod(Object roomApi) {
+        if (roomApi == null) return null;
+        Method method = KavaReflector.findMethodRecursive(
+                roomApi.getClass(), "n", String.class, String.class, String.class);
+        if (method == null || method.getParameterTypes().length != 3
+                || method.getReturnType().isPrimitive() || method.getReturnType() == void.class
+                || !"com.tencent.mm.roomsdk.model.factory.a".equals(method.getReturnType().getName())) {
+            return null;
+        }
+        return method;
+    }
+
+    /** Exact abstract API used by RoomSDK's native request factory; invocation dispatches to f.b(). */
+    private Method findRoomFactorySubmitMethod(Object factory) {
+        if (factory == null || factory.getClass().getClassLoader() == null) return null;
+        try {
+            Class<?> factoryBase = Class.forName(
+                    "com.tencent.mm.roomsdk.model.factory.a", false, factory.getClass().getClassLoader());
+            if (!factoryBase.isInstance(factory)) return null;
+            Method submit = factoryBase.getDeclaredMethod("b");
+            if (submit.getReturnType() != void.class || submit.getParameterTypes().length != 0
+                    || Modifier.isStatic(submit.getModifiers())) return null;
+            submit.setAccessible(true);
+            return submit;
+        } catch (Throwable e) {
+            return null;
+        }
+    }
+
+    private String normalizeNativeRoomNickname(String requestedNickname, String roomId) throws Exception {
+        if (TextUtils.isEmpty(requestedNickname)) return "";
+        Object nativeContact = contactApi != null ? contactApi.getNativeContactObject(roomId) : null;
+        if (nativeContact == null || nativeContact.getClass().getClassLoader() == null) {
+            throw new IllegalStateException("微信原生群聊联系人对象不可用");
+        }
+        Class<?> normalizer = Class.forName(
+                "com.tencent.mm.sdk.platformtools.b9", false, nativeContact.getClass().getClassLoader());
+        Method method = normalizer.getDeclaredMethod("n", String.class);
+        if (!KavaReflector.isStatic(method) || method.getReturnType() != String.class) {
+            throw new IllegalStateException("微信原生昵称标准化方法签名不匹配");
+        }
+        method.setAccessible(true);
+        Object normalized = KavaReflector.invokeOrThrow(method, null, requestedNickname.trim());
+        if (!(normalized instanceof String)) throw new IllegalStateException("微信昵称标准化失败");
+        return ((String) normalized).trim();
+    }
+
+    private void installNicknameCallback(
+            Object factory,
+            String roomId,
+            String selfId,
+            String nickname,
+            WeChatContactApi.BatchSubmissionGuard accountGuard,
+            PendingNickname pending) throws Exception {
+        Field callbackField = KavaReflector.findFieldRecursive(factory.getClass(), "d");
+        if (callbackField == null || !callbackField.getType().isInterface()) {
+            throw new IllegalStateException("RoomSDK 群昵称回调接口不可用");
+        }
+        Class<?> callbackType = callbackField.getType();
+        Method callbackMethod = callbackType.getMethod(
+                "a", int.class, int.class, String.class, callbackType);
+        if (callbackMethod.getReturnType() != void.class) {
+            throw new IllegalStateException("RoomSDK 群昵称回调签名不匹配");
+        }
+        Object callback = Proxy.newProxyInstance(
+                callbackType.getClassLoader(), new Class<?>[]{callbackType},
+                new InvocationHandler() {
+                    @Override
+                    public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
+                        if (method.getDeclaringClass() == Object.class) {
+                            if ("toString".equals(method.getName())) return "WeiPlusRoomNicknameCallback";
+                            if ("hashCode".equals(method.getName())) return System.identityHashCode(proxy);
+                            if ("equals".equals(method.getName())) return proxy == (args != null && args.length > 0 ? args[0] : null);
+                        }
+                        if ("a".equals(method.getName()) && args != null && args.length == 4
+                                && args[0] instanceof Number && args[1] instanceof Number) {
+                            if (!pending.completedOnce.compareAndSet(false, true)) return null;
+                            int errorCode = ((Number) args[1]).intValue();
+                            WeChatNativeMutationResult result;
+                            if (errorCode != 0) {
+                                result = mutation(WeChatNativeMutationResult.Outcome.SERVER_REJECTED,
+                                        "微信服务端拒绝群昵称修改");
+                            } else if (accountGuard == null || !accountGuard.mayContinue()) {
+                                result = mutation(WeChatNativeMutationResult.Outcome.SERVER_ACCEPTED,
+                                        "服务端已接受；账号已切换，本地状态未更新");
+                            } else {
+                                boolean updated = WeChatMainThread.call(
+                                        () -> updateMyNicknameCache(roomId, nickname, factory.getClass().getClassLoader()));
+                                RoomNicknameState finalState = readMyNicknameState(roomId, selfId);
+                                result = updated && finalState.success && finalState.member
+                                        && nickname.equals(finalState.nickname)
+                                        ? mutation(WeChatNativeMutationResult.Outcome.CONFIRMED,
+                                                "群昵称服务端回调成功且状态已确认")
+                                        : mutation(WeChatNativeMutationResult.Outcome.SERVER_ACCEPTED,
+                                                "服务端已接受，本地最终状态未确认");
+                            }
+                            pending.result.set(result);
+                            pending.completed.countDown();
+                        }
+                        return null;
+                    }
+                });
+        if (!KavaReflector.writeField(callbackField, factory, callback)) {
+            throw new IllegalStateException("RoomSDK 群昵称回调注册失败");
+        }
+    }
+
+    /** Mirrors the native b6 success callback only after the RoomSDK response returns code 0. */
+    private boolean updateMyNicknameCache(String roomId, String nickname, ClassLoader loader) {
+        try {
+            Class<?> storageApiClass = Class.forName("x12.f", false, loader);
+            Object storageApi = WeChatInternalServices.getService(dexFinder, storageApiClass);
+            if (storageApi == null) return false;
+            Method storageGetter = KavaReflector.findMethodRecursive(storageApi.getClass(), "a");
+            if (storageGetter == null || storageGetter.getParameterTypes().length != 0) return false;
+            Object storage = KavaReflector.invokeOrThrow(storageGetter, storageApi);
+            if (storage == null) return false;
+            Method entityGetter = KavaReflector.findMethodRecursive(storage.getClass(), "I1", String.class);
+            if (entityGetter == null || entityGetter.getParameterTypes().length != 1) return false;
+            Object entity = KavaReflector.invokeOrThrow(entityGetter, storage, roomId);
+            if (entity == null || !roomId.equals(KavaReflector.readField(entity, "field_chatroomname"))) {
+                return false;
+            }
+            Class<?> entityInterface = Class.forName("gg5.f0", false, loader);
+            Method update = KavaReflector.findMethodRecursive(
+                    storage.getClass(), "update", entityInterface, String[].class);
+            if (update == null || update.getReturnType() != boolean.class) return false;
+            if (!KavaReflector.writeField(entity, "field_selfDisplayName", nickname)) return false;
+            Object result = KavaReflector.invokeOrThrow(update, storage, entity, new String[0]);
+            return Boolean.TRUE.equals(result);
+        } catch (Throwable e) {
+            log("群昵称原生成功回调的本地状态刷新失败: " + e.getMessage());
+            return false;
+        }
+    }
+
+    private boolean maySubmit(WeChatContactApi.BatchSubmissionGuard guard) {
+        if (guard == null) return true;
+        try {
+            return guard.mayContinue();
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private static WeChatNativeMutationResult mutation(
+            WeChatNativeMutationResult.Outcome outcome, String message) {
+        return WeChatNativeMutationResult.of(outcome, message);
+    }
+
+    private static int intValue(Map<String, Object> row, String key) {
+        Object value = row != null ? row.get(key) : null;
+        if (value instanceof Number) return ((Number) value).intValue();
+        if (value == null) return 0;
+        try {
+            return Integer.parseInt(String.valueOf(value));
+        } catch (Throwable ignored) {
+            return 0;
+        }
     }
 
     public String getMemberRoleName(String chatroomId, String memberWxId) {
@@ -434,6 +866,41 @@ public final class WeChatChatroomApi {
 
     private void log(String message) {
         if (logger != null) logger.log("[WeChatChatroomApi] " + message);
+    }
+
+    private static final class GroupContactState {
+        final boolean success;
+        final boolean found;
+        final int type;
+        final String error;
+
+        GroupContactState(boolean success, boolean found, int type, String error) {
+            this.success = success;
+            this.found = found;
+            this.type = type;
+            this.error = error == null ? "" : error;
+        }
+    }
+
+    private static final class RoomNicknameState {
+        final boolean success;
+        final boolean member;
+        final String nickname;
+        final String error;
+
+        RoomNicknameState(boolean success, boolean member, String nickname, String error) {
+            this.success = success;
+            this.member = member;
+            this.nickname = nickname == null ? "" : nickname;
+            this.error = error == null ? "" : error;
+        }
+    }
+
+    private static final class PendingNickname {
+        final CountDownLatch completed = new CountDownLatch(1);
+        final AtomicBoolean completedOnce = new AtomicBoolean(false);
+        final AtomicBoolean submitted = new AtomicBoolean(false);
+        final AtomicReference<WeChatNativeMutationResult> result = new AtomicReference<>();
     }
 
     private static final class RoomDataMember {

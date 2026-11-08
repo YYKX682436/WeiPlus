@@ -23,6 +23,7 @@ import androidx.compose.ui.unit.dp
 import h.Hchat.hooks.api.core.WeChatApis
 import h.Hchat.hooks.api.model.ContactLabelBean
 import h.Hchat.hooks.items.batch.BatchOperation
+import h.Hchat.hooks.items.batch.BatchFriendPermission
 import h.Hchat.hooks.items.batch.BatchTaskManager
 import h.Hchat.hooks.items.batch.BatchTaskRequest
 import h.Hchat.hooks.items.batch.BatchTaskStatus
@@ -46,6 +47,8 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
     var feature by remember { mutableStateOf<BatchOperation?>(null) }
     var enabled by remember { mutableStateOf(true) }
     var scope by remember { mutableStateOf(BatchScope.CURRENT) }
+    var friendPermission by remember { mutableStateOf(BatchFriendPermission.ONLY_CHAT) }
+    var groupNickname by remember { mutableStateOf("") }
     var labelChoices by remember { mutableStateOf(emptyList<ContactLabelBean>()) }
     var labelsLoaded by remember { mutableStateOf(false) }
     var labelsError by remember { mutableStateOf("") }
@@ -104,6 +107,8 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
     val latestFeature = rememberUpdatedState(currentFeature)
     val latestScope = rememberUpdatedState(scope)
     val latestEnabled = rememberUpdatedState(enabled)
+    val latestFriendPermission = rememberUpdatedState(friendPermission)
+    val latestGroupNickname = rememberUpdatedState(groupNickname)
     val latestLabels = rememberUpdatedState(labelChoices)
     val latestLabelsLoaded = rememberUpdatedState(labelsLoaded)
     val latestLabelsError = rememberUpdatedState(labelsError)
@@ -112,7 +117,8 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
     val latestConfirmEnabled = rememberUpdatedState(
         accountReady && accountIdentity.isNotBlank() &&
             (currentFeature != BatchOperation.FRIEND_LABEL ||
-                (labelsLoaded && labelsError.isBlank() && selectedLabelName.isNotBlank()))
+                (labelsLoaded && labelsError.isBlank() && selectedLabelName.isNotBlank())) &&
+            (currentFeature != BatchOperation.GROUP_NICKNAME || validGroupNickname(groupNickname))
     )
     val latestCandidateMode = rememberUpdatedState(candidateMode(currentFeature, scope, enabled))
     val latestLabelFilterId = rememberUpdatedState(
@@ -143,6 +149,10 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
                         feature = latestFeature.value,
                         enabled = latestEnabled.value,
                         onEnabledChange = { enabled = it },
+                        friendPermission = latestFriendPermission.value,
+                        onFriendPermissionChange = { friendPermission = it },
+                        groupNickname = latestGroupNickname.value,
+                        onGroupNicknameChange = { groupNickname = it },
                         scope = latestScope.value,
                         onScopeChange = { scope = it },
                         labels = latestLabels.value,
@@ -179,6 +189,10 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
             Toast.makeText(context, "请先选择有效好友标签", Toast.LENGTH_SHORT).show()
             return
         }
+        if (currentFeature == BatchOperation.GROUP_NICKNAME && !validGroupNickname(groupNickname)) {
+            Toast.makeText(context, "请输入不超过16个汉字的群聊昵称", Toast.LENGTH_SHORT).show()
+            return
+        }
         val selectedFeature = currentFeature ?: return
         val result = manager.submit(
             BatchTaskRequest(
@@ -186,7 +200,9 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
                 targetIds = picked.map { it.id },
                 expectedAccount = accountIdentity,
                 enabled = enabled,
-                labelId = selectedLabelId
+                labelId = selectedLabelId,
+                friendPermission = friendPermission,
+                groupNickname = groupNickname
             )
         )
         when (result) {
@@ -236,6 +252,8 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
                             feature = operation
                             enabled = true
                             scope = BatchScope.CURRENT
+                            friendPermission = BatchFriendPermission.ONLY_CHAT
+                            groupNickname = ""
                             if (operation == BatchOperation.FRIEND_LABEL && labelsLoaded) {
                                 selectedLabelId = labelChoices.firstOrNull()?.labelId.orEmpty()
                             }
@@ -273,6 +291,10 @@ private fun BatchPickerControls(
     feature: BatchOperation?,
     enabled: Boolean,
     onEnabledChange: (Boolean) -> Unit,
+    friendPermission: BatchFriendPermission,
+    onFriendPermissionChange: (BatchFriendPermission) -> Unit,
+    groupNickname: String,
+    onGroupNicknameChange: (String) -> Unit,
     scope: BatchScope,
     onScopeChange: (BatchScope) -> Unit,
     labels: List<ContactLabelBean>,
@@ -350,6 +372,51 @@ private fun BatchPickerControls(
                     onValueChanged = { onEnabledChange(it.toBooleanStrictOrNull() ?: enabled) }
                 )
             }
+            BatchOperation.STAR_FRIEND -> PopupChoiceRow(
+                title = "星标操作",
+                summary = if (enabled) "设为星标朋友" else "取消星标朋友",
+                options = listOf(PopupChoice("设为星标朋友", "true"), PopupChoice("取消星标朋友", "false")),
+                currentValue = enabled.toString(),
+                onValueChanged = { onEnabledChange(it.toBooleanStrictOrNull() ?: enabled) }
+            )
+            BatchOperation.FRIEND_PERMISSION -> {
+                PopupChoiceRow(
+                    title = "设置项",
+                    summary = friendPermission.label,
+                    options = BatchFriendPermission.entries.map { PopupChoice(it.label, it.name) },
+                    currentValue = friendPermission.name,
+                    onValueChanged = { value ->
+                        BatchFriendPermission.entries.firstOrNull { it.name == value }
+                            ?.let(onFriendPermissionChange)
+                    }
+                )
+                InsetDivider()
+                val targetOptions = if (friendPermission == BatchFriendPermission.ONLY_CHAT) {
+                    listOf(PopupChoice("仅聊天", "true"), PopupChoice("普通朋友", "false"))
+                } else {
+                    listOf(PopupChoice("开启", "true"), PopupChoice("关闭", "false"))
+                }
+                PopupChoiceRow(
+                    title = "目标状态",
+                    summary = targetOptions.firstOrNull { it.value == enabled.toString() }?.label.orEmpty(),
+                    options = targetOptions,
+                    currentValue = enabled.toString(),
+                    onValueChanged = { onEnabledChange(it.toBooleanStrictOrNull() ?: enabled) }
+                )
+            }
+            BatchOperation.GROUP_SAVE_TO_CONTACTS -> PopupChoiceRow(
+                title = "通讯录操作",
+                summary = if (enabled) "保存到通讯录" else "取消保存",
+                options = listOf(PopupChoice("保存", "true"), PopupChoice("取消保存", "false")),
+                currentValue = enabled.toString(),
+                onValueChanged = { onEnabledChange(it.toBooleanStrictOrNull() ?: enabled) }
+            )
+            BatchOperation.GROUP_NICKNAME -> InputRow(
+                title = "我在群里的昵称",
+                summary = "最多16个汉字",
+                value = groupNickname,
+                onValueChange = onGroupNicknameChange
+            )
             else -> Unit
         }
     }
@@ -376,6 +443,8 @@ private fun candidateMode(
     } else {
         BatchCandidateMode.ALL_FRIENDS_WITH_LABEL
     }
+    BatchOperation.STAR_FRIEND, BatchOperation.FRIEND_PERMISSION -> BatchCandidateMode.ALL_FRIENDS
+    BatchOperation.GROUP_SAVE_TO_CONTACTS, BatchOperation.GROUP_NICKNAME -> BatchCandidateMode.ALL_GROUPS
     null -> null
 }
 
@@ -384,6 +453,13 @@ private fun operationSummary(operation: BatchOperation): String = when (operatio
     BatchOperation.DO_NOT_DISTURB -> "开启或关闭当前聊天或全部好友与群聊的免打扰"
     BatchOperation.PIN -> "置顶或取消置顶当前聊天或全部好友与群聊"
     BatchOperation.FRIEND_LABEL -> "追加到全部好友，或从指定标签的成员中移除"
+    BatchOperation.STAR_FRIEND -> "为全部有效好友设置或取消星标"
+    BatchOperation.FRIEND_PERMISSION -> "修改仅聊天和朋友圈权限"
+    BatchOperation.GROUP_SAVE_TO_CONTACTS -> "保存群聊到通讯录或取消保存"
+    BatchOperation.GROUP_NICKNAME -> "为所选群聊设置我在群里的昵称"
 }
+
+private fun validGroupNickname(value: String): Boolean =
+    value.isNotBlank() && value.trim().length <= 16
 
 private enum class BatchPage { HOME, PICKER }

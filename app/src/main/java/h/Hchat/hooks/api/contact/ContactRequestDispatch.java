@@ -26,6 +26,10 @@ final class ContactRequestDispatch {
         Object submit(Callback callback) throws Throwable;
     }
 
+    interface SubmitGuard {
+        boolean maySubmit();
+    }
+
     static final class Result {
         final Outcome outcome;
         final int errorType;

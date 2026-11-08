@@ -1,6 +1,7 @@
 package h.Hchat.hooks.items.batch
 
 import h.Hchat.hooks.api.contact.WeChatContactApi
+import h.Hchat.hooks.api.contact.WeChatNativeMutationResult
 import h.Hchat.hooks.api.core.WeChatApis
 
 /**
@@ -89,10 +90,11 @@ internal object BatchOperationExecutor : BatchTaskProcessor {
         stopSignal: BatchTaskRunner.StopSignal
     ): BatchTaskRunner.TaskResult {
         val conversations = WeChatApis.conversations()
-            ?: return result(BatchTaskRunner.Outcome.FAILED, "微信会话 API 不可用")
         val contacts = WeChatApis.contacts()
+        val chatrooms = WeChatApis.chatrooms()
         when (request.operation) {
             BatchOperation.HIDE -> {
+                if (conversations == null) return result(BatchTaskRunner.Outcome.FAILED, "微信会话 API 不可用")
                 if (!conversations.isBatchOperableConversation(id)) {
                     return result(BatchTaskRunner.Outcome.SKIPPED, "会话不存在或不可操作")
                 }
@@ -112,6 +114,7 @@ internal object BatchOperationExecutor : BatchTaskProcessor {
                 }
             }
             BatchOperation.DO_NOT_DISTURB -> {
+                if (conversations == null) return result(BatchTaskRunner.Outcome.FAILED, "微信会话 API 不可用")
                 val isGroup = conversations.isGroupConversation(id)
                 val validTarget = if (isGroup) contacts?.isValidGroupContact(id) == true
                     else contacts?.isFriend(id) == true
@@ -136,6 +139,7 @@ internal object BatchOperationExecutor : BatchTaskProcessor {
                 }
             }
             BatchOperation.PIN -> {
+                if (conversations == null) return result(BatchTaskRunner.Outcome.FAILED, "微信会话 API 不可用")
                 if (!conversations.isBatchOperableConversation(id)) {
                     return result(BatchTaskRunner.Outcome.SKIPPED, "会话记录不存在，未创建聊天")
                 }
@@ -159,7 +163,80 @@ internal object BatchOperationExecutor : BatchTaskProcessor {
                 }
             }
             BatchOperation.FRIEND_LABEL -> return result(BatchTaskRunner.Outcome.FAILED, "标签任务未进入批量入口")
+            BatchOperation.STAR_FRIEND -> {
+                val contactApi = contacts ?: return result(BatchTaskRunner.Outcome.FAILED, "微信联系人 API 不可用")
+                return mapNativeResult(contactApi.setStarredFriend(
+                    id,
+                    request.enabled,
+                    nativeSubmissionGuard(request, stopSignal)
+                ), request, stopSignal)
+            }
+            BatchOperation.FRIEND_PERMISSION -> {
+                val contactApi = contacts ?: return result(BatchTaskRunner.Outcome.FAILED, "微信联系人 API 不可用")
+                return mapNativeResult(contactApi.setFriendPermission(
+                    id,
+                    request.friendPermission.toApiPermission(),
+                    request.enabled,
+                    nativeSubmissionGuard(request, stopSignal)
+                ), request, stopSignal)
+            }
+            BatchOperation.GROUP_SAVE_TO_CONTACTS -> {
+                val api = chatrooms ?: return result(BatchTaskRunner.Outcome.FAILED, "微信群 API 不可用")
+                return mapNativeResult(api.setGroupSavedToContacts(
+                    id,
+                    request.enabled,
+                    nativeSubmissionGuard(request, stopSignal)
+                ), request, stopSignal)
+            }
+            BatchOperation.GROUP_NICKNAME -> {
+                val api = chatrooms ?: return result(BatchTaskRunner.Outcome.FAILED, "微信群 API 不可用")
+                return mapNativeResult(api.setMyGroupNickname(
+                    id,
+                    request.groupNickname,
+                    accountSelfId(),
+                    nativeSubmissionGuard(request, stopSignal),
+                    WeChatContactApi.BatchSubmissionGuard { isAccountCurrent(request.expectedAccount) }
+                ), request, stopSignal)
+            }
         }
+    }
+
+    private fun accountSelfId(): String =
+        runCatching { WeChatApis.account()?.selfWxId().orEmpty().trim() }.getOrDefault("")
+
+    private fun nativeSubmissionGuard(
+        request: BatchTaskRequest,
+        stopSignal: BatchTaskRunner.StopSignal
+    ) = WeChatContactApi.BatchSubmissionGuard {
+        !stopSignal.isStopped() && isAccountCurrent(request.expectedAccount)
+    }
+
+    private fun mapNativeResult(
+        native: WeChatNativeMutationResult,
+        request: BatchTaskRequest,
+        stopSignal: BatchTaskRunner.StopSignal
+    ): BatchTaskRunner.TaskResult = when (native.outcome) {
+        WeChatNativeMutationResult.Outcome.CONFIRMED -> result(BatchTaskRunner.Outcome.SUCCESS, native.message)
+        WeChatNativeMutationResult.Outcome.SERVER_ACCEPTED,
+        WeChatNativeMutationResult.Outcome.SUBMITTED_UNCONFIRMED ->
+            result(BatchTaskRunner.Outcome.UNCONFIRMED, native.message.ifBlank { "已提交／未确认" })
+        WeChatNativeMutationResult.Outcome.SERVER_REJECTED -> result(BatchTaskRunner.Outcome.FAILED, native.message)
+        WeChatNativeMutationResult.Outcome.ALREADY_SATISFIED -> result(BatchTaskRunner.Outcome.SKIPPED, native.message)
+        WeChatNativeMutationResult.Outcome.INVALID_TARGET -> result(BatchTaskRunner.Outcome.SKIPPED, native.message)
+        WeChatNativeMutationResult.Outcome.READ_FAILED -> result(BatchTaskRunner.Outcome.FAILED, native.message)
+        WeChatNativeMutationResult.Outcome.NOT_SUBMITTED -> {
+            if (stopSignal.isStopped() || !isAccountCurrent(request.expectedAccount)) {
+                result(BatchTaskRunner.Outcome.SKIPPED, native.message.ifBlank { stopReason(stopSignal) })
+            } else {
+                result(BatchTaskRunner.Outcome.FAILED, native.message)
+            }
+        }
+    }
+
+    private fun BatchFriendPermission.toApiPermission() = when (this) {
+        BatchFriendPermission.ONLY_CHAT -> WeChatContactApi.FriendPermissionSetting.ONLY_CHAT
+        BatchFriendPermission.DONT_SEE_MOMENTS -> WeChatContactApi.FriendPermissionSetting.DONT_SEE_MOMENTS
+        BatchFriendPermission.DONT_LET_SEE_MOMENTS -> WeChatContactApi.FriendPermissionSetting.DONT_LET_SEE_MOMENTS
     }
 
     private fun failedReport(ids: List<String>, message: String): BatchTaskRunner.Report =

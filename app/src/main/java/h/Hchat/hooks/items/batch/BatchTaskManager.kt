@@ -13,7 +13,17 @@ internal enum class BatchOperation(val title: String) {
     HIDE("批量不显示聊天"),
     DO_NOT_DISTURB("批量设置免打扰"),
     PIN("批量设置置顶"),
-    FRIEND_LABEL("批量管理好友标签")
+    FRIEND_LABEL("批量管理好友标签"),
+    STAR_FRIEND("批量设置星标朋友"),
+    FRIEND_PERMISSION("批量设置好友权限"),
+    GROUP_SAVE_TO_CONTACTS("批量保存群聊到通讯录"),
+    GROUP_NICKNAME("批量修改我在群里的昵称")
+}
+
+internal enum class BatchFriendPermission(val label: String) {
+    ONLY_CHAT("仅聊天／普通朋友"),
+    DONT_SEE_MOMENTS("不看对方朋友圈"),
+    DONT_LET_SEE_MOMENTS("不让对方看我的朋友圈")
 }
 
 internal data class BatchTaskRequest(
@@ -21,7 +31,9 @@ internal data class BatchTaskRequest(
     val targetIds: List<String>,
     val expectedAccount: String,
     val enabled: Boolean,
-    val labelId: String = ""
+    val labelId: String = "",
+    val friendPermission: BatchFriendPermission = BatchFriendPermission.ONLY_CHAT,
+    val groupNickname: String = ""
 )
 
 internal enum class BatchTaskStatus {
@@ -156,13 +168,23 @@ internal class BatchTaskManager private constructor(
     private fun normalize(request: BatchTaskRequest): BatchTaskRequest? {
         if (request.expectedAccount.isBlank()) return null
         if (request.operation == BatchOperation.FRIEND_LABEL && request.labelId.isBlank()) return null
+        if (request.operation == BatchOperation.GROUP_NICKNAME) {
+            val nickname = request.groupNickname.trim()
+            val codePoints = nickname.codePointCount(0, nickname.length)
+            if (nickname.isBlank() || codePoints > 16) return null
+        }
         val ids = request.targetIds.asSequence()
             .map(String::trim)
             .filter(String::isNotEmpty)
             .distinct()
             .toList()
         if (ids.isEmpty()) return null
-        return request.copy(targetIds = ids, expectedAccount = request.expectedAccount.trim(), labelId = request.labelId.trim())
+        return request.copy(
+            targetIds = ids,
+            expectedAccount = request.expectedAccount.trim(),
+            labelId = request.labelId.trim(),
+            groupNickname = request.groupNickname.trim()
+        )
     }
 
     companion object {

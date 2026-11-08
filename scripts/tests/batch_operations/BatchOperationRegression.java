@@ -1,4 +1,5 @@
 import h.Hchat.hooks.api.contact.ContactLabelIds;
+import h.Hchat.hooks.api.contact.WeChatContactTypeState;
 import h.Hchat.hooks.items.batch.BatchCandidateLoadGate;
 import h.Hchat.hooks.items.batch.BatchSelectionPolicy;
 import h.Hchat.hooks.items.batch.BatchSelectionState;
@@ -21,6 +22,7 @@ public final class BatchOperationRegression {
         labelChangesResetOldSelections();
         labelMembershipEdits();
         stateTransitions();
+        friendPermissionTypeBitsAreIndependent();
         serialResultsAndPartialFailure();
         stopPreventsLaterSubmissions();
         accountSwitchPreventsLaterSubmissions();
@@ -44,6 +46,15 @@ public final class BatchOperationRegression {
                 candidates, sessions, friends, groups, false, true, false);
         assertEquals(Arrays.asList("friend1"), strictFriends,
                 "friend label selection must keep only valid friends");
+        List<String> allContacts = BatchSelectionPolicy.filterCandidateIds(
+                candidates, new HashSet<String>(), friends, groups, false, false, true);
+        assertEquals(Arrays.asList("friend1", "group1@chatroom"), allContacts,
+                "all-friends-and-groups actions must include non-chat friends while excluding virtual rows");
+        List<String> allGroups = BatchSelectionPolicy.filterCandidateIds(
+                Arrays.asList("group1@chatroom", "stale@chatroom", "wxid_hchat_group_abc"),
+                new HashSet<String>(), new HashSet<String>(), groups, false, false, true);
+        assertEquals(Arrays.asList("group1@chatroom"), allGroups,
+                "group-wide operations must keep real group contacts and exclude virtual or stale rows");
         List<String> nativeHome = BatchSelectionPolicy.filterCandidateIds(
                 candidates, sessions, friends, groups, true, false, false);
         assertEquals(Arrays.asList("friend1", "group1@chatroom", "nonfriend@chat", "filehelper"), nativeHome,
@@ -170,6 +181,26 @@ public final class BatchOperationRegression {
         assertTrue(!BatchStatePolicy.alreadySatisfied(null, false)
                         && !BatchStatePolicy.verified(null, false),
                 "unknown state must not count as satisfied or verified");
+    }
+
+    private static void friendPermissionTypeBitsAreIndependent() {
+        int type = WeChatContactTypeState.STARRED_FRIEND
+                | WeChatContactTypeState.DO_NOT_LET_SEE_MOMENTS
+                | WeChatContactTypeState.ONLY_CHAT
+                | 0x200000;
+        assertTrue(WeChatContactTypeState.matches(type, WeChatContactTypeState.STARRED_FRIEND, true),
+                "starred state must read the native contact type bit");
+        assertTrue(WeChatContactTypeState.matches(type, WeChatContactTypeState.DO_NOT_LET_SEE_MOMENTS, true),
+                "the independent outside permission bit must be read independently");
+        assertTrue(WeChatContactTypeState.matches(type, WeChatContactTypeState.ONLY_CHAT, true),
+                "only-chat permission must be read independently");
+        assertTrue(!WeChatContactTypeState.matches(type & ~WeChatContactTypeState.ONLY_CHAT,
+                        WeChatContactTypeState.ONLY_CHAT, true)
+                        && WeChatContactTypeState.matches(type & ~WeChatContactTypeState.ONLY_CHAT,
+                        WeChatContactTypeState.STARRED_FRIEND, true)
+                        && WeChatContactTypeState.matches(type & ~WeChatContactTypeState.ONLY_CHAT,
+                        WeChatContactTypeState.DO_NOT_LET_SEE_MOMENTS, true),
+                "changing one permission state must not alter the other independent flags");
     }
 
     private static void serialResultsAndPartialFailure() {

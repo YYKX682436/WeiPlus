@@ -12,7 +12,7 @@ import java.util.concurrent.atomic.AtomicReference
 
 class BatchTaskManagerRegressionTest {
     @Test
-    fun allFourProductionTaskKindsStartImmediatelyAndPreserveSelectedState() {
+    fun allEightProductionTaskKindsStartImmediatelyAndPreserveSelectedState() {
         val accepted = LinkedBlockingQueue<BatchTaskRequest>()
         val manager = BatchTaskManager.createForTesting(BatchTaskProcessor { request, _ ->
             accepted.put(request)
@@ -31,7 +31,46 @@ class BatchTaskManagerRegressionTest {
             BatchTaskRequest(BatchOperation.PIN, listOf("chat-c-on"), "account-A", true),
             BatchTaskRequest(BatchOperation.PIN, listOf("chat-c"), "account-A", false),
             BatchTaskRequest(BatchOperation.FRIEND_LABEL, listOf("friend-d-add"), "account-A", true, "label-9"),
-            BatchTaskRequest(BatchOperation.FRIEND_LABEL, listOf("friend-d-remove"), "account-A", false, "label-9")
+            BatchTaskRequest(BatchOperation.FRIEND_LABEL, listOf("friend-d-remove"), "account-A", false, "label-9"),
+            BatchTaskRequest(BatchOperation.STAR_FRIEND, listOf("friend-star-on"), "account-A", true),
+            BatchTaskRequest(BatchOperation.STAR_FRIEND, listOf("friend-star-off"), "account-A", false),
+            BatchTaskRequest(
+                BatchOperation.FRIEND_PERMISSION,
+                listOf("friend-only-chat"),
+                "account-A",
+                true,
+                friendPermission = BatchFriendPermission.ONLY_CHAT
+            ),
+            BatchTaskRequest(
+                BatchOperation.FRIEND_PERMISSION,
+                listOf("friend-normal"),
+                "account-A",
+                false,
+                friendPermission = BatchFriendPermission.ONLY_CHAT
+            ),
+            BatchTaskRequest(
+                BatchOperation.FRIEND_PERMISSION,
+                listOf("friend-hide-moments"),
+                "account-A",
+                true,
+                friendPermission = BatchFriendPermission.DONT_SEE_MOMENTS
+            ),
+            BatchTaskRequest(
+                BatchOperation.FRIEND_PERMISSION,
+                listOf("friend-show-moments"),
+                "account-A",
+                false,
+                friendPermission = BatchFriendPermission.DONT_LET_SEE_MOMENTS
+            ),
+            BatchTaskRequest(BatchOperation.GROUP_SAVE_TO_CONTACTS, listOf("room-save"), "account-A", true),
+            BatchTaskRequest(BatchOperation.GROUP_SAVE_TO_CONTACTS, listOf("room-unsave"), "account-A", false),
+            BatchTaskRequest(
+                BatchOperation.GROUP_NICKNAME,
+                listOf("room-nickname"),
+                "account-A",
+                true,
+                groupNickname = "我的群昵称"
+            )
         )
 
         try {
@@ -44,6 +83,54 @@ class BatchTaskManagerRegressionTest {
                 assertEquals(request.targetIds.size, manager.snapshot.value.report?.success)
                 assertEquals("批量操作成功", BatchTaskCompletionMessage.from(manager.snapshot.value))
             }
+        } finally {
+            manager.shutdownForTesting()
+        }
+    }
+
+    @Test
+    fun groupNicknameRequestsRequireValidNativeLengthBeforeQueueing() {
+        val manager = BatchTaskManager.createForTesting(BatchTaskProcessor { request, _ ->
+            BatchTaskRunner.fromResults(
+                request.targetIds,
+                request.targetIds.map {
+                    BatchTaskRunner.TaskResult.of(BatchTaskRunner.Outcome.SUCCESS, "captured")
+                },
+                ""
+            )
+        })
+        try {
+            assertEquals(
+                BatchTaskSubmitResult.INVALID,
+                manager.submit(BatchTaskRequest(
+                    BatchOperation.GROUP_NICKNAME,
+                    listOf("room"),
+                    "account-A",
+                    true,
+                    groupNickname = ""
+                ))
+            )
+            assertEquals(
+                BatchTaskSubmitResult.INVALID,
+                manager.submit(BatchTaskRequest(
+                    BatchOperation.GROUP_NICKNAME,
+                    listOf("room"),
+                    "account-A",
+                    true,
+                    groupNickname = "12345678901234567"
+                ))
+            )
+            assertEquals(
+                BatchTaskSubmitResult.STARTED,
+                manager.submit(BatchTaskRequest(
+                    BatchOperation.GROUP_NICKNAME,
+                    listOf("room"),
+                    "account-A",
+                    true,
+                    groupNickname = "1234567890123456"
+                ))
+            )
+            awaitStatus(manager, BatchTaskStatus.COMPLETED)
         } finally {
             manager.shutdownForTesting()
         }
@@ -176,7 +263,11 @@ class BatchTaskManagerRegressionTest {
 
         try {
             val firstRequest = BatchTaskRequest(
-                BatchOperation.PIN, listOf("one", "two"), "account-A", enabled = true
+                BatchOperation.GROUP_NICKNAME,
+                listOf("one", "two"),
+                "account-A",
+                enabled = true,
+                groupNickname = "My group name"
             )
             assertEquals(BatchTaskSubmitResult.STARTED, manager.submit(firstRequest))
             assertTrue("first task should begin", firstStarted.await(5, TimeUnit.SECONDS))
@@ -197,7 +288,7 @@ class BatchTaskManagerRegressionTest {
             assertEquals(1, submissions.get())
 
             val restart = BatchTaskRequest(
-                BatchOperation.HIDE, listOf("three"), "account-A", enabled = true
+                BatchOperation.STAR_FRIEND, listOf("three"), "account-A", enabled = true
             )
             assertEquals(BatchTaskSubmitResult.STARTED, manager.submit(restart))
             assertTrue("a finished process task should be restartable", secondFinished.await(5, TimeUnit.SECONDS))
@@ -236,10 +327,11 @@ class BatchTaskManagerRegressionTest {
             assertEquals(
                 BatchTaskSubmitResult.STARTED,
                 manager.submit(BatchTaskRequest(
-                    BatchOperation.DO_NOT_DISTURB,
+                    BatchOperation.FRIEND_PERMISSION,
                     listOf("one", "two"),
                     "account-A",
-                    enabled = true
+                    enabled = true,
+                    friendPermission = BatchFriendPermission.DONT_SEE_MOMENTS
                 ))
             )
             assertTrue(secondFinished.await(5, TimeUnit.SECONDS))

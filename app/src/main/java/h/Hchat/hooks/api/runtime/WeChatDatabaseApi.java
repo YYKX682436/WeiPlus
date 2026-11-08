@@ -26,6 +26,19 @@ import java.util.concurrent.ConcurrentHashMap;
  * 通过 DexKit 定位 MMKernel/CoreStorage/SqliteDB wrapper，运行时懒加载数据库对象。
  */
 public final class WeChatDatabaseApi {
+    /** A query result that keeps a legitimate empty result separate from a read failure. */
+    public static final class QueryResult {
+        public final boolean success;
+        public final List<Map<String, Object>> rows;
+        public final String error;
+
+        private QueryResult(boolean success, List<Map<String, Object>> rows, String error) {
+            this.success = success;
+            this.rows = rows == null ? new ArrayList<>() : new ArrayList<>(rows);
+            this.error = error == null ? "" : error;
+        }
+    }
+
     public interface Logger {
         void log(String message);
     }
@@ -90,6 +103,40 @@ public final class WeChatDatabaseApi {
             } catch (Throwable ignored) {}
         }
         return rows;
+    }
+
+    /**
+     * Reads rows while preserving the distinction between an empty table/query and an unavailable
+     * database or cursor failure. Batch actions use this before they decide whether a target is
+     * invalid or merely could not be checked.
+     */
+    public QueryResult queryWithStatus(String sql, String[] args) {
+        if (TextUtils.isEmpty(sql)) return new QueryResult(false, null, "SQL 为空");
+        if (!ensureReady()) return new QueryResult(false, null, "微信数据库不可用");
+        Cursor cursor = rawQuery(sql, args);
+        if (cursor == null) return new QueryResult(false, null, "微信数据库读取失败");
+        List<Map<String, Object>> rows = new ArrayList<>();
+        try {
+            String[] columns = cursor.getColumnNames();
+            if (columns == null) return new QueryResult(false, null, "微信数据库列信息不可用");
+            if (cursor.moveToFirst()) {
+                do {
+                    Map<String, Object> row = new HashMap<>();
+                    for (int i = 0; i < columns.length; i++) {
+                        row.put(columns[i], cursorValue(cursor, i));
+                    }
+                    rows.add(row);
+                } while (cursor.moveToNext());
+            }
+            return new QueryResult(true, rows, "");
+        } catch (Throwable e) {
+            log("SQL 状态读取异常: " + e.getMessage());
+            return new QueryResult(false, null, e.getMessage());
+        } finally {
+            try {
+                cursor.close();
+            } catch (Throwable ignored) {}
+        }
     }
 
     public String queryFirstString(String sql, String[] args, String columnName) {
