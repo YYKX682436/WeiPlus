@@ -30,7 +30,9 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -115,6 +117,33 @@ public final class WeChatContactApi {
             this.validFriend = validFriend;
             this.type = type;
             this.error = error == null ? "" : error;
+        }
+    }
+
+    /** Native DeleteContactService response for a submitted batch deletion. */
+    public static final class DeleteFriendRequest implements AutoCloseable {
+        private final CountDownLatch responseLatch = new CountDownLatch(1);
+        private final XposedInterface.HookHandle hookHandle;
+        private volatile Integer nativeResult;
+
+        private DeleteFriendRequest(XposedInterface.HookHandle hookHandle) {
+            this.hookHandle = hookHandle;
+        }
+
+        private void complete(int result) {
+            nativeResult = result;
+            responseLatch.countDown();
+        }
+
+        /** null means that the native service did not report a response before the bound. */
+        public Integer awaitNativeResult(long timeout, TimeUnit unit) throws InterruptedException {
+            if (!responseLatch.await(timeout, unit)) return null;
+            return nativeResult;
+        }
+
+        @Override
+        public void close() {
+            try { HookRegistry.get().unhook(hookHandle); } catch (Throwable ignored) {}
         }
     }
 
@@ -522,27 +551,13 @@ public final class WeChatContactApi {
     /** Submits WeChat's native friend deletion request. This confirms submission only. */
     public boolean submitDeleteFriend(String username, boolean clearRecord) {
         String target = username == null ? "" : username.trim();
-        if (target.isEmpty() || dexFinder == null || !isAvailable()) return false;
-        String self = databaseApi.queryFirstString(
-                "SELECT value FROM userinfo WHERE id=? LIMIT 1",
-                new String[]{String.valueOf(SELF_FIELD_WXID)}, "value");
-        if (target.equals(self == null ? "" : self.trim())) return false;
-        ContactStateResult state = getContactStateResult(target);
-        if (!state.success || !state.found || !state.validFriend || isGroup(target)
-                || target.startsWith("gh_")) return false;
+        if (!isCurrentValidFriendDeleteTarget(target)) return false;
 
         dexFinder.resolveDeleteContactServiceApi();
         Method method = dexFinder.deleteContactServiceMethod;
         if (method == null) return false;
         if (dexFinder.serviceGetterMethod == null) dexFinder.resolveServiceManagerApi();
-        Object service = WeChatInternalServices.getService(dexFinder, method.getDeclaringClass());
-        if (service == null) service = KavaReflector.staticInstance(method.getDeclaringClass());
-        if (service == null) {
-            Constructor<?> constructor = KavaReflector.declaredConstructors(method.getDeclaringClass())
-                    .stream().filter(candidate -> candidate.getParameterTypes().length == 0)
-                    .findFirst().orElse(null);
-            if (constructor != null) service = KavaReflector.newInstance(constructor);
-        }
+        Object service = resolveDeleteContactService(method);
         if (service == null || !method.getDeclaringClass().isInstance(service)) return false;
         try {
             if (method.getParameterTypes().length == 2) {
@@ -555,6 +570,89 @@ public final class WeChatContactApi {
             log("原生删除好友请求提交失败: " + e.getMessage());
             return false;
         }
+    }
+
+    /** Installs a short lived result hook before submission so server rejection and timeout differ. */
+    public DeleteFriendRequest submitDeleteFriendWithResult(String username, boolean clearRecord) {
+        return submitDeleteFriendWithResult(username, clearRecord, null);
+    }
+
+    public DeleteFriendRequest submitDeleteFriendWithResult(
+            String username, boolean clearRecord, BatchSubmissionGuard guard) {
+        String target = username == null ? "" : username.trim();
+        if (!clearRecord || !isCurrentValidFriendDeleteTarget(target)
+                || !supportsDeleteFriendRecordClear()) return null;
+        Method submitMethod = dexFinder.deleteContactServiceMethod;
+        Object service = resolveDeleteContactService(submitMethod);
+        if (service == null) return null;
+        List<Method> responseMethods = new ArrayList<>();
+        for (Method method : KavaReflector.declaredMethods(submitMethod.getDeclaringClass())) {
+            Class<?>[] params = method.getParameterTypes();
+            if (method.getReturnType() == void.class && params.length == 3
+                    && params[0] == String.class && params[1] == int.class
+                    && params[2] == boolean.class) responseMethods.add(method);
+        }
+        if (responseMethods.size() != 1) {
+            log("原生好友删除结果入口定位不唯一: candidates=" + responseMethods.size());
+            return null;
+        }
+        AtomicReference<DeleteFriendRequest> requestRef = new AtomicReference<>();
+        final XposedInterface.HookHandle handle;
+        try {
+            handle = HookRegistry.get().hook(responseMethods.get(0), chain -> {
+                Object[] args = chain.getArgs().toArray();
+                Object receiver = chain.getThisObject();
+                Object result = chain.proceed();
+                if (receiver == service && args != null && args.length == 3
+                        && target.equals(args[0]) && args[1] instanceof Number) {
+                    DeleteFriendRequest request = requestRef.get();
+                    if (request != null) request.complete(((Number) args[1]).intValue());
+                }
+                return result;
+            });
+        } catch (Throwable e) {
+            log("原生好友删除结果Hook安装失败: " + e.getMessage());
+            return null;
+        }
+        DeleteFriendRequest request = new DeleteFriendRequest(handle);
+        requestRef.set(request);
+        try {
+            if (guard != null && !guard.mayContinue()) {
+                request.close();
+                return null;
+            }
+            KavaReflector.invokeOrThrow(submitMethod, service, target, true);
+            return request;
+        } catch (Throwable e) {
+            request.close();
+            log("原生删除好友请求提交失败: " + e.getMessage());
+            return null;
+        }
+    }
+
+    private boolean isCurrentValidFriendDeleteTarget(String target) {
+        if (target == null || target.isEmpty() || dexFinder == null || !isAvailable()) return false;
+        String self = databaseApi.queryFirstString(
+                "SELECT value FROM userinfo WHERE id=? LIMIT 1",
+                new String[]{String.valueOf(SELF_FIELD_WXID)}, "value");
+        if (target.equals(self == null ? "" : self.trim())) return false;
+        ContactStateResult state = getContactStateResult(target);
+        return state.success && state.found && state.validFriend && !isGroup(target)
+                && !target.startsWith("gh_");
+    }
+
+    private Object resolveDeleteContactService(Method method) {
+        if (method == null) return null;
+        if (dexFinder.serviceGetterMethod == null) dexFinder.resolveServiceManagerApi();
+        Object service = WeChatInternalServices.getService(dexFinder, method.getDeclaringClass());
+        if (service == null) service = KavaReflector.staticInstance(method.getDeclaringClass());
+        if (service == null) {
+            Constructor<?> constructor = KavaReflector.declaredConstructors(method.getDeclaringClass())
+                    .stream().filter(candidate -> candidate.getParameterTypes().length == 0)
+                    .findFirst().orElse(null);
+            if (constructor != null) service = KavaReflector.newInstance(constructor);
+        }
+        return service != null && method.getDeclaringClass().isInstance(service) ? service : null;
     }
 
     /** Batch removal requires the native explicit history-cleanup switch. */

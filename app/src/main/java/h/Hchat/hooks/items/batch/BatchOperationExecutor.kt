@@ -294,14 +294,30 @@ internal object BatchOperationExecutor : BatchTaskProcessor {
         if (!mayStartNativeOperation(request, stopSignal)) {
             return result(BatchTaskRunner.Outcome.SKIPPED, stopReason(stopSignal))
         }
-        if (!contacts.submitDeleteFriend(id, true)) {
-            return result(BatchTaskRunner.Outcome.FAILED, "微信原生删除好友请求未提交")
+        val nativeDelete = contacts.submitDeleteFriendWithResult(id, true) {
+            !stopSignal.isStopped() && isAccountCurrent(request.expectedAccount)
+        } ?: return if (!mayStartNativeOperation(request, stopSignal)) {
+            result(BatchTaskRunner.Outcome.SKIPPED, stopReason(stopSignal))
+        } else {
+            result(BatchTaskRunner.Outcome.FAILED, "微信原生删除好友请求未提交或结果回调不可用")
+        }
+        val nativeResult = try {
+            nativeDelete.awaitNativeResult(5, TimeUnit.MINUTES)
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            null
+        } finally {
+            nativeDelete.close()
+        }
+        BatchDeleteOutcomePolicy.friendNativeResult(nativeResult)?.let { return it }
+        if (!isAccountCurrent(request.expectedAccount)) {
+            return result(BatchTaskRunner.Outcome.UNCONFIRMED, "好友删除已获原生确认；账号已切换，聊天记录未复核")
         }
 
         val deadline = System.nanoTime() + TimeUnit.MINUTES.toNanos(5)
         while (true) {
             if (stopSignal.isStopped() || !isAccountCurrent(request.expectedAccount)) {
-                return result(BatchTaskRunner.Outcome.UNCONFIRMED, "删除请求已提交；因停止或账号切换未确认")
+                return result(BatchTaskRunner.Outcome.UNCONFIRMED, "删除已获原生确认；因停止或账号切换未确认聊天记录")
             }
             val current = contacts.getContactStateResult(id)
             val outcome = BatchDeleteOutcomePolicy.friendState(
@@ -312,13 +328,13 @@ internal object BatchOperationExecutor : BatchTaskProcessor {
             )
             if (outcome != null) return outcome
             if (System.nanoTime() >= deadline) {
-                return result(BatchTaskRunner.Outcome.UNCONFIRMED, "删除请求已提交；好友关系或聊天记录未确认")
+                return result(BatchTaskRunner.Outcome.UNCONFIRMED, "好友删除已获原生确认；聊天记录清理仍未确认")
             }
             try {
                 Thread.sleep(200)
             } catch (e: InterruptedException) {
                 Thread.currentThread().interrupt()
-                return result(BatchTaskRunner.Outcome.UNCONFIRMED, "删除请求已提交；任务中断，结果未确认")
+                return result(BatchTaskRunner.Outcome.UNCONFIRMED, "好友删除已获原生确认；任务中断，聊天记录未确认")
             }
         }
     }

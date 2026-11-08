@@ -8,6 +8,15 @@ import org.junit.Test
 
 class BatchDeleteOutcomePolicyTest {
     @Test
+    fun nativeFriendResponseDistinguishesRejectionFromMissingResponse() {
+        assertEquals(BatchTaskRunner.Outcome.UNCONFIRMED,
+            BatchDeleteOutcomePolicy.friendNativeResult(null)?.outcome)
+        assertEquals(BatchTaskRunner.Outcome.FAILED,
+            BatchDeleteOutcomePolicy.friendNativeResult(1001)?.outcome)
+        assertNull(BatchDeleteOutcomePolicy.friendNativeResult(0))
+    }
+
+    @Test
     fun chatIndexIsNeverRemovedBeforeNativeMessageCleanupCompletes() {
         var removedConversation = false
         val result = BatchDeleteOutcomePolicy.deleteChat(

@@ -4,6 +4,15 @@ package h.Hchat.hooks.items.batch
 internal object BatchDeleteOutcomePolicy {
     enum class ChatClearState { COMPLETED, NOT_SUBMITTED, UNCONFIRMED, STOPPED }
 
+    /** A native response code of zero confirms the server mutation, but not local cleanup yet. */
+    fun friendNativeResult(resultCode: Int?): BatchTaskRunner.TaskResult? = when {
+        resultCode == null -> result(BatchTaskRunner.Outcome.UNCONFIRMED,
+            "删除请求已提交；微信未返回删除结果")
+        resultCode != 0 -> result(BatchTaskRunner.Outcome.FAILED,
+            "微信原生删除好友返回失败码 $resultCode")
+        else -> null
+    }
+
     /** The conversation remover is unreachable unless the native message stage is confirmed complete. */
     fun deleteChat(
         clearMessages: () -> ChatClearState,

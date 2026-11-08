@@ -218,10 +218,12 @@ try {
     assert.match(deleteChatMethod, /getNativeHomeConversationUsernames\(\)[\s\S]*?home\.contains\(id\)/,
         'a chat must still be in the current root home list when its delete begins');
     const deleteFriendMethod = methodBody(executor, 'private fun deleteFriend(');
-    assert.match(deleteFriendMethod, /submitDeleteFriend\(id, true\)[\s\S]*?hasConversationMessagesState\(id\)/,
-        'friend deletion must confirm the relation and message rows after native submission');
+    assert.match(deleteFriendMethod, /submitDeleteFriendWithResult\(id, true\)[\s\S]*?awaitNativeResult[\s\S]*?friendNativeResult\(nativeResult\)[\s\S]*?hasConversationMessagesState\(id\)/,
+        'friend deletion must distinguish a native rejection, a missing response and cleared message rows');
     assert.match(contactApi, /resolveDeleteContactServiceApi\(\)[\s\S]*?KavaReflector\.invokeOrThrow\(method, service, target, clearRecord\)/,
         'native DeleteContactService must live in the common contact API with its clear-record argument');
+    assert.match(contactApi, /submitDeleteFriendWithResult[\s\S]*?HookRegistry\.get\(\)\.hook[\s\S]*?request\.complete\(\(\(Number\) args\[1\]\)\.intValue\(\)\)/,
+        'the common contact API must capture the native response code for batch outcome classification');
     assert.match(zombieFeature, /submitDeleteFriend\(wxid, shouldClearRecord\(wxid, clearRecord\)\)/,
         'zombie-check deletion must reuse the common native entry');
     assert.match(messageStore, /stageOne\.await[\s\S]*?hasConversationMessagesState\(target\)[\s\S]*?ConversationClearResult\.COMPLETED/,
