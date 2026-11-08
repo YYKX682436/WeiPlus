@@ -82,7 +82,8 @@ internal data class BatchTaskRequest(
     val enabled: Boolean,
     val labelId: String = "",
     val friendPermissionSelection: BatchFriendPermissionSelection = BatchFriendPermissionSelection(),
-    val groupNickname: String = ""
+    val groupNickname: String = "",
+    val deleteFriendClearHistory: Boolean = false
 )
 
 internal enum class BatchTaskStatus {

@@ -99,7 +99,14 @@ class BatchTaskManagerRegressionTest {
             BatchTaskRequest(BatchOperation.GROUP_SAVE_TO_CONTACTS, listOf("room-save"), "account-A", true),
             BatchTaskRequest(BatchOperation.GROUP_SAVE_TO_CONTACTS, listOf("room-unsave"), "account-A", false),
             BatchTaskRequest(BatchOperation.DELETE_CHATS, listOf("chat-delete"), "account-A", true),
-            BatchTaskRequest(BatchOperation.DELETE_FRIENDS, listOf("friend-delete"), "account-A", true),
+            BatchTaskRequest(BatchOperation.DELETE_FRIENDS, listOf("friend-delete-default"), "account-A", true),
+            BatchTaskRequest(
+                BatchOperation.DELETE_FRIENDS,
+                listOf("friend-delete-with-history"),
+                "account-A",
+                true,
+                deleteFriendClearHistory = true
+            ),
             BatchTaskRequest(
                 BatchOperation.GROUP_NICKNAME,
                 listOf("room-nickname"),
@@ -119,6 +126,38 @@ class BatchTaskManagerRegressionTest {
                 assertEquals(request.targetIds.size, manager.snapshot.value.report?.success)
                 assertEquals("批量操作成功", BatchTaskCompletionMessage.from(manager.snapshot.value))
             }
+        } finally {
+            manager.shutdownForTesting()
+        }
+    }
+
+    @Test
+    fun deleteFriendHistoryChoiceDefaultsOffAndIsCapturedInTheQueuedRequest() {
+        val accepted = LinkedBlockingQueue<BatchTaskRequest>()
+        val manager = BatchTaskManager.createForTesting(BatchTaskProcessor { request, _ ->
+            accepted.put(request)
+            BatchTaskRunner.fromResults(
+                request.targetIds,
+                request.targetIds.map {
+                    BatchTaskRunner.TaskResult.of(BatchTaskRunner.Outcome.SUCCESS, "test")
+                },
+                ""
+            )
+        })
+        val defaultRequest = BatchTaskRequest(BatchOperation.DELETE_FRIENDS, listOf("friend-off"), "account-A", true)
+        val clearHistoryRequest = defaultRequest.copy(
+            targetIds = listOf("friend-on"),
+            deleteFriendClearHistory = true
+        )
+        try {
+            assertFalse(defaultRequest.deleteFriendClearHistory)
+            assertEquals(BatchTaskSubmitResult.STARTED, manager.submit(defaultRequest))
+            assertEquals(defaultRequest, accepted.poll(5, TimeUnit.SECONDS))
+            awaitStatus(manager, BatchTaskStatus.COMPLETED)
+
+            assertEquals(BatchTaskSubmitResult.STARTED, manager.submit(clearHistoryRequest))
+            assertEquals(clearHistoryRequest, accepted.poll(5, TimeUnit.SECONDS))
+            awaitStatus(manager, BatchTaskStatus.COMPLETED)
         } finally {
             manager.shutdownForTesting()
         }

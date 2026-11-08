@@ -61,10 +61,16 @@ internal object BatchDeleteOutcomePolicy {
     }
 
     /** null means the deletion is still pending and should be observed again. */
-    fun friendState(validFriend: Boolean?, messagesRemain: Boolean?): BatchTaskRunner.TaskResult? {
+    fun friendState(
+        validFriend: Boolean?,
+        messagesRemain: Boolean?,
+        requireHistoryClear: Boolean = true
+    ): BatchTaskRunner.TaskResult? {
         if (validFriend == null) return result(BatchTaskRunner.Outcome.UNCONFIRMED,
             "删除请求已提交；好友关系状态读取失败")
         if (validFriend) return null
+        if (!requireHistoryClear) return result(BatchTaskRunner.Outcome.SUCCESS,
+            "好友关系已解除；聊天记录按微信原生删除行为处理")
         return when (messagesRemain) {
             false -> result(BatchTaskRunner.Outcome.SUCCESS, "好友关系与聊天记录已删除")
             true -> null

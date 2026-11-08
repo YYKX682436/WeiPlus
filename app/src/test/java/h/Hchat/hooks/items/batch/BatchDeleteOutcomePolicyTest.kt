@@ -111,4 +111,42 @@ class BatchDeleteOutcomePolicyTest {
             BatchDeleteOutcomePolicy.friendState(validFriend = null, messagesRemain = null)?.outcome
         )
     }
+
+    @Test
+    fun friendHistoryIsOptionalAndOnlyRequiredWhenTheNativeOptionIsEnabled() {
+        assertNull(BatchDeleteOutcomePolicy.friendState(
+            validFriend = true,
+            messagesRemain = null,
+            requireHistoryClear = false
+        ))
+        assertEquals(
+            BatchTaskRunner.Outcome.SUCCESS,
+            BatchDeleteOutcomePolicy.friendState(
+                validFriend = false,
+                messagesRemain = null,
+                requireHistoryClear = false
+            )?.outcome
+        )
+        assertEquals(
+            BatchTaskRunner.Outcome.UNCONFIRMED,
+            BatchDeleteOutcomePolicy.friendState(
+                validFriend = false,
+                messagesRemain = null,
+                requireHistoryClear = true
+            )?.outcome
+        )
+        assertNull(BatchDeleteOutcomePolicy.friendState(
+            validFriend = false,
+            messagesRemain = true,
+            requireHistoryClear = true
+        ))
+        assertEquals(
+            BatchTaskRunner.Outcome.SUCCESS,
+            BatchDeleteOutcomePolicy.friendState(
+                validFriend = false,
+                messagesRemain = false,
+                requireHistoryClear = true
+            )?.outcome
+        )
+    }
 }

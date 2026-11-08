@@ -624,10 +624,6 @@ public final class WeChatContactApi {
     public DeleteFriendRequest submitDeleteFriendWithResult(
             String username, boolean clearRecord, BatchSubmissionGuard guard) {
         String target = username == null ? "" : username.trim();
-        if (!clearRecord) {
-            logDeleteDiagnostic(target, "preflight-invalid-clear-option", "clearRecord=false");
-            return null;
-        }
         String preflightFailure = deleteFriendTargetCheckFailure(target);
         if (preflightFailure != null) {
             logDeleteDiagnostic(target, "preflight-state-failed", preflightFailure);
@@ -693,8 +689,9 @@ public final class WeChatContactApi {
                 request.close();
                 return null;
             }
-            KavaReflector.invokeOrThrow(submitMethod, service, target, true);
-            logDeleteDiagnostic(target, "request-submitted", submitMethod.toGenericString());
+            KavaReflector.invokeOrThrow(submitMethod, service, target, clearRecord);
+            logDeleteDiagnostic(target, "request-submitted",
+                    "clearRecord=" + clearRecord + " method=" + submitMethod.toGenericString());
             return request;
         } catch (Throwable e) {
             logDeleteDiagnostic(target, "native-invocation-threw",
@@ -778,7 +775,7 @@ public final class WeChatContactApi {
         return service != null && method.getDeclaringClass().isInstance(service) ? service : null;
     }
 
-    /** Batch removal requires the native explicit history-cleanup switch. */
+    /** Checks that DeleteContactService exposes its native clear-or-preserve history argument. */
     public boolean supportsDeleteFriendRecordClear() {
         if (dexFinder == null) return false;
         dexFinder.resolveDeleteContactServiceApi();

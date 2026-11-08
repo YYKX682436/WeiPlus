@@ -82,6 +82,16 @@ try {
         'the production entry list must add both requested delete operations');
     assert.match(batchUi, /BatchOperation\.DELETE_CHATS, BatchOperation\.DELETE_FRIENDS -> "删除"[\s\S]*?BatchDeleteConfirmDialog/,
         'deletion uses a counted footer and one final consequence confirmation');
+    assert.match(batchUi, /var deleteFriendClearHistory by remember \{ mutableStateOf\(false\) \}[\s\S]*?deleteFriendClearHistory = false[\s\S]*?BatchOperation\.DELETE_FRIENDS -> PopupChoiceRow[\s\S]*?同时清空聊天记录[\s\S]*?summary = if \(deleteFriendClearHistory\) "开启" else "关闭"[\s\S]*?PopupChoice\("开启", "true"\)[\s\S]*?PopupChoice\("关闭", "false"\)/,
+        'friend deletion exposes the default-off compact choice and resets it when the operation is entered');
+    assert.match(batchUi, /pendingDeleteClearHistory = currentFeature == BatchOperation\.DELETE_FRIENDS && deleteFriendClearHistory[\s\S]*?if \(pendingDeleteClearHistory\)[\s\S]*?同时清空对应聊天记录[\s\S]*?不主动清空[\s\S]*?val clearFriendHistory = pendingDeleteClearHistory[\s\S]*?startSelectionTask\(confirmed, clearFriendHistory\)/,
+        'the single final confirmation must match the captured operation consequence');
+    assert.match(batchUi, /deleteFriendClearHistory = selectedFeature == BatchOperation\.DELETE_FRIENDS && clearFriendHistory/,
+        'the picker value must be copied into the immutable background request only for friend deletion');
+    assert.match(manager, /deleteFriendClearHistory: Boolean = false/,
+        'the queued delete-friend option must default to history preservation');
+    assert.match(batchUi, /operationHeader = if \(currentFeature == BatchOperation\.HIDE \|\|\s*currentFeature == BatchOperation\.DELETE_CHATS\) null/,
+        'the new setting header must remain scoped to the friend picker without changing other selector layouts');
     assert.match(batchUi, /将删除所选[\s\S]*?聊天记录[\s\S]*?好友关系与群成员关系会保留[\s\S]*?此操作不可恢复/,
         'chat deletion confirmation must state message cleanup and preserved relationships');
     assert.match(batchUi, /BatchOperation\.DELETE_CHATS -> BatchCandidateMode\.HOME_CONVERSATIONS[\s\S]*?BatchOperation\.DELETE_FRIENDS -> BatchCandidateMode\.ALL_FRIENDS/,
@@ -235,8 +245,10 @@ try {
     assert.match(homeDeletePolicy, /if \(nativeHomeContains\)[\s\S]*?HOME_STILL_CONTAINS[\s\S]*?if \(rowPresent\) return WeChatConversationApi\.NativeHomeDeleteState\.HOME_REMOVED_ROW_RETAINED/,
         'a native reserved index is successful when the message history is empty and the current home query omits the chat');
     const deleteFriendMethod = methodBody(executor, 'private fun deleteFriend(');
-    assert.match(deleteFriendMethod, /submitDeleteFriendWithResult\(id, true\)[\s\S]*?FRIEND_DELETE_OBSERVATION_TIMEOUT_MS[\s\S]*?friendNativeResult\(nativeResult\)[\s\S]*?hasConversationMessagesState\(id\)/,
-        'friend deletion must distinguish a native rejection, a missing response and cleared message rows');
+    assert.match(deleteFriendMethod, /val clearHistory = request\.deleteFriendClearHistory[\s\S]*?val messages = if \(clearHistory\)[\s\S]*?submitDeleteFriendWithResult\(id, clearHistory\)[\s\S]*?friendState\(false, historyState, clearHistory\)/,
+        'friend history clearing must be optional, reach the native bool parameter and gate completion only when enabled');
+    assert.match(deleteFriendMethod, /if \(clearHistory\) messages\?\.hasConversationMessagesState\(id\) else null/,
+        'default friend deletion must not call or wait for the message store');
     assert.match(contactApi, /resolveDeleteContactServiceApi\(\)[\s\S]*?KavaReflector\.invokeOrThrow\(method, service, target, clearRecord\)/,
         'native DeleteContactService must live in the common contact API with its clear-record argument');
     assert.match(dexFinder, /usingEqStrings\([\s\S]*?MicroMsg\.DeleteContactService[\s\S]*?delete contact %s isClearRecord:%s[\s\S]*?DeleteContactServiceMethodPolicy\.isSubmitMethod/,
@@ -254,8 +266,10 @@ try {
     assert.match(contactApi, /submitDeleteFriendWithResult[\s\S]*?HookRegistry\.get\(\)\.hook[\s\S]*?request\.complete\(resultCode\)/,
         'the common contact API must capture the native response code for batch outcome classification');
     const trackedDelete = methodBody(contactApi, 'public DeleteFriendRequest submitDeleteFriendWithResult(\n            String username, boolean clearRecord, BatchSubmissionGuard guard)');
-    assert.match(trackedDelete, /response-method-unavailable[\s\S]*?XposedInterface\.HookHandle handle = null[\s\S]*?KavaReflector\.invokeOrThrow\(submitMethod, service, target, true\)/,
-        'response hook lookup or installation failure must not prevent one native submission');
+    assert.doesNotMatch(trackedDelete, /if \(!clearRecord\)/,
+        'preserving history must remain a valid native deletion mode');
+    assert.match(trackedDelete, /response-method-unavailable[\s\S]*?XposedInterface\.HookHandle handle = null[\s\S]*?KavaReflector\.invokeOrThrow\(submitMethod, service, target, clearRecord\)/,
+        'response hook lookup or installation failure must not prevent one native submission with the selected clear-record value');
     assert.match(executor, /FRIEND_DELETE_OBSERVATION_TIMEOUT_MS = 15_000L[\s\S]*?nativeDelete\.hasResponseHook\(\)[\s\S]*?nativeDelete\.receiverMismatch\(\)[\s\S]*?nativeDelete\.close\(\)/,
         'friend deletion must observe hook and actual state within one short bounded window');
     assert.match(zombieFeature, /submitDeleteFriend\(wxid, shouldClearRecord\(wxid, clearRecord\)\)/,

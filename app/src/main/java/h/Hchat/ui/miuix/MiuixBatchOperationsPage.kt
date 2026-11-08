@@ -48,6 +48,7 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
     var phase by remember { mutableStateOf(BatchPage.HOME) }
     var feature by remember { mutableStateOf<BatchOperation?>(null) }
     var enabled by remember { mutableStateOf(true) }
+    var deleteFriendClearHistory by remember { mutableStateOf(false) }
     var scope by remember { mutableStateOf(BatchScope.CURRENT) }
     var friendPermissionSelection by remember { mutableStateOf(BatchFriendPermissionSelection()) }
     var groupNickname by remember { mutableStateOf("") }
@@ -56,6 +57,7 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
     var labelsError by remember { mutableStateOf("") }
     var selectedLabelId by remember { mutableStateOf("") }
     var pendingDeleteTargets by remember { mutableStateOf<List<ContactOption>?>(null) }
+    var pendingDeleteClearHistory by remember { mutableStateOf(false) }
     var accountIdentity by remember { mutableStateOf("") }
     var accountReady by remember { mutableStateOf(false) }
     val labelLoadGeneration = remember { AtomicLong() }
@@ -110,6 +112,7 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
     val latestFeature = rememberUpdatedState(currentFeature)
     val latestScope = rememberUpdatedState(scope)
     val latestEnabled = rememberUpdatedState(enabled)
+    val latestDeleteFriendClearHistory = rememberUpdatedState(deleteFriendClearHistory)
     val latestFriendPermissionSelection = rememberUpdatedState(friendPermissionSelection)
     val latestGroupNickname = rememberUpdatedState(groupNickname)
     val latestLabels = rememberUpdatedState(labelChoices)
@@ -157,13 +160,14 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
                 else -> "确定"
             },
             operationHeader = if (currentFeature == BatchOperation.HIDE ||
-                currentFeature == BatchOperation.DELETE_CHATS ||
-                currentFeature == BatchOperation.DELETE_FRIENDS) null else {
+                currentFeature == BatchOperation.DELETE_CHATS) null else {
                 {
                     BatchPickerControls(
                         feature = latestFeature.value,
                         enabled = latestEnabled.value,
                         onEnabledChange = { enabled = it },
+                        deleteFriendClearHistory = latestDeleteFriendClearHistory.value,
+                        onDeleteFriendClearHistoryChange = { deleteFriendClearHistory = it },
                         friendPermissionSelection = latestFriendPermissionSelection.value,
                         onFriendPermissionSelectionChange = { friendPermissionSelection = it },
                         groupNickname = latestGroupNickname.value,
@@ -188,11 +192,12 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
 
     fun returnHome() {
         pendingDeleteTargets = null
+        pendingDeleteClearHistory = false
         feature = null
         phase = BatchPage.HOME
     }
 
-    fun startSelectionTask(picked: List<ContactOption>) {
+    fun startSelectionTask(picked: List<ContactOption>, clearFriendHistory: Boolean = false) {
         if (picked.isEmpty()) {
             Toast.makeText(context, "请至少选择一个对象", Toast.LENGTH_SHORT).show()
             return
@@ -224,7 +229,8 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
                 enabled = enabled,
                 labelId = selectedLabelId,
                 friendPermissionSelection = friendPermissionSelection,
-                groupNickname = groupNickname
+                groupNickname = groupNickname,
+                deleteFriendClearHistory = selectedFeature == BatchOperation.DELETE_FRIENDS && clearFriendHistory
             )
         )
         when (result) {
@@ -243,6 +249,7 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
     fun submitSelection(picked: List<ContactOption>) {
         if (currentFeature == BatchOperation.DELETE_CHATS || currentFeature == BatchOperation.DELETE_FRIENDS) {
             pendingDeleteTargets = picked.toList()
+            pendingDeleteClearHistory = currentFeature == BatchOperation.DELETE_FRIENDS && deleteFriendClearHistory
         } else {
             startSelectionTask(picked)
         }
@@ -252,15 +259,24 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
         show = pendingDeleteTargets != null,
         message = when (currentFeature) {
             BatchOperation.DELETE_CHATS -> "将删除所选 ${pendingDeleteTargets?.size ?: 0} 个聊天，并清理对应聊天记录。好友关系与群成员关系会保留。此操作不可恢复。"
-            BatchOperation.DELETE_FRIENDS -> "将删除所选 ${pendingDeleteTargets?.size ?: 0} 位好友及对应聊天记录。此操作不可恢复。"
+            BatchOperation.DELETE_FRIENDS -> if (pendingDeleteClearHistory) {
+                "将删除所选 ${pendingDeleteTargets?.size ?: 0} 位好友，并同时清空对应聊天记录。此操作不可恢复。"
+            } else {
+                "将删除所选 ${pendingDeleteTargets?.size ?: 0} 位好友；聊天记录按微信原生删除行为处理，不主动清空。此操作不可恢复。"
+            }
             else -> ""
         },
         labels = pendingDeleteTargets.orEmpty().map { it.label },
-        onDismiss = { pendingDeleteTargets = null },
+        onDismiss = {
+            pendingDeleteTargets = null
+            pendingDeleteClearHistory = false
+        },
         onConfirm = {
             val confirmed = pendingDeleteTargets
+            val clearFriendHistory = pendingDeleteClearHistory
             pendingDeleteTargets = null
-            if (!confirmed.isNullOrEmpty()) startSelectionTask(confirmed)
+            pendingDeleteClearHistory = false
+            if (!confirmed.isNullOrEmpty()) startSelectionTask(confirmed, clearFriendHistory)
         }
     )
 
@@ -297,6 +313,7 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
                         ActionRow(operation.title, operationSummary(operation)) {
                             feature = operation
                             enabled = true
+                            deleteFriendClearHistory = false
                             scope = BatchScope.CURRENT
                             friendPermissionSelection = BatchFriendPermissionSelection()
                             groupNickname = ""
@@ -337,6 +354,8 @@ private fun BatchPickerControls(
     feature: BatchOperation?,
     enabled: Boolean,
     onEnabledChange: (Boolean) -> Unit,
+    deleteFriendClearHistory: Boolean,
+    onDeleteFriendClearHistoryChange: (Boolean) -> Unit,
     friendPermissionSelection: BatchFriendPermissionSelection,
     onFriendPermissionSelectionChange: (BatchFriendPermissionSelection) -> Unit,
     groupNickname: String,
@@ -352,6 +371,13 @@ private fun BatchPickerControls(
 ) {
     SettingsCard {
         when (feature) {
+            BatchOperation.DELETE_FRIENDS -> PopupChoiceRow(
+                title = "同时清空聊天记录",
+                summary = if (deleteFriendClearHistory) "开启" else "关闭",
+                options = listOf(PopupChoice("开启", "true"), PopupChoice("关闭", "false")),
+                currentValue = deleteFriendClearHistory.toString(),
+                onValueChanged = { onDeleteFriendClearHistoryChange(it.toBooleanStrictOrNull() ?: deleteFriendClearHistory) }
+            )
             BatchOperation.DO_NOT_DISTURB -> {
                 PopupChoiceRow(
                     title = "免打扰",
@@ -523,7 +549,7 @@ private fun operationSummary(operation: BatchOperation): String = when (operatio
     BatchOperation.GROUP_SAVE_TO_CONTACTS -> "保存群聊到通讯录或取消保存"
     BatchOperation.GROUP_NICKNAME -> "为所选群聊设置我在群里的昵称"
     BatchOperation.DELETE_CHATS -> "删除微信首页当前聊天，并清理对应聊天记录；保留好友与群成员关系"
-    BatchOperation.DELETE_FRIENDS -> "删除全部有效好友及其聊天记录，不含自己、公众号和群聊"
+    BatchOperation.DELETE_FRIENDS -> "删除全部有效好友，可选同时清空聊天记录；不含自己、公众号和群聊"
 }
 
 private fun validGroupNickname(value: String): Boolean =

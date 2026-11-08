@@ -296,9 +296,14 @@ internal object BatchOperationExecutor : BatchTaskProcessor {
         logDeletePhase("delete-friend", id, "executor-entered")
         val contacts = WeChatApis.contacts()
             ?: return result(BatchTaskRunner.Outcome.FAILED, "微信联系人 API 不可用")
-        val messages = WeChatApis.messageStore()
-            ?: return result(BatchTaskRunner.Outcome.FAILED, "微信消息清理 API 不可用")
-        if (!messages.isAvailable) return result(BatchTaskRunner.Outcome.FAILED, "微信消息清理 API 不可用")
+        val clearHistory = request.deleteFriendClearHistory
+        val messages = if (clearHistory) {
+            WeChatApis.messageStore()
+                ?: return result(BatchTaskRunner.Outcome.FAILED, "微信消息清理 API 不可用")
+        } else null
+        if (clearHistory && messages?.isAvailable != true) {
+            return result(BatchTaskRunner.Outcome.FAILED, "微信消息清理 API 不可用")
+        }
         val state = contacts.getContactStateResult(id)
         if (!state.success) return result(BatchTaskRunner.Outcome.FAILED, state.error.ifBlank { "读取好友关系失败" })
         val self = accountSelfId()
@@ -307,12 +312,12 @@ internal object BatchOperationExecutor : BatchTaskProcessor {
             return result(BatchTaskRunner.Outcome.SKIPPED, "不是有效好友或对象已失效")
         }
         if (!contacts.supportsDeleteFriendRecordClear()) {
-            return result(BatchTaskRunner.Outcome.FAILED, "当前微信未提供带聊天记录清理选项的原生删除接口")
+            return result(BatchTaskRunner.Outcome.FAILED, "当前微信原生删除好友 API 不可用")
         }
         if (!mayStartNativeOperation(request, stopSignal)) {
             return result(BatchTaskRunner.Outcome.SKIPPED, stopReason(stopSignal))
         }
-        val nativeDelete = contacts.submitDeleteFriendWithResult(id, true) {
+        val nativeDelete = contacts.submitDeleteFriendWithResult(id, clearHistory) {
             !stopSignal.isStopped() && isAccountCurrent(request.expectedAccount)
         } ?: return if (!mayStartNativeOperation(request, stopSignal)) {
             result(BatchTaskRunner.Outcome.SKIPPED, stopReason(stopSignal))
@@ -334,9 +339,13 @@ internal object BatchOperationExecutor : BatchTaskProcessor {
                 val current = contacts.getContactStateResult(id)
                 if (current.success && (!current.found || !current.validFriend)) {
                     lastRelationState = "removed"
-                    val historyState = messages.hasConversationMessagesState(id)
-                    lastHistoryState = historyState?.toString() ?: "unreadable"
-                    val outcome = BatchDeleteOutcomePolicy.friendState(false, historyState)
+                    val historyState = if (clearHistory) messages?.hasConversationMessagesState(id) else null
+                    lastHistoryState = when {
+                        !clearHistory -> "not-requested"
+                        historyState == null -> "unreadable"
+                        else -> historyState.toString()
+                    }
+                    val outcome = BatchDeleteOutcomePolicy.friendState(false, historyState, clearHistory)
                     if (outcome?.outcome == BatchTaskRunner.Outcome.SUCCESS) return outcome
                 } else if (current.success) {
                     lastRelationState = "still-friend"
@@ -352,6 +361,12 @@ internal object BatchOperationExecutor : BatchTaskProcessor {
                             "nativeResult=${nativeResult ?: "missing"}"
                     )
                     val stateDetail = when {
+                        !clearHistory && nativeResult == 0 -> "微信返回成功码，但好友关系尚未确认"
+                        !clearHistory && nativeResult == null && nativeDelete.receiverMismatch() ->
+                            "原生回执由其他Service实例处理；好友关系未确认"
+                        !clearHistory && nativeResult == null && !nativeDelete.hasResponseHook() ->
+                            "原生结果Hook不可用，好友关系未确认"
+                        !clearHistory && nativeResult == null -> "请求已提交但未收到原生回执，好友关系未确认"
                         nativeResult == null && nativeDelete.receiverMismatch() ->
                             "原生回执由其他Service实例处理；好友或聊天记录状态未确认"
                         nativeResult == null && !nativeDelete.hasResponseHook() ->
