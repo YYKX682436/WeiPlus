@@ -13,6 +13,7 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
@@ -27,6 +28,30 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public final class WeChatMessageStoreApi {
     public enum ConversationClearResult { COMPLETED, NOT_SUBMITTED, UNCONFIRMED, STOPPED }
     private static final long MESSAGE_CLEAR_CONFIRMATION_TIMEOUT_MS = 30_000L;
+    private static final class MessageRowsObservation {
+        final Boolean messagesRemain;
+        final String partitionState;
+        final String mainState;
+        final String reason;
+        final boolean broadScan;
+
+        MessageRowsObservation(Boolean messagesRemain, String partitionState, String mainState, String reason) {
+            this(messagesRemain, partitionState, mainState, reason, false);
+        }
+
+        MessageRowsObservation(Boolean messagesRemain, String partitionState, String mainState,
+                               String reason, boolean broadScan) {
+            this.messagesRemain = messagesRemain;
+            this.partitionState = partitionState;
+            this.mainState = mainState;
+            this.reason = reason;
+            this.broadScan = broadScan;
+        }
+
+        String detail() {
+            return "partition=" + partitionState + " main=" + mainState + " reason=" + reason;
+        }
+    }
     public interface Logger {
         void log(String message);
     }
@@ -180,13 +205,14 @@ public final class WeChatMessageStoreApi {
         try {
             while (true) {
                 boolean stopped = shouldStop != null && shouldStop.getAsBoolean();
-                Boolean remains = hasConversationMessagesState(target);
+                MessageRowsObservation observation = observeConversationMessageRows(target);
+                Boolean remains = observation.messagesRemain;
                 boolean timedOut = System.nanoTime() >= deadline;
                 MessageClearCompletionPolicy.Decision decision =
                         MessageClearCompletionPolicy.decide(remains, stopped, timedOut);
                 if (decision == MessageClearCompletionPolicy.Decision.COMPLETED) {
                     logBatchDeletePhase(target, "stage2-message-tables-empty",
-                            stageOneReceived.get(), false, "partitionAndMain=empty");
+                            stageOneReceived.get(), false, observation.detail());
                     if (!stageOneReceived.get()) {
                         logBatchDeletePhase(target, "stage1-callback-missing-but-stage2-confirmed",
                                 false, false, method.toGenericString());
@@ -201,10 +227,11 @@ public final class WeChatMessageStoreApi {
                 if (decision == MessageClearCompletionPolicy.Decision.UNCONFIRMED) {
                     logBatchDeletePhase(target, "stage2-message-clear-unconfirmed",
                             stageOneReceived.get(), remains,
-                            "timeoutMs=" + MESSAGE_CLEAR_CONFIRMATION_TIMEOUT_MS);
+                            "timeoutMs=" + MESSAGE_CLEAR_CONFIRMATION_TIMEOUT_MS
+                                    + " " + observation.detail());
                     return ConversationClearResult.UNCONFIRMED;
                 }
-                TimeUnit.MILLISECONDS.sleep(200);
+                TimeUnit.MILLISECONDS.sleep(observation.broadScan ? 1_000L : 200L);
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -230,26 +257,111 @@ public final class WeChatMessageStoreApi {
 
     /** null means the message store could not be queried reliably. */
     public Boolean hasConversationMessagesState(String talker) {
-        if (databaseApi == null || !databaseApi.isAvailable()) return null;
-        String partition = messageTable(talker);
-        if (TextUtils.isEmpty(partition)) return null;
-        Boolean partitionRows = tableHasTalkerRows(partition, talker);
-        if (!Boolean.FALSE.equals(partitionRows)) return partitionRows;
-        if ("\"message\"".equalsIgnoreCase(partition)) return false;
-        return tableHasTalkerRows("\"message\"", talker);
+        return observeConversationMessageRows(talker).messagesRemain;
     }
 
-    private Boolean tableHasTalkerRows(String table, String talker) {
-        Cursor cursor = databaseApi.rawQuery("SELECT 1 FROM " + table + " WHERE talker=? LIMIT 1",
-                new String[]{talker});
-        if (cursor == null) return null;
-        try {
-            return cursor.moveToFirst();
-        } catch (Throwable e) {
-            return null;
-        } finally {
-            try { cursor.close(); } catch (Throwable ignored) {}
+    private MessageRowsObservation observeConversationMessageRows(String talker) {
+        String target = talker == null ? "" : talker.trim();
+        if (target.isEmpty()) {
+            return new MessageRowsObservation(null, "unreadable", "not-checked", "invalid-target");
         }
+        if (databaseApi == null) {
+            return new MessageRowsObservation(null, "unreadable", "not-checked", "database-api-null");
+        }
+        if (!databaseApi.isAvailable()) {
+            return new MessageRowsObservation(null, "unreadable", "not-checked", "database-api-unavailable");
+        }
+        String partition = messageTable(target);
+        if (TextUtils.isEmpty(partition)) {
+            return observeAllKnownMessageTables(target, "talker-partition-unresolved");
+        }
+        WeChatDatabaseApi.QueryResult partitionResult = queryMessageRows(partition, target);
+        if (!partitionResult.success) {
+            return observeAllKnownMessageTables(target, "partition-query-failed");
+        }
+        if (!partitionResult.rows.isEmpty()) {
+            return new MessageRowsObservation(true, "present", "not-checked", "partition-has-rows");
+        }
+        if ("message".equalsIgnoreCase(unquoteTable(partition))) {
+            return observeAllKnownMessageTables(target, "main-table-is-talker-partition");
+        }
+        WeChatDatabaseApi.QueryResult mainResult = queryMessageRows(databaseApi.quoteTable("message"), target);
+        if (!mainResult.success) {
+            return observeAllKnownMessageTables(target, "main-table-query-failed");
+        }
+        if (!mainResult.rows.isEmpty()) {
+            return new MessageRowsObservation(true, "empty", "present", "main-table-has-rows");
+        }
+        return observeAllKnownMessageTables(target, "mapped-partition-and-main-empty");
+    }
+
+    /** If WeChat's talker-to-partition mapper is unavailable, read every schema-verified message table. */
+    private MessageRowsObservation observeAllKnownMessageTables(String talker, String cause) {
+        LinkedHashSet<String> tables = new LinkedHashSet<>(databaseApi.messageTables());
+        tables.add("message");
+        List<String> quotedTables = new ArrayList<>();
+        for (String table : tables) {
+            String quoted = databaseApi.quoteTable(table);
+            if (!TextUtils.isEmpty(quoted)) quotedTables.add(quoted);
+        }
+        if (quotedTables.isEmpty()) {
+            return new MessageRowsObservation(null, "unreadable", "unreadable",
+                    cause + ";knownMessageTables=0", true);
+        }
+
+        final int chunkSize = 128;
+        for (int start = 0; start < quotedTables.size(); start += chunkSize) {
+            int end = Math.min(start + chunkSize, quotedTables.size());
+            StringBuilder sql = new StringBuilder();
+            List<String> args = new ArrayList<>(end - start);
+            for (int index = start; index < end; index++) {
+                if (sql.length() > 0) sql.append(" UNION ALL ");
+                sql.append("SELECT 1 FROM ").append(quotedTables.get(index)).append(" WHERE talker=?");
+                args.add(talker);
+            }
+            sql.append(" LIMIT 1");
+            WeChatDatabaseApi.QueryResult query = databaseApi.queryWithStatus(
+                    sql.toString(), args.toArray(new String[0]));
+            if (!query.success) {
+                return new MessageRowsObservation(null, "all-known-unreadable", "included-in-scan",
+                        cause + ";scanQueryFailed=" + queryFailureCode(query)
+                                + ";knownMessageTables=" + quotedTables.size(), true);
+            }
+            if (!query.rows.isEmpty()) {
+                return new MessageRowsObservation(true, "all-known-scanned", "included-in-scan",
+                        cause + ";rowsRemain=true;knownMessageTables=" + quotedTables.size(), true);
+            }
+        }
+        return new MessageRowsObservation(false, "all-known-empty", "empty",
+                cause + ";knownMessageTables=" + quotedTables.size(), true);
+    }
+
+    private WeChatDatabaseApi.QueryResult queryMessageRows(String table, String talker) {
+        return databaseApi.queryWithStatus(
+                "SELECT 1 FROM " + table + " WHERE talker=? LIMIT 1", new String[]{talker});
+    }
+
+    private String queryFailureCode(WeChatDatabaseApi.QueryResult query) {
+        String error = query != null ? query.error : "";
+        if (error.contains("不可用")) return "database-unavailable";
+        if (error.contains("读取失败")) return "cursor-unavailable";
+        if (error.contains("列信息")) return "columns-unavailable";
+        if (error.contains("异常")) return "query-exception";
+        return "query-failed";
+    }
+
+    private String unquoteTable(String table) {
+        if (TextUtils.isEmpty(table)) return "";
+        String value = table.trim();
+        if (value.length() >= 2) {
+            char first = value.charAt(0);
+            char last = value.charAt(value.length() - 1);
+            if ((first == '`' && last == '`') || (first == '"' && last == '"')
+                    || (first == '[' && last == ']')) {
+                return value.substring(1, value.length() - 1);
+            }
+        }
+        return value;
     }
 
     /** A mutation already identifies its table: never probe other tables for that event. */

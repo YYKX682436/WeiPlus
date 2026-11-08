@@ -569,6 +569,7 @@ public final class WeChatDatabaseApi {
         boolean hasMsgSvrId = false;
         boolean hasCreateTime = false;
         boolean hasContent = false;
+        boolean hasTalker = false;
         try {
             int index = cursor.getColumnIndex("name");
             if (index < 0) return false;
@@ -578,8 +579,9 @@ public final class WeChatDatabaseApi {
                 if ("msgSvrId".equals(name)) hasMsgSvrId = true;
                 if ("createTime".equals(name)) hasCreateTime = true;
                 if ("content".equals(name)) hasContent = true;
+                if ("talker".equals(name)) hasTalker = true;
             }
-            return hasMsgId && hasMsgSvrId && hasCreateTime && hasContent;
+            return hasMsgId && hasMsgSvrId && hasCreateTime && hasContent && hasTalker;
         } catch (Throwable ignored) {
             return false;
         } finally {

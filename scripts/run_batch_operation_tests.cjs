@@ -258,12 +258,20 @@ try {
         'friend deletion must observe hook and actual state within one short bounded window');
     assert.match(zombieFeature, /submitDeleteFriend\(wxid, shouldClearRecord\(wxid, clearRecord\)\)/,
         'zombie-check deletion must reuse the common native entry');
-    assert.match(messageStore, /hasConversationMessagesState\(target\)[\s\S]*?MessageClearCompletionPolicy\.decide[\s\S]*?stage2-message-tables-empty/,
+    assert.match(messageStore, /observeConversationMessageRows\(target\)[\s\S]*?MessageClearCompletionPolicy\.decide[\s\S]*?stage2-message-tables-empty/,
         'message table emptiness must independently confirm Stage 2 even if Stage 1 callback was missed');
     assert.doesNotMatch(messageStore, /stageOne\.await|TimeUnit\.MINUTES\.toNanos\(5\)/,
         'a missing Stage 1 callback must not block conversation deletion for five minutes');
     assert.match(messageClearPolicy, /Boolean\.FALSE\.equals\(messagesRemain\)[\s\S]*?Decision\.COMPLETED/,
         'confirmed empty message tables must advance without requiring the Stage 1 callback');
+    assert.match(messageStore, /observeAllKnownMessageTables[\s\S]*?databaseApi\.messageTables\(\)[\s\S]*?UNION ALL[\s\S]*?queryWithStatus/,
+        'an unresolved talker partition must fall back to a bounded scan of verified message tables and the main table');
+    assert.match(messageStore, /mapped-partition-and-main-empty[\s\S]*?observeAllKnownMessageTables/,
+        'mapped partition and main-table emptiness must also be checked against the complete known message-table set');
+    assert.match(databaseApi, /hasTalker = false[\s\S]*?hasMsgId && hasMsgSvrId && hasCreateTime && hasContent && hasTalker/,
+        'fallback scans must only use schema-verified message partitions that have the talker field');
+    assert.match(messageStore, /timeoutMs=" \+ MESSAGE_CLEAR_CONFIRMATION_TIMEOUT_MS[\s\S]*?observation\.detail\(\)/,
+        'an unconfirmed message read must expose whether the partition, main table or fallback scan failed');
     assert.match(wechatApiFeature, /startsWith\("\[WeChatContactApi\] 批量删除好友诊断 phase="\)[\s\S]*?startsWith\("\[WeChatMessageStoreApi\] 批量删除聊天核验 phase="\)/,
         'only the targeted batch deletion diagnostics bypass the default log filter');
     assert.match(executor, /setStarredFriend\([\s\S]*?setFriendPermission\([\s\S]*?setGroupSavedToContacts\([\s\S]*?setMyGroupNickname\(/,
