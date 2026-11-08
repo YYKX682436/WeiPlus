@@ -1,12 +1,15 @@
 package h.Hchat.hooks.api.contact;
 
+import android.content.Context;
 import android.text.TextUtils;
 
 import h.Hchat.dexkit.DexFinder;
+import h.Hchat.hooks.api.conversation.WeChatConversationApi;
 import h.Hchat.hooks.api.model.WeChatChatroom;
 import h.Hchat.hooks.api.model.WeChatContact;
 import h.Hchat.hooks.api.net.WeChatNetworkDispatcher;
 import h.Hchat.hooks.api.runtime.WeChatDatabaseApi;
+import h.Hchat.hooks.items.batch.BatchGroupStatePolicy;
 import h.Hchat.hooks.api.media.WeChatInternalServices;
 import h.Hchat.utils.KavaReflector;
 
@@ -15,6 +18,7 @@ import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.Proxy;
+import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -25,6 +29,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 
 /**
  * 微信群聊 API。
@@ -34,6 +39,79 @@ public final class WeChatChatroomApi {
     public static final int ROLE_ADMIN = 1;
     public static final int ROLE_OWNER = 2;
     private static final int ROOM_FLAG_ADMIN = 0x800;
+    private static final String GROUP_ID_SQL = "(r.username LIKE '%@chatroom' OR r.username LIKE '%@im.chatroom')";
+
+    public static final class GroupCandidate {
+        public final WeChatContact contact;
+        public final BatchGroupStatePolicy.CleanupReason cleanupReason;
+
+        GroupCandidate(WeChatContact contact, BatchGroupStatePolicy.CleanupReason cleanupReason) {
+            this.contact = contact;
+            this.cleanupReason = cleanupReason;
+        }
+
+        public String cleanupReasonLabel() {
+            if (cleanupReason == BatchGroupStatePolicy.CleanupReason.DISBANDED) return "已解散";
+            if (cleanupReason == BatchGroupStatePolicy.CleanupReason.LEFT_OR_REMOVED) return "已退出或被移出";
+            return "";
+        }
+    }
+
+    public static final class GroupCandidateResult {
+        public final boolean success;
+        public final List<GroupCandidate> candidates;
+        public final String error;
+
+        private GroupCandidateResult(boolean success, List<GroupCandidate> candidates, String error) {
+            this.success = success;
+            this.candidates = candidates == null ? new ArrayList<>() : new ArrayList<>(candidates);
+            this.error = error == null ? "" : error;
+        }
+    }
+
+    public static final class GroupOperationStatus {
+        public final boolean readSucceeded;
+        public final boolean contactPresent;
+        public final boolean chatroomRowPresent;
+        public final BatchGroupStatePolicy.State state;
+        public final BatchGroupStatePolicy.CleanupReason cleanupReason;
+        public final String roomOwner;
+        public final String error;
+
+        private GroupOperationStatus(GroupStateSnapshot snapshot) {
+            readSucceeded = snapshot.readSucceeded;
+            contactPresent = snapshot.contactPresent;
+            chatroomRowPresent = snapshot.chatroomRowPresent;
+            state = snapshot.state;
+            cleanupReason = BatchGroupStatePolicy.cleanupReason(snapshot.state);
+            roomOwner = snapshot.roomOwner;
+            error = snapshot.error;
+        }
+    }
+
+    private static final class GroupStateSnapshot {
+        final boolean readSucceeded;
+        final boolean contactPresent;
+        final boolean chatroomRowPresent;
+        final String memberList;
+        final String roomOwner;
+        final int chatroomStatus;
+        final BatchGroupStatePolicy.State state;
+        final String error;
+
+        GroupStateSnapshot(boolean readSucceeded, boolean contactPresent, boolean chatroomRowPresent,
+                           String memberList, String roomOwner, int chatroomStatus,
+                           BatchGroupStatePolicy.State state, String error) {
+            this.readSucceeded = readSucceeded;
+            this.contactPresent = contactPresent;
+            this.chatroomRowPresent = chatroomRowPresent;
+            this.memberList = memberList;
+            this.roomOwner = roomOwner;
+            this.chatroomStatus = chatroomStatus;
+            this.state = state;
+            this.error = error == null ? "" : error;
+        }
+    }
 
     public interface Logger {
         void log(String message);
@@ -41,6 +119,9 @@ public final class WeChatChatroomApi {
 
     private final WeChatDatabaseApi databaseApi;
     private final WeChatContactApi contactApi;
+    private final WeChatAccountApi accountApi;
+    private final WeakReference<Context> hostContext;
+    private final PendingGroupExitGuard pendingGroupExitGuard;
     private final DexFinder dexFinder;
     private final WeChatNetworkDispatcher networkDispatcher;
     private final Logger logger;
@@ -50,7 +131,7 @@ public final class WeChatChatroomApi {
     public WeChatChatroomApi(WeChatDatabaseApi databaseApi,
                              WeChatContactApi contactApi,
                              Logger logger) {
-        this(databaseApi, contactApi, null, null, logger);
+        this(null, null, databaseApi, contactApi, null, null, logger);
     }
 
     public WeChatChatroomApi(WeChatDatabaseApi databaseApi,
@@ -58,11 +139,343 @@ public final class WeChatChatroomApi {
                              DexFinder dexFinder,
                              WeChatNetworkDispatcher networkDispatcher,
                              Logger logger) {
+        this(null, null, databaseApi, contactApi, dexFinder, networkDispatcher, logger);
+    }
+
+    public WeChatChatroomApi(Context hostContext,
+                             WeChatAccountApi accountApi,
+                             WeChatDatabaseApi databaseApi,
+                             WeChatContactApi contactApi,
+                             DexFinder dexFinder,
+                             WeChatNetworkDispatcher networkDispatcher,
+                             Logger logger) {
+        Context applicationContext = hostContext != null && hostContext.getApplicationContext() != null
+                ? hostContext.getApplicationContext() : hostContext;
+        this.hostContext = applicationContext != null ? new WeakReference<>(applicationContext) : null;
+        this.accountApi = accountApi;
+        this.pendingGroupExitGuard = applicationContext != null
+                ? new PendingGroupExitGuard(applicationContext) : null;
         this.databaseApi = databaseApi;
         this.contactApi = contactApi;
         this.dexFinder = dexFinder;
         this.networkDispatcher = networkDispatcher;
         this.logger = logger;
+    }
+
+    /**
+     * Loads every confirmed current member group from rcontact + chatroom, including groups that
+     * have no homepage conversation. Missing/empty roster data is omitted as unknown.
+     */
+    public GroupCandidateResult getJoinedGroupCandidates() {
+        String selfId = accountApi != null ? accountApi.selfWxId() : "";
+        if (TextUtils.isEmpty(selfId)) return candidatesFailed("无法确认当前微信账号");
+        WeChatContactApi.ContactListResult groupResult = contactApi != null
+                ? contactApi.getGroupsResult() : null;
+        if (groupResult == null || !groupResult.success) {
+            return candidatesFailed(groupResult != null && !TextUtils.isEmpty(groupResult.error)
+                    ? groupResult.error : "读取群聊联系人失败");
+        }
+        Map<String, GroupStateSnapshot> states = readAllGroupStates(selfId);
+        if (states == null) return candidatesFailed("读取当前群成员状态失败");
+        List<GroupCandidate> candidates = new ArrayList<>();
+        for (WeChatContact contact : groupResult.contacts) {
+            if (contact == null || TextUtils.isEmpty(contact.wxId)) continue;
+            GroupStateSnapshot state = states.get(contact.wxId);
+            if (state == null || !BatchGroupStatePolicy.isLeaveCandidate(
+                    state.state, selfId, state.roomOwner)) continue;
+            candidates.add(new GroupCandidate(contact, null));
+        }
+        return new GroupCandidateResult(true, candidates, "");
+    }
+
+    /** Only groups whose native status proves they are disbanded or no longer contain this user. */
+    public GroupCandidateResult getInvalidGroupCandidates() {
+        String selfId = accountApi != null ? accountApi.selfWxId() : "";
+        if (TextUtils.isEmpty(selfId)) return candidatesFailed("无法确认当前微信账号");
+        WeChatContactApi.ContactListResult groupResult = contactApi != null
+                ? contactApi.getGroupsResult() : null;
+        if (groupResult == null || !groupResult.success) {
+            return candidatesFailed(groupResult != null && !TextUtils.isEmpty(groupResult.error)
+                    ? groupResult.error : "读取群聊联系人失败");
+        }
+        Map<String, GroupStateSnapshot> states = readAllGroupStates(selfId);
+        if (states == null) return candidatesFailed("读取当前群成员状态失败");
+        List<GroupCandidate> candidates = new ArrayList<>();
+        for (WeChatContact contact : groupResult.contacts) {
+            if (contact == null || TextUtils.isEmpty(contact.wxId)) continue;
+            GroupStateSnapshot state = states.get(contact.wxId);
+            if (state == null || !state.readSucceeded || !state.contactPresent || !state.chatroomRowPresent) continue;
+            BatchGroupStatePolicy.CleanupReason reason = BatchGroupStatePolicy.cleanupReason(state.state);
+            if (reason != null) candidates.add(new GroupCandidate(contact, reason));
+        }
+        return new GroupCandidateResult(true, candidates, "");
+    }
+
+    /** Live state read used again immediately before a selected group operation. */
+    public GroupOperationStatus getGroupOperationStatus(String chatroomId) {
+        String roomId = chatroomId == null ? "" : chatroomId.trim();
+        String selfId = accountApi != null ? accountApi.selfWxId() : "";
+        if (!isGroup(roomId) || TextUtils.isEmpty(selfId)) {
+            return new GroupOperationStatus(groupStateReadFailed("无法确认群聊或当前账号"));
+        }
+        return new GroupOperationStatus(readGroupState(roomId, selfId));
+    }
+
+    /** Uses the exact native batch process and fails closed for owners or stale group state. */
+    public NativeBatchQuitChatroomProcess.Result submitNativeBatchQuit(
+            List<String> roomIds,
+            String expectedAccount,
+            BooleanSupplier shouldContinue) {
+        List<String> targets = roomIds == null ? Collections.emptyList() : new ArrayList<>(roomIds);
+        if (targets.isEmpty() || targets.size() > NativeBatchQuitChatroomProcess.MAX_BATCH_SIZE) {
+            return NativeBatchQuitChatroomProcess.Result.failed("微信原生退群单批上限为20个群聊");
+        }
+        if (accountApi == null || TextUtils.isEmpty(expectedAccount)
+                || !expectedAccount.trim().equals(accountApi.sessionIdentity())) {
+            return NativeBatchQuitChatroomProcess.Result.failed("账号已切换或当前账号不可用");
+        }
+        String selfId = accountApi.selfWxId();
+        if (TextUtils.isEmpty(selfId)) {
+            return NativeBatchQuitChatroomProcess.Result.failed("无法确认当前微信账号");
+        }
+        for (String target : targets) {
+            if (!isGroup(target)) {
+                return NativeBatchQuitChatroomProcess.Result.failed("所选对象已不是群聊；未提交退群请求");
+            }
+            GroupStateSnapshot state = readGroupState(target, selfId);
+            if (!state.readSucceeded || !state.contactPresent || !state.chatroomRowPresent
+                    || !BatchGroupStatePolicy.isLeaveCandidate(state.state, selfId, state.roomOwner)) {
+                return NativeBatchQuitChatroomProcess.Result.failed(
+                        "群聊状态、成员身份或群主状态已变化；未提交该批退群请求");
+            }
+            if (shouldContinue != null && !safeContinue(shouldContinue)) {
+                return NativeBatchQuitChatroomProcess.Result.failed("账号已切换或任务已停止");
+            }
+        }
+        Context context = hostContext != null ? hostContext.get() : null;
+        if (context == null || dexFinder == null) {
+            return NativeBatchQuitChatroomProcess.Result.failed("微信原生退群 API 未就绪");
+        }
+        if (pendingGroupExitGuard != null) {
+            for (String target : targets) pendingGroupExitGuard.mark(expectedAccount, target);
+        }
+        NativeBatchQuitChatroomProcess.Result nativeResult = NativeBatchQuitChatroomProcess.execute(
+                context, dexFinder, targets, this::log);
+        for (String id : nativeResult.submittedIds) {
+            GroupStateSnapshot after = readGroupState(id, selfId);
+            boolean membershipResolved = after.readSucceeded && (
+                    after.state == BatchGroupStatePolicy.State.NOT_MEMBER
+                            || after.state == BatchGroupStatePolicy.State.DISBANDED
+                            || after.state == BatchGroupStatePolicy.State.CONTACT_MISSING);
+            boolean uncertain = !membershipResolved && (
+                    nativeResult.serverAcceptedIds.contains(id)
+                            || nativeResult.timedOut
+                            || nativeResult.networkError
+                            || nativeResult.accountDetached
+                            || !nativeResult.completed
+                            || nativeResult.retrySuppressedIds.contains(id));
+            if (pendingGroupExitGuard != null) {
+                if (uncertain) pendingGroupExitGuard.mark(expectedAccount, id);
+                else if (membershipResolved) pendingGroupExitGuard.clear(expectedAccount, id);
+                else if (nativeResult.completed && nativeResult.failedIds.contains(id)
+                        && !nativeResult.serverAcceptedIds.contains(id)) {
+                    pendingGroupExitGuard.clear(expectedAccount, id);
+                }
+            }
+        }
+        if (pendingGroupExitGuard != null) {
+            for (String id : targets) {
+                if (!nativeResult.submittedIds.contains(id)) pendingGroupExitGuard.clear(expectedAccount, id);
+            }
+        }
+        return nativeResult;
+    }
+
+    /**
+     * Rechecks the selected invalid reason, then uses WeChat's own conversation and whole-room
+     * deletion helpers. It never deletes message rows or writes rcontact/chatroom SQL directly.
+     */
+    public WeChatNativeMutationResult deleteInvalidGroupNative(
+            String chatroomId,
+            BatchGroupStatePolicy.CleanupReason expectedReason,
+            WeChatConversationApi conversations,
+            WeChatContactApi.BatchSubmissionGuard guard) {
+        String roomId = chatroomId == null ? "" : chatroomId.trim();
+        if (!isGroup(roomId) || expectedReason == null || conversations == null) {
+            return mutation(WeChatNativeMutationResult.Outcome.INVALID_TARGET, "无效群聊对象");
+        }
+        if (databaseApi == null || !databaseApi.isAvailable() || accountApi == null) {
+            return mutation(WeChatNativeMutationResult.Outcome.READ_FAILED, "群聊或账号 API 不可用");
+        }
+        String selfId = accountApi.selfWxId();
+        if (TextUtils.isEmpty(selfId)) {
+            return mutation(WeChatNativeMutationResult.Outcome.READ_FAILED, "无法确认当前微信账号");
+        }
+        GroupStateSnapshot before = readGroupState(roomId, selfId);
+        if (!before.readSucceeded) {
+            return mutation(WeChatNativeMutationResult.Outcome.READ_FAILED, "复核群聊状态失败");
+        }
+        if (!before.contactPresent || !before.chatroomRowPresent
+                || !BatchGroupStatePolicy.stillMatchesCleanupReason(before.state, expectedReason)) {
+            return mutation(WeChatNativeMutationResult.Outcome.INVALID_TARGET,
+                    "群聊状态已变化或已可用，未清理");
+        }
+        if (dexFinder == null || !dexFinder.resolveDeleteWholeChatroomApi()
+                || dexFinder.deleteWholeChatroomMethod == null) {
+            return mutation(WeChatNativeMutationResult.Outcome.NOT_SUBMITTED,
+                    "微信原生群资料删除入口不可用");
+        }
+        if (!maySubmit(guard)) {
+            return mutation(WeChatNativeMutationResult.Outcome.NOT_SUBMITTED, "账号已切换或任务已停止");
+        }
+        boolean conversationRemoved;
+        try {
+            conversationRemoved = conversations.deleteConversation(roomId);
+        } catch (Throwable e) {
+            log("调用微信原生会话删除失败: " + e.getMessage());
+            return mutation(WeChatNativeMutationResult.Outcome.SUBMITTED_UNCONFIRMED, "原生会话清理未确认");
+        }
+        if (!conversationRemoved) {
+            return mutation(WeChatNativeMutationResult.Outcome.SUBMITTED_UNCONFIRMED, "原生会话清理未确认");
+        }
+
+        if (!maySubmit(guard)) {
+            return mutation(WeChatNativeMutationResult.Outcome.SUBMITTED_UNCONFIRMED,
+                    "会话已移除；账号或任务状态变化，群资料删除未继续");
+        }
+        GroupStateSnapshot beforeRoomRemoval = readGroupState(roomId, selfId);
+        if (!beforeRoomRemoval.readSucceeded) {
+            return mutation(WeChatNativeMutationResult.Outcome.SUBMITTED_UNCONFIRMED,
+                    "会话已移除；群聊状态复核失败，群资料删除未继续");
+        }
+        if (!beforeRoomRemoval.contactPresent || !beforeRoomRemoval.chatroomRowPresent
+                || !BatchGroupStatePolicy.stillMatchesCleanupReason(
+                        beforeRoomRemoval.state, expectedReason)) {
+            return mutation(WeChatNativeMutationResult.Outcome.SUBMITTED_UNCONFIRMED,
+                    "会话已移除；群聊状态已变化，群资料删除未继续");
+        }
+
+        try {
+            Object value = KavaReflector.invokeOrThrow(
+                    dexFinder.deleteWholeChatroomMethod, null, roomId);
+            if (value instanceof Boolean && !((Boolean) value)) {
+                return mutation(WeChatNativeMutationResult.Outcome.SUBMITTED_UNCONFIRMED,
+                        "微信原生群资料删除未确认；会话已移除");
+            }
+        } catch (Throwable e) {
+            log("调用微信原生群资料删除失败: " + e.getMessage());
+            return mutation(WeChatNativeMutationResult.Outcome.SUBMITTED_UNCONFIRMED,
+                    "群资料删除未确认；会话已移除");
+        }
+        return confirmNativeGroupRemoved(roomId, conversations)
+                ? mutation(WeChatNativeMutationResult.Outcome.CONFIRMED,
+                        "已按微信原生方式移除失效群资料与残留会话；聊天记录未额外清空")
+                : mutation(WeChatNativeMutationResult.Outcome.SUBMITTED_UNCONFIRMED,
+                        "已提交微信原生群资料删除；最终状态未确认");
+    }
+
+    private boolean confirmNativeGroupRemoved(String roomId, WeChatConversationApi conversations) {
+        WeChatDatabaseApi.QueryResult contact = databaseApi.queryWithStatus(
+                "SELECT username FROM rcontact WHERE username=? LIMIT 1", new String[]{roomId});
+        WeChatDatabaseApi.QueryResult room = databaseApi.queryWithStatus(
+                "SELECT chatroomname FROM chatroom WHERE chatroomname=? LIMIT 1", new String[]{roomId});
+        Boolean conversation = conversations.conversationEntryExistsState(roomId);
+        return contact.success && contact.rows.isEmpty()
+                && room.success && room.rows.isEmpty()
+                && Boolean.FALSE.equals(conversation);
+    }
+
+    private Map<String, GroupStateSnapshot> readAllGroupStates(String selfId) {
+        if (databaseApi == null || !databaseApi.isAvailable()) return null;
+        WeChatDatabaseApi.QueryResult query = databaseApi.queryWithStatus(
+                "SELECT r.username AS username, r.chatroomStatus AS chatroomStatus, "
+                        + "c.chatroomname AS chatroomname, c.memberlist AS memberlist, c.roomowner AS roomowner "
+                        + "FROM rcontact r LEFT JOIN chatroom c ON c.chatroomname=r.username WHERE "
+                        + GROUP_ID_SQL + " ORDER BY r.username",
+                null);
+        if (!query.success) {
+            log("读取群聊原生状态失败: " + query.error);
+            return null;
+        }
+        Map<String, GroupStateSnapshot> result = new LinkedHashMap<>();
+        for (Map<String, Object> row : query.rows) {
+            String id = str(row, "username");
+            if (TextUtils.isEmpty(id)) continue;
+            boolean roomPresent = !TextUtils.isEmpty(str(row, "chatroomname"));
+            String memberList = str(row, "memberlist");
+            String roomOwner = str(row, "roomowner");
+            int status = intValue(row, "chatroomStatus");
+            Boolean nativeAlreadyQuit = readNativeAlreadyQuit(id);
+            BatchGroupStatePolicy.State state = BatchGroupStatePolicy.classify(
+                    true, true, roomPresent, selfId, memberList, status, nativeAlreadyQuit);
+            result.put(id, applyPendingExitGuard(id, new GroupStateSnapshot(
+                    true, true, roomPresent, memberList, roomOwner, status, state, "")));
+        }
+        return result;
+    }
+
+    private GroupStateSnapshot readGroupState(String roomId, String selfId) {
+        if (databaseApi == null || !databaseApi.isAvailable()) {
+            return groupStateReadFailed("微信数据库不可用");
+        }
+        WeChatDatabaseApi.QueryResult query = databaseApi.queryWithStatus(
+                "SELECT r.username AS username, r.chatroomStatus AS chatroomStatus, "
+                        + "c.chatroomname AS chatroomname, c.memberlist AS memberlist, c.roomowner AS roomowner "
+                        + "FROM rcontact r LEFT JOIN chatroom c ON c.chatroomname=r.username "
+                        + "WHERE r.username=? AND " + GROUP_ID_SQL + " LIMIT 1",
+                new String[]{roomId});
+        if (!query.success) return groupStateReadFailed(query.error);
+        if (query.rows.isEmpty()) {
+            return applyPendingExitGuard(roomId, new GroupStateSnapshot(true, false, false, null, "", 0,
+                    BatchGroupStatePolicy.State.CONTACT_MISSING, ""));
+        }
+        Map<String, Object> row = query.rows.get(0);
+        boolean roomPresent = !TextUtils.isEmpty(str(row, "chatroomname"));
+        String memberList = str(row, "memberlist");
+        String owner = str(row, "roomowner");
+        int status = intValue(row, "chatroomStatus");
+        Boolean nativeAlreadyQuit = readNativeAlreadyQuit(roomId);
+        BatchGroupStatePolicy.State state = BatchGroupStatePolicy.classify(
+                true, true, roomPresent, selfId, memberList, status, nativeAlreadyQuit);
+        return applyPendingExitGuard(roomId, new GroupStateSnapshot(
+                true, true, roomPresent, memberList, owner, status, state, ""));
+    }
+
+    /** Returns the native "already quit" predicate, or null if WeChat cannot verify it. */
+    private Boolean readNativeAlreadyQuit(String roomId) {
+        if (dexFinder == null || !dexFinder.resolveChatroomAlreadyQuitApi()
+                || dexFinder.chatroomAlreadyQuitMethod == null) return null;
+        try {
+            Object value = KavaReflector.invokeOrThrow(dexFinder.chatroomAlreadyQuitMethod, null, roomId);
+            return value instanceof Boolean ? (Boolean) value : null;
+        } catch (Throwable e) {
+            log("读取微信原生群成员状态失败: " + e.getMessage());
+            return null;
+        }
+    }
+
+    private GroupStateSnapshot applyPendingExitGuard(String roomId, GroupStateSnapshot snapshot) {
+        if (pendingGroupExitGuard == null || accountApi == null || !snapshot.readSucceeded) return snapshot;
+        String account = accountApi.sessionIdentity();
+        if (BatchGroupStatePolicy.resolvesPendingRequest(snapshot.state)) {
+            pendingGroupExitGuard.clear(account, roomId);
+            return snapshot;
+        }
+        if (!BatchGroupStatePolicy.shouldBlockRepeat(snapshot.state,
+                pendingGroupExitGuard.contains(account, roomId))) return snapshot;
+        return new GroupStateSnapshot(true, snapshot.contactPresent, snapshot.chatroomRowPresent,
+                snapshot.memberList, snapshot.roomOwner, snapshot.chatroomStatus,
+                BatchGroupStatePolicy.State.UNKNOWN,
+                "退群结果尚未确认；等待微信原生成员状态更新，禁止重复提交");
+    }
+
+    private GroupStateSnapshot groupStateReadFailed(String error) {
+        return new GroupStateSnapshot(false, false, false, null, "", 0,
+                BatchGroupStatePolicy.State.UNKNOWN, error);
+    }
+
+    private GroupCandidateResult candidatesFailed(String error) {
+        return new GroupCandidateResult(false, Collections.emptyList(), error);
     }
 
     public boolean isAvailable() {
@@ -567,6 +980,10 @@ public final class WeChatChatroomApi {
         } catch (Throwable ignored) {
             return false;
         }
+    }
+
+    private boolean safeContinue(BooleanSupplier supplier) {
+        try { return supplier.getAsBoolean(); } catch (Throwable ignored) { return false; }
     }
 
     private static WeChatNativeMutationResult mutation(

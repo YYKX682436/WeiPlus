@@ -34,6 +34,7 @@ try {
         'app/src/main/java/h/Hchat/hooks/api/conversation/WeChatConversationIdentity.java',
         'app/src/main/java/h/Hchat/hooks/api/contact/ContactLabelIds.java',
         'app/src/main/java/h/Hchat/hooks/items/batch/BatchCandidateLoadGate.java',
+        'app/src/main/java/h/Hchat/hooks/items/batch/BatchGroupStatePolicy.java',
         'app/src/main/java/h/Hchat/hooks/items/batch/BatchSelectionPolicy.java',
         'app/src/main/java/h/Hchat/hooks/items/batch/BatchSelectionState.java',
         'app/src/main/java/h/Hchat/hooks/items/batch/BatchStatePolicy.java',
@@ -61,6 +62,9 @@ try {
     const wechatApiFeature = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/api/core/WechatApiFeature.java'), 'utf8');
     const zombieFeature = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/items/zombiecheck/ZombieCheckFeature.kt'), 'utf8');
     const chatroomApi = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/api/contact/WeChatChatroomApi.java'), 'utf8');
+    const nativeBatchQuit = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/api/contact/NativeBatchQuitChatroomProcess.java'), 'utf8');
+    const groupStatePolicy = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/items/batch/BatchGroupStatePolicy.java'), 'utf8');
+    const groupQuitPolicy = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/items/batch/BatchGroupQuitOutcomePolicy.kt'), 'utf8');
     const databaseApi = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/api/runtime/WeChatDatabaseApi.java'), 'utf8');
     const executor = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/items/batch/BatchOperationExecutor.kt'), 'utf8');
     const manager = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/items/batch/BatchTaskManager.kt'), 'utf8');
@@ -80,6 +84,14 @@ try {
         'the home feature count and list must come from implemented operations');
     assert.match(manager, /DELETE_CHATS\("批量删除聊天"\)[\s\S]*?DELETE_FRIENDS\("批量删除好友"\)/,
         'the production entry list must add both requested delete operations');
+    assert.match(manager, /GROUP_LEAVE\("批量退出群聊"\)[\s\S]*?DELETE_INVALID_GROUPS\("批量删除无效群聊"\)[\s\S]*?DELETE_CHATS\("批量删除聊天"\)/,
+        'the second-round operations must preserve the existing ten operations and add the two group actions');
+    const operationEnum = manager.slice(
+        manager.indexOf('internal enum class BatchOperation'),
+        manager.indexOf('internal enum class BatchFriendAccessChoice')
+    );
+    assert.equal((operationEnum.match(/^    [A-Z_]+\("/gm) || []).length, 12,
+        'the batch entry point must contain twelve implemented operations');
     assert.match(batchUi, /BatchOperation\.DELETE_CHATS, BatchOperation\.DELETE_FRIENDS -> "删除"[\s\S]*?BatchDeleteConfirmDialog/,
         'deletion uses a counted footer and one final consequence confirmation');
     assert.match(batchUi, /var deleteFriendClearHistory by remember \{ mutableStateOf\(false\) \}[\s\S]*?deleteFriendClearHistory = false[\s\S]*?BatchOperation\.DELETE_FRIENDS -> PopupChoiceRow[\s\S]*?同时清空聊天记录[\s\S]*?summary = if \(deleteFriendClearHistory\) "开启" else "关闭"[\s\S]*?PopupChoice\("开启", "true"\)[\s\S]*?PopupChoice\("关闭", "false"\)/,
@@ -94,9 +106,9 @@ try {
         'the new setting header must remain scoped to the friend picker without changing other selector layouts');
     assert.match(batchUi, /将删除所选[\s\S]*?聊天记录[\s\S]*?好友关系与群成员关系会保留[\s\S]*?此操作不可恢复/,
         'chat deletion confirmation must state message cleanup and preserved relationships');
-    assert.match(batchUi, /BatchOperation\.DELETE_CHATS -> BatchCandidateMode\.HOME_CONVERSATIONS[\s\S]*?BatchOperation\.DELETE_FRIENDS -> BatchCandidateMode\.ALL_FRIENDS/,
+    assert.match(batchUi, /BatchOperation\.GROUP_LEAVE -> BatchCandidateMode\.JOINED_GROUPS[\s\S]*?BatchOperation\.DELETE_INVALID_GROUPS -> BatchCandidateMode\.INVALID_GROUPS[\s\S]*?BatchOperation\.DELETE_CHATS -> BatchCandidateMode\.HOME_CONVERSATIONS[\s\S]*?BatchOperation\.DELETE_FRIENDS -> BatchCandidateMode\.ALL_FRIENDS/,
         'delete candidates must use the ordered home chats and valid friends data sets');
-    for (const operation of ['STAR_FRIEND', 'FRIEND_PERMISSION', 'GROUP_SAVE_TO_CONTACTS', 'GROUP_NICKNAME', 'DELETE_CHATS', 'DELETE_FRIENDS']) {
+    for (const operation of ['STAR_FRIEND', 'FRIEND_PERMISSION', 'GROUP_SAVE_TO_CONTACTS', 'GROUP_NICKNAME', 'GROUP_LEAVE', 'DELETE_INVALID_GROUPS', 'DELETE_CHATS', 'DELETE_FRIENDS']) {
         assert.match(manager, new RegExp(`\\b${operation}\\b`), `missing production task kind ${operation}`);
         assert.match(executor, new RegExp(`BatchOperation\\.${operation}`), `executor does not route ${operation}`);
     }
@@ -146,7 +158,7 @@ try {
         'batch selectors must omit account, search and repeated operation copy');
 
     assert.match(contactPicker, /if \(!request\.hideSearch\) item/,
-        'the common picker search remains available for all eight batch operations');
+        'the common picker search remains available for all twelve batch operations');
     assert.match(contactPicker, /\.filter \{ it\.matchesSearch\(lower\) \}/,
         'picker search must filter by the contact aliases and IDs supported by ContactOption');
     assert.match(contactPicker, /request\.flatBatchSelection\) batchSelectionOrderForUi\.size/,
@@ -185,6 +197,39 @@ try {
         'starred candidate loading must share the database success state instead of treating a read failure as empty');
     assert.match(shared, /getGroupsResult\(\)[\s\S]*?读取有效群聊失败/,
         'group candidates must distinguish a successful empty list from database failure');
+    assert.match(shared, /BatchCandidateMode\.JOINED_GROUPS ->[\s\S]*?getJoinedGroupCandidates\(\)[\s\S]*?BatchCandidateMode\.INVALID_GROUPS ->[\s\S]*?getInvalidGroupCandidates\(\)/,
+        'the two new group selectors must use the evidence-filtered candidate APIs');
+    assert.match(groupStatePolicy, /if \(!readSucceeded\) return State\.UNKNOWN[\s\S]*?if \(!chatroomRowPresent\) return State\.UNKNOWN[\s\S]*?memberList == null \|\| memberList\.trim\(\)\.isEmpty\(\)/,
+        'failed reads, missing room rows and empty rosters must not become invalid cleanup candidates');
+    assert.match(groupStatePolicy, /DISBANDED_STATUS_FLAG = 0x2[\s\S]*?State\.DISBANDED/,
+        'the dismissed state must come from the native chatroomStatus bit');
+    assert.match(groupStatePolicy, /Boolean nativeAlreadyQuit[\s\S]*?State\.NOT_MEMBER && !Boolean\.TRUE\.equals\(nativeAlreadyQuit\)/,
+        'left or removed state must agree with WeChat’s native already-quit predicate');
+    assert.match(dexFinder, /resolveChatroomAlreadyQuitApi\(\)[\s\S]*?deleteWholeChatroomMethod\.getDeclaringClass\(\)[\s\S]*?method\.getName\(\)\.equals\("E"\)/,
+        'the group-state check must resolve WeChat’s native already-quit method from its verified helper class');
+    assert.match(groupStatePolicy, /isLeaveCandidate[\s\S]*?!owner\.equals\(self\)/,
+        'the current room owner must never enter the automated leave request');
+    assert.match(groupQuitPolicy, /REQUEST_RESULT_UNKNOWN[\s\S]*?LEFT_CONFIRMED[\s\S]*?SERVER_ACCEPTED_STATE_UNKNOWN/,
+        'the leave result policy must separate request submission, server response, actual membership and account scope');
+    assert.match(groupQuitPolicy, /ACCOUNT_CHANGED_UNKNOWN/,
+        'account changes must be reported independently from a confirmed leave');
+    assert.match(chatroomApi, /pendingGroupExitGuard\.mark[\s\S]*?applyPendingExitGuard[\s\S]*?shouldBlockRepeat/,
+        'a timed-out or unconfirmed leave must block another submit until native state resolves');
+    assert.match(nativeBatchQuit, /MAX_BATCH_SIZE = 20[\s\S]*?batchQuitChatroomWorkerCtor, process, ids, false/,
+        'native batch exit must use WeChat’s batch process with history clearing disabled');
+    assert.match(nativeBatchQuit, /retainHooksForLateCompletion\.set\(true\)[\s\S]*?if \(!retainHooksForLateCompletion\.get\(\) \|\| completionObserved\.get\(\)\) hooks\.release\(\)/,
+        'a timed-out batch must keep its instance hooks until late native reconciliation completes');
+    assert.match(nativeBatchQuit, /if \(timedOut\.get\(\)\) hooks\.release\(\)/,
+        'late native completion must release the retained retry and completion hooks');
+    assert.doesNotMatch(nativeBatchQuit, /stopWithoutRetry|writeField\(running/,
+        'a timeout must not cut off WeChat’s late native reconciliation callback');
+    assert.doesNotMatch(chatroomApi, /delChatroomMember\([^\n]*selfWxId/,
+        'active exit must not masquerade as removing the current user from the member list');
+    const invalidGroupDelete = methodBody(chatroomApi, 'public WeChatNativeMutationResult deleteInvalidGroupNative(');
+    assert.match(invalidGroupDelete, /stillMatchesCleanupReason[\s\S]*?conversations\.deleteConversation\(roomId\)[\s\S]*?beforeRoomRemoval[\s\S]*?stillMatchesCleanupReason[\s\S]*?deleteWholeChatroomMethod/,
+        'invalid cleanup must recheck the same evidence before conversation and group-storage deletion');
+    assert.doesNotMatch(invalidGroupDelete, /databaseApi\.delete\(|DELETE FROM (rcontact|chatroom)|clearConversationMessages/,
+        'invalid cleanup must not directly delete group tables or message rows');
     assert.match(shared, /!labelSnapshot\.success[\s\S]*?读取好友标签成员失败/,
         'a failed membership read must produce an error distinct from an empty membership result');
     assert.match(shared, /preserveNativeHomeOrder = nativeHomeConversationList \|\| batchCandidateMode in setOf\([\s\S]*?CURRENT_FRIENDS[\s\S]*?val sorted = if \(preserveNativeHomeOrder\) deduplicated/,

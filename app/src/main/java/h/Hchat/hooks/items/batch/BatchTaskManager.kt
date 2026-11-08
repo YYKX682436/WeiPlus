@@ -18,6 +18,8 @@ internal enum class BatchOperation(val title: String) {
     FRIEND_PERMISSION("批量设置好友权限"),
     GROUP_SAVE_TO_CONTACTS("批量保存群聊到通讯录"),
     GROUP_NICKNAME("批量修改我在群里的昵称"),
+    GROUP_LEAVE("批量退出群聊"),
+    DELETE_INVALID_GROUPS("批量删除无效群聊"),
     DELETE_CHATS("批量删除聊天"),
     DELETE_FRIENDS("批量删除好友")
 }
@@ -83,7 +85,8 @@ internal data class BatchTaskRequest(
     val labelId: String = "",
     val friendPermissionSelection: BatchFriendPermissionSelection = BatchFriendPermissionSelection(),
     val groupNickname: String = "",
-    val deleteFriendClearHistory: Boolean = false
+    val deleteFriendClearHistory: Boolean = false,
+    val groupCleanupReasons: Map<String, String> = emptyMap()
 )
 
 internal enum class BatchTaskStatus {
@@ -232,11 +235,19 @@ internal class BatchTaskManager private constructor(
             .distinct()
             .toList()
         if (ids.isEmpty()) return null
+        val cleanupReasons = request.groupCleanupReasons
+            .filterKeys { it in ids }
+            .mapValues { it.value.trim() }
+        if (request.operation == BatchOperation.DELETE_INVALID_GROUPS && ids.any { id ->
+                cleanupReasons[id] !in setOf("LEFT_OR_REMOVED", "DISBANDED")
+            }
+        ) return null
         return request.copy(
             targetIds = ids,
             expectedAccount = request.expectedAccount.trim(),
             labelId = request.labelId.trim(),
-            groupNickname = request.groupNickname.trim()
+            groupNickname = request.groupNickname.trim(),
+            groupCleanupReasons = cleanupReasons
         )
     }
 

@@ -279,6 +279,20 @@ public class DexFinder {
     public Constructor<?> inviteChatroomMemberCtor;
     public Class<?> delChatroomMemberClass;
     public Constructor<?> delChatroomMemberCtor;
+    // Official BatchQuitChatroomProcess (batchquitchatroom scene + local native reconciliation).
+    public Class<?> batchQuitChatroomProcessClass;
+    public Constructor<?> batchQuitChatroomProcessCtor;
+    public Method batchQuitChatroomSubmitMethod;
+    public Method batchQuitChatroomRetryMethod;
+    public Method batchQuitChatroomFailureMethod;
+    public Method batchQuitChatroomFailureFactoryMethod;
+    public Method batchQuitChatroomCompleteMethod;
+    public Class<?> batchQuitChatroomWorkerClass;
+    public Constructor<?> batchQuitChatroomWorkerCtor;
+    public Method batchQuitChatroomWorkerRunMethod;
+    // Native local deletion used by ChatroomInfoUI.doDeleteChatroom after leave/disband.
+    public Method deleteWholeChatroomMethod;
+    public Method chatroomAlreadyQuitMethod;
     public Class<?> revokeMsgClass;
     public Constructor<?> revokeMsgCtor;
     public Class<?> uploadDeviceStepClass;
@@ -3930,6 +3944,191 @@ public class DexFinder {
         } catch (Throwable e) {
             h.Hchat.utils.HLog.e(TAG + " resolveDelChatroomMemberApi 失败: " + e.getMessage(), e);
         }
+    }
+
+    /** Resolve the official batch-quit controller by its stable method-local log anchors. */
+    public synchronized boolean resolveBatchQuitChatroomApi() {
+        ensureSnapshotLoaded();
+        if (isBatchQuitChatroomApiReady()) return true;
+        try {
+            List<Method> submitCandidates = findMethodsUsingString(
+                    "send batch rooms:%s generation:%d clearHistory:%s");
+            Method submit = uniqueMethod(submitCandidates, method ->
+                    !Modifier.isStatic(method.getModifiers())
+                            && method.getReturnType() == void.class
+                            && method.getParameterTypes().length == 1
+                            && List.class.isAssignableFrom(method.getParameterTypes()[0]));
+            if (submit == null) return false;
+
+            Class<?> processClass = submit.getDeclaringClass();
+            Constructor<?> processCtor = null;
+            for (Constructor<?> constructor : KavaReflector.declaredConstructors(processClass)) {
+                Class<?>[] params = constructor.getParameterTypes();
+                if (params.length == 2
+                        && Context.class.isAssignableFrom(params[0])
+                        && params[1].isInterface()) {
+                    processCtor = KavaReflector.accessible(constructor);
+                    break;
+                }
+            }
+            if (processCtor == null) return false;
+
+            Method retry = uniqueMethod(findMethodsUsingString(
+                            "retry exhausted, room:%s outcome:%d retryCount:%d"), method ->
+                    method.getDeclaringClass() == processClass
+                            && !Modifier.isStatic(method.getModifiers())
+                            && method.getReturnType() == void.class
+                            && method.getParameterTypes().length == 2
+                            && method.getParameterTypes()[0] == String.class
+                            && method.getParameterTypes()[1] == int.class);
+            Method failure = uniqueMethod(findMethodsUsingString(
+                            "room quit failed, room:%s stage:%s"), method ->
+                    method.getDeclaringClass() == processClass
+                            && !Modifier.isStatic(method.getModifiers())
+                            && method.getReturnType() == void.class
+                            && method.getParameterTypes().length == 2
+                            && method.getParameterTypes()[0] == String.class
+                            && !method.getParameterTypes()[1].isPrimitive());
+            Method complete = uniqueMethod(findMethodsUsingString(
+                            "complete successRooms:%s failedRooms:%s cleanupFailedRooms:%s networkError:%s detached:%s"), method ->
+                    method.getDeclaringClass() == processClass
+                            && !Modifier.isStatic(method.getModifiers())
+                            && method.getReturnType() == void.class
+                            && method.getParameterTypes().length == 0);
+            if (retry == null || failure == null || complete == null) return false;
+
+            Class<?> failureType = failure.getParameterTypes()[1];
+            Method failureFactory = null;
+            for (Method method : KavaReflector.declaredMethods(processClass)) {
+                if (!Modifier.isStatic(method.getModifiers())
+                        && method.getName().equals("i")
+                        && method.getReturnType() == failureType
+                        && method.getParameterTypes().length == 0) {
+                    failureFactory = KavaReflector.accessible(method);
+                    break;
+                }
+            }
+            if (failureFactory == null) return false;
+
+            Method workerRun = uniqueMethod(findMethodsUsingString("start rooms:%s clearHistory:%s"), method ->
+                    method.getReturnType() == void.class && method.getParameterTypes().length == 0);
+            if (workerRun == null) return false;
+            Class<?> workerClass = workerRun.getDeclaringClass();
+            Constructor<?> workerCtor = null;
+            for (Constructor<?> constructor : KavaReflector.declaredConstructors(workerClass)) {
+                Class<?>[] params = constructor.getParameterTypes();
+                if (params.length == 3
+                        && params[0] == processClass
+                        && List.class.isAssignableFrom(params[1])
+                        && params[2] == boolean.class) {
+                    workerCtor = KavaReflector.accessible(constructor);
+                    break;
+                }
+            }
+            if (workerCtor == null) return false;
+
+            batchQuitChatroomProcessClass = processClass;
+            batchQuitChatroomProcessCtor = processCtor;
+            batchQuitChatroomSubmitMethod = KavaReflector.accessible(submit);
+            batchQuitChatroomRetryMethod = KavaReflector.accessible(retry);
+            batchQuitChatroomFailureMethod = KavaReflector.accessible(failure);
+            batchQuitChatroomFailureFactoryMethod = failureFactory;
+            batchQuitChatroomCompleteMethod = KavaReflector.accessible(complete);
+            batchQuitChatroomWorkerClass = workerClass;
+            batchQuitChatroomWorkerCtor = workerCtor;
+            batchQuitChatroomWorkerRunMethod = KavaReflector.accessible(workerRun);
+            return isBatchQuitChatroomApiReady();
+        } catch (Throwable e) {
+            HLog.e(TAG + " resolveBatchQuitChatroomApi failed: " + e.getMessage(), e);
+            return false;
+        }
+    }
+
+    public synchronized boolean isBatchQuitChatroomApiReady() {
+        return batchQuitChatroomProcessClass != null
+                && batchQuitChatroomProcessCtor != null
+                && batchQuitChatroomSubmitMethod != null
+                && batchQuitChatroomRetryMethod != null
+                && batchQuitChatroomFailureMethod != null
+                && batchQuitChatroomFailureFactoryMethod != null
+                && batchQuitChatroomCompleteMethod != null
+                && batchQuitChatroomWorkerClass != null
+                && batchQuitChatroomWorkerCtor != null
+                && batchQuitChatroomWorkerRunMethod != null;
+    }
+
+    /** Resolve WeChat's own chatroom/contact removal helper; never edits rcontact or chatroom SQL. */
+    public synchronized boolean resolveDeleteWholeChatroomApi() {
+        ensureSnapshotLoaded();
+        if (deleteWholeChatroomMethod != null
+                && Modifier.isStatic(deleteWholeChatroomMethod.getModifiers())
+                && deleteWholeChatroomMethod.getReturnType() == boolean.class
+                && Arrays.equals(deleteWholeChatroomMethod.getParameterTypes(), new Class<?>[]{String.class})) {
+            return true;
+        }
+        try {
+            deleteWholeChatroomMethod = uniqueMethod(
+                    findMethodsUsingString("deleteWholeChatroom: room:["), method ->
+                            Modifier.isStatic(method.getModifiers())
+                                    && method.getReturnType() == boolean.class
+                                    && Arrays.equals(method.getParameterTypes(), new Class<?>[]{String.class}));
+            return deleteWholeChatroomMethod != null;
+        } catch (Throwable e) {
+            HLog.e(TAG + " resolveDeleteWholeChatroomApi failed: " + e.getMessage(), e);
+            return false;
+        }
+    }
+
+    /** Resolve WeChat's native already-quit state check from the chatroom-membership helper. */
+    public synchronized boolean resolveChatroomAlreadyQuitApi() {
+        ensureSnapshotLoaded();
+        if (chatroomAlreadyQuitMethod != null
+                && Modifier.isStatic(chatroomAlreadyQuitMethod.getModifiers())
+                && chatroomAlreadyQuitMethod.getReturnType() == boolean.class
+                && Arrays.equals(chatroomAlreadyQuitMethod.getParameterTypes(), new Class<?>[]{String.class})) {
+            return true;
+        }
+        if (!resolveDeleteWholeChatroomApi()) return false;
+        try {
+            Class<?> owner = deleteWholeChatroomMethod.getDeclaringClass();
+            chatroomAlreadyQuitMethod = uniqueMethod(
+                    KavaReflector.declaredMethods(owner), method ->
+                            Modifier.isStatic(method.getModifiers())
+                                    && method.getName().equals("E")
+                                    && method.getReturnType() == boolean.class
+                                    && Arrays.equals(method.getParameterTypes(), new Class<?>[]{String.class}));
+            return chatroomAlreadyQuitMethod != null;
+        } catch (Throwable e) {
+            HLog.e(TAG + " resolveChatroomAlreadyQuitApi failed: " + e.getMessage(), e);
+            return false;
+        }
+    }
+
+    private List<Method> findMethodsUsingString(String anchor) {
+        List<Method> result = new ArrayList<>();
+        if (anchor == null || anchor.isEmpty() || dexQueries == null) return result;
+        for (MethodData data : dexQueries.findMethod(mkMethodUsingStrings(anchor))) {
+            try {
+                Method method = data.getMethodInstance(classLoader);
+                if (method != null && !result.contains(method)) result.add(method);
+            } catch (Throwable ignored) {}
+        }
+        return result;
+    }
+
+    private interface RuntimeMethodMatcher {
+        boolean matches(Method method);
+    }
+
+    private Method uniqueMethod(List<Method> methods, RuntimeMethodMatcher matcher) {
+        List<Method> candidates = new ArrayList<>();
+        if (methods == null || matcher == null) return null;
+        for (Method method : methods) {
+            try {
+                if (matcher.matches(method) && !candidates.contains(method)) candidates.add(method);
+            } catch (Throwable ignored) {}
+        }
+        return candidates.size() == 1 ? candidates.get(0) : null;
     }
 
     public void resolveRevokeMsgApi() {

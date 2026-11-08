@@ -1,6 +1,7 @@
 import h.Hchat.hooks.api.contact.ContactLabelIds;
 import h.Hchat.hooks.api.contact.WeChatContactTypeState;
 import h.Hchat.hooks.items.batch.BatchCandidateLoadGate;
+import h.Hchat.hooks.items.batch.BatchGroupStatePolicy;
 import h.Hchat.hooks.items.batch.BatchSelectionPolicy;
 import h.Hchat.hooks.items.batch.BatchSelectionState;
 import h.Hchat.hooks.items.batch.BatchStatePolicy;
@@ -23,6 +24,7 @@ public final class BatchOperationRegression {
         labelChangesResetOldSelections();
         labelMembershipEdits();
         stateTransitions();
+        groupStatusEvidenceFailsClosed();
         friendPermissionTypeBitsAreIndependent();
         serialResultsAndPartialFailure();
         stopPreventsLaterSubmissions();
@@ -196,6 +198,58 @@ public final class BatchOperationRegression {
         assertTrue(!BatchStatePolicy.alreadySatisfied(null, false)
                         && !BatchStatePolicy.verified(null, false),
                 "unknown state must not count as satisfied or verified");
+    }
+
+    private static void groupStatusEvidenceFailsClosed() {
+        assertEquals(BatchGroupStatePolicy.State.UNKNOWN,
+                BatchGroupStatePolicy.classify(false, true, true, "self", "other", 0),
+                "a failed database read must stay unknown");
+        assertEquals(BatchGroupStatePolicy.State.UNKNOWN,
+                BatchGroupStatePolicy.classify(true, true, false, "self", "other", 0),
+                "a missing chatroom row must not prove an invalid group");
+        assertEquals(BatchGroupStatePolicy.State.UNKNOWN,
+                BatchGroupStatePolicy.classify(true, true, true, "self", "", 0),
+                "an empty member list must not prove an invalid group");
+        assertEquals(BatchGroupStatePolicy.State.CONTACT_MISSING,
+                BatchGroupStatePolicy.classify(true, false, true, "self", "other", 0),
+                "a missing contact row is not a residual group cleanup candidate");
+        assertEquals(BatchGroupStatePolicy.State.JOINED,
+                BatchGroupStatePolicy.classify(true, true, true, "self", "member;self", 0),
+                "the current member list must confirm the current account is still joined");
+        assertEquals(BatchGroupStatePolicy.State.NOT_MEMBER,
+                BatchGroupStatePolicy.classify(true, true, true, "self", "member-a;member-b", 0),
+                "a nonempty member list without self confirms left or removed state");
+        assertEquals(BatchGroupStatePolicy.State.UNKNOWN,
+                BatchGroupStatePolicy.classify(true, true, true, "self", "member-a;member-b", 0, null),
+                "missing native already-quit evidence must not confirm a stale roster");
+        assertEquals(BatchGroupStatePolicy.State.UNKNOWN,
+                BatchGroupStatePolicy.classify(true, true, true, "self", "member-a;member-b", 0, false),
+                "a disagreement with WeChat's native already-quit predicate must stay unknown");
+        assertEquals(BatchGroupStatePolicy.State.NOT_MEMBER,
+                BatchGroupStatePolicy.classify(true, true, true, "self", "member-a;member-b", 0, true),
+                "cleanup eligibility requires WeChat's native already-quit confirmation");
+        assertEquals(BatchGroupStatePolicy.State.JOINED,
+                BatchGroupStatePolicy.classify(true, true, true, "self", "member-a;self", 0, false),
+                "the roster and native current-membership check must agree before leave");
+        assertEquals(BatchGroupStatePolicy.State.DISBANDED,
+                BatchGroupStatePolicy.classify(true, true, true, "self", "", 0x2),
+                "the native disband status flag is independent evidence from an empty roster");
+        assertTrue(!BatchGroupStatePolicy.isLeaveCandidate(
+                        BatchGroupStatePolicy.State.JOINED, "self", "self"),
+                "the room owner must not enter the automatic leave request");
+        assertTrue(!BatchGroupStatePolicy.stillMatchesCleanupReason(
+                        BatchGroupStatePolicy.State.JOINED,
+                        BatchGroupStatePolicy.CleanupReason.LEFT_OR_REMOVED),
+                "a group that becomes usable before cleanup must not be deleted");
+        assertTrue(BatchGroupStatePolicy.shouldBlockRepeat(
+                        BatchGroupStatePolicy.State.JOINED, true),
+                "a timed-out leave cannot be submitted again while native membership still says joined");
+        assertTrue(BatchGroupStatePolicy.shouldBlockRepeat(
+                        BatchGroupStatePolicy.State.UNKNOWN, true),
+                "an unknown group state cannot be resubmitted while a prior request is unresolved");
+        assertTrue(BatchGroupStatePolicy.resolvesPendingRequest(
+                        BatchGroupStatePolicy.State.NOT_MEMBER),
+                "a native membership change resolves the pending leave guard");
     }
 
     private static void friendPermissionTypeBitsAreIndependent() {

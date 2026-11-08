@@ -2,9 +2,11 @@ package h.Hchat.hooks.items.batch
 
 import h.Hchat.hooks.api.contact.WeChatContactApi
 import h.Hchat.hooks.api.contact.WeChatNativeMutationResult
+import h.Hchat.hooks.api.contact.NativeBatchQuitChatroomProcess
 import h.Hchat.hooks.api.core.WeChatApis
 import h.Hchat.hooks.api.message.WeChatMessageStoreApi
 import h.Hchat.utils.HLog
+import java.util.LinkedHashMap
 import java.util.concurrent.TimeUnit
 
 /**
@@ -22,6 +24,9 @@ internal object BatchOperationExecutor : BatchTaskProcessor {
         if (request.operation == BatchOperation.FRIEND_LABEL) {
             return executeLabelBatch(request, stopSignal)
         }
+        if (request.operation == BatchOperation.GROUP_LEAVE) {
+            return executeGroupLeaveBatch(request, stopSignal)
+        }
         return BatchTaskRunner.run(
             request.targetIds,
             request.expectedAccount,
@@ -31,6 +36,123 @@ internal object BatchOperationExecutor : BatchTaskProcessor {
             { id, signal -> executeOne(request, id, signal) },
             null
         )
+    }
+
+    private fun executeGroupLeaveBatch(
+        request: BatchTaskRequest,
+        stopSignal: BatchTaskRunner.StopSignal
+    ): BatchTaskRunner.Report {
+        val chatrooms = WeChatApis.chatrooms()
+            ?: return failedReport(request.targetIds, "微信群 API 不可用")
+        val results = LinkedHashMap<String, BatchTaskRunner.TaskResult>()
+        var stopReason = ""
+
+        for (chunk in request.targetIds.chunked(NativeBatchQuitChatroomProcess.MAX_BATCH_SIZE)) {
+            if (stopSignal.isStopped()) {
+                stopReason = "已停止后续操作"
+                break
+            }
+            if (!isAccountCurrent(request.expectedAccount)) {
+                stopReason = "账号已切换或账号状态不可用"
+                break
+            }
+
+            val eligible = mutableListOf<String>()
+            for (id in chunk) {
+                val state = chatrooms.getGroupOperationStatus(id)
+                when {
+                    !state.readSucceeded -> results[id] = result(
+                        BatchTaskRunner.Outcome.FAILED, "无法复核群聊状态，未提交退群请求")
+                    !state.contactPresent || !state.chatroomRowPresent ||
+                        !BatchGroupStatePolicy.isLeaveCandidate(state.state, accountSelfId(), state.roomOwner) -> {
+                        results[id] = result(BatchTaskRunner.Outcome.SKIPPED, when (state.state) {
+                            BatchGroupStatePolicy.State.DISBANDED -> "群聊已解散，未提交退群请求"
+                            BatchGroupStatePolicy.State.NOT_MEMBER,
+                            BatchGroupStatePolicy.State.CONTACT_MISSING -> "当前账号已不在该群，未提交退群请求"
+                            BatchGroupStatePolicy.State.JOINED -> "无法确认群主身份，未提交退群请求"
+                            else -> if (state.error.contains("禁止重复提交")) {
+                                "此前退群结果仍未知；微信成员状态未更新，未重试"
+                            } else {
+                                "群聊资料或成员状态未知，未提交退群请求"
+                            }
+                        })
+                    }
+                    else -> eligible += id
+                }
+            }
+            if (eligible.isEmpty()) continue
+            if (stopSignal.isStopped() || !isAccountCurrent(request.expectedAccount)) {
+                stopReason = if (stopSignal.isStopped()) "已停止后续操作" else "账号已切换或账号状态不可用"
+                break
+            }
+
+            val native = chatrooms.submitNativeBatchQuit(
+                eligible,
+                request.expectedAccount,
+                java.util.function.BooleanSupplier {
+                    !stopSignal.isStopped() && isAccountCurrent(request.expectedAccount)
+                }
+            )
+            val accountStillCurrent = isAccountCurrent(request.expectedAccount) && !native.accountDetached
+            for (id in eligible) {
+                val submitted = id in native.submittedIds
+                val accepted = id in native.serverAcceptedIds
+                val current = chatrooms.getGroupOperationStatus(id)
+                if (!submitted && !accepted && current.readSucceeded &&
+                    (current.state == BatchGroupStatePolicy.State.NOT_MEMBER ||
+                        current.state == BatchGroupStatePolicy.State.DISBANDED ||
+                        current.state == BatchGroupStatePolicy.State.CONTACT_MISSING)
+                ) {
+                    results[id] = result(BatchTaskRunner.Outcome.SKIPPED,
+                        "提交前群聊状态已变化，未发送退群请求")
+                    continue
+                }
+                if (!submitted && !accepted && !native.requestPrepared && !native.completed) {
+                    val stopped = stopSignal.isStopped() || !accountStillCurrent
+                    results[id] = result(
+                        if (stopped) BatchTaskRunner.Outcome.SKIPPED else BatchTaskRunner.Outcome.FAILED,
+                        when {
+                            stopSignal.isStopped() -> "任务已停止，未提交退群请求"
+                            !accountStillCurrent -> "账号已切换，未提交退群请求"
+                            native.error.isNotBlank() -> "原生退群流程未能提交：${native.error}"
+                            else -> "原生退群流程未能提交"
+                        }
+                    )
+                    continue
+                }
+                val decision = BatchGroupQuitOutcomePolicy.classify(
+                    requestSubmitted = submitted,
+                    serverAccepted = accepted,
+                    state = if (current.readSucceeded) current.state else BatchGroupStatePolicy.State.UNKNOWN,
+                    cleanupFailed = id in native.cleanupFailedIds,
+                    transportUnknown = native.timedOut || native.networkError ||
+                        !native.completed || id in native.retrySuppressedIds,
+                    accountChanged = !accountStillCurrent
+                )
+                val message = if (decision.outcome == BatchTaskRunner.Outcome.UNCONFIRMED &&
+                    native.error.isNotBlank() && decision.stage == BatchGroupQuitOutcomePolicy.Stage.REQUEST_RESULT_UNKNOWN
+                ) native.error else decision.message
+                results[id] = result(decision.outcome, message)
+            }
+
+            if (native.timedOut || native.networkError || native.accountDetached ||
+                native.retrySuppressedIds.isNotEmpty() || !isAccountCurrent(request.expectedAccount)
+            ) {
+                stopReason = when {
+                    !isAccountCurrent(request.expectedAccount) || native.accountDetached -> "账号已切换，已停止后续群聊"
+                    native.timedOut || native.networkError || native.retrySuppressedIds.isNotEmpty() ->
+                        "上一批退群请求结果未知，已停止后续群聊"
+                    else -> "已停止后续操作"
+                }
+                break
+            }
+        }
+
+        val taskResults = request.targetIds.map { id ->
+            results[id] ?: result(BatchTaskRunner.Outcome.SKIPPED,
+                if (stopReason.isNotBlank()) stopReason else "未提交")
+        }
+        return BatchTaskRunner.fromResults(request.targetIds, taskResults, stopReason)
     }
 
     private fun executeLabelBatch(
@@ -218,6 +340,22 @@ internal object BatchOperationExecutor : BatchTaskProcessor {
                     accountSelfId(),
                     nativeSubmissionGuard(request, stopSignal),
                     WeChatContactApi.BatchSubmissionGuard { isAccountCurrent(request.expectedAccount) }
+                ), request, stopSignal)
+            }
+            BatchOperation.GROUP_LEAVE ->
+                return result(BatchTaskRunner.Outcome.FAILED, "群聊退群必须使用微信原生批量流程")
+            BatchOperation.DELETE_INVALID_GROUPS -> {
+                val api = chatrooms ?: return result(BatchTaskRunner.Outcome.FAILED, "微信群 API 不可用")
+                val conversations = WeChatApis.conversations()
+                    ?: return result(BatchTaskRunner.Outcome.FAILED, "微信会话 API 不可用")
+                val cleanupReason = request.groupCleanupReasons[id]
+                    ?.let { runCatching { BatchGroupStatePolicy.CleanupReason.valueOf(it) }.getOrNull() }
+                    ?: return result(BatchTaskRunner.Outcome.SKIPPED, "失效原因缺失，未清理")
+                return mapNativeResult(api.deleteInvalidGroupNative(
+                    id,
+                    cleanupReason,
+                    conversations,
+                    nativeSubmissionGuard(request, stopSignal)
                 ), request, stopSignal)
             }
             BatchOperation.DELETE_CHATS -> deleteChat(id, request, stopSignal)

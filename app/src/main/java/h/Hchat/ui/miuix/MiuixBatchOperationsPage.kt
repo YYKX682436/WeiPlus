@@ -145,6 +145,7 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
             title = currentFeature?.title ?: "选择对象",
             mode = when (currentFeature) {
                 BatchOperation.FRIEND_LABEL, BatchOperation.DELETE_FRIENDS -> ContactPickerMode.FRIENDS
+                BatchOperation.GROUP_LEAVE, BatchOperation.DELETE_INVALID_GROUPS -> ContactPickerMode.GROUPS
                 else -> ContactPickerMode.ALL_CHATS
             },
             multiSelect = true,
@@ -157,6 +158,8 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
             multiSelectConfirmPrefix = when (currentFeature) {
                 BatchOperation.HIDE -> "确定不显示"
                 BatchOperation.DELETE_CHATS, BatchOperation.DELETE_FRIENDS -> "删除"
+                BatchOperation.GROUP_LEAVE -> "退出"
+                BatchOperation.DELETE_INVALID_GROUPS -> "删除"
                 else -> "确定"
             },
             operationHeader = if (currentFeature == BatchOperation.HIDE ||
@@ -230,7 +233,12 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
                 labelId = selectedLabelId,
                 friendPermissionSelection = friendPermissionSelection,
                 groupNickname = groupNickname,
-                deleteFriendClearHistory = selectedFeature == BatchOperation.DELETE_FRIENDS && clearFriendHistory
+                deleteFriendClearHistory = selectedFeature == BatchOperation.DELETE_FRIENDS && clearFriendHistory,
+                groupCleanupReasons = if (selectedFeature == BatchOperation.DELETE_INVALID_GROUPS) {
+                    picked.associate { it.id to it.groupCleanupReason }
+                } else {
+                    emptyMap()
+                }
             )
         )
         when (result) {
@@ -247,7 +255,13 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
     }
 
     fun submitSelection(picked: List<ContactOption>) {
-        if (currentFeature == BatchOperation.DELETE_CHATS || currentFeature == BatchOperation.DELETE_FRIENDS) {
+        if (currentFeature in setOf(
+                BatchOperation.DELETE_CHATS,
+                BatchOperation.DELETE_FRIENDS,
+                BatchOperation.GROUP_LEAVE,
+                BatchOperation.DELETE_INVALID_GROUPS
+            )
+        ) {
             pendingDeleteTargets = picked.toList()
             pendingDeleteClearHistory = currentFeature == BatchOperation.DELETE_FRIENDS && deleteFriendClearHistory
         } else {
@@ -264,6 +278,8 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
             } else {
                 "将删除所选 ${pendingDeleteTargets?.size ?: 0} 位好友；聊天记录按微信原生删除行为处理，不主动清空。此操作不可恢复。"
             }
+            BatchOperation.GROUP_LEAVE -> "将通过微信原生批量退群流程退出所选 ${pendingDeleteTargets?.size ?: 0} 个群聊。群主群聊不在候选列表中；结果未知的请求不会重试。此操作不可恢复。"
+            BatchOperation.DELETE_INVALID_GROUPS -> "将按微信原生方式移除所选 ${pendingDeleteTargets?.size ?: 0} 个已确认失效群聊的残留群资料与会话，不额外清空聊天记录。此操作不可恢复。"
             else -> ""
         },
         labels = pendingDeleteTargets.orEmpty().map { it.label },
@@ -378,6 +394,11 @@ private fun BatchPickerControls(
                 currentValue = deleteFriendClearHistory.toString(),
                 onValueChanged = { onDeleteFriendClearHistoryChange(it.toBooleanStrictOrNull() ?: deleteFriendClearHistory) }
             )
+            BatchOperation.GROUP_LEAVE -> InfoRow(
+                "退群范围",
+                "仅列出确认仍在群内且非群主的群聊；结果未知的群会暂时隐藏，待微信成员状态更新"
+            )
+            BatchOperation.DELETE_INVALID_GROUPS -> InfoRow("清理范围", "仅列出已解散或成员名单确认不含当前账号的群聊")
             BatchOperation.DO_NOT_DISTURB -> {
                 PopupChoiceRow(
                     title = "免打扰",
@@ -534,6 +555,8 @@ private fun candidateMode(
     }
     BatchOperation.FRIEND_PERMISSION -> BatchCandidateMode.ALL_FRIENDS
     BatchOperation.GROUP_SAVE_TO_CONTACTS, BatchOperation.GROUP_NICKNAME -> BatchCandidateMode.ALL_GROUPS
+    BatchOperation.GROUP_LEAVE -> BatchCandidateMode.JOINED_GROUPS
+    BatchOperation.DELETE_INVALID_GROUPS -> BatchCandidateMode.INVALID_GROUPS
     BatchOperation.DELETE_CHATS -> BatchCandidateMode.HOME_CONVERSATIONS
     BatchOperation.DELETE_FRIENDS -> BatchCandidateMode.ALL_FRIENDS
     null -> null
@@ -548,6 +571,8 @@ private fun operationSummary(operation: BatchOperation): String = when (operatio
     BatchOperation.FRIEND_PERMISSION -> "修改仅聊天和朋友圈权限"
     BatchOperation.GROUP_SAVE_TO_CONTACTS -> "保存群聊到通讯录或取消保存"
     BatchOperation.GROUP_NICKNAME -> "为所选群聊设置我在群里的昵称"
+    BatchOperation.GROUP_LEAVE -> "批量退出当前确认仍在群内的非群主群聊"
+    BatchOperation.DELETE_INVALID_GROUPS -> "清理已经退出、被移出或解散后仍残留的群聊"
     BatchOperation.DELETE_CHATS -> "删除微信首页当前聊天，并清理对应聊天记录；保留好友与群成员关系"
     BatchOperation.DELETE_FRIENDS -> "删除全部有效好友，可选同时清空聊天记录；不含自己、公众号和群聊"
 }

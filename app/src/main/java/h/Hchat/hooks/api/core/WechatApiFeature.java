@@ -74,7 +74,8 @@ public class WechatApiFeature implements Feature {
                 databaseApi, contactApi, notifyApi, context.dexFinder(), this::log);
         WeChatUserApi userApi = new WeChatUserApi(accountApi, contactApi, this::log);
         WeChatChatroomApi chatroomApi = new WeChatChatroomApi(
-                databaseApi, contactApi, context.dexFinder(), dispatcher, this::log);
+                context.hostContext(), accountApi, databaseApi, contactApi,
+                context.dexFinder(), dispatcher, this::log);
         WeChatStorageApi storageApi = new WeChatStorageApi(databaseApi, this::log);
         WeChatMessageParseApi messageParseApi = new WeChatMessageParseApi();
         WeChatMessageEventApi messageEventApi = new WeChatMessageEventApi(

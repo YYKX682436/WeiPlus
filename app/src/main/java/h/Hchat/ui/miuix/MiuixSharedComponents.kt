@@ -2761,6 +2761,8 @@ internal enum class BatchCandidateMode {
     ALL_FRIENDS,
     STARRED_FRIENDS,
     ALL_GROUPS,
+    JOINED_GROUPS,
+    INVALID_GROUPS,
     ALL_FRIENDS_WITH_LABEL
 }
 
@@ -2985,7 +2987,8 @@ internal data class ContactOption(
     val extraSummary: String = "",
     val searchAliases: List<String> = emptyList(),
     val selectable: Boolean = true,
-    val disabledReason: String = ""
+    val disabledReason: String = "",
+    val groupCleanupReason: String = ""
 )
 
 internal fun ContactOption.matchesSearch(lower: String): Boolean {
@@ -4103,7 +4106,9 @@ internal fun loadContacts(
                     BatchCandidateMode.CURRENT_FRIENDS_AND_GROUPS,
                     BatchCandidateMode.ALL_FRIENDS_AND_GROUPS,
                     BatchCandidateMode.PINNABLE_FRIENDS_AND_GROUPS,
-                    BatchCandidateMode.ALL_GROUPS
+                    BatchCandidateMode.ALL_GROUPS,
+                    BatchCandidateMode.JOINED_GROUPS,
+                    BatchCandidateMode.INVALID_GROUPS
                 ) || strictFriendsAndGroupsOnly
             val groupResult = if (needsGroups) api.getGroupsResult() else null
             if (groupResult != null && !groupResult.success) {
@@ -4111,6 +4116,21 @@ internal fun loadContacts(
             }
             val groups = groupResult?.contacts.orEmpty()
             val allGroupIds = groups.mapNotNull { it.wxId.takeIf(String::isNotBlank) }.toSet()
+            val specialGroupCandidates = when (batchCandidateMode) {
+                BatchCandidateMode.JOINED_GROUPS -> {
+                    val result = WeChatApis.chatrooms()?.getJoinedGroupCandidates()
+                        ?: throw IllegalStateException("微信群状态 API 不可用")
+                    if (!result.success) throw IllegalStateException(result.error.ifBlank { "读取已加入群聊失败" })
+                    result.candidates
+                }
+                BatchCandidateMode.INVALID_GROUPS -> {
+                    val result = WeChatApis.chatrooms()?.getInvalidGroupCandidates()
+                        ?: throw IllegalStateException("微信群状态 API 不可用")
+                    if (!result.success) throw IllegalStateException(result.error.ifBlank { "读取失效群聊失败" })
+                    result.candidates
+                }
+                else -> emptyList()
+            }
             val batchValidFriendIds = BatchSelectionPolicy.filterCandidateIds(
                 friends.mapNotNull { it.wxId.takeIf(String::isNotBlank) },
                 emptySet(), friendIds, emptySet(), false, true, false
@@ -4199,6 +4219,18 @@ internal fun loadContacts(
                     BatchCandidateMode.ALL_GROUPS -> {
                         rows += groups.asSequence().filter { it.wxId in batchValidGroupIds }
                             .mapNotNull { it.toOption(true) }.toList()
+                    }
+                    BatchCandidateMode.JOINED_GROUPS -> {
+                        rows += specialGroupCandidates.mapNotNull { it.contact?.toOption(true) }
+                    }
+                    BatchCandidateMode.INVALID_GROUPS -> {
+                        rows += specialGroupCandidates.mapNotNull { candidate ->
+                            val option = candidate.contact?.toOption(true) ?: return@mapNotNull null
+                            option.copy(
+                                label = "${option.label} · ${candidate.cleanupReasonLabel()}",
+                                groupCleanupReason = candidate.cleanupReason?.name.orEmpty()
+                            )
+                        }
                     }
                     BatchCandidateMode.ALL_FRIENDS_WITH_LABEL -> {
                         val memberFriends = BatchSelectionPolicy.filterFriendLabelMembers(
