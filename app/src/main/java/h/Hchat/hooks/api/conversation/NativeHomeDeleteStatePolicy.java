@@ -18,7 +18,7 @@ public final class NativeHomeDeleteStatePolicy {
         if (nativeHomeContains) {
             return WeChatConversationApi.NativeHomeDeleteState.HOME_STILL_CONTAINS;
         }
-        if (rowPresent) return WeChatConversationApi.NativeHomeDeleteState.ROW_REMAINS;
+        if (rowPresent) return WeChatConversationApi.NativeHomeDeleteState.HOME_REMOVED_ROW_RETAINED;
         return WeChatConversationApi.NativeHomeDeleteState.HOME_STILL_CONTAINS;
     }
 }

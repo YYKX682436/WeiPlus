@@ -269,6 +269,8 @@ internal object BatchOperationExecutor : BatchTaskProcessor {
                 }) {
                     h.Hchat.hooks.api.conversation.WeChatConversationApi.NativeHomeDeleteState.CONFIRMED_REMOVED ->
                         BatchDeleteOutcomePolicy.NativeHomeDeleteState.CONFIRMED_REMOVED
+                    h.Hchat.hooks.api.conversation.WeChatConversationApi.NativeHomeDeleteState.HOME_REMOVED_ROW_RETAINED ->
+                        BatchDeleteOutcomePolicy.NativeHomeDeleteState.HOME_REMOVED_ROW_RETAINED
                     h.Hchat.hooks.api.conversation.WeChatConversationApi.NativeHomeDeleteState.ROW_REMAINS ->
                         BatchDeleteOutcomePolicy.NativeHomeDeleteState.ROW_REMAINS
                     h.Hchat.hooks.api.conversation.WeChatConversationApi.NativeHomeDeleteState.ROW_RECREATED ->

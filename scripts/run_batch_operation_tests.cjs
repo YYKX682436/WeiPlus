@@ -232,6 +232,8 @@ try {
         'the batch path must locate WeChat ConvDelLogic rather than call only ConversationStorage.k');
     assert.match(homeDeletePolicy, /!rowPresent && !nativeHomeContains[\s\S]*?CONFIRMED_REMOVED[\s\S]*?rowPresent && deleteEvents > 0 && insertEvents > 0[\s\S]*?ROW_RECREATED/,
         'native home deletion can only confirm absence from both current views and reports a recreated row');
+    assert.match(homeDeletePolicy, /if \(nativeHomeContains\)[\s\S]*?HOME_STILL_CONTAINS[\s\S]*?if \(rowPresent\) return WeChatConversationApi\.NativeHomeDeleteState\.HOME_REMOVED_ROW_RETAINED/,
+        'a native reserved index is successful when the message history is empty and the current home query omits the chat');
     const deleteFriendMethod = methodBody(executor, 'private fun deleteFriend(');
     assert.match(deleteFriendMethod, /submitDeleteFriendWithResult\(id, true\)[\s\S]*?FRIEND_DELETE_OBSERVATION_TIMEOUT_MS[\s\S]*?friendNativeResult\(nativeResult\)[\s\S]*?hasConversationMessagesState\(id\)/,
         'friend deletion must distinguish a native rejection, a missing response and cleared message rows');

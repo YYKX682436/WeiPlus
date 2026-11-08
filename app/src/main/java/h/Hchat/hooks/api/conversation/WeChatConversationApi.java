@@ -31,6 +31,7 @@ import java.util.function.BooleanSupplier;
 public final class WeChatConversationApi {
     public enum NativeHomeDeleteState {
         CONFIRMED_REMOVED,
+        HOME_REMOVED_ROW_RETAINED,
         ROW_REMAINS,
         ROW_RECREATED,
         HOME_STILL_CONTAINS,
@@ -608,6 +609,7 @@ public final class WeChatConversationApi {
 
     private boolean isFinalNativeHomeDeleteState(NativeHomeDeleteState state) {
         return state == NativeHomeDeleteState.CONFIRMED_REMOVED
+                || state == NativeHomeDeleteState.HOME_REMOVED_ROW_RETAINED
                 || state == NativeHomeDeleteState.ROW_RECREATED;
     }
 

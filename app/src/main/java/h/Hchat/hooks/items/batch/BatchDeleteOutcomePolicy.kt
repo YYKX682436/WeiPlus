@@ -4,7 +4,7 @@ package h.Hchat.hooks.items.batch
 internal object BatchDeleteOutcomePolicy {
     enum class ChatClearState { COMPLETED, NOT_SUBMITTED, UNCONFIRMED, STOPPED }
     enum class NativeHomeDeleteState {
-        CONFIRMED_REMOVED, ROW_REMAINS, ROW_RECREATED, HOME_STILL_CONTAINS,
+        CONFIRMED_REMOVED, HOME_REMOVED_ROW_RETAINED, ROW_REMAINS, ROW_RECREATED, HOME_STILL_CONTAINS,
         SCOPE_CHANGED, NOT_SUBMITTED, UNCONFIRMED
     }
 
@@ -41,7 +41,10 @@ internal object BatchDeleteOutcomePolicy {
         }
         return when (deleteConversation()) {
             NativeHomeDeleteState.CONFIRMED_REMOVED ->
-                result(BatchTaskRunner.Outcome.SUCCESS, "聊天与聊天记录已删除；关系保留")
+                result(BatchTaskRunner.Outcome.SUCCESS, "聊天记录已清理，聊天已从微信首页移除；关系保留")
+            NativeHomeDeleteState.HOME_REMOVED_ROW_RETAINED ->
+                result(BatchTaskRunner.Outcome.SUCCESS,
+                    "聊天记录已清理，聊天已从微信首页移除（微信保留会话索引）；关系保留")
             NativeHomeDeleteState.ROW_REMAINS ->
                 result(BatchTaskRunner.Outcome.FAILED, "聊天记录已清理，但原生删除后会话行仍存在")
             NativeHomeDeleteState.ROW_RECREATED ->

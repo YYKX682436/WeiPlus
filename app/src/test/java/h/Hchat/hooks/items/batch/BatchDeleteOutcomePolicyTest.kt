@@ -82,6 +82,16 @@ class BatchDeleteOutcomePolicyTest {
             deleteConversation = { error("must not remove after a stopped clear") }
         )
         assertEquals(BatchTaskRunner.Outcome.UNCONFIRMED, stoppedAfterClearSubmission.outcome)
+
+        val nativeReservedButHomeRemoved = BatchDeleteOutcomePolicy.deleteChat(
+            clearMessages = { BatchDeleteOutcomePolicy.ChatClearState.COMPLETED },
+            mayDeleteConversation = { true },
+            deleteConversation = {
+                BatchDeleteOutcomePolicy.NativeHomeDeleteState.HOME_REMOVED_ROW_RETAINED
+            }
+        )
+        assertEquals(BatchTaskRunner.Outcome.SUCCESS, nativeReservedButHomeRemoved.outcome)
+        assertTrue(nativeReservedButHomeRemoved.message.contains("已从微信首页移除"))
     }
 
     @Test
