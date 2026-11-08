@@ -2757,7 +2757,8 @@ internal enum class BatchCandidateMode {
     ALL_FRIENDS_AND_GROUPS,
     PINNABLE_FRIENDS_AND_GROUPS,
     CURRENT_FRIENDS,
-    ALL_FRIENDS
+    ALL_FRIENDS,
+    ALL_FRIENDS_WITH_LABEL
 }
 
 internal data class ContactPickerRequest(
@@ -2780,6 +2781,8 @@ internal data class ContactPickerRequest(
     val operationHeader: (@Composable () -> Unit)? = null,
     val confirmEnabled: () -> Boolean = { true },
     val batchCandidateMode: () -> BatchCandidateMode? = { null },
+    val batchLabelFilterId: () -> String? = { null },
+    val batchSelectionResetKey: () -> String? = { null },
     val hideSearch: Boolean = false
 )
 
@@ -4051,6 +4054,7 @@ internal fun loadContacts(
     strictFriendsAndGroupsOnly: Boolean = false,
     nativeHomeConversationList: Boolean = false,
     batchCandidateMode: BatchCandidateMode? = null,
+    batchLabelFilterId: String? = null,
     callback: (List<ContactOption>, Throwable?) -> Unit
 ) {
     val api = WeChatApis.contact().contacts()
@@ -4077,7 +4081,8 @@ internal fun loadContacts(
             val needsAllFriends = batchCandidateMode in setOf(
                 BatchCandidateMode.ALL_FRIENDS_AND_GROUPS,
                 BatchCandidateMode.PINNABLE_FRIENDS_AND_GROUPS,
-                BatchCandidateMode.ALL_FRIENDS
+                BatchCandidateMode.ALL_FRIENDS,
+                BatchCandidateMode.ALL_FRIENDS_WITH_LABEL
             )
             val needsFriendIds = strictFriendsOnly || strictFriendsAndGroupsOnly ||
                 batchCandidateMode in setOf(
@@ -4093,6 +4098,21 @@ internal fun loadContacts(
                 ) || strictFriendsAndGroupsOnly
             val groups = if (needsGroups) api.getPickerGroups() else emptyList()
             val allGroupIds = groups.mapNotNull { it.wxId.takeIf(String::isNotBlank) }.toSet()
+            val labelMemberIds = if (batchCandidateMode == BatchCandidateMode.ALL_FRIENDS_WITH_LABEL) {
+                val targetLabelId = batchLabelFilterId?.trim().orEmpty()
+                if (targetLabelId.isBlank()) {
+                    throw IllegalStateException("请先选择有效好友标签")
+                }
+                val labelSnapshot = api.getContactLabelListResult()
+                if (!labelSnapshot.success) {
+                    throw IllegalStateException(labelSnapshot.error.ifBlank { "读取好友标签成员失败" })
+                }
+                labelSnapshot.labels.firstOrNull { it.labelId == targetLabelId }
+                    ?.userNameList?.toSet()
+                    ?: throw IllegalStateException("所选标签已不存在")
+            } else {
+                emptySet()
+            }
             val sessionIds = if (onlyExistingConversations && !nativeHomeConversationList) {
                 conversations?.getRecentConversationUsernames(10000)?.toSet().orEmpty()
             } else if (nativeHomeConversationList) {
@@ -4138,6 +4158,16 @@ internal fun loadContacts(
                     }
                     BatchCandidateMode.ALL_FRIENDS -> {
                         rows += friends.mapNotNull { it.toOption(false) }
+                    }
+                    BatchCandidateMode.ALL_FRIENDS_WITH_LABEL -> {
+                        val memberFriends = BatchSelectionPolicy.filterFriendLabelMembers(
+                            friends.mapNotNull { it.wxId.takeIf(String::isNotBlank) },
+                            labelMemberIds
+                        ).toSet()
+                        rows += friends.asSequence()
+                            .filter { it.wxId in memberFriends }
+                            .mapNotNull { it.toOption(false) }
+                            .toList()
                     }
                     BatchCandidateMode.ALL_FRIENDS_AND_GROUPS -> {
                         rows += friends.mapNotNull { it.toOption(false) }

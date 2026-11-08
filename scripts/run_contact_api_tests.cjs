@@ -27,6 +27,8 @@ try {
 
     const api = fs.readFileSync(path.join(root,
         'app/src/main/java/h/Hchat/hooks/api/contact/WeChatContactApi.java'), 'utf8');
+    const sharedPicker = fs.readFileSync(path.join(root,
+        'app/src/main/java/h/Hchat/ui/miuix/MiuixSharedComponents.kt'), 'utf8');
     assert.match(api, /result == null \|\| !result\.serverAccepted\(\)/,
         'remark persistence must require server acceptance');
     assert.match(api, /nativeResult\.serverAccepted\(\)/,
@@ -35,6 +37,12 @@ try {
         'failed remark requests must not mutate local native storage');
     assert.match(api, /public Boolean hasContactLabelId\(String labelId\)/,
         'batch label preflight must resolve one label ID before iterating friends');
+    assert.match(api, /public static final class ContactLabelListResult[\s\S]*?public final boolean success[\s\S]*?public final List<ContactLabelBean> labels/,
+        'label membership snapshots must expose read success separately from empty lists');
+    assert.match(api, /public ContactLabelListResult getContactLabelListResult\(\)[\s\S]*?labelCursor == null\) return failedContactLabelList[\s\S]*?contactsCursor == null\) return failedContactLabelList[\s\S]*?new ContactLabelListResult\(true, labels, ""\)/,
+        'a failed tag/member query must not look like a valid empty tag or membership list');
+    assert.match(sharedPicker, /labelSnapshot\.labels\.firstOrNull[\s\S]*?userNameList/,
+        'removal candidate loading must reuse the complete tag member relationship snapshot');
     assert.match(api, /public ContactLabelMutationResult setContactLabelMembershipById\([\s\S]*?readContactLabelIds\(username, labelIdsColumn\)[\s\S]*?ContactLabelIds\.setMembership\(currentLabelIds, targetId, enabled\)/,
         'each friend update must read only that row and preserve other label IDs');
     assert.match(api, /if \(currentLabelIds == null\)\s*\{[\s\S]*?return ContactLabelMutationResult\.NOT_SUBMITTED;/,

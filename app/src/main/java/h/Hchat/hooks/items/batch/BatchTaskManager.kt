@@ -47,10 +47,15 @@ internal fun interface BatchTaskProcessor {
     fun execute(request: BatchTaskRequest, stopSignal: BatchTaskRunner.StopSignal): BatchTaskRunner.Report
 }
 
+internal fun interface BatchTaskCompletionNotifier {
+    fun notify(snapshot: BatchTaskSnapshot)
+}
+
 /** Process-owned serial work queue. It never captures an Activity, Compose state, or UI callback. */
 internal class BatchTaskManager private constructor(
     private val processor: BatchTaskProcessor,
-    private val executor: ExecutorService
+    private val executor: ExecutorService,
+    private val completionNotifier: BatchTaskCompletionNotifier
 ) {
     private data class Session(
         val id: Long,
@@ -121,10 +126,12 @@ internal class BatchTaskManager private constructor(
         } catch (failure: Throwable) {
             null to (failure.message ?: failure.javaClass.simpleName)
         }
+        var finishedSnapshot: BatchTaskSnapshot? = null
+        var shouldNotify = false
         synchronized(lock) {
             if (current?.id != session.id) return
             current = null
-            mutableSnapshot.value = BatchTaskSnapshot(
+            val snapshot = BatchTaskSnapshot(
                 status = when {
                     report == null -> BatchTaskStatus.FAILED
                     report.stopReason.isNotBlank() -> BatchTaskStatus.STOPPED
@@ -135,6 +142,14 @@ internal class BatchTaskManager private constructor(
                 report = report,
                 failure = failure
             )
+            mutableSnapshot.value = snapshot
+            finishedSnapshot = snapshot
+            shouldNotify = !shutDown
+        }
+        if (shouldNotify) {
+            finishedSnapshot?.let { snapshot ->
+                runCatching { completionNotifier.notify(snapshot) }
+            }
         }
     }
 
@@ -154,7 +169,8 @@ internal class BatchTaskManager private constructor(
         private val threadIds = AtomicLong()
         private val processManager = BatchTaskManager(
             processor = BatchOperationExecutor,
-            executor = newExecutor("HchatBatchTask")
+            executor = newExecutor("HchatBatchTask"),
+            completionNotifier = BatchTaskCompletionToastNotifier
         )
 
         @JvmStatic
@@ -163,8 +179,11 @@ internal class BatchTaskManager private constructor(
         @JvmStatic
         fun shutdownProcessManagerForHostInvalidation() = processManager.shutdownForHostInvalidation()
 
-        internal fun createForTesting(processor: BatchTaskProcessor): BatchTaskManager =
-            BatchTaskManager(processor, newExecutor("HchatBatchTest"))
+        internal fun createForTesting(
+            processor: BatchTaskProcessor,
+            completionNotifier: BatchTaskCompletionNotifier = BatchTaskCompletionNotifier { _ -> }
+        ): BatchTaskManager =
+            BatchTaskManager(processor, newExecutor("HchatBatchTest"), completionNotifier)
 
         private fun newExecutor(prefix: String): ExecutorService = Executors.newSingleThreadExecutor(
             ThreadFactory { runnable ->

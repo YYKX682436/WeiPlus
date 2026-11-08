@@ -33,6 +33,7 @@ try {
         '-encoding', 'UTF-8', '-d', output,
         'app/src/main/java/h/Hchat/hooks/api/conversation/WeChatConversationIdentity.java',
         'app/src/main/java/h/Hchat/hooks/api/contact/ContactLabelIds.java',
+        'app/src/main/java/h/Hchat/hooks/items/batch/BatchCandidateLoadGate.java',
         'app/src/main/java/h/Hchat/hooks/items/batch/BatchSelectionPolicy.java',
         'app/src/main/java/h/Hchat/hooks/items/batch/BatchSelectionState.java',
         'app/src/main/java/h/Hchat/hooks/items/batch/BatchStatePolicy.java',
@@ -59,8 +60,10 @@ try {
         'batch operation must use a single picker followed by direct submission');
     assert.match(batchUi, /onConfirm = \{ submitSelection\(it\) \}/,
         'one confirm must submit the task directly');
-    assert.match(batchUi, /BatchTaskSubmitResult\.STARTED -> \{[\s\S]*?已开始后台处理[\s\S]*?returnHome\(\)/,
-        'accepted work must show a queued notice and return home immediately');
+    assert.match(batchUi, /BatchTaskSubmitResult\.STARTED -> \{\s*returnHome\(\)/,
+        'accepted work must return home immediately without a progress page');
+    assert.doesNotMatch(batchUi, /已开始后台处理|最近一次结果|InfoRow\("成功"|InfoRow\("失败"|InfoRow\("跳过"|已提交／未确认/,
+        'the home page must not show a start toast or permanent result summary');
     assert.match(batchUi, /manager\.submit\(\s*BatchTaskRequest\(/,
         'the selector must submit to the process-owned task manager');
     assert.match(batchUi, /BatchOperation\.entries\.forEachIndexed/,
@@ -69,33 +72,59 @@ try {
         'batch UI must not own a progress/result screen or execution coroutine');
     assert.match(batchUi, /BatchTaskStatus\.RUNNING, BatchTaskStatus\.STOPPING[\s\S]*?停止后续任务/,
         'the home page must retain an explicit stop-later control');
-    assert.match(batchUi, /InfoRow\("成功"[\s\S]*?InfoRow\("失败"[\s\S]*?InfoRow\("跳过"[\s\S]*?InfoRow\("已提交／未确认"/,
-        'the persisted in-process summary must keep each outcome distinct');
-    assert.match(batchUi, /BatchChoiceRow\([\s\S]*?当前聊天[\s\S]*?全部好友与群聊/,
-        'DND and pin must offer current-chat and all-friends/groups scopes');
-    assert.match(batchUi, /BatchCandidateMode\.CURRENT_FRIENDS[\s\S]*?BatchCandidateMode\.ALL_FRIENDS/,
-        'friend labels must offer current-chat friends and all friends');
+    assert.doesNotMatch(batchUi, /BatchChoiceRow|ContactFilterChip/,
+        'batch configuration must use compact existing Miuix setting rows');
+    assert.match(batchUi, /PopupChoiceRow\([\s\S]*?"开启"[\s\S]*?"关闭"[\s\S]*?当前聊天[\s\S]*?全部好友与群聊/,
+        'DND choices and scope must be visible in compact Miuix rows');
+    assert.match(batchUi, /PopupChoiceRow\([\s\S]*?"置顶"[\s\S]*?"取消置顶"[\s\S]*?当前聊天[\s\S]*?全部好友与群聊/,
+        'pin choices and scope must be visible in compact Miuix rows');
+    assert.match(batchUi, /title = "目标标签"[\s\S]*?title = "标签操作"/,
+        'friend label selection and append/remove controls must be visible');
+    assert.doesNotMatch(batchUi, /当前聊天中的好友|全部好友"\s*,\s*BatchScope/,
+        'friend label management must not offer an unrelated chat-scope switch');
     assert.match(batchUi, /BatchOperation\.PIN -> if \(scope == BatchScope\.CURRENT\)[\s\S]*?BatchCandidateMode\.HOME_CONVERSATIONS[\s\S]*?PINNABLE_FRIENDS_AND_GROUPS/,
         'pin candidates must be scoped to real conversations and disable missing rows');
+    assert.match(batchUi, /BatchOperation\.FRIEND_LABEL -> if \(enabled\)[\s\S]*?ALL_FRIENDS[\s\S]*?ALL_FRIENDS_WITH_LABEL/,
+        'append must use all friends while removal uses only members of the chosen label');
+    assert.doesNotMatch(batchUi, /hideSearch\s*=\s*true/,
+        'all batch operations must retain the shared picker search');
     assert.doesNotMatch(batchUi, /InfoRow\("当前微信账号"|InputRow\(\s*title = "搜索"|Text\("当前操作/,
         'batch selectors must omit account, search and repeated operation copy');
 
-    assert.match(contactPicker, /request\.hideSearch\) "" else query/,
-        'hide-search batch selectors must not apply a hidden query');
     assert.match(contactPicker, /if \(!request\.hideSearch\) item/,
-        'batch search field must not render');
-    assert.match(contactPicker, /request\.flatBatchSelection\) batchSelectionOrder\.size/,
+        'the common picker search remains available for all four batch operations');
+    assert.match(contactPicker, /\.filter \{ it\.matchesSearch\(lower\) \}/,
+        'picker search must filter by the contact aliases and IDs supported by ContactOption');
+    assert.match(contactPicker, /request\.flatBatchSelection\) batchSelectionOrderForUi\.size/,
         'batch footer must count selections retained across scopes');
-    assert.match(contactPicker, /BatchSelectionState\.selectedFirst[\s\S]*?batchOptionCache\[id\]/,
-        'selected rows from earlier scopes must remain visible at the top');
+    assert.match(contactPicker, /BatchSelectionState\.selectedOutsideMatches[\s\S]*?selectedBatchContacts \+ batchMatchingContacts/,
+        'selected rows that do not match the search must be separate from matching results');
+    assert.match(contactPicker, /PickerSectionHeader\(text = "已选[\s\S]*?PickerSectionHeader\(text = "匹配结果/,
+        'the UI must label the retained selection and actual search results separately');
+    assert.match(contactPicker, /BatchSelectionState\.selectedFirst\(filteredContacts\.map \{ it\.id \}, batchSelectionOrderForUi\)/,
+        'selected search matches must lead the actual filtered result list');
     assert.match(contactPicker, /BatchSelectionState\.toggleVisible/,
         'select-all must toggle the currently visible result set');
+    assert.match(contactPicker, /batchSelectionResetKey[\s\S]*?shouldResetForKeyChange[\s\S]*?batchOptionCache\.clear\(\)/,
+        'changing tag or add/remove mode must clear stale selected members');
+    assert.match(contactPicker, /BatchCandidateLoadGate[\s\S]*?loadGate\.isCurrent\(generation\)/,
+        'stale list reads after quick scope/tag changes or page disposal must be discarded');
+    assert.match(contactPicker, /LaunchedEffect\(request, candidateLoadToken\)/,
+        'a changed tag or candidate mode must load a distinct candidate snapshot');
     assert.match(contactPicker, /multiSelectConfirmPrefix != null -> "\$\{request\.multiSelectConfirmPrefix\}（\$selectedContactCount）"/,
         'batch selector must expose one direct confirm action with the total selection count');
+    assert.match(contactPicker, /request\.confirmEnabled\(\) && selectedContactCount > 0 && !candidateLoading && error\.isBlank\(\) && candidateStateFresh/,
+        'a failed or pending candidate read must disable task submission');
+    assert.match(contactPicker, /BatchCandidateMode\.ALL_FRIENDS_WITH_LABEL[\s\S]*?该标签下没有有效好友/,
+        'an empty successful removal membership query must have an empty-state message');
     assert.match(shared, /conversations\?\.getNativeHomeConversationUsernames\(\)[\s\S]*?throw IllegalStateException\("读取微信首页原生会话列表失败"\)/,
         'chat scopes must fail closed if the native home query cannot be read');
     assert.match(shared, /BatchCandidateMode\.HOME_CONVERSATIONS ->[\s\S]*?nativeContactOptions\(eligible, api, conversations\)/,
         'hide candidates must be taken from the complete ordered native home list');
+    assert.match(shared, /getContactLabelListResult\(\)[\s\S]*?BatchCandidateMode\.ALL_FRIENDS_WITH_LABEL ->[\s\S]*?filterFriendLabelMembers/,
+        'remove-tag candidates must come from a successfully-read tag membership snapshot intersected with valid friends');
+    assert.match(shared, /!labelSnapshot\.success[\s\S]*?读取好友标签成员失败/,
+        'a failed membership read must produce an error distinct from an empty membership result');
     assert.match(shared, /preserveNativeHomeOrder = nativeHomeConversationList \|\| batchCandidateMode in setOf\([\s\S]*?CURRENT_FRIENDS[\s\S]*?val sorted = if \(preserveNativeHomeOrder\) deduplicated/,
         'batch current-chat ranges must preserve the native WeChat home ordering');
     assert.match(shared, /getExistingConversationUsernames\(\)[\s\S]*?无会话记录；微信置顶会创建空会话记录/,
@@ -109,8 +138,21 @@ try {
         'the process manager must use a bounded serial daemon queue');
     assert.match(manager, /if \(current != null\) return BatchTaskSubmitResult\.BUSY/,
         'the process manager must reject overlapping tasks');
+    assert.match(manager, /completionNotifier\.notify\(snapshot\)/,
+        'the process manager must send one completion notification after storing the final report');
+    assert.match(manager, /shouldNotify = !shutDown/,
+        'host runtime invalidation must suppress stale completion feedback');
+    const notifier = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/items/batch/BatchTaskCompletionToastNotifier.kt'), 'utf8');
+    assert.match(notifier, /WeChatApis\.notifyApi\(\)\?\.showToast/,
+        'completion feedback must use the host notification API without retaining a page');
+    assert.match(notifier, /report\.success == report\.total[\s\S]*?report\.failed == 0[\s\S]*?report\.unconfirmed == 0/,
+        'success toast must require confirmed success for every selected item');
+    assert.match(notifier, /已停止后续操作[\s\S]*?批量操作部分完成[\s\S]*?未确认/,
+        'stop, partial failure and unconfirmed outcomes must not be reported as full success');
     assert.match(moduleEntry, /BatchTaskManager\.shutdownProcessManagerForHostInvalidation\(\)/,
         'host identity invalidation must stop future process submissions');
+    assert.doesNotMatch(executor, /Dispatchers\.Main|Looper\.getMainLooper/,
+        'native operations must stay on the bounded worker and let WeChat marshal its observers');
     assert.match(executor, /stopSignal\.isStopped\(\)[\s\S]*?isAccountCurrent/,
         'each operation must recheck stop and account state close to native submission');
     assert.match(executor, /setWechatDoNotDisturb\(id, request\.enabled\)/,
@@ -150,6 +192,15 @@ try {
         'individual fallback is allowed only when the bulk scene was not submitted');
     assert.match(contactApi, /if \(currentLabelIds == null\)[\s\S]*?读取好友原有标签失败，未提交修改/,
         'a failed label row read must block an overwrite request');
+    assert.match(contactApi, /class ContactLabelListResult[\s\S]*?public final boolean success/,
+        'label table read failure must remain distinct from a successful empty list');
+    const labelListMethod = methodBody(contactApi, 'public ContactLabelListResult getContactLabelListResult');
+    assert.match(labelListMethod, /labelCursor == null[\s\S]*?failedContactLabelList/,
+        'label table query failures must be returned as failures');
+    assert.match(labelListMethod, /contactsCursor == null[\s\S]*?failedContactLabelList/,
+        'member relation query failures must be returned as failures');
+    assert.match(labelListMethod, /new ContactLabelListResult\(true, labels, ""\)/,
+        'a successfully-read table with no members must remain a valid empty result');
     assert.match(contactApi, /SERVER_ACCEPTED[\s\S]*?SUBMITTED_UNCONFIRMED[\s\S]*?SERVER_REJECTED/,
         'label outcomes must separate server acceptance, unknown submission and rejection');
 

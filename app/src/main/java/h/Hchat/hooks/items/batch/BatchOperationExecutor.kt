@@ -3,7 +3,12 @@ package h.Hchat.hooks.items.batch
 import h.Hchat.hooks.api.contact.WeChatContactApi
 import h.Hchat.hooks.api.core.WeChatApis
 
-/** Stateless process-side executor. It uses only WeiPlus APIs and immutable task data. */
+/**
+ * Stateless process-side executor. It uses only WeiPlus APIs and immutable task data.
+ * On the verified WeChat 8.0.80 storage path, conversation changes post observers through a
+ * Looper-backed queue (registered Looper or main Looper); the native write itself stays here on
+ * the serial worker instead of synchronously blocking the UI thread.
+ */
 internal object BatchOperationExecutor : BatchTaskProcessor {
     override fun execute(
         request: BatchTaskRequest,

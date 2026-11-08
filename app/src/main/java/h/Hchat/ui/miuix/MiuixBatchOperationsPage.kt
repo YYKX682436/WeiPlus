@@ -1,20 +1,15 @@
 package h.Hchat.ui.miuix
 
-import android.os.Handler
-import android.os.Looper
 import android.widget.Toast
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -32,6 +27,7 @@ import h.Hchat.hooks.items.batch.BatchTaskManager
 import h.Hchat.hooks.items.batch.BatchTaskRequest
 import h.Hchat.hooks.items.batch.BatchTaskStatus
 import h.Hchat.hooks.items.batch.BatchTaskSubmitResult
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
@@ -56,8 +52,13 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
     var selectedLabelId by remember { mutableStateOf("") }
     var accountIdentity by remember { mutableStateOf("") }
     var accountReady by remember { mutableStateOf(false) }
+    val labelLoadGeneration = remember { AtomicLong() }
     val listState = rememberLazyListState()
     val scrollBehavior = MiuixScrollBehavior()
+
+    DisposableEffect(labelLoadGeneration) {
+        onDispose { labelLoadGeneration.incrementAndGet() }
+    }
 
     LaunchedEffect(Unit) {
         accountIdentity = withContext(Dispatchers.IO) {
@@ -66,18 +67,35 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
         accountReady = true
     }
     LaunchedEffect(feature) {
-        if (feature == BatchOperation.FRIEND_LABEL && !labelsLoaded) {
+        if (feature == BatchOperation.FRIEND_LABEL && (!labelsLoaded || labelsError.isNotBlank())) {
+            val generation = labelLoadGeneration.incrementAndGet()
             val result = withContext(Dispatchers.IO) {
-                runCatching { WeChatApis.contacts()?.getContactLabelList().orEmpty() }
+                runCatching {
+                    WeChatApis.contacts()?.getContactLabelListResult()
+                        ?: throw IllegalStateException("好友标签 API 不可用")
+                }
             }
-            result.onSuccess { rows ->
-                labelChoices = rows.filter { it.labelId.isNotBlank() && it.labelName.isNotBlank() }
-                selectedLabelId = labelChoices.firstOrNull()?.labelId.orEmpty()
-                labelsError = ""
-            }.onFailure {
-                labelsError = it.message ?: "读取好友标签失败"
+            if (generation == labelLoadGeneration.get() && feature == BatchOperation.FRIEND_LABEL) {
+                result.fold(
+                    onSuccess = { snapshot ->
+                        if (!snapshot.success) {
+                            labelsError = snapshot.error.ifBlank { "读取好友标签失败" }
+                        } else {
+                            labelChoices = snapshot.labels.filter {
+                                it.labelId.isNotBlank() && it.labelName.isNotBlank()
+                            }
+                            if (labelChoices.none { it.labelId == selectedLabelId }) {
+                                selectedLabelId = labelChoices.firstOrNull()?.labelId.orEmpty()
+                            }
+                            labelsError = ""
+                        }
+                    },
+                    onFailure = {
+                        labelsError = it.message ?: "读取好友标签失败"
+                    }
+                )
+                labelsLoaded = true
             }
-            labelsLoaded = true
         }
     }
 
@@ -96,7 +114,13 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
             (currentFeature != BatchOperation.FRIEND_LABEL ||
                 (labelsLoaded && labelsError.isBlank() && selectedLabelName.isNotBlank()))
     )
-    val latestCandidateMode = rememberUpdatedState(candidateMode(currentFeature, scope))
+    val latestCandidateMode = rememberUpdatedState(candidateMode(currentFeature, scope, enabled))
+    val latestLabelFilterId = rememberUpdatedState(
+        selectedLabelId.takeIf { currentFeature == BatchOperation.FRIEND_LABEL && !enabled }
+    )
+    val latestSelectionResetKey = rememberUpdatedState(
+        if (currentFeature == BatchOperation.FRIEND_LABEL) "$enabled:$selectedLabelId" else null
+    )
 
     val pickerRequest = remember(currentFeature) {
         ContactPickerRequest(
@@ -112,7 +136,6 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
             enableGroupLabels = false,
             showSelectedCount = true,
             flatBatchSelection = true,
-            hideSearch = true,
             multiSelectConfirmPrefix = if (currentFeature == BatchOperation.HIDE) "确定不显示" else "确定",
             operationHeader = if (currentFeature == BatchOperation.HIDE) null else {
                 {
@@ -132,7 +155,9 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
                 }
             },
             confirmEnabled = { latestConfirmEnabled.value },
-            batchCandidateMode = { latestCandidateMode.value }
+            batchCandidateMode = { latestCandidateMode.value },
+            batchLabelFilterId = { latestLabelFilterId.value },
+            batchSelectionResetKey = { latestSelectionResetKey.value }
         )
     }
 
@@ -166,7 +191,6 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
         )
         when (result) {
             BatchTaskSubmitResult.STARTED -> {
-                Toast.makeText(context, "已开始后台处理 ${picked.size} 项", Toast.LENGTH_SHORT).show()
                 returnHome()
             }
             BatchTaskSubmitResult.BUSY ->
@@ -224,15 +248,13 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
             when (taskSnapshot.status) {
                 BatchTaskStatus.RUNNING, BatchTaskStatus.STOPPING -> item {
                     SettingsCard {
-                        InfoRow(
-                            "后台任务",
-                            "${taskSnapshot.operation?.title ?: "批量操作"} · ${taskSnapshot.total} 项" +
-                                if (taskSnapshot.status == BatchTaskStatus.STOPPING) " · 正在停止" else " · 正在处理"
-                        )
-                        InsetDivider()
                         ActionRow(
                             title = "停止后续任务",
-                            summary = "当前已提交操作完成后停止"
+                            summary = if (taskSnapshot.status == BatchTaskStatus.STOPPING) {
+                                "已请求停止；已提交操作会完成"
+                            } else {
+                                "已提交操作会完成，之后停止"
+                            }
                         ) {
                             if (!manager.stopLaterTasks()) {
                                 Toast.makeText(context, "没有可停止的后续任务", Toast.LENGTH_SHORT).show()
@@ -240,32 +262,7 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
                         }
                     }
                 }
-                BatchTaskStatus.COMPLETED, BatchTaskStatus.STOPPED, BatchTaskStatus.FAILED -> {
-                    val report = taskSnapshot.report
-                    item { SmallTitle(text = "最近一次结果") }
-                    item {
-                        SettingsCard {
-                            InfoRow("操作", taskSnapshot.operation?.title ?: "批量操作")
-                            InsetDivider()
-                            InfoRow("成功", "${report?.success ?: 0} 项")
-                            InsetDivider()
-                            InfoRow("失败", "${report?.failed ?: 0} 项")
-                            InsetDivider()
-                            InfoRow("跳过", "${report?.skipped ?: 0} 项")
-                            InsetDivider()
-                            InfoRow("已提交／未确认", "${report?.unconfirmed ?: 0} 项")
-                            if (taskSnapshot.failure.isNotBlank()) {
-                                InsetDivider()
-                                InfoRow("任务错误", taskSnapshot.failure)
-                            }
-                            report?.stopReason?.takeIf { it.isNotBlank() }?.let {
-                                InsetDivider()
-                                InfoRow("停止原因", it)
-                            }
-                        }
-                    }
-                }
-                BatchTaskStatus.IDLE -> Unit
+                else -> Unit
             }
         }
     }
@@ -288,37 +285,47 @@ private fun BatchPickerControls(
     SettingsCard {
         when (feature) {
             BatchOperation.DO_NOT_DISTURB -> {
-                BatchChoiceRow(
-                    first = "开启",
-                    firstSelected = enabled,
-                    second = "关闭",
-                    onFirst = { onEnabledChange(true) },
-                    onSecond = { onEnabledChange(false) }
+                PopupChoiceRow(
+                    title = "免打扰",
+                    summary = if (enabled) "开启" else "关闭",
+                    options = listOf(PopupChoice("开启", "true"), PopupChoice("关闭", "false")),
+                    currentValue = enabled.toString(),
+                    onValueChanged = { onEnabledChange(it.toBooleanStrictOrNull() ?: enabled) }
                 )
                 InsetDivider()
-                BatchChoiceRow(
-                    first = "当前聊天",
-                    firstSelected = scope == BatchScope.CURRENT,
-                    second = "全部好友与群聊",
-                    onFirst = { onScopeChange(BatchScope.CURRENT) },
-                    onSecond = { onScopeChange(BatchScope.ALL) }
+                PopupChoiceRow(
+                    title = "选择范围",
+                    summary = if (scope == BatchScope.CURRENT) "当前聊天" else "全部好友与群聊",
+                    options = listOf(
+                        PopupChoice("当前聊天", BatchScope.CURRENT.name),
+                        PopupChoice("全部好友与群聊", BatchScope.ALL.name)
+                    ),
+                    currentValue = scope.name,
+                    onValueChanged = { value ->
+                        onScopeChange(BatchScope.entries.firstOrNull { it.name == value } ?: scope)
+                    }
                 )
             }
             BatchOperation.PIN -> {
-                BatchChoiceRow(
-                    first = "置顶",
-                    firstSelected = enabled,
-                    second = "取消置顶",
-                    onFirst = { onEnabledChange(true) },
-                    onSecond = { onEnabledChange(false) }
+                PopupChoiceRow(
+                    title = "置顶操作",
+                    summary = if (enabled) "置顶" else "取消置顶",
+                    options = listOf(PopupChoice("置顶", "true"), PopupChoice("取消置顶", "false")),
+                    currentValue = enabled.toString(),
+                    onValueChanged = { onEnabledChange(it.toBooleanStrictOrNull() ?: enabled) }
                 )
                 InsetDivider()
-                BatchChoiceRow(
-                    first = "当前聊天",
-                    firstSelected = scope == BatchScope.CURRENT,
-                    second = "全部好友与群聊",
-                    onFirst = { onScopeChange(BatchScope.CURRENT) },
-                    onSecond = { onScopeChange(BatchScope.ALL) }
+                PopupChoiceRow(
+                    title = "选择范围",
+                    summary = if (scope == BatchScope.CURRENT) "当前聊天" else "全部好友与群聊",
+                    options = listOf(
+                        PopupChoice("当前聊天", BatchScope.CURRENT.name),
+                        PopupChoice("全部好友与群聊", BatchScope.ALL.name)
+                    ),
+                    currentValue = scope.name,
+                    onValueChanged = { value ->
+                        onScopeChange(BatchScope.entries.firstOrNull { it.name == value } ?: scope)
+                    }
                 )
             }
             BatchOperation.FRIEND_LABEL -> {
@@ -327,7 +334,7 @@ private fun BatchPickerControls(
                     labelsError.isNotBlank() -> EmptyText(labelsError)
                     labels.isEmpty() -> EmptyText("暂无可用标签")
                     else -> PopupChoiceRow(
-                        title = "好友标签",
+                        title = "目标标签",
                         summary = labelName.ifBlank { "选择标签" },
                         options = labels.map { PopupChoice(it.labelName, it.labelId) },
                         currentValue = labelId,
@@ -335,20 +342,12 @@ private fun BatchPickerControls(
                     )
                 }
                 InsetDivider()
-                BatchChoiceRow(
-                    first = "追加",
-                    firstSelected = enabled,
-                    second = "移除",
-                    onFirst = { onEnabledChange(true) },
-                    onSecond = { onEnabledChange(false) }
-                )
-                InsetDivider()
-                BatchChoiceRow(
-                    first = "当前聊天中的好友",
-                    firstSelected = scope == BatchScope.CURRENT,
-                    second = "全部好友",
-                    onFirst = { onScopeChange(BatchScope.CURRENT) },
-                    onSecond = { onScopeChange(BatchScope.ALL) }
+                PopupChoiceRow(
+                    title = "标签操作",
+                    summary = if (enabled) "追加" else "移除",
+                    options = listOf(PopupChoice("追加", "true"), PopupChoice("移除", "false")),
+                    currentValue = enabled.toString(),
+                    onValueChanged = { onEnabledChange(it.toBooleanStrictOrNull() ?: enabled) }
                 )
             }
             else -> Unit
@@ -356,25 +355,11 @@ private fun BatchPickerControls(
     }
 }
 
-@Composable
-private fun BatchChoiceRow(
-    first: String,
-    firstSelected: Boolean,
-    second: String,
-    onFirst: () -> Unit,
-    onSecond: () -> Unit
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        ContactFilterChip(first, firstSelected, onFirst)
-        ContactFilterChip(second, !firstSelected, onSecond)
-    }
-}
-
-private fun candidateMode(feature: BatchOperation?, scope: BatchScope): BatchCandidateMode? = when (feature) {
+private fun candidateMode(
+    feature: BatchOperation?,
+    scope: BatchScope,
+    enabled: Boolean
+): BatchCandidateMode? = when (feature) {
     BatchOperation.HIDE -> BatchCandidateMode.HOME_CONVERSATIONS
     BatchOperation.DO_NOT_DISTURB -> if (scope == BatchScope.CURRENT) {
         BatchCandidateMode.CURRENT_FRIENDS_AND_GROUPS
@@ -386,10 +371,10 @@ private fun candidateMode(feature: BatchOperation?, scope: BatchScope): BatchCan
     } else {
         BatchCandidateMode.PINNABLE_FRIENDS_AND_GROUPS
     }
-    BatchOperation.FRIEND_LABEL -> if (scope == BatchScope.CURRENT) {
-        BatchCandidateMode.CURRENT_FRIENDS
-    } else {
+    BatchOperation.FRIEND_LABEL -> if (enabled) {
         BatchCandidateMode.ALL_FRIENDS
+    } else {
+        BatchCandidateMode.ALL_FRIENDS_WITH_LABEL
     }
     null -> null
 }
@@ -398,7 +383,7 @@ private fun operationSummary(operation: BatchOperation): String = when (operatio
     BatchOperation.HIDE -> "只显示微信首页当前聊天"
     BatchOperation.DO_NOT_DISTURB -> "开启或关闭当前聊天或全部好友与群聊的免打扰"
     BatchOperation.PIN -> "置顶或取消置顶当前聊天或全部好友与群聊"
-    BatchOperation.FRIEND_LABEL -> "为当前聊天中的好友或全部好友追加、移除标签"
+    BatchOperation.FRIEND_LABEL -> "追加到全部好友，或从指定标签的成员中移除"
 }
 
 private enum class BatchPage { HOME, PICKER }

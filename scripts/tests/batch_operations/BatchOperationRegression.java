@@ -1,4 +1,5 @@
 import h.Hchat.hooks.api.contact.ContactLabelIds;
+import h.Hchat.hooks.items.batch.BatchCandidateLoadGate;
 import h.Hchat.hooks.items.batch.BatchSelectionPolicy;
 import h.Hchat.hooks.items.batch.BatchSelectionState;
 import h.Hchat.hooks.items.batch.BatchStatePolicy;
@@ -13,7 +14,11 @@ import java.util.concurrent.atomic.AtomicInteger;
 public final class BatchOperationRegression {
     public static void main(String[] args) {
         selectionFiltering();
+        labelMemberCandidatesAreExactAndOrdered();
         multiScopeSelectionState();
+        searchSeparatesSelectedItemsFromMatches();
+        staleCandidateLoadsCannotReplaceNewerScopes();
+        labelChangesResetOldSelections();
         labelMembershipEdits();
         stateTransitions();
         serialResultsAndPartialFailure();
@@ -78,6 +83,51 @@ public final class BatchOperationRegression {
         }
         assertEquals(Arrays.asList("chat-a", "friend-c", "friend-d"), currentDisplay,
                 "a retained out-of-scope selection remains selected across range changes");
+    }
+
+    private static void labelMemberCandidatesAreExactAndOrdered() {
+        List<String> members = BatchSelectionPolicy.filterFriendLabelMembers(
+                Arrays.asList("friend-b", "friend-a", "group@chatroom", "wxid_hchat_group_fake", "friend-c"),
+                new HashSet<>(Arrays.asList("friend-a", "group@chatroom", "stale-friend")));
+        assertEquals(Arrays.asList("friend-a"), members,
+                "remove-tag candidates must be the exact valid friend members in friend order");
+        assertEquals(new java.util.ArrayList<String>(),
+                BatchSelectionPolicy.filterFriendLabelMembers(
+                        Arrays.asList("friend-a"), new HashSet<String>()),
+                "an empty member relation is a valid empty candidate list");
+    }
+
+    private static void searchSeparatesSelectedItemsFromMatches() {
+        List<String> selectionOrder = Arrays.asList("outside-scope", "matched-selected");
+        List<String> searchMatches = Arrays.asList("matched-first", "matched-selected", "matched-last");
+        assertEquals(Arrays.asList("outside-scope"),
+                BatchSelectionState.selectedOutsideMatches(selectionOrder, searchMatches),
+                "selected entries that do not match must stay in their separate selected section");
+        assertEquals(Arrays.asList("matched-selected", "matched-first", "matched-last"),
+                BatchSelectionState.selectedFirst(searchMatches, selectionOrder),
+                "search results must contain matching entries only and keep selected matches first");
+    }
+
+    private static void staleCandidateLoadsCannotReplaceNewerScopes() {
+        BatchCandidateLoadGate gate = new BatchCandidateLoadGate();
+        long oldScopeLoad = gate.beginLoad();
+        long newestTagLoad = gate.beginLoad();
+        assertTrue(!gate.isCurrent(oldScopeLoad),
+                "a late result from a prior scope/tag request must be discarded");
+        assertTrue(gate.isCurrent(newestTagLoad),
+                "only the newest candidate request may update the visible picker");
+        gate.invalidate();
+        assertTrue(!gate.isCurrent(newestTagLoad),
+                "disposing the picker must invalidate outstanding candidate callbacks");
+    }
+
+    private static void labelChangesResetOldSelections() {
+        assertTrue(BatchSelectionState.shouldResetForKeyChange("true:label-a", "true:label-b"),
+                "changing the target label must clear selected members");
+        assertTrue(BatchSelectionState.shouldResetForKeyChange("true:label-a", "false:label-a"),
+                "switching between append and removal must clear stale selections");
+        assertTrue(!BatchSelectionState.shouldResetForKeyChange("false:label-a", "false:label-a"),
+                "reloading the same tag/action must preserve the current selection");
     }
 
     private static void labelMembershipEdits() {

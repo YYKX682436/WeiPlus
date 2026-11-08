@@ -34,4 +34,18 @@ public final class BatchSelectionPolicy {
         }
         return new ArrayList<>(result);
     }
+
+    /** Intersects a validated friend query with one label's exact member IDs, preserving friend order. */
+    public static List<String> filterFriendLabelMembers(Iterable<String> validFriendIds,
+                                                         Set<String> labelMemberIds) {
+        LinkedHashSet<String> result = new LinkedHashSet<>();
+        if (validFriendIds == null || labelMemberIds == null) return new ArrayList<>();
+        for (String id : validFriendIds) {
+            if (!WeChatConversationIdentity.isBatchOperableUsername(id)) continue;
+            String target = id.trim();
+            if (target.endsWith("@chatroom") || target.endsWith("@im.chatroom")) continue;
+            if (labelMemberIds.contains(target)) result.add(target);
+        }
+        return new ArrayList<>(result);
+    }
 }

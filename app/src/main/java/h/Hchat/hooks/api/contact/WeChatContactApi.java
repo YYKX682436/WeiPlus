@@ -67,6 +67,19 @@ public final class WeChatContactApi {
         }
     }
 
+    public static final class ContactLabelListResult {
+        public final boolean success;
+        public final List<ContactLabelBean> labels;
+        public final String error;
+
+        private ContactLabelListResult(
+                boolean success, List<ContactLabelBean> labels, String error) {
+            this.success = success;
+            this.labels = labels == null ? Collections.emptyList() : new ArrayList<>(labels);
+            this.error = error == null ? "" : error;
+        }
+    }
+
     private static final int SELF_FIELD_WXID = 2;
     private static final int SELF_FIELD_GENDER = 12290;
     private static final int SELF_FIELD_CITY = 12292;
@@ -597,46 +610,98 @@ public final class WeChatContactApi {
     }
 
     public List<ContactLabelBean> getContactLabelList() {
-        List<ContactLabelBean> result = new ArrayList<>();
+        return getContactLabelListResult().labels;
+    }
+
+    /** A successful empty snapshot is distinct from a failed label or membership query. */
+    public ContactLabelListResult getContactLabelListResult() {
+        if (databaseApi == null || !databaseApi.isAvailable()) {
+            return failedContactLabelList("联系人数据库不可用");
+        }
         LabelTableInfo info = findContactLabelTable();
-        if (info == null) return result;
+        if (info == null) return failedContactLabelList("好友标签表不可用");
+        String labelIdsColumn = findRcontactLabelIdsColumn();
+        if (TextUtils.isEmpty(labelIdsColumn)) {
+            return failedContactLabelList("好友标签关系字段不可用");
+        }
+
+        String labelsSql = "SELECT " + quoteColumn(info.idColumn) + " AS labelId, "
+                + quoteColumn(info.nameColumn) + " AS labelName"
+                + " FROM " + databaseApi.quoteTable(info.table)
+                + " ORDER BY CAST(" + quoteColumn(info.idColumn) + " AS INTEGER), "
+                + quoteColumn(info.nameColumn);
+        Cursor labelCursor = databaseApi.rawQuery(labelsSql, null);
+        if (labelCursor == null) return failedContactLabelList("读取好友标签失败");
+        LinkedHashMap<String, String> labelNames = new LinkedHashMap<>();
         try {
-            String sql = "SELECT " + quoteColumn(info.idColumn) + " AS labelId, "
-                    + quoteColumn(info.nameColumn) + " AS labelName"
-                    + " FROM " + databaseApi.quoteTable(info.table)
-                    + " ORDER BY CAST(" + quoteColumn(info.idColumn) + " AS INTEGER), "
-                    + quoteColumn(info.nameColumn);
-            List<Map<String, Object>> labelRows = databaseApi.query(sql, null);
-            if (labelRows.isEmpty()) return result;
-            Map<String, Set<String>> usersByLabelId = new LinkedHashMap<>();
-            String labelIdsColumn = findRcontactLabelIdsColumn();
-            if (!TextUtils.isEmpty(labelIdsColumn)) {
-                String quotedLabelIds = quoteColumn(labelIdsColumn);
-                String contactsSql = "SELECT username, " + quotedLabelIds + " AS labelIds "
-                        + "FROM rcontact WHERE " + quotedLabelIds + " IS NOT NULL "
-                        + "AND " + quotedLabelIds + "!=''";
-                for (Map<String, Object> row : databaseApi.query(contactsSql, null)) {
-                    String username = str(row, "username");
-                    if (TextUtils.isEmpty(username)) continue;
-                    for (String labelId : splitLabelIds(str(row, "labelIds"))) {
-                        usersByLabelId
-                                .computeIfAbsent(labelId, ignored -> new LinkedHashSet<>())
-                                .add(username);
-                    }
-                }
+            int idIndex = labelCursor.getColumnIndex("labelId");
+            int nameIndex = labelCursor.getColumnIndex("labelName");
+            if (idIndex < 0 || nameIndex < 0) {
+                return failedContactLabelList("好友标签字段读取失败");
             }
-            for (Map<String, Object> row : labelRows) {
-                String labelId = str(row, "labelId");
-                String labelName = str(row, "labelName");
+            while (labelCursor.moveToNext()) {
+                String labelId = safeCursorString(labelCursor, idIndex);
+                String labelName = safeCursorString(labelCursor, nameIndex);
                 if (TextUtils.isEmpty(labelId) && TextUtils.isEmpty(labelName)) continue;
-                List<String> users = new ArrayList<>(
-                        usersByLabelId.getOrDefault(labelId, Collections.emptySet()));
-                result.add(new ContactLabelBean(labelId, labelName, users));
+                labelNames.put(labelId, labelName);
             }
         } catch (Throwable e) {
-            log("获取标签列表失败: " + e.getMessage());
+            log("读取好友标签失败: " + e.getMessage());
+            return failedContactLabelList("读取好友标签失败");
+        } finally {
+            closeCursor(labelCursor);
         }
-        return result;
+
+        String quotedLabelIds = quoteColumn(labelIdsColumn);
+        String contactsSql = "SELECT username, " + quotedLabelIds + " AS labelIds "
+                + "FROM rcontact WHERE " + quotedLabelIds + " IS NOT NULL "
+                + "AND " + quotedLabelIds + "!=''";
+        Cursor contactsCursor = databaseApi.rawQuery(contactsSql, null);
+        if (contactsCursor == null) return failedContactLabelList("读取好友标签成员失败");
+        Map<String, Set<String>> usersByLabelId = new LinkedHashMap<>();
+        try {
+            int usernameIndex = contactsCursor.getColumnIndex("username");
+            int labelIdsIndex = contactsCursor.getColumnIndex("labelIds");
+            if (usernameIndex < 0 || labelIdsIndex < 0) {
+                return failedContactLabelList("好友标签成员字段读取失败");
+            }
+            while (contactsCursor.moveToNext()) {
+                String username = safeCursorString(contactsCursor, usernameIndex);
+                if (TextUtils.isEmpty(username)) continue;
+                for (String labelId : splitLabelIds(safeCursorString(contactsCursor, labelIdsIndex))) {
+                    usersByLabelId.computeIfAbsent(labelId, ignored -> new LinkedHashSet<>()).add(username);
+                }
+            }
+        } catch (Throwable e) {
+            log("读取好友标签成员失败: " + e.getMessage());
+            return failedContactLabelList("读取好友标签成员失败");
+        } finally {
+            closeCursor(contactsCursor);
+        }
+
+        List<ContactLabelBean> labels = new ArrayList<>();
+        for (Map.Entry<String, String> entry : labelNames.entrySet()) {
+            labels.add(new ContactLabelBean(
+                    entry.getKey(),
+                    entry.getValue(),
+                    new ArrayList<>(usersByLabelId.getOrDefault(entry.getKey(), Collections.emptySet()))));
+        }
+        return new ContactLabelListResult(true, labels, "");
+    }
+
+    private static ContactLabelListResult failedContactLabelList(String error) {
+        return new ContactLabelListResult(false, Collections.emptyList(), error);
+    }
+
+    private static String safeCursorString(Cursor cursor, int column) {
+        return cursor.isNull(column) ? "" : cursor.getString(column);
+    }
+
+    private static void closeCursor(Cursor cursor) {
+        if (cursor == null) return;
+        try {
+            cursor.close();
+        } catch (Throwable ignored) {}
     }
 
     /** Reads only the label table; used once as a batch preflight before per-friend requests. */

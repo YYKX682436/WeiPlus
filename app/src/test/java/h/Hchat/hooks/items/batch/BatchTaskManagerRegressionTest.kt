@@ -42,8 +42,106 @@ class BatchTaskManagerRegressionTest {
                 awaitStatus(manager, BatchTaskStatus.COMPLETED)
                 assertEquals(BatchTaskStatus.COMPLETED, manager.snapshot.value.status)
                 assertEquals(request.targetIds.size, manager.snapshot.value.report?.success)
+                assertEquals("批量操作成功", BatchTaskCompletionMessage.from(manager.snapshot.value))
             }
         } finally {
+            manager.shutdownForTesting()
+        }
+    }
+
+    @Test
+    fun completionFeedbackRunsOnceAfterPartialResultsWithoutTreatingThemAsSuccess() {
+        val notified = CountDownLatch(1)
+        val calls = AtomicInteger()
+        val manager = BatchTaskManager.createForTesting(
+            BatchTaskProcessor { request, _ ->
+                BatchTaskRunner.fromResults(
+                    request.targetIds,
+                    listOf(
+                        BatchTaskRunner.TaskResult.of(BatchTaskRunner.Outcome.SUCCESS, "confirmed"),
+                        BatchTaskRunner.TaskResult.of(BatchTaskRunner.Outcome.FAILED, "rejected"),
+                        BatchTaskRunner.TaskResult.of(BatchTaskRunner.Outcome.UNCONFIRMED, "accepted only")
+                    ),
+                    ""
+                )
+            },
+            BatchTaskCompletionNotifier { snapshot ->
+                assertEquals(BatchTaskStatus.COMPLETED, snapshot.status)
+                assertEquals(1, snapshot.report?.success)
+                assertEquals(1, snapshot.report?.failed)
+                assertEquals(1, snapshot.report?.unconfirmed)
+                calls.incrementAndGet()
+                notified.countDown()
+            }
+        )
+        try {
+            assertEquals(
+                BatchTaskSubmitResult.STARTED,
+                manager.submit(BatchTaskRequest(
+                    BatchOperation.FRIEND_LABEL,
+                    listOf("one", "two", "three"),
+                    "account-A",
+                    enabled = false,
+                    labelId = "label-A"
+                ))
+            )
+            assertTrue("completion feedback should follow the final report", notified.await(5, TimeUnit.SECONDS))
+            repeat(3) { manager.snapshot.value }
+            assertEquals(1, calls.get())
+            val message = BatchTaskCompletionMessage.from(manager.snapshot.value)
+            assertTrue(message.contains("失败 1"))
+            assertTrue(message.contains("未确认 1"))
+            assertTrue(!message.contains("批量操作成功"))
+        } finally {
+            manager.shutdownForTesting()
+        }
+    }
+
+    @Test
+    fun hostInvalidationLetsInflightItemFinishButStopsLaterSubmissions() {
+        val firstStarted = CountDownLatch(1)
+        val releaseFirst = CountDownLatch(1)
+        val finished = CountDownLatch(1)
+        val submitted = AtomicInteger()
+        val notifications = AtomicInteger()
+        val manager = BatchTaskManager.createForTesting(
+            BatchTaskProcessor { request, signal ->
+                val report = BatchTaskRunner.run(
+                    request.targetIds,
+                    request.expectedAccount,
+                    { "account-A" },
+                    signal,
+                    0,
+                    { _, _ ->
+                        submitted.incrementAndGet()
+                        firstStarted.countDown()
+                        releaseFirst.await(5, TimeUnit.SECONDS)
+                        BatchTaskRunner.TaskResult.of(BatchTaskRunner.Outcome.SUCCESS, "already submitted")
+                    },
+                    null
+                )
+                finished.countDown()
+                report
+            },
+            BatchTaskCompletionNotifier { notifications.incrementAndGet() }
+        )
+        try {
+            val request = BatchTaskRequest(
+                BatchOperation.PIN, listOf("one", "two"), "account-A", enabled = true
+            )
+            assertEquals(BatchTaskSubmitResult.STARTED, manager.submit(request))
+            assertTrue(firstStarted.await(5, TimeUnit.SECONDS))
+            manager.shutdownForTesting()
+            releaseFirst.countDown()
+            assertTrue(finished.await(5, TimeUnit.SECONDS))
+            awaitStatus(manager, BatchTaskStatus.STOPPED)
+            assertEquals(1, submitted.get())
+            assertEquals(1, manager.snapshot.value.report?.success)
+            assertEquals(1, manager.snapshot.value.report?.skipped)
+            assertEquals(0, notifications.get())
+            assertEquals(BatchTaskSubmitResult.UNAVAILABLE, manager.submit(request))
+        } finally {
+            releaseFirst.countDown()
             manager.shutdownForTesting()
         }
     }
@@ -95,6 +193,7 @@ class BatchTaskManagerRegressionTest {
             assertEquals(BatchTaskStatus.STOPPED, manager.snapshot.value.status)
             assertEquals(1, manager.snapshot.value.report?.success)
             assertEquals(1, manager.snapshot.value.report?.skipped)
+            assertEquals("已停止后续操作", BatchTaskCompletionMessage.from(manager.snapshot.value))
             assertEquals(1, submissions.get())
 
             val restart = BatchTaskRequest(
