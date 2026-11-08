@@ -4,6 +4,7 @@ import h.Hchat.hooks.api.contact.WeChatContactApi
 import h.Hchat.hooks.api.contact.WeChatNativeMutationResult
 import h.Hchat.hooks.api.core.WeChatApis
 import h.Hchat.hooks.api.message.WeChatMessageStoreApi
+import h.Hchat.utils.HLog
 import java.util.concurrent.TimeUnit
 
 /**
@@ -229,6 +230,7 @@ internal object BatchOperationExecutor : BatchTaskProcessor {
         request: BatchTaskRequest,
         stopSignal: BatchTaskRunner.StopSignal
     ): BatchTaskRunner.TaskResult {
+        logDeletePhase("delete-chat", id, "executor-entered")
         val conversations = WeChatApis.conversations()
             ?: return result(BatchTaskRunner.Outcome.FAILED, "微信会话 API 不可用")
         val home = conversations.getNativeHomeConversationUsernames()
@@ -262,7 +264,9 @@ internal object BatchOperationExecutor : BatchTaskProcessor {
                 else conversations.getNativeHomeConversationUsernames()?.let { it.contains(id) }
             },
             deleteConversation = {
-                when (conversations.deleteConversationFromNativeHome(id)) {
+                when (conversations.deleteConversationFromNativeHome(id) {
+                    stopSignal.isStopped() || !isAccountCurrent(request.expectedAccount)
+                }) {
                     h.Hchat.hooks.api.conversation.WeChatConversationApi.NativeHomeDeleteState.CONFIRMED_REMOVED ->
                         BatchDeleteOutcomePolicy.NativeHomeDeleteState.CONFIRMED_REMOVED
                     h.Hchat.hooks.api.conversation.WeChatConversationApi.NativeHomeDeleteState.ROW_REMAINS ->
@@ -273,6 +277,8 @@ internal object BatchOperationExecutor : BatchTaskProcessor {
                         BatchDeleteOutcomePolicy.NativeHomeDeleteState.HOME_STILL_CONTAINS
                     h.Hchat.hooks.api.conversation.WeChatConversationApi.NativeHomeDeleteState.SCOPE_CHANGED ->
                         BatchDeleteOutcomePolicy.NativeHomeDeleteState.SCOPE_CHANGED
+                    h.Hchat.hooks.api.conversation.WeChatConversationApi.NativeHomeDeleteState.NOT_SUBMITTED ->
+                        BatchDeleteOutcomePolicy.NativeHomeDeleteState.NOT_SUBMITTED
                     h.Hchat.hooks.api.conversation.WeChatConversationApi.NativeHomeDeleteState.UNCONFIRMED ->
                         BatchDeleteOutcomePolicy.NativeHomeDeleteState.UNCONFIRMED
                 }
@@ -285,6 +291,7 @@ internal object BatchOperationExecutor : BatchTaskProcessor {
         request: BatchTaskRequest,
         stopSignal: BatchTaskRunner.StopSignal
     ): BatchTaskRunner.TaskResult {
+        logDeletePhase("delete-friend", id, "executor-entered")
         val contacts = WeChatApis.contacts()
             ?: return result(BatchTaskRunner.Outcome.FAILED, "微信联系人 API 不可用")
         val messages = WeChatApis.messageStore()
@@ -308,7 +315,7 @@ internal object BatchOperationExecutor : BatchTaskProcessor {
         } ?: return if (!mayStartNativeOperation(request, stopSignal)) {
             result(BatchTaskRunner.Outcome.SKIPPED, stopReason(stopSignal))
         } else {
-            result(BatchTaskRunner.Outcome.FAILED, "微信原生删除好友请求未提交或结果回调不可用")
+            result(BatchTaskRunner.Outcome.FAILED, "微信原生删除好友请求未提交（方法、服务实例或好友状态不可用）")
         }
         val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(FRIEND_DELETE_OBSERVATION_TIMEOUT_MS)
         var lastRelationState = "unread"
@@ -362,6 +369,10 @@ internal object BatchOperationExecutor : BatchTaskProcessor {
         } finally {
             nativeDelete.close()
         }
+    }
+
+    private fun logDeletePhase(operation: String, id: String, phase: String) {
+        HLog.i("[Hchat:BatchDelete] operation=$operation phase=$phase targetHash=${Integer.toHexString(id.hashCode())}")
     }
 
     private fun accountSelfId(): String =

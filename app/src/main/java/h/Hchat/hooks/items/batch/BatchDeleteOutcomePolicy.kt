@@ -4,7 +4,8 @@ package h.Hchat.hooks.items.batch
 internal object BatchDeleteOutcomePolicy {
     enum class ChatClearState { COMPLETED, NOT_SUBMITTED, UNCONFIRMED, STOPPED }
     enum class NativeHomeDeleteState {
-        CONFIRMED_REMOVED, ROW_REMAINS, ROW_RECREATED, HOME_STILL_CONTAINS, SCOPE_CHANGED, UNCONFIRMED
+        CONFIRMED_REMOVED, ROW_REMAINS, ROW_RECREATED, HOME_STILL_CONTAINS,
+        SCOPE_CHANGED, NOT_SUBMITTED, UNCONFIRMED
     }
 
     /** A native response code of zero confirms the server mutation, but not local cleanup yet. */
@@ -27,8 +28,8 @@ internal object BatchDeleteOutcomePolicy {
                 "原生聊天记录清理未提交；会话保留")
             ChatClearState.UNCONFIRMED -> return result(BatchTaskRunner.Outcome.UNCONFIRMED,
                 "聊天记录清理未确认；会话保留")
-            ChatClearState.STOPPED -> return result(BatchTaskRunner.Outcome.FAILED,
-                "清理已提交但被停止或账号已切换；会话保留")
+            ChatClearState.STOPPED -> return result(BatchTaskRunner.Outcome.UNCONFIRMED,
+                "清理请求可能已提交；被停止或账号已切换，结果未确认；会话保留")
             ChatClearState.COMPLETED -> Unit
         }
         when (mayDeleteConversation()) {
@@ -49,6 +50,8 @@ internal object BatchDeleteOutcomePolicy {
                 result(BatchTaskRunner.Outcome.UNCONFIRMED, "聊天记录已清理；原生首页仍显示该会话")
             NativeHomeDeleteState.SCOPE_CHANGED ->
                 result(BatchTaskRunner.Outcome.FAILED, "聊天记录已清理；会话范围变化，原生删除未执行")
+            NativeHomeDeleteState.NOT_SUBMITTED ->
+                result(BatchTaskRunner.Outcome.SKIPPED, "聊天记录已清理；任务已停止或账号已切换，会话删除未提交")
             NativeHomeDeleteState.UNCONFIRMED ->
                 result(BatchTaskRunner.Outcome.UNCONFIRMED, "聊天记录已清理；原生会话移除状态未确认")
         }

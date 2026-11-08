@@ -52,8 +52,13 @@ try {
     const dexFinder = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/dexkit/DexFinder.java'), 'utf8');
     const groupRuntime = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/items/conversationgroup/ConversationGroupRuntime.kt'), 'utf8');
     const conversationApi = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/api/conversation/WeChatConversationApi.java'), 'utf8');
+    const homeDeletePolicy = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/api/conversation/NativeHomeDeleteStatePolicy.java'), 'utf8');
     const contactApi = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/api/contact/WeChatContactApi.java'), 'utf8');
+    const deleteContactMethodPolicy = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/api/contact/DeleteContactServiceMethodPolicy.java'), 'utf8');
+    const internalServices = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/api/media/WeChatInternalServices.kt'), 'utf8');
     const messageStore = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/api/message/WeChatMessageStoreApi.java'), 'utf8');
+    const messageClearPolicy = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/api/message/MessageClearCompletionPolicy.java'), 'utf8');
+    const wechatApiFeature = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/api/core/WechatApiFeature.java'), 'utf8');
     const zombieFeature = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/items/zombiecheck/ZombieCheckFeature.kt'), 'utf8');
     const chatroomApi = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/api/contact/WeChatChatroomApi.java'), 'utf8');
     const databaseApi = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/api/runtime/WeChatDatabaseApi.java'), 'utf8');
@@ -217,19 +222,33 @@ try {
         'WeChat home deletion helper must run only after confirmed native message cleanup');
     assert.match(deleteChatMethod, /getNativeHomeConversationUsernames\(\)[\s\S]*?home\.contains\(id\)/,
         'a chat must still be in the current root home list when its delete begins');
-    const nativeHomeDeleteMethod = methodBody(conversationApi, 'public NativeHomeDeleteState deleteConversationFromNativeHome(');
+    const nativeHomeDeleteMethod = methodBody(conversationApi, 'public NativeHomeDeleteState deleteConversationFromNativeHome(\n            String username, BooleanSupplier shouldStop)');
     assert.match(nativeHomeDeleteMethod, /conversationDeleteFromHomeMethod/);
-    assert.match(nativeHomeDeleteMethod, /getNativeHomeConversationUsernames\(\)[\s\S]*?AtomicInteger deletes[\s\S]*?AtomicInteger inserts[\s\S]*?ROW_RECREATED/,
+    assert.match(nativeHomeDeleteMethod, /getNativeHomeConversationUsernames\(\)[\s\S]*?AtomicInteger deletes[\s\S]*?AtomicInteger inserts[\s\S]*?targetChange\.await/,
         'post-delete verification must distinguish database, native-home and recreated-row states');
     assert.match(nativeHomeDeleteMethod, /WeChatMainThread\.call[\s\S]*?KavaReflector\.invokeOrThrow\(method, null, target\)/,
         'home deletion must run through the confirmed native UI helper on WeChat main looper');
     assert.match(dexFinder, /doDeleteConv\(\) called talker:%s reserveConversation:%s hasLeftChatroom:%s[\s\S]*?resolveConversationDeleteFromHomeApi/,
         'the batch path must locate WeChat ConvDelLogic rather than call only ConversationStorage.k');
+    assert.match(homeDeletePolicy, /!rowPresent && !nativeHomeContains[\s\S]*?CONFIRMED_REMOVED[\s\S]*?rowPresent && deleteEvents > 0 && insertEvents > 0[\s\S]*?ROW_RECREATED/,
+        'native home deletion can only confirm absence from both current views and reports a recreated row');
     const deleteFriendMethod = methodBody(executor, 'private fun deleteFriend(');
     assert.match(deleteFriendMethod, /submitDeleteFriendWithResult\(id, true\)[\s\S]*?FRIEND_DELETE_OBSERVATION_TIMEOUT_MS[\s\S]*?friendNativeResult\(nativeResult\)[\s\S]*?hasConversationMessagesState\(id\)/,
         'friend deletion must distinguish a native rejection, a missing response and cleared message rows');
     assert.match(contactApi, /resolveDeleteContactServiceApi\(\)[\s\S]*?KavaReflector\.invokeOrThrow\(method, service, target, clearRecord\)/,
         'native DeleteContactService must live in the common contact API with its clear-record argument');
+    assert.match(dexFinder, /usingEqStrings\([\s\S]*?MicroMsg\.DeleteContactService[\s\S]*?delete contact %s isClearRecord:%s[\s\S]*?DeleteContactServiceMethodPolicy\.isSubmitMethod/,
+        'friend delete locator must use the exact official method-local log anchors and signature policy');
+    assert.doesNotMatch(dexFinder, /isLegacyDeleteContactServiceMethod|startsWith\("com\.tencent\.mm\."\)[\s\S]*?isDeleteContactServiceMethod/,
+        'the obfuscated native service owner must not be rejected by a package-name heuristic');
+    assert.match(deleteContactMethodPolicy, /parameters\[0\] == String\.class[\s\S]*?parameters\[1\] == boolean\.class/,
+        'the native request predicate must keep the exact String/boolean signature');
+    assert.match(dexFinder, /resolveDeleteContactServiceGetterApi\(\)[\s\S]*?delete contact %s[\s\S]*?invokeMethods\(new MethodsMatcher\(\)\.add\(submitMatcher\)\)[\s\S]*?callerMethods\(new MethodsMatcher\(\)\.add\(uiCallerMatcher\)\)/,
+        'the service getter must be extracted from the exact native UI caller that invokes the submit method');
+    assert.match(contactApi, /resolveDeleteContactServiceGetterApi\(\)[\s\S]*?deleteContactServiceGetterMethod[\s\S]*?WeChatInternalServices\.resolveService\(serviceGetter, submitMethod\.getDeclaringClass\(\)\)/,
+        'batch submission must use the caller-verified DeleteContactService getter');
+    assert.match(internalServices, /resolveService\(getter: Method\?, owner: Class<\*>\?\)/,
+        'internal service lookup must support the exact getter extracted from the UI callsite');
     assert.match(contactApi, /submitDeleteFriendWithResult[\s\S]*?HookRegistry\.get\(\)\.hook[\s\S]*?request\.complete\(resultCode\)/,
         'the common contact API must capture the native response code for batch outcome classification');
     const trackedDelete = methodBody(contactApi, 'public DeleteFriendRequest submitDeleteFriendWithResult(\n            String username, boolean clearRecord, BatchSubmissionGuard guard)');
@@ -239,8 +258,14 @@ try {
         'friend deletion must observe hook and actual state within one short bounded window');
     assert.match(zombieFeature, /submitDeleteFriend\(wxid, shouldClearRecord\(wxid, clearRecord\)\)/,
         'zombie-check deletion must reuse the common native entry');
-    assert.match(messageStore, /stageOne\.await[\s\S]*?hasConversationMessagesState\(target\)[\s\S]*?ConversationClearResult\.COMPLETED/,
-        'message clear must await native stage 1 and confirm the message table is empty');
+    assert.match(messageStore, /hasConversationMessagesState\(target\)[\s\S]*?MessageClearCompletionPolicy\.decide[\s\S]*?stage2-message-tables-empty/,
+        'message table emptiness must independently confirm Stage 2 even if Stage 1 callback was missed');
+    assert.doesNotMatch(messageStore, /stageOne\.await|TimeUnit\.MINUTES\.toNanos\(5\)/,
+        'a missing Stage 1 callback must not block conversation deletion for five minutes');
+    assert.match(messageClearPolicy, /Boolean\.FALSE\.equals\(messagesRemain\)[\s\S]*?Decision\.COMPLETED/,
+        'confirmed empty message tables must advance without requiring the Stage 1 callback');
+    assert.match(wechatApiFeature, /startsWith\("\[WeChatContactApi\] 批量删除好友诊断 phase="\)[\s\S]*?startsWith\("\[WeChatMessageStoreApi\] 批量删除聊天核验 phase="\)/,
+        'only the targeted batch deletion diagnostics bypass the default log filter');
     assert.match(executor, /setStarredFriend\([\s\S]*?setFriendPermission\([\s\S]*?setGroupSavedToContacts\([\s\S]*?setMyGroupNickname\(/,
         'the four new actions must enter their public WeChat APIs');
     assert.match(executor, /BatchFriendPermissionExecution\.executeOne\([\s\S]*?request\.friendPermissionSelection[\s\S]*?setFriendPermission\(/,

@@ -189,6 +189,12 @@ public class WechatApiFeature implements Feature {
                     return databaseListenerApi.isOperational() && messageChangeApi.isInstalled();
                 });
         DexInstallScheduler.scheduleTask(
+                "wechat_api:delete_contact_service_locator",
+                "原生好友删除服务定位核验",
+                DexInstallScheduler.Stage.WARMUP,
+                -900,
+                contactApi::diagnoseDeleteFriendNativeApi);
+        DexInstallScheduler.scheduleTask(
                 "wechat_api:private_conversation_mute",
                 "私聊免打扰API补定位",
                 DexInstallScheduler.Stage.WARMUP,
@@ -209,9 +215,19 @@ public class WechatApiFeature implements Feature {
             HLog.i(TAG + " " + message);
             return;
         }
+        if (isBatchDeleteDiagnostic(message)) {
+            HLog.i(TAG + " " + message);
+            return;
+        }
         if (isImportantLog(message)) {
             HLog.e(TAG + " " + message);
         }
+    }
+
+    private boolean isBatchDeleteDiagnostic(String message) {
+        return message != null && (message.startsWith("[WeChatContactApi] 批量删除好友诊断 phase=")
+                || message.startsWith("[WeChatMessageStoreApi] 批量删除聊天核验 phase=")
+                || message.startsWith("[WeChatConversationApi] 批量删除聊天核验 phase="));
     }
 
     private void installApiHook(String name, Runnable runnable) {

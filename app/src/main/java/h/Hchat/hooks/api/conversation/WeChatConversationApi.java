@@ -18,6 +18,10 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BooleanSupplier;
 
 /**
  * 微信会话 API。
@@ -31,11 +35,13 @@ public final class WeChatConversationApi {
         ROW_RECREATED,
         HOME_STILL_CONTAINS,
         SCOPE_CHANGED,
+        NOT_SUBMITTED,
         UNCONFIRMED
     }
     private static final String HCHAT_INTERNAL_PREFIX = "wxid_hchat_group_";
     private static final String HIDDEN_CONVERSATION_PARENT = "hidden_conv_parent";
     private static final long CONVERSATION_TOP_FLAG = 1L << 62;
+    private static final long NATIVE_HOME_DELETE_OBSERVATION_TIMEOUT_MS = 2_000L;
 
     public interface Logger {
         void log(String message);
@@ -462,13 +468,30 @@ public final class WeChatConversationApi {
      * the home adapter. The result checks the row, native home query, and observed row writes.
      */
     public NativeHomeDeleteState deleteConversationFromNativeHome(String username) {
+        return deleteConversationFromNativeHome(username, null);
+    }
+
+    /** Runs the native helper and observes its targeted storage notification and final home query. */
+    public NativeHomeDeleteState deleteConversationFromNativeHome(
+            String username, BooleanSupplier shouldStop) {
         String target = username == null ? "" : username.trim();
         if (target.isEmpty() || databaseApi == null || dexFinder == null) {
             return NativeHomeDeleteState.UNCONFIRMED;
         }
+        if (shouldStop != null && shouldStop.getAsBoolean()) {
+            logDeleteDiagnostic(target, "stopped-before-native-helper", null, false, 0, 0,
+                    "nativeHelperNotCalled=true");
+            return NativeHomeDeleteState.NOT_SUBMITTED;
+        }
         Boolean rowBefore = conversationEntryExists(target);
         List<String> homeBefore = getNativeHomeConversationUsernames();
-        if (rowBefore == null || homeBefore == null) return NativeHomeDeleteState.UNCONFIRMED;
+        if (rowBefore == null || homeBefore == null) {
+            logDeleteDiagnostic(target, "pre-state-unavailable", rowBefore,
+                    homeBefore != null && homeBefore.contains(target), 0, 0, "query-failed");
+            return NativeHomeDeleteState.UNCONFIRMED;
+        }
+        logDeleteDiagnostic(target, "pre-state", rowBefore, homeBefore.contains(target), 0, 0,
+                "nativeHomeCount=" + homeBefore.size());
         if (!Boolean.TRUE.equals(rowBefore) || !homeBefore.contains(target)) {
             logDeleteDiagnostic(target, "precondition", rowBefore, homeBefore.contains(target), 0, 0, "out-of-scope");
             return NativeHomeDeleteState.SCOPE_CHANGED;
@@ -476,9 +499,13 @@ public final class WeChatConversationApi {
 
         dexFinder.resolveConversationDeleteFromHomeApi();
         Method method = dexFinder.conversationDeleteFromHomeMethod;
-        if (method == null) return NativeHomeDeleteState.UNCONFIRMED;
-        java.util.concurrent.atomic.AtomicInteger deletes = new java.util.concurrent.atomic.AtomicInteger();
-        java.util.concurrent.atomic.AtomicInteger inserts = new java.util.concurrent.atomic.AtomicInteger();
+        if (method == null) {
+            logDeleteDiagnostic(target, "native-helper-unavailable", rowBefore, true, 0, 0, "method=null");
+            return NativeHomeDeleteState.UNCONFIRMED;
+        }
+        AtomicInteger deletes = new AtomicInteger();
+        AtomicInteger inserts = new AtomicInteger();
+        CountDownLatch targetChange = new CountDownLatch(1);
         WeChatConversationChangeApi changes = WeChatApis.conversationChanges();
         WeChatConversationChangeApi.Subscription subscription = changes != null
                 ? changes.subscribe(change -> {
@@ -490,40 +517,98 @@ public final class WeChatConversationApi {
                     if (!matches || change.databaseChange == null) return;
                     if (change.databaseChange.isDelete()) deletes.incrementAndGet();
                     else if (change.databaseChange.isInsert()) inserts.incrementAndGet();
+                    targetChange.countDown();
                 }) : null;
         try {
+            if (shouldStop != null && shouldStop.getAsBoolean()) {
+                logDeleteDiagnostic(target, "stopped-before-native-helper", rowBefore, true,
+                        deletes.get(), inserts.get(), method.toGenericString());
+                if (subscription != null) subscription.unsubscribe();
+                return NativeHomeDeleteState.NOT_SUBMITTED;
+            }
+            logDeleteDiagnostic(target, "native-helper-call-start", rowBefore, true,
+                    deletes.get(), inserts.get(), method.toGenericString());
             WeChatMainThread.call(() -> {
                 KavaReflector.invokeOrThrow(method, null, target);
                 return null;
             });
+            logDeleteDiagnostic(target, "native-helper-called", rowBefore, true,
+                    deletes.get(), inserts.get(), method.toGenericString()
+                            + " storageNotification=m4.k->notify(5,storage,username)");
         } catch (Throwable e) {
             logDeleteDiagnostic(target, "native-helper-threw", rowBefore, true,
                     deletes.get(), inserts.get(), method.toGenericString() + ":" + e.getClass().getSimpleName());
+            if (subscription != null) subscription.unsubscribe();
+            return NativeHomeDeleteState.UNCONFIRMED;
+        }
+
+        try {
+            if (shouldStop != null && shouldStop.getAsBoolean()) {
+                logDeleteDiagnostic(target, "stopped-after-native-helper-unconfirmed", null,
+                        false, deletes.get(), inserts.get(), "nativeRequestMayBeInFlight=true");
+                return NativeHomeDeleteState.UNCONFIRMED;
+            }
+            NativeHomeDeleteState state = readNativeHomeDeleteState(
+                    target, method, deletes, inserts, "post-helper");
+            if (isFinalNativeHomeDeleteState(state)) return state;
+
+            if (subscription != null) {
+                long deadline = System.nanoTime()
+                        + TimeUnit.MILLISECONDS.toNanos(NATIVE_HOME_DELETE_OBSERVATION_TIMEOUT_MS);
+                while (targetChange.getCount() > 0 && System.nanoTime() < deadline) {
+                    if (shouldStop != null && shouldStop.getAsBoolean()) {
+                        logDeleteDiagnostic(target, "stopped-during-native-observation-unconfirmed", null,
+                                false, deletes.get(), inserts.get(), "nativeRequestMayBeInFlight=true");
+                        return NativeHomeDeleteState.UNCONFIRMED;
+                    }
+                    long remaining = deadline - System.nanoTime();
+                    if (remaining <= 0L) break;
+                    targetChange.await(Math.min(remaining, TimeUnit.MILLISECONDS.toNanos(100)),
+                            TimeUnit.NANOSECONDS);
+                }
+                if (shouldStop != null && shouldStop.getAsBoolean()) {
+                    logDeleteDiagnostic(target, "stopped-during-native-observation-unconfirmed", null,
+                            false, deletes.get(), inserts.get(), "nativeRequestMayBeInFlight=true");
+                    return NativeHomeDeleteState.UNCONFIRMED;
+                }
+                state = readNativeHomeDeleteState(target, method, deletes, inserts,
+                        targetChange.getCount() == 0 ? "post-change-event" : "post-observation-timeout");
+            } else {
+                logDeleteDiagnostic(target, "conversation-observer-unavailable", rowBefore, true,
+                        deletes.get(), inserts.get(), method.toGenericString());
+                state = readNativeHomeDeleteState(target, method, deletes, inserts, "observer-unavailable");
+            }
+            if (shouldStop != null && shouldStop.getAsBoolean()) {
+                logDeleteDiagnostic(target, "stopped-after-native-observation-unconfirmed", null,
+                        false, deletes.get(), inserts.get(), "nativeRequestMayBeInFlight=true");
+                return NativeHomeDeleteState.UNCONFIRMED;
+            }
+            return state;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            logDeleteDiagnostic(target, "native-observation-interrupted-unconfirmed", null,
+                    false, deletes.get(), inserts.get(), method.toGenericString());
             return NativeHomeDeleteState.UNCONFIRMED;
         } finally {
             if (subscription != null) subscription.unsubscribe();
         }
+    }
 
+    private NativeHomeDeleteState readNativeHomeDeleteState(
+            String target, Method method, AtomicInteger deletes, AtomicInteger inserts, String phase) {
         Boolean rowAfter = conversationEntryExists(target);
         List<String> homeAfter = getNativeHomeConversationUsernames();
-        if (rowAfter == null || homeAfter == null) {
-            logDeleteDiagnostic(target, "post-state-unavailable", rowAfter,
-                    homeAfter != null && homeAfter.contains(target), deletes.get(), inserts.get(), method.toGenericString());
-            return NativeHomeDeleteState.UNCONFIRMED;
-        }
-        boolean inHome = homeAfter.contains(target);
-        String phase = !Boolean.TRUE.equals(rowAfter) && !inHome ? "removed"
-                : Boolean.TRUE.equals(rowAfter) && deletes.get() > 0 && inserts.get() > 0 ? "recreated"
-                : Boolean.TRUE.equals(rowAfter) && inHome ? "still-in-home"
-                : Boolean.TRUE.equals(rowAfter) ? "row-remains" : "row-missing-home-inconsistent";
-        logDeleteDiagnostic(target, phase, rowAfter, inHome,
-                deletes.get(), inserts.get(), method.toGenericString());
-        if (!Boolean.TRUE.equals(rowAfter) && !inHome) return NativeHomeDeleteState.CONFIRMED_REMOVED;
-        if (Boolean.TRUE.equals(rowAfter) && deletes.get() > 0 && inserts.get() > 0) {
-            return NativeHomeDeleteState.ROW_RECREATED;
-        }
-        if (Boolean.TRUE.equals(rowAfter) && inHome) return NativeHomeDeleteState.HOME_STILL_CONTAINS;
-        return NativeHomeDeleteState.ROW_REMAINS;
+        Boolean inHome = homeAfter != null ? homeAfter.contains(target) : null;
+        NativeHomeDeleteState state = NativeHomeDeleteStatePolicy.classify(
+                rowAfter, inHome, deletes.get(), inserts.get());
+        logDeleteDiagnostic(target, phase + ":" + state.name(), rowAfter,
+                Boolean.TRUE.equals(inHome), deletes.get(), inserts.get(), method.toGenericString());
+        return state;
+    }
+
+    private boolean isFinalNativeHomeDeleteState(NativeHomeDeleteState state) {
+        return state == NativeHomeDeleteState.CONFIRMED_REMOVED
+                || state == NativeHomeDeleteState.ROW_RECREATED;
     }
 
     private void logDeleteDiagnostic(String username, String phase, Boolean rowPresent,

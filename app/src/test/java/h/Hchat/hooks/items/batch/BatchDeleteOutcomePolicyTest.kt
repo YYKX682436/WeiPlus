@@ -68,6 +68,20 @@ class BatchDeleteOutcomePolicyTest {
             deleteConversation = { BatchDeleteOutcomePolicy.NativeHomeDeleteState.HOME_STILL_CONTAINS }
         )
         assertEquals(BatchTaskRunner.Outcome.UNCONFIRMED, nativeHomeStale.outcome)
+
+        val stoppedBeforeDelete = BatchDeleteOutcomePolicy.deleteChat(
+            clearMessages = { BatchDeleteOutcomePolicy.ChatClearState.COMPLETED },
+            mayDeleteConversation = { true },
+            deleteConversation = { BatchDeleteOutcomePolicy.NativeHomeDeleteState.NOT_SUBMITTED }
+        )
+        assertEquals(BatchTaskRunner.Outcome.SKIPPED, stoppedBeforeDelete.outcome)
+
+        val stoppedAfterClearSubmission = BatchDeleteOutcomePolicy.deleteChat(
+            clearMessages = { BatchDeleteOutcomePolicy.ChatClearState.STOPPED },
+            mayDeleteConversation = { error("must not remove after a stopped clear") },
+            deleteConversation = { error("must not remove after a stopped clear") }
+        )
+        assertEquals(BatchTaskRunner.Outcome.UNCONFIRMED, stoppedAfterClearSubmission.outcome)
     }
 
     @Test

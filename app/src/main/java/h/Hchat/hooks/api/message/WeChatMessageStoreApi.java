@@ -15,9 +15,9 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * 微信消息存储 API。
@@ -26,6 +26,7 @@ import java.util.function.BooleanSupplier;
  */
 public final class WeChatMessageStoreApi {
     public enum ConversationClearResult { COMPLETED, NOT_SUBMITTED, UNCONFIRMED, STOPPED }
+    private static final long MESSAGE_CLEAR_CONFIRMATION_TIMEOUT_MS = 30_000L;
     public interface Logger {
         void log(String message);
     }
@@ -122,23 +123,28 @@ public final class WeChatMessageStoreApi {
         }
     }
 
-    /**
-     * Clears one chat through WeChat's asynchronous native stages and confirms the message
-     * table is empty before a caller removes the conversation index. The native callback marks
-     * completion of stage 1; the row check waits for stage 2 to finish deleting message rows.
-     */
+    /** Clears one chat through WeChat's native asynchronous stages and confirms both stores empty. */
     public ConversationClearResult clearConversationMessagesAndWait(
             String talker, BooleanSupplier shouldStop) {
         String target = talker == null ? "" : talker.trim();
-        if (target.isEmpty() || dexFinder == null) return ConversationClearResult.NOT_SUBMITTED;
+        if (target.isEmpty() || dexFinder == null) {
+            logBatchDeletePhase(target, "message-clear-not-submitted", false, null, "invalid-target-or-dexfinder");
+            return ConversationClearResult.NOT_SUBMITTED;
+        }
         dexFinder.resolveMessageClearApi();
         Method method = dexFinder.messageClearBatchMethod;
         if (method == null || method.getParameterTypes().length < 2) {
+            logBatchDeletePhase(target, "message-clear-locator-failed", false, null,
+                    "batchMethod=" + (method != null ? method.toGenericString() : "null"));
             return ConversationClearResult.NOT_SUBMITTED;
         }
         Class<?> callbackType = method.getParameterTypes()[1];
-        if (!callbackType.isInterface()) return ConversationClearResult.NOT_SUBMITTED;
-        CountDownLatch stageOne = new CountDownLatch(1);
+        if (!callbackType.isInterface()) {
+            logBatchDeletePhase(target, "message-clear-not-submitted", false, null,
+                    "callbackType=" + callbackType.getName());
+            return ConversationClearResult.NOT_SUBMITTED;
+        }
+        AtomicBoolean stageOneReceived = new AtomicBoolean();
         Object callback = Proxy.newProxyInstance(callbackType.getClassLoader(),
                 new Class<?>[]{callbackType}, (proxy, callbackMethod, args) -> {
                     if (callbackMethod.getDeclaringClass() == Object.class) {
@@ -149,7 +155,11 @@ public final class WeChatMessageStoreApi {
                         }
                     }
                     if ("b".equals(callbackMethod.getName())
-                            && callbackMethod.getParameterTypes().length == 0) stageOne.countDown();
+                            && callbackMethod.getParameterTypes().length == 0
+                            && stageOneReceived.compareAndSet(false, true)) {
+                        logBatchDeletePhase(target, "stage1-callback-received", true, null,
+                                callbackMethod.toGenericString());
+                    }
                     return defaultPrimitiveValue(callbackMethod.getReturnType());
                 });
         try {
@@ -160,33 +170,62 @@ public final class WeChatMessageStoreApi {
                 KavaReflector.invokeOrThrow(method, null, java.util.Collections.singletonList(target), callback);
             }
         } catch (Throwable e) {
-            log("原生消息清理提交失败: " + e.getMessage() + " talker=" + target);
-            return ConversationClearResult.NOT_SUBMITTED;
+            logBatchDeletePhase(target, "message-clear-submit-threw", false, null,
+                    method.toGenericString() + " error=" + e.getClass().getSimpleName());
+            return ConversationClearResult.UNCONFIRMED;
         }
+        logBatchDeletePhase(target, "message-clear-request-submitted", false, null, method.toGenericString());
 
-        long deadline = System.nanoTime() + TimeUnit.MINUTES.toNanos(5);
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(MESSAGE_CLEAR_CONFIRMATION_TIMEOUT_MS);
         try {
-            while (stageOne.getCount() != 0) {
-                if (shouldStop != null && shouldStop.getAsBoolean()) return ConversationClearResult.STOPPED;
-                if (System.nanoTime() >= deadline) return ConversationClearResult.UNCONFIRMED;
-                stageOne.await(200, TimeUnit.MILLISECONDS);
-            }
             while (true) {
-                if (shouldStop != null && shouldStop.getAsBoolean()) return ConversationClearResult.STOPPED;
+                boolean stopped = shouldStop != null && shouldStop.getAsBoolean();
                 Boolean remains = hasConversationMessagesState(target);
-                if (Boolean.FALSE.equals(remains)) return ConversationClearResult.COMPLETED;
-                if (remains == null || System.nanoTime() >= deadline) {
+                boolean timedOut = System.nanoTime() >= deadline;
+                MessageClearCompletionPolicy.Decision decision =
+                        MessageClearCompletionPolicy.decide(remains, stopped, timedOut);
+                if (decision == MessageClearCompletionPolicy.Decision.COMPLETED) {
+                    logBatchDeletePhase(target, "stage2-message-tables-empty",
+                            stageOneReceived.get(), false, "partitionAndMain=empty");
+                    if (!stageOneReceived.get()) {
+                        logBatchDeletePhase(target, "stage1-callback-missing-but-stage2-confirmed",
+                                false, false, method.toGenericString());
+                    }
+                    return ConversationClearResult.COMPLETED;
+                }
+                if (decision == MessageClearCompletionPolicy.Decision.STOPPED) {
+                    logBatchDeletePhase(target, "message-clear-stopped-unconfirmed",
+                            stageOneReceived.get(), remains, "nativeRequestMayBeInFlight=true");
+                    return ConversationClearResult.STOPPED;
+                }
+                if (decision == MessageClearCompletionPolicy.Decision.UNCONFIRMED) {
+                    logBatchDeletePhase(target, "stage2-message-clear-unconfirmed",
+                            stageOneReceived.get(), remains,
+                            "timeoutMs=" + MESSAGE_CLEAR_CONFIRMATION_TIMEOUT_MS);
                     return ConversationClearResult.UNCONFIRMED;
                 }
                 TimeUnit.MILLISECONDS.sleep(200);
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            logBatchDeletePhase(target, "message-clear-interrupted-unconfirmed",
+                    stageOneReceived.get(), null, "nativeRequestMayBeInFlight=true");
             return ConversationClearResult.STOPPED;
         } catch (Throwable e) {
-            log("核验原生消息清理失败: " + e.getMessage() + " talker=" + target);
+            logBatchDeletePhase(target, "stage2-message-state-read-failed",
+                    stageOneReceived.get(), null, e.getClass().getSimpleName());
             return ConversationClearResult.UNCONFIRMED;
         }
+    }
+
+    private void logBatchDeletePhase(String talker, String phase, boolean stageOneReceived,
+                                     Boolean messagesRemain, String detail) {
+        String target = talker == null ? "" : talker;
+        log("批量删除聊天核验 phase=" + phase
+                + " targetHash=" + Integer.toHexString(target.hashCode())
+                + " stage1Callback=" + stageOneReceived
+                + " messageRows=" + (messagesRemain == null ? "unreadable" : messagesRemain ? "present" : "empty")
+                + " detail=" + detail);
     }
 
     /** null means the message store could not be queried reliably. */

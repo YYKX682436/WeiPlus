@@ -1,5 +1,6 @@
 package h.Hchat.dexkit;
 
+import android.app.Activity;
 import android.os.Bundle;
 import android.content.Context;
 import android.content.SharedPreferences;
@@ -34,6 +35,8 @@ import java.util.Map;
 import java.util.Set;
 
 import h.Hchat.hooks.api.message.WeChatMessageParseApi;
+import h.Hchat.hooks.api.contact.DeleteContactServiceMethodPolicy;
+import h.Hchat.hooks.api.media.WeChatInternalServices;
 import h.Hchat.utils.HLog;
 
 /**
@@ -254,6 +257,12 @@ public class DexFinder {
     public Method messageClearByTalkerMethod;
     public Method messageClearBatchMethod;
     public Method deleteContactServiceMethod;
+    public Method deleteContactServiceResponseMethod;
+    public Method deleteContactServiceGetterMethod;
+    public Method deleteContactServiceUiCallerMethod;
+    public int deleteContactServiceCandidateCount = -1;
+    public int deleteContactServiceResponseCandidateCount = -1;
+    public int deleteContactServiceGetterCandidateCount = -1;
     // 微信原生消息免打扰
     public Method contactMuteStateMethod;
     public Method contactMuteEnableMethod;
@@ -2992,6 +3001,7 @@ public class DexFinder {
 
     /** Resolves the conversation deletion helper invoked by WeChat's confirmed home-row UI path. */
     public synchronized void resolveConversationDeleteFromHomeApi() {
+        ensureSnapshotLoaded();
         if (isConversationDeleteFromHomeMethod(conversationDeleteFromHomeMethod)) return;
         conversationDeleteFromHomeMethod = null;
         try {
@@ -3011,6 +3021,7 @@ public class DexFinder {
             if (candidates.size() == 1) {
                 conversationDeleteFromHomeMethod = candidates.get(0);
                 logDetail("微信首页会话删除链路: " + methodName(conversationDeleteFromHomeMethod));
+                if (resolutionFinished) saveCache();
             } else {
                 h.Hchat.utils.HLog.e(TAG + " 微信首页会话删除链路定位失败: candidates=" + candidates.size());
             }
@@ -3243,8 +3254,13 @@ public class DexFinder {
 
     /** Locates WeChat's native DeleteContactService request that carries isClearRecord. */
     public synchronized void resolveDeleteContactServiceApi() {
-        if (isDeleteContactServiceMethod(deleteContactServiceMethod)) return;
+        ensureSnapshotLoaded();
+        if (isDeleteContactServiceMethod(deleteContactServiceMethod)) {
+            deleteContactServiceCandidateCount = 1;
+            return;
+        }
         deleteContactServiceMethod = null;
+        deleteContactServiceCandidateCount = 0;
         try {
             FindMethod find = new FindMethod();
             find.matcher(new MethodMatcher().usingEqStrings(
@@ -3258,42 +3274,144 @@ public class DexFinder {
                     }
                 } catch (Throwable ignored) {}
             }
-            if (candidates.isEmpty()) {
-                FindMethod legacyFind = new FindMethod();
-                legacyFind.matcher(new MethodMatcher().usingEqStrings(
-                        "MicroMsg.DeleteContactService", "delete contact %s"));
-                for (MethodData data : dexQueries.findMethod(legacyFind)) {
-                    try {
-                        Method method = data.getMethodInstance(classLoader);
-                        if (isLegacyDeleteContactServiceMethod(method) && !candidates.contains(method)) {
-                            candidates.add(KavaReflector.accessible(method));
-                        }
-                    } catch (Throwable ignored) {}
-                }
-            }
+            deleteContactServiceCandidateCount = candidates.size();
             if (candidates.size() == 1) {
                 deleteContactServiceMethod = candidates.get(0);
                 logDetail("原生好友删除API: " + methodName(deleteContactServiceMethod));
             } else {
                 h.Hchat.utils.HLog.e(TAG + " 原生好友删除API定位失败: candidates=" + candidates.size());
             }
+            if (resolutionFinished && deleteContactServiceMethod != null) saveCache();
         } catch (Throwable e) {
             h.Hchat.utils.HLog.e(TAG + " resolveDeleteContactServiceApi 失败: " + e.getMessage(), e);
         }
     }
 
-    private boolean isDeleteContactServiceMethod(Method method) {
-        if (method == null || KavaReflector.isStatic(method) || method.getReturnType() != void.class) return false;
-        Class<?>[] params = method.getParameterTypes();
-        return method.getDeclaringClass().getName().startsWith("com.tencent.mm.")
-                && params.length == 2 && params[0] == String.class && params[1] == boolean.class;
+    /** Locates the exact response handler from its result log anchor, independently of submission. */
+    public synchronized void resolveDeleteContactServiceResponseApi() {
+        ensureSnapshotLoaded();
+        resolveDeleteContactServiceApi();
+        Class<?> serviceClass = deleteContactServiceMethod != null
+                ? deleteContactServiceMethod.getDeclaringClass() : null;
+        if (isDeleteContactServiceResponseMethod(deleteContactServiceResponseMethod, serviceClass)) {
+            deleteContactServiceResponseCandidateCount = 1;
+            return;
+        }
+        deleteContactServiceResponseMethod = null;
+        deleteContactServiceResponseCandidateCount = 0;
+        if (serviceClass == null) return;
+        try {
+            FindMethod find = new FindMethod();
+            find.matcher(new MethodMatcher().usingEqStrings(
+                    "MicroMsg.DeleteContactService",
+                    "handel delete contact username:%s, getEncryptUsername:%s ret:%d, isClearRecord:%s"));
+            List<Method> candidates = new ArrayList<>();
+            for (MethodData data : dexQueries.findMethod(find)) {
+                try {
+                    Method method = data.getMethodInstance(classLoader);
+                    if (isDeleteContactServiceResponseMethod(method, serviceClass)
+                            && !candidates.contains(method)) {
+                        candidates.add(KavaReflector.accessible(method));
+                    }
+                } catch (Throwable ignored) {}
+            }
+            deleteContactServiceResponseCandidateCount = candidates.size();
+            if (candidates.size() == 1) {
+                deleteContactServiceResponseMethod = candidates.get(0);
+                logDetail("原生好友删除回执API: " + methodName(deleteContactServiceResponseMethod));
+                if (resolutionFinished) saveCache();
+            } else {
+                h.Hchat.utils.HLog.e(TAG + " 原生好友删除回执API定位失败: candidates=" + candidates.size());
+            }
+        } catch (Throwable e) {
+            h.Hchat.utils.HLog.e(TAG + " resolveDeleteContactServiceResponseApi 失败: " + e.getMessage(), e);
+        }
     }
 
-    private boolean isLegacyDeleteContactServiceMethod(Method method) {
-        return method != null && !KavaReflector.isStatic(method) && method.getReturnType() == void.class
-                && method.getDeclaringClass().getName().startsWith("com.tencent.mm.")
-                && method.getParameterTypes().length == 1
-                && method.getParameterTypes()[0] == String.class;
+    /** Finds the exact service getter called by WeChat's own contact-delete menu handler. */
+    public synchronized void resolveDeleteContactServiceGetterApi() {
+        ensureSnapshotLoaded();
+        resolveDeleteContactServiceApi();
+        Method submitMethod = deleteContactServiceMethod;
+        if (submitMethod == null) return;
+        if (isServiceGetterMethod(deleteContactServiceGetterMethod)
+                && isNativeDeleteContactUiMethod(deleteContactServiceUiCallerMethod)) {
+            deleteContactServiceGetterCandidateCount = 1;
+            return;
+        }
+        deleteContactServiceGetterMethod = null;
+        deleteContactServiceUiCallerMethod = null;
+        deleteContactServiceGetterCandidateCount = 0;
+        try {
+            MethodMatcher submitMatcher = new MethodMatcher()
+                    .declaredClass(submitMethod.getDeclaringClass().getName())
+                    .name(submitMethod.getName())
+                    .paramTypes(submitMethod.getParameterTypes())
+                    .returnType(submitMethod.getReturnType());
+            MethodMatcher uiMatcher = new MethodMatcher()
+                    .usingEqStrings("MicroMsg.DeleteContactService", "delete contact %s")
+                    .invokeMethods(new MethodsMatcher().add(submitMatcher));
+            LinkedHashSet<Method> uiCallers = new LinkedHashSet<>();
+            for (MethodData data : dexQueries.findMethod(new FindMethod().matcher(uiMatcher))) {
+                try {
+                    Method caller = data.getMethodInstance(classLoader);
+                    if (!isNativeDeleteContactUiMethod(caller)) continue;
+                    uiCallers.add(caller);
+                } catch (Throwable ignored) {}
+            }
+            if (uiCallers.size() != 1) {
+                h.Hchat.utils.HLog.e(TAG + " 删除好友UI调用点定位失败: candidates=" + uiCallers.size());
+                return;
+            }
+            Method uiCaller = uiCallers.iterator().next();
+            LinkedHashSet<Method> getters = new LinkedHashSet<>();
+            MethodMatcher uiCallerMatcher = new MethodMatcher()
+                    .declaredClass(uiCaller.getDeclaringClass().getName())
+                    .name(uiCaller.getName())
+                    .paramTypes(uiCaller.getParameterTypes())
+                    .returnType(uiCaller.getReturnType());
+            MethodMatcher getterMatcher = new MethodMatcher()
+                    .callerMethods(new MethodsMatcher().add(uiCallerMatcher));
+            for (MethodData data : dexQueries.findMethod(new FindMethod().matcher(getterMatcher))) {
+                try {
+                    Method getter = data.getMethodInstance(classLoader);
+                    if (isServiceGetterMethod(getter)) getters.add(KavaReflector.accessible(getter));
+                } catch (Throwable ignored) {}
+            }
+            deleteContactServiceGetterCandidateCount = getters.size();
+            if (getters.size() == 1) {
+                deleteContactServiceUiCallerMethod = KavaReflector.accessible(uiCaller);
+                deleteContactServiceGetterMethod = getters.iterator().next();
+                logDetail("好友删除UI服务实例入口: caller=" + methodName(deleteContactServiceUiCallerMethod)
+                        + " getter=" + methodName(deleteContactServiceGetterMethod));
+                if (resolutionFinished) saveCache();
+            } else {
+                h.Hchat.utils.HLog.e(TAG + " 删除好友UI服务Getter定位失败: candidates=" + getters.size()
+                        + " caller=" + methodName(uiCaller));
+            }
+        } catch (Throwable e) {
+            h.Hchat.utils.HLog.e(TAG + " resolveDeleteContactServiceGetterApi 失败: " + e.getMessage(), e);
+        }
+    }
+
+    private boolean isNativeDeleteContactUiMethod(Method method) {
+        if (method == null || !Modifier.isStatic(method.getModifiers()) || method.getReturnType() != void.class
+                || !method.getDeclaringClass().getName().startsWith("com.tencent.mm.ui.tools.")) return false;
+        Class<?>[] params = method.getParameterTypes();
+        return params.length == 5
+                && params[0] != null && !params[0].isPrimitive()
+                && params[1] == Activity.class
+                && "com.tencent.mm.storage.z3".equals(params[2].getName())
+                && params[3] == boolean.class
+                && params[4] == int.class;
+    }
+
+    private boolean isDeleteContactServiceMethod(Method method) {
+        return DeleteContactServiceMethodPolicy.isSubmitMethod(method);
+    }
+
+    private boolean isDeleteContactServiceResponseMethod(Method method, Class<?> serviceClass) {
+        return DeleteContactServiceMethodPolicy.isResponseMethod(method, serviceClass);
     }
 
     private boolean isMessageClearBatchMethod(Method method) {
@@ -4343,12 +4461,17 @@ public class DexFinder {
                 sqliteDbWrapperClass = null;
             }
             conversationDeleteMethod = loadMethod("conversationDeleteMethod");
+            conversationDeleteFromHomeMethod = loadMethod("conversationDeleteFromHomeMethod");
             nativeConversationHomeListQueryMethod = loadMethod("nativeConversationHomeListQueryMethod");
             conversationSetPlacedTopMethod = loadMethod("conversationSetPlacedTopMethod");
             conversationUnsetPlacedTopMethod = loadMethod("conversationUnsetPlacedTopMethod");
             conversationHideFromHomeMethod = loadMethod("conversationHideFromHomeMethod");
             messageClearByTalkerMethod = loadMethod("messageClearByTalkerMethod");
             messageClearBatchMethod = loadMethod("messageClearBatchMethod");
+            deleteContactServiceMethod = loadMethod("deleteContactServiceMethod");
+            deleteContactServiceResponseMethod = loadMethod("deleteContactServiceResponseMethod");
+            deleteContactServiceGetterMethod = loadMethod("deleteContactServiceGetterMethod");
+            deleteContactServiceUiCallerMethod = loadMethod("deleteContactServiceUiCallerMethod");
             contactMuteStateMethod = loadMethod("contactMuteStateMethod");
             contactMuteEnableMethod = loadMethod("contactMuteEnableMethod");
             contactMuteDisableMethod = loadMethod("contactMuteDisableMethod");
@@ -5678,12 +5801,17 @@ public class DexFinder {
                             ? SQLITE_WRAPPER_LOCATOR_VERSION : "");
             putMethod(editor, "coreStorageGetter", coreStorageGetter);
             putMethod(editor, "conversationDeleteMethod", conversationDeleteMethod);
+            putMethod(editor, "conversationDeleteFromHomeMethod", conversationDeleteFromHomeMethod);
             putMethod(editor, "nativeConversationHomeListQueryMethod", nativeConversationHomeListQueryMethod);
             putMethod(editor, "conversationSetPlacedTopMethod", conversationSetPlacedTopMethod);
             putMethod(editor, "conversationUnsetPlacedTopMethod", conversationUnsetPlacedTopMethod);
             putMethod(editor, "conversationHideFromHomeMethod", conversationHideFromHomeMethod);
             putMethod(editor, "messageClearByTalkerMethod", messageClearByTalkerMethod);
             putMethod(editor, "messageClearBatchMethod", messageClearBatchMethod);
+            putMethod(editor, "deleteContactServiceMethod", deleteContactServiceMethod);
+            putMethod(editor, "deleteContactServiceResponseMethod", deleteContactServiceResponseMethod);
+            putMethod(editor, "deleteContactServiceGetterMethod", deleteContactServiceGetterMethod);
+            putMethod(editor, "deleteContactServiceUiCallerMethod", deleteContactServiceUiCallerMethod);
             putMethod(editor, "contactMuteStateMethod", contactMuteStateMethod);
             putMethod(editor, "contactMuteEnableMethod", contactMuteEnableMethod);
             putMethod(editor, "contactMuteDisableMethod", contactMuteDisableMethod);
