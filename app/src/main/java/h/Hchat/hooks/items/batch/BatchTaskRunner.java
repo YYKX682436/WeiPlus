@@ -105,6 +105,39 @@ public final class BatchTaskRunner {
 
     private BatchTaskRunner() {}
 
+    /** Builds the same per-target statistics when one native request carries many targets. */
+    public static Report fromResults(List<String> ids,
+                                     List<TaskResult> taskResults,
+                                     String stopReason) {
+        List<String> targets = ids == null ? Collections.emptyList() : new ArrayList<>(ids);
+        List<TaskResult> supplied = taskResults == null ? Collections.emptyList() : taskResults;
+        List<ItemResult> results = new ArrayList<>();
+        int success = 0;
+        int failed = 0;
+        int skipped = 0;
+        int unconfirmed = 0;
+        int attempted = 0;
+        for (int index = 0; index < targets.size(); index++) {
+            TaskResult result = index < supplied.size() ? supplied.get(index) : null;
+            boolean wasProcessed = result != null;
+            if (result == null) {
+                result = TaskResult.of(Outcome.SKIPPED,
+                        stopReason == null || stopReason.isEmpty() ? "未执行" : stopReason);
+            }
+            if (wasProcessed) attempted++;
+            results.add(new ItemResult(targets.get(index), result.outcome, result.message, wasProcessed));
+            switch (result.outcome) {
+                case SUCCESS: success++; break;
+                case FAILED: failed++; break;
+                case SKIPPED: skipped++; break;
+                case UNCONFIRMED: unconfirmed++; break;
+                default: failed++; break;
+            }
+        }
+        return new Report(targets.size(), attempted, success, failed, skipped, unconfirmed,
+                stopReason == null ? "" : stopReason, results);
+    }
+
     public static Report run(List<String> ids,
                              String expectedIdentity,
                              AccountIdentity accountIdentity,

@@ -22,6 +22,7 @@ import android.widget.MediaController
 import android.widget.Toast
 import android.widget.VideoView
 import h.Hchat.BuildConfig
+import h.Hchat.hooks.api.contact.WeChatContactApi
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
@@ -2267,21 +2268,29 @@ private fun ContactRow(
     Row(
         modifier = Modifier.fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
-            .background(pressFeedbackColor)
+            .background(
+                if (option.selectable) pressFeedbackColor
+                else MiuixTheme.colorScheme.onSurface.copy(alpha = 0.035f)
+            )
             .responsiveTap(
-                onClick = onClick,
-                onPressedChange = { pressed = it }
+                onClick = { if (option.selectable || selected) onClick() },
+                onPressedChange = { pressed = option.selectable && it }
             )
             .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         ContactAvatar(option)
         Column(modifier = Modifier.weight(1f).padding(start = 12.dp)) {
-            Text(text = option.label, color = MiuixTheme.colorScheme.onSurface, fontWeight = FontWeight.Medium)
+            Text(
+                text = option.label,
+                color = MiuixTheme.colorScheme.onSurface.copy(alpha = if (option.selectable) 1f else 0.6f),
+                fontWeight = FontWeight.Medium
+            )
             val summary = buildList {
                 add(option.id)
                 option.labels.takeIf { it.isNotEmpty() }?.let { add(it.joinToString(" / ")) }
                 option.extraSummary.takeIf { it.isNotBlank() }?.let(::add)
+                option.disabledReason.takeIf { it.isNotBlank() }?.let(::add)
             }.joinToString(" · ")
             Text(text = summary, color = MiuixTheme.colorScheme.onSurfaceVariantSummary, fontSize = 12.sp)
         }
@@ -2742,6 +2751,15 @@ internal enum class MessageBlockContactFilter(
     ALL("全部", "全部")
 }
 
+internal enum class BatchCandidateMode {
+    HOME_CONVERSATIONS,
+    CURRENT_FRIENDS_AND_GROUPS,
+    ALL_FRIENDS_AND_GROUPS,
+    PINNABLE_FRIENDS_AND_GROUPS,
+    CURRENT_FRIENDS,
+    ALL_FRIENDS
+}
+
 internal data class ContactPickerRequest(
     val title: String,
     val mode: ContactPickerMode,
@@ -2760,7 +2778,9 @@ internal data class ContactPickerRequest(
     val flatBatchSelection: Boolean = false,
     val multiSelectConfirmPrefix: String? = null,
     val operationHeader: (@Composable () -> Unit)? = null,
-    val confirmEnabled: () -> Boolean = { true }
+    val confirmEnabled: () -> Boolean = { true },
+    val batchCandidateMode: () -> BatchCandidateMode? = { null },
+    val hideSearch: Boolean = false
 )
 
 internal enum class AutoMessageForwardRoute {
@@ -2957,7 +2977,9 @@ internal data class ContactOption(
     val labels: List<String> = emptyList(),
     val official: Boolean = false,
     val extraSummary: String = "",
-    val searchAliases: List<String> = emptyList()
+    val searchAliases: List<String> = emptyList(),
+    val selectable: Boolean = true,
+    val disabledReason: String = ""
 )
 
 internal fun ContactOption.matchesSearch(lower: String): Boolean {
@@ -4028,6 +4050,7 @@ internal fun loadContacts(
     strictFriendsOnly: Boolean = false,
     strictFriendsAndGroupsOnly: Boolean = false,
     nativeHomeConversationList: Boolean = false,
+    batchCandidateMode: BatchCandidateMode? = null,
     callback: (List<ContactOption>, Throwable?) -> Unit
 ) {
     val api = WeChatApis.contact().contacts()
@@ -4040,12 +4063,36 @@ internal fun loadContacts(
         try {
             val rows = mutableListOf<ContactOption>()
             val conversations = WeChatApis.conversations()
-            val nativeHomeIds = if (nativeHomeConversationList) {
+            val needsHomeRows = nativeHomeConversationList || batchCandidateMode in setOf(
+                BatchCandidateMode.HOME_CONVERSATIONS,
+                BatchCandidateMode.CURRENT_FRIENDS_AND_GROUPS,
+                BatchCandidateMode.CURRENT_FRIENDS
+            )
+            val nativeHomeIds = if (needsHomeRows) {
                 conversations?.getNativeHomeConversationUsernames()
                     ?: throw IllegalStateException("读取微信首页原生会话列表失败")
             } else {
                 emptyList()
             }
+            val needsAllFriends = batchCandidateMode in setOf(
+                BatchCandidateMode.ALL_FRIENDS_AND_GROUPS,
+                BatchCandidateMode.PINNABLE_FRIENDS_AND_GROUPS,
+                BatchCandidateMode.ALL_FRIENDS
+            )
+            val needsFriendIds = strictFriendsOnly || strictFriendsAndGroupsOnly ||
+                batchCandidateMode in setOf(
+                    BatchCandidateMode.CURRENT_FRIENDS_AND_GROUPS,
+                    BatchCandidateMode.CURRENT_FRIENDS
+                )
+            val friends = if (needsAllFriends || needsFriendIds) api.getFriends() else emptyList()
+            val friendIds = friends.mapNotNull { it.wxId.takeIf(String::isNotBlank) }.toSet()
+            val needsGroups = batchCandidateMode in setOf(
+                    BatchCandidateMode.CURRENT_FRIENDS_AND_GROUPS,
+                    BatchCandidateMode.ALL_FRIENDS_AND_GROUPS,
+                    BatchCandidateMode.PINNABLE_FRIENDS_AND_GROUPS
+                ) || strictFriendsAndGroupsOnly
+            val groups = if (needsGroups) api.getPickerGroups() else emptyList()
+            val allGroupIds = groups.mapNotNull { it.wxId.takeIf(String::isNotBlank) }.toSet()
             val sessionIds = if (onlyExistingConversations && !nativeHomeConversationList) {
                 conversations?.getRecentConversationUsernames(10000)?.toSet().orEmpty()
             } else if (nativeHomeConversationList) {
@@ -4053,11 +4100,7 @@ internal fun loadContacts(
             } else {
                 emptySet()
             }
-            val validFriendIds = if (strictFriendsOnly || strictFriendsAndGroupsOnly) {
-                api.getFriends().mapNotNull { it.wxId.takeIf(String::isNotBlank) }.toSet()
-            } else {
-                emptySet()
-            }
+            val validFriendIds = if (needsFriendIds || needsAllFriends) friendIds else emptySet()
             val labelsByUser = linkedMapOf<String, MutableList<String>>()
             if (includeLabels) {
                 runCatching { api.getContactLabelList() }.getOrDefault(emptyList()).forEach { label ->
@@ -4073,7 +4116,48 @@ internal fun loadContacts(
             val nativeHomeGroupIds = nativeHomeIds.filter {
                 it.endsWith("@chatroom") || it.endsWith("@im.chatroom")
             }.toSet()
-            if (nativeHomeConversationList) {
+            if (batchCandidateMode != null) {
+                when (batchCandidateMode) {
+                    BatchCandidateMode.HOME_CONVERSATIONS -> {
+                        val eligible = BatchSelectionPolicy.filterCandidateIds(
+                            nativeHomeIds, nativeHomeIds.toSet(), emptySet(), emptySet(), true, false, false
+                        )
+                        rows += nativeContactOptions(eligible, api, conversations)
+                    }
+                    BatchCandidateMode.CURRENT_FRIENDS_AND_GROUPS -> {
+                        val eligible = BatchSelectionPolicy.filterCandidateIds(
+                            nativeHomeIds, nativeHomeIds.toSet(), friendIds, allGroupIds, true, false, true
+                        )
+                        rows += nativeContactOptions(eligible, api, conversations)
+                    }
+                    BatchCandidateMode.CURRENT_FRIENDS -> {
+                        val eligible = BatchSelectionPolicy.filterCandidateIds(
+                            nativeHomeIds, nativeHomeIds.toSet(), friendIds, emptySet(), true, true, false
+                        )
+                        rows += nativeContactOptions(eligible, api, conversations)
+                    }
+                    BatchCandidateMode.ALL_FRIENDS -> {
+                        rows += friends.mapNotNull { it.toOption(false) }
+                    }
+                    BatchCandidateMode.ALL_FRIENDS_AND_GROUPS -> {
+                        rows += friends.mapNotNull { it.toOption(false) }
+                        rows += groups.mapNotNull { it.toOption(true) }
+                    }
+                    BatchCandidateMode.PINNABLE_FRIENDS_AND_GROUPS -> {
+                        val existingIds = conversations?.getExistingConversationUsernames()?.toSet()
+                            ?: throw IllegalStateException("无法核对全部候选对象的现有会话记录")
+                        val options = friends.mapNotNull { it.toOption(false) } + groups.mapNotNull { it.toOption(true) }
+                        rows += options.map { option ->
+                            if (option.id in existingIds) option
+                            else option.copy(
+                                selectable = false,
+                                disabledReason = "无会话记录；微信置顶会创建空会话记录"
+                            )
+                        }
+                    }
+                    null -> Unit
+                }
+            } else if (nativeHomeConversationList) {
                 val eligibleNativeIds = BatchSelectionPolicy.filterCandidateIds(
                     nativeHomeIds,
                     sessionIds,
@@ -4115,7 +4199,12 @@ internal fun loadContacts(
                     rows += api.getPickerOfficialAccounts().mapNotNull { it.toOption(false, official = true) }
                 }
             }
-            val conversationOrder = if (nativeHomeConversationList) {
+            val preserveNativeHomeOrder = nativeHomeConversationList || batchCandidateMode in setOf(
+                BatchCandidateMode.HOME_CONVERSATIONS,
+                BatchCandidateMode.CURRENT_FRIENDS_AND_GROUPS,
+                BatchCandidateMode.CURRENT_FRIENDS
+            )
+            val conversationOrder = if (preserveNativeHomeOrder) {
                 nativeHomeIds.mapIndexed { index, username -> username to index }.toMap()
             } else {
                 conversations?.getRecentConversationUsernames(10000)
@@ -4140,7 +4229,7 @@ internal fun loadContacts(
                 rows
             }
             val deduplicated = eligibleRows.distinctBy { it.id }
-            val sorted = if (nativeHomeConversationList) deduplicated else deduplicated.sortedWith(
+            val sorted = if (preserveNativeHomeOrder) deduplicated else deduplicated.sortedWith(
                 compareBy<ContactOption> { conversationOrder[it.id] ?: Int.MAX_VALUE }
                     .thenBy { it.group }
                     .thenBy { it.official }
@@ -4151,6 +4240,25 @@ internal fun loadContacts(
             main.post { callback(emptyList(), throwable) }
         }
     }, "HchatContactPicker").start()
+}
+
+private fun nativeContactOptions(
+    ids: List<String>,
+    api: WeChatContactApi,
+    conversations: h.Hchat.hooks.api.conversation.WeChatConversationApi?
+): List<ContactOption> {
+    val contactById = ids.chunked(400).flatMap(api::getContactsByIds).associateBy { it.wxId }
+    return ids.map { id ->
+        val group = id.endsWith("@chatroom") || id.endsWith("@im.chatroom")
+        contactById[id]?.toOption(group = group, official = id.startsWith("gh_")) ?: ContactOption(
+            id = id,
+            label = conversations?.getConversationTitle(id)?.ifBlank { id } ?: id,
+            group = group,
+            avatarUrl = "",
+            avatarBackupUrl = "",
+            official = id.startsWith("gh_")
+        )
+    }
 }
 
 internal fun loadGroupMembers(

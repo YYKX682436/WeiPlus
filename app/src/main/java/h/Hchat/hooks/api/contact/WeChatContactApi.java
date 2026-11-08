@@ -45,7 +45,26 @@ public final class WeChatContactApi {
         SERVER_REJECTED,
         SUBMITTED,
         NOT_SUBMITTED,
-        ALREADY_SATISFIED
+        ALREADY_SATISFIED,
+        INVALID_TARGET
+    }
+
+    @FunctionalInterface
+    public interface BatchSubmissionGuard {
+        boolean mayContinue();
+    }
+
+    public static final class ContactLabelBatchItemResult {
+        public final String username;
+        public final ContactLabelMutationResult outcome;
+        public final String message;
+
+        public ContactLabelBatchItemResult(
+                String username, ContactLabelMutationResult outcome, String message) {
+            this.username = username == null ? "" : username;
+            this.outcome = outcome == null ? ContactLabelMutationResult.NOT_SUBMITTED : outcome;
+            this.message = message == null ? "" : message;
+        }
     }
 
     private static final int SELF_FIELD_WXID = 2;
@@ -121,6 +140,20 @@ public final class WeChatContactApi {
     public boolean isGroup(String wxId) {
         return !TextUtils.isEmpty(wxId)
                 && (wxId.endsWith("@chatroom") || wxId.endsWith("@im.chatroom"));
+    }
+
+    /** Confirms a group remains represented as a chatroom contact at the moment of submission. */
+    public boolean isValidGroupContact(String wxId) {
+        if (!isGroup(wxId) || databaseApi == null || !databaseApi.isAvailable()) return false;
+        try {
+            return !databaseApi.query(
+                    "SELECT username FROM rcontact WHERE username=? "
+                            + "AND (username LIKE '%@chatroom' OR username LIKE '%@im.chatroom') LIMIT 1",
+                    new String[]{wxId}).isEmpty();
+        } catch (Throwable e) {
+            log("复核群聊对象失败: " + e.getMessage());
+            return false;
+        }
     }
 
     public String getDisplayName(String wxId) {
@@ -802,6 +835,207 @@ public final class WeChatContactApi {
         return dispatch.wasSubmitted()
                 ? ContactLabelMutationResult.SUBMITTED_UNCONFIRMED
                 : ContactLabelMutationResult.NOT_SUBMITTED;
+    }
+
+    /**
+     * Submits WeChat's native list-scene once for all prepared contacts when available.
+     * Each entry carries that contact's own complete label-ID string. The request response is
+     * scene-wide, so final state is read back per contact; this method never writes rcontact.
+     */
+    public List<ContactLabelBatchItemResult> setContactLabelMembershipsById(
+            List<String> usernames,
+            String labelId,
+            boolean enabled,
+            BatchSubmissionGuard guard) {
+        LinkedHashSet<String> uniqueIds = new LinkedHashSet<>();
+        if (usernames != null) {
+            for (String username : usernames) {
+                if (username == null) continue;
+                String cleanUsername = username.trim();
+                if (!TextUtils.isEmpty(cleanUsername)) uniqueIds.add(cleanUsername);
+            }
+        }
+        LinkedHashMap<String, ContactLabelBatchItemResult> results = new LinkedHashMap<>();
+        for (String username : uniqueIds) {
+            results.put(username, null);
+        }
+        if (uniqueIds.isEmpty()) return new ArrayList<>();
+        if (TextUtils.isEmpty(labelId) || databaseApi == null || !databaseApi.isAvailable()) {
+            return batchResultList(uniqueIds, results, ContactLabelMutationResult.NOT_SUBMITTED,
+                    "好友标签 API 或标签 ID 不可用");
+        }
+        Boolean labelExists = hasContactLabelId(labelId);
+        if (!Boolean.TRUE.equals(labelExists)) {
+            return batchResultList(uniqueIds, results, ContactLabelMutationResult.NOT_SUBMITTED,
+                    labelExists == null ? "无法读取所选标签" : "所选标签已不存在");
+        }
+        String targetId = labelId.trim();
+        String labelIdsColumn = findRcontactLabelIdsColumn();
+        if (TextUtils.isEmpty(labelIdsColumn)) {
+            return batchResultList(uniqueIds, results, ContactLabelMutationResult.NOT_SUBMITTED,
+                    "好友标签字段不可用");
+        }
+
+        List<LabelBatchChange> changes = new ArrayList<>();
+        for (String username : uniqueIds) {
+            if (!maySubmit(guard)) {
+                results.put(username, batchItem(username, ContactLabelMutationResult.NOT_SUBMITTED,
+                        "账号已切换或任务已停止"));
+                break;
+            }
+            if (!isFriend(username)) {
+                results.put(username, batchItem(username, ContactLabelMutationResult.INVALID_TARGET,
+                        "好友关系已失效"));
+                continue;
+            }
+            String currentLabelIds = readContactLabelIds(username, labelIdsColumn);
+            if (currentLabelIds == null) {
+                results.put(username, batchItem(username, ContactLabelMutationResult.NOT_SUBMITTED,
+                        "读取好友原有标签失败，未提交"));
+                continue;
+            }
+            if (ContactLabelIds.contains(currentLabelIds, targetId) == enabled) {
+                results.put(username, batchItem(username, ContactLabelMutationResult.ALREADY_SATISFIED,
+                        "好友标签已符合目标"));
+                continue;
+            }
+            String updated = ContactLabelIds.setMembership(currentLabelIds, targetId, enabled);
+            if (updated == null) {
+                results.put(username, batchItem(username, ContactLabelMutationResult.NOT_SUBMITTED,
+                        "生成好友标签列表失败，未提交"));
+                continue;
+            }
+            changes.add(new LabelBatchChange(username, updated));
+        }
+        if (changes.isEmpty()) {
+            return completeBatchResults(uniqueIds, results, "");
+        }
+        if (!maySubmit(guard)) {
+            for (LabelBatchChange change : changes) {
+                results.put(change.username, batchItem(change.username,
+                        ContactLabelMutationResult.NOT_SUBMITTED, "账号已切换或任务已停止"));
+            }
+            return completeBatchResults(uniqueIds, results, "账号已切换或任务已停止");
+        }
+
+        Constructor<?> ctor = dexFinder != null ? dexFinder.modifyContactLabelListCtor : null;
+        boolean batchReady = ctor != null && networkDispatcher != null && dexFinder != null;
+        LinkedList<Object> requestItems = new LinkedList<>();
+        if (batchReady) {
+            installNetworkHook();
+            for (LabelBatchChange change : changes) {
+                Object item = buildModifyContactLabelItem(ctor, change.username, change.labelIds);
+                if (item == null) {
+                    batchReady = false;
+                    break;
+                }
+                requestItems.add(item);
+            }
+        }
+
+        ContactRequestDispatch.Result dispatch = null;
+        if (batchReady && requestItems.size() == changes.size() && maySubmit(guard)) {
+            boolean nativeDispatchStarted = false;
+            try {
+                Object scene = KavaReflector.newInstance(ctor, requestItems);
+                if (scene != null) {
+                    nativeDispatchStarted = true;
+                    dispatch = sendNativeContactScene(scene);
+                }
+            } catch (Throwable e) {
+                log("好友标签批量请求构造或提交失败: " + e.getMessage());
+                dispatch = nativeDispatchStarted ? ContactRequestDispatch.dispatchFailed() : null;
+            }
+        }
+        if (dispatch == null && !maySubmit(guard)) {
+            for (LabelBatchChange change : changes) {
+                results.put(change.username, batchItem(change.username,
+                        ContactLabelMutationResult.NOT_SUBMITTED, "账号已切换或任务已停止"));
+            }
+            return completeBatchResults(uniqueIds, results, "账号已切换或任务已停止");
+        }
+
+        if (ContactRequestDispatch.safeToFallbackToPerItem(dispatch)) {
+            log("原生好友标签批量入口未提交，退回逐好友原生请求");
+            for (LabelBatchChange change : changes) {
+                if (!maySubmit(guard)) {
+                    results.put(change.username, batchItem(change.username,
+                            ContactLabelMutationResult.NOT_SUBMITTED, "账号已切换或任务已停止"));
+                    continue;
+                }
+                results.put(change.username, batchItem(
+                        change.username,
+                        setContactLabelMembershipById(change.username, targetId, enabled),
+                        "逐好友原生请求"));
+            }
+            return completeBatchResults(uniqueIds, results,
+                    maySubmit(guard) ? "" : "账号已切换或任务已停止");
+        }
+
+        for (LabelBatchChange change : changes) {
+            Boolean finalMembership = getContactLabelMembershipStateById(change.username, targetId);
+            if (Boolean.valueOf(enabled).equals(finalMembership)) {
+                results.put(change.username, batchItem(change.username,
+                        ContactLabelMutationResult.CONFIRMED, "原生批量请求后标签状态已确认"));
+            } else if (dispatch.outcome == ContactRequestDispatch.Outcome.SERVER_ACCEPTED) {
+                results.put(change.username, batchItem(change.username,
+                        ContactLabelMutationResult.SERVER_ACCEPTED, "服务端已接受，最终状态未确认"));
+            } else if (dispatch.outcome == ContactRequestDispatch.Outcome.SERVER_REJECTED) {
+                results.put(change.username, batchItem(change.username,
+                        ContactLabelMutationResult.SERVER_REJECTED, "服务端拒绝好友标签批量请求"));
+            } else {
+                results.put(change.username, batchItem(change.username,
+                        ContactLabelMutationResult.SUBMITTED_UNCONFIRMED,
+                        "批量请求已提交，服务端响应未确认"));
+            }
+        }
+        return completeBatchResults(uniqueIds, results, "");
+    }
+
+    private static final class LabelBatchChange {
+        final String username;
+        final String labelIds;
+
+        LabelBatchChange(String username, String labelIds) {
+            this.username = username;
+            this.labelIds = labelIds;
+        }
+    }
+
+    private static boolean maySubmit(BatchSubmissionGuard guard) {
+        if (guard == null) return true;
+        try {
+            return guard.mayContinue();
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private static ContactLabelBatchItemResult batchItem(
+            String username, ContactLabelMutationResult outcome, String message) {
+        return new ContactLabelBatchItemResult(username, outcome, message);
+    }
+
+    private static List<ContactLabelBatchItemResult> batchResultList(
+            Iterable<String> usernames,
+            Map<String, ContactLabelBatchItemResult> current,
+            ContactLabelMutationResult outcome,
+            String message) {
+        for (String username : usernames) current.put(username, batchItem(username, outcome, message));
+        return new ArrayList<>(current.values());
+    }
+
+    private static List<ContactLabelBatchItemResult> completeBatchResults(
+            Iterable<String> usernames,
+            Map<String, ContactLabelBatchItemResult> current,
+            String defaultMessage) {
+        for (String username : usernames) {
+            if (current.get(username) == null) {
+                current.put(username, batchItem(username, ContactLabelMutationResult.NOT_SUBMITTED,
+                        defaultMessage.isEmpty() ? "未提交" : defaultMessage));
+            }
+        }
+        return new ArrayList<>(current.values());
     }
 
     private String readContactLabelIds(String username, String labelIdsColumn) {

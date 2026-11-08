@@ -85,6 +85,11 @@ final class ContactRequestDispatch {
         return result(Outcome.DISPATCH_FAILED, -1, -1);
     }
 
+    /** Unknown dispatch exceptions are not retried because the server may already have received it. */
+    static boolean safeToFallbackToPerItem(Result result) {
+        return result == null || result.outcome == Outcome.NOT_SUBMITTED;
+    }
+
     private static Result result(Outcome outcome, int errorType, int errorCode) {
         return new Result(outcome, errorType, errorCode);
     }

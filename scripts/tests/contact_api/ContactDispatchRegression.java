@@ -9,6 +9,7 @@ public final class ContactDispatchRegression {
         asynchronousFailureIsRejected();
         asynchronousSuccessIsAccepted();
         timeoutRemainsSubmittedButUnconfirmed();
+        ambiguousDispatchIsNotRetried();
         System.out.println("Contact dispatch regression tests passed");
     }
 
@@ -58,6 +59,18 @@ public final class ContactDispatchRegression {
         ContactRequestDispatch.Result result = ContactRequestDispatch.submitAndAwait(callback -> new Object(), 5);
         check(result.outcome == ContactRequestDispatch.Outcome.TIMED_OUT, "timeout outcome");
         check(result.wasSubmitted() && !result.serverAccepted(), "timeout status");
+    }
+
+    private static void ambiguousDispatchIsNotRetried() {
+        check(ContactRequestDispatch.safeToFallbackToPerItem(null),
+                "a bulk path unavailable before submission may use the existing single-item path");
+        check(ContactRequestDispatch.safeToFallbackToPerItem(ContactRequestDispatch.notSubmitted()),
+                "a request explicitly not submitted may use the existing single-item path");
+        check(!ContactRequestDispatch.safeToFallbackToPerItem(ContactRequestDispatch.dispatchFailed()),
+                "an ambiguous dispatch failure must not risk duplicate label requests");
+        check(!ContactRequestDispatch.safeToFallbackToPerItem(
+                        ContactRequestDispatch.submitAndAwait(callback -> new Object(), 1)),
+                "a submitted timeout must not be retried per item");
     }
 
     private static void check(boolean condition, String message) {

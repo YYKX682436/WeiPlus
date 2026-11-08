@@ -10,7 +10,7 @@ public final class ContactLabelIds {
     public static boolean contains(String currentValue, String targetId) {
         if (targetId == null || targetId.trim().isEmpty()) return false;
         for (String id : split(currentValue)) {
-            if (targetId.trim().equals(id)) return true;
+            if (targetId.trim().equals(id.trim())) return true;
         }
         return false;
     }
@@ -26,12 +26,12 @@ public final class ContactLabelIds {
         if (targetId == null || targetId.trim().isEmpty()) return null;
         String target = targetId.trim();
         List<String> ids = split(currentValue);
-        boolean present = ids.contains(target);
+        boolean present = contains(currentValue, target);
         if (present == enabled) return currentValue == null ? "" : currentValue;
         if (enabled) {
             ids.add(target);
         } else {
-            ids.remove(target);
+            ids.removeIf(id -> target.equals(id.trim()));
         }
         if (ids.isEmpty()) return "";
         return join(ids) + '\u0000';
@@ -42,9 +42,8 @@ public final class ContactLabelIds {
         if (value == null || value.isEmpty()) return ids;
         String normalized = value.endsWith("\u0000")
                 ? value.substring(0, value.length() - 1) : value;
-        for (String part : normalized.split(",")) {
-            String id = part.trim();
-            if (!id.isEmpty() && !ids.contains(id)) ids.add(id);
+        for (String id : normalized.split(",", -1)) {
+            if (!id.isEmpty()) ids.add(id);
         }
         return ids;
     }

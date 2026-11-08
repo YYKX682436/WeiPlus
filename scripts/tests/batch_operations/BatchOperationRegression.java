@@ -1,7 +1,7 @@
 import h.Hchat.hooks.api.contact.ContactLabelIds;
 import h.Hchat.hooks.items.batch.BatchSelectionPolicy;
+import h.Hchat.hooks.items.batch.BatchSelectionState;
 import h.Hchat.hooks.items.batch.BatchStatePolicy;
-import h.Hchat.hooks.items.batch.BatchTaskLifecycle;
 import h.Hchat.hooks.items.batch.BatchTaskRunner;
 
 import java.util.Arrays;
@@ -13,12 +13,12 @@ import java.util.concurrent.atomic.AtomicInteger;
 public final class BatchOperationRegression {
     public static void main(String[] args) {
         selectionFiltering();
+        multiScopeSelectionState();
         labelMembershipEdits();
         stateTransitions();
         serialResultsAndPartialFailure();
         stopPreventsLaterSubmissions();
         accountSwitchPreventsLaterSubmissions();
-        lifecycleSurvivesStateTransitionsAndRestarts();
         progressCountsOnlyCompletedItems();
         System.out.println("Batch operation regression assertions passed");
     }
@@ -45,6 +45,41 @@ public final class BatchOperationRegression {
                 "native home rows must keep non-friend chats and operable system chats while filtering virtual/pseudo rows");
     }
 
+    private static void multiScopeSelectionState() {
+        List<String> selected = BatchSelectionState.toggleVisible(
+                new java.util.ArrayList<>(), Arrays.asList("chat-a", "chat-b"));
+        assertEquals(Arrays.asList("chat-a", "chat-b"), selected,
+                "select-all must preserve the visible candidate order");
+
+        List<String> allScopeOrder = BatchSelectionState.selectedFirst(
+                Arrays.asList("friend-c", "chat-b", "friend-d"), selected);
+        assertEquals(Arrays.asList("chat-b", "friend-c", "friend-d"), allScopeOrder,
+                "selected candidates must be moved to the front without reordering other rows");
+        List<String> displayedWithRetained = new java.util.ArrayList<>(selected);
+        for (String id : allScopeOrder) if (!displayedWithRetained.contains(id)) displayedWithRetained.add(id);
+        assertEquals(Arrays.asList("chat-a", "chat-b", "friend-c", "friend-d"), displayedWithRetained,
+                "selected rows outside the current scope must remain visible at the top");
+
+        Set<String> afterToggle = new java.util.LinkedHashSet<>(selected);
+        afterToggle.addAll(allScopeOrder);
+        List<String> retained = BatchSelectionState.updateOrder(selected, afterToggle,
+                Arrays.asList("friend-c", "chat-b", "friend-d"));
+        assertEquals(Arrays.asList("chat-a", "chat-b", "friend-c", "friend-d"), retained,
+                "switching scopes must retain hidden selections and append newly selected IDs");
+
+        List<String> cancelVisible = BatchSelectionState.toggleVisible(retained,
+                Arrays.asList("chat-b", "friend-c", "friend-d"));
+        assertEquals(Arrays.asList("chat-a"), cancelVisible,
+                "cancel-all must clear only the current display results");
+        List<String> currentDisplay = new java.util.ArrayList<>(cancelVisible);
+        for (String id : BatchSelectionState.selectedFirst(
+                Arrays.asList("friend-c", "friend-d"), cancelVisible)) {
+            if (!currentDisplay.contains(id)) currentDisplay.add(id);
+        }
+        assertEquals(Arrays.asList("chat-a", "friend-c", "friend-d"), currentDisplay,
+                "a retained out-of-scope selection remains selected across range changes");
+    }
+
     private static void labelMembershipEdits() {
         assertEquals(Boolean.FALSE, ContactLabelIds.membershipState("", "first"),
                 "a successfully-read empty label list is a valid nonmembership state");
@@ -57,6 +92,12 @@ public final class BatchOperationRegression {
         assertEquals("keep1,unknown99\u0000",
                 ContactLabelIds.setMembership(original, "removeMe", false),
                 "remove must preserve unrelated and unknown IDs");
+        assertEquals("keep1, unknown-historical ,new\u0000",
+                ContactLabelIds.setMembership("keep1, unknown-historical \u0000", "new", true),
+                "append must preserve unknown historical IDs without normalizing their stored value");
+        assertEquals("keep1,unknown99\u0000",
+                ContactLabelIds.setMembership("keep1, removeMe ,unknown99\u0000", "removeMe", false),
+                "remove must match the selected ID while preserving other raw ID tokens");
         assertEquals("", ContactLabelIds.setMembership("only\u0000", "only", false),
                 "removing the last label must produce an empty list");
         assertEquals(original, ContactLabelIds.setMembership(original, "removeMe", true),
@@ -128,42 +169,6 @@ public final class BatchOperationRegression {
                 }, null);
         assertEquals(1, submissions.get(), "account switch must stop later submissions");
         assertEquals(1, report.skipped, "remaining items after account switch should be skipped");
-    }
-
-    private static void lifecycleSurvivesStateTransitionsAndRestarts() {
-        BatchTaskLifecycle lifecycle = new BatchTaskLifecycle();
-        BatchTaskLifecycle.Session first = lifecycle.begin();
-        AtomicInteger firstStarts = new AtomicInteger();
-        BatchTaskRunner.Report firstReport = BatchTaskRunner.run(
-                Arrays.asList("first-task"), "account", () -> "account", first.stopSignal(), 0,
-                (id, stop) -> {
-                    firstStarts.incrementAndGet();
-                    return BatchTaskRunner.TaskResult.of(BatchTaskRunner.Outcome.SUCCESS, "executed");
-                }, null);
-        assertEquals(1, firstStarts.get(), "a newly-created session must start its first task");
-        assertEquals(1, firstReport.attempted, "the first session should complete its task");
-        assertTrue(lifecycle.finish(first), "finishing the current session should succeed");
-
-        BatchTaskLifecycle.Session second = lifecycle.begin();
-        assertTrue(!lifecycle.stop(first), "disposing the old effect must not stop a newer session");
-        assertTrue(!second.stopSignal().isStopped(), "a normal state transition must not stop the new task");
-        AtomicInteger secondStarts = new AtomicInteger();
-        BatchTaskRunner.Report secondReport = BatchTaskRunner.run(
-                Arrays.asList("restart-task"), "account", () -> "account", second.stopSignal(), 0,
-                (id, stop) -> {
-                    secondStarts.incrementAndGet();
-                    return BatchTaskRunner.TaskResult.of(BatchTaskRunner.Outcome.SUCCESS, "executed");
-                }, null);
-        assertEquals(1, secondStarts.get(), "a completed page must be able to start another task");
-        assertEquals(1, secondReport.attempted, "the restarted session should execute");
-        assertTrue(lifecycle.finish(second), "the restarted session should finish cleanly");
-
-        BatchTaskLifecycle.Session third = lifecycle.begin();
-        assertTrue(lifecycle.stop(third), "active session stop should be accepted");
-        assertEquals(0, BatchTaskRunner.run(
-                Arrays.asList("must-not-start"), "account", () -> "account", third.stopSignal(), 0,
-                (id, stop) -> BatchTaskRunner.TaskResult.of(BatchTaskRunner.Outcome.SUCCESS, "unexpected"),
-                null).attempted, "stop before startup must prevent the first submission");
     }
 
     private static void progressCountsOnlyCompletedItems() {

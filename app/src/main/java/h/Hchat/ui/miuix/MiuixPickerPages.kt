@@ -14,6 +14,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -21,6 +22,7 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import h.Hchat.hooks.api.core.WeChatApis
+import h.Hchat.hooks.items.batch.BatchSelectionState
 import h.Hchat.hooks.items.conversationgroup.ConversationGroupPickerSupport
 import h.Hchat.hooks.items.grouplabel.GroupChatLabelStore
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
@@ -308,6 +310,19 @@ internal fun ContactPickerPage(
     var query by remember(request) { mutableStateOf("") }
     val initialSelectedIds = remember(request) { parseIds(request.existingValue) }
     var selectedIds by remember(request) { mutableStateOf(initialSelectedIds) }
+    var batchSelectionOrder by remember(request) { mutableStateOf(initialSelectedIds.toList()) }
+    val batchOptionCache = remember(request) { mutableStateMapOf<String, ContactOption>() }
+    val batchCandidateMode = request.batchCandidateMode()
+
+    fun updateSelection(next: Set<String>) {
+        selectedIds = next
+        if (!request.flatBatchSelection) return
+        batchSelectionOrder = BatchSelectionState.updateOrder(
+            batchSelectionOrder,
+            next,
+            contacts.map { it.id }
+        )
+    }
     val scopeSelectionEnabled = !request.flatBatchSelection && request.enableScopeSelection &&
         request.multiSelect &&
         request.mode == ContactPickerMode.FRIENDS
@@ -333,7 +348,10 @@ internal fun ContactPickerPage(
     val listState = rememberLazyListState()
     val scrollBehavior = MiuixScrollBehavior()
 
-    LaunchedEffect(request) {
+    LaunchedEffect(request, batchCandidateMode) {
+        loading = true
+        error = ""
+        if (request.flatBatchSelection) contacts = emptyList()
         loadContacts(
             context = context,
             mode = request.mode,
@@ -341,13 +359,15 @@ internal fun ContactPickerPage(
             onlyExistingConversations = request.onlyExistingConversations,
             strictFriendsOnly = request.strictFriendsOnly,
             strictFriendsAndGroupsOnly = request.strictFriendsAndGroupsOnly,
-            nativeHomeConversationList = request.nativeHomeConversationList
+            nativeHomeConversationList = request.nativeHomeConversationList,
+            batchCandidateMode = batchCandidateMode
         ) { result, throwable ->
             loading = false
             if (throwable != null) {
                 error = throwable.message ?: "读取联系人失败"
             } else {
                 contacts = result
+                if (request.flatBatchSelection) result.forEach { batchOptionCache[it.id] = it }
             }
         }
     }
@@ -406,8 +426,8 @@ internal fun ContactPickerPage(
             selectedLabel = ""
         }
     }
-    val lower = query.trim().lowercase(Locale.US)
-    val visibleContacts = remember(
+    val lower = if (request.hideSearch) "" else query.trim().lowercase(Locale.US)
+    val filteredContacts = remember(
         scopedContacts,
         contactFilter,
         selectedLabel,
@@ -429,7 +449,14 @@ internal fun ContactPickerPage(
             }
         }.filter { it.matchesSearch(lower) }
             .toList()
-            .selectedFirst { initialSelectedIds.contains(it.id) }
+    }
+    val visibleContacts = if (!request.flatBatchSelection) {
+        filteredContacts.selectedFirst { initialSelectedIds.contains(it.id) }
+    } else {
+        val currentById = filteredContacts.associateBy { it.id }
+        val currentIds = BatchSelectionState.selectedFirst(filteredContacts.map { it.id }, batchSelectionOrder)
+        val displayIds = (batchSelectionOrder + currentIds).distinct()
+        displayIds.mapNotNull { id -> currentById[id] ?: batchOptionCache[id] }
     }
     val visibleLabelScopes = remember(contactLabelScopes, lower, initialSelectedIds) {
         contactLabelScopes.filter {
@@ -441,8 +468,10 @@ internal fun ContactPickerPage(
             lower.isEmpty() || it.name.lowercase(Locale.US).contains(lower)
         }.selectedFirst { scope -> scope.conversationIds.any(initialSelectedIds::contains) }
     }
-    val visibleContactIds = remember(visibleContacts) {
-        visibleContacts.mapTo(linkedSetOf()) { it.id }
+    val visibleContactIds = remember(visibleContacts, selectedIds) {
+        visibleContacts.asSequence()
+            .filter { it.selectable || it.id in selectedIds }
+            .mapTo(linkedSetOf()) { it.id }
     }
     val bottomVisibleIds = remember(
         scopeSelectionEnabled,
@@ -462,9 +491,8 @@ internal fun ContactPickerPage(
         }
     }
     val bottomVisibleAllSelected = bottomVisibleIds.isNotEmpty() && bottomVisibleIds.all { selectedIds.contains(it) }
-    val selectedContactCount = remember(selectedIds, contacts) {
-        contacts.count { it.id in selectedIds }
-    }
+    val genericSelectedCount = remember(selectedIds, contacts) { contacts.count { it.id in selectedIds } }
+    val selectedContactCount = if (request.flatBatchSelection) batchSelectionOrder.size else genericSelectedCount
     val batchConfirmEnabled = request.multiSelectConfirmPrefix == null ||
         (request.confirmEnabled() && selectedContactCount > 0)
 
@@ -476,12 +504,16 @@ internal fun ContactPickerPage(
             BottomActionBar(
                 primaryText = when {
                     request.multiSelectConfirmPrefix != null -> "${request.multiSelectConfirmPrefix}（$selectedContactCount）"
-                    request.showSelectedCount -> "下一步 · 已选 ${selectedIds.intersect(contacts.map { it.id }.toSet()).size} 项"
+                    request.showSelectedCount -> "下一步 · 已选 $selectedContactCount 项"
                     request.multiSelect -> "保存选择"
                     else -> request.singleConfirmText
                 },
                 onPrimaryClick = {
-                    val picked = contacts.filter { selectedIds.contains(it.id) }
+                    val picked = if (request.flatBatchSelection) {
+                        batchSelectionOrder.mapNotNull { batchOptionCache[it] }
+                    } else {
+                        contacts.filter { selectedIds.contains(it.id) }
+                    }
                     if (picked.isEmpty() && (!request.multiSelect || request.showSelectedCount)) {
                         Toast.makeText(context, "请选择对象", Toast.LENGTH_SHORT).show()
                     } else if (!request.confirmEnabled()) {
@@ -499,11 +531,14 @@ internal fun ContactPickerPage(
                 },
                 onMiddleClick = if (request.multiSelect && bottomVisibleIds.isNotEmpty()) {
                     {
-                        selectedIds = if (bottomVisibleAllSelected) {
+                        val next = if (request.flatBatchSelection) {
+                            BatchSelectionState.toggleVisible(batchSelectionOrder, bottomVisibleIds).toSet()
+                        } else if (bottomVisibleAllSelected) {
                             selectedIds - bottomVisibleIds
                         } else {
                             selectedIds + bottomVisibleIds
                         }
+                        updateSelection(next)
                     }
                 } else {
                     null
@@ -615,7 +650,7 @@ internal fun ContactPickerPage(
                     }
                 }
             }
-            item {
+            if (!request.hideSearch) item {
                 SettingsCard {
                     InputRow(
                         title = "搜索",
@@ -630,7 +665,7 @@ internal fun ContactPickerPage(
                     )
                 }
             }
-            item {
+            if (!request.flatBatchSelection) item {
                 PickerSectionHeader(
                     text = when {
                         request.flatBatchSelection -> "${if (request.mode == ContactPickerMode.FRIENDS) "好友" else "会话"} · ${visibleContacts.size} 项 · 已选 $selectedContactCount"
@@ -662,11 +697,12 @@ internal fun ContactPickerPage(
                                         selectedCount = selectedCount,
                                         memberUnit = "位好友",
                                         onClick = {
-                                            selectedIds = if (selectedCount == scope.memberIds.size) {
+                                            val next = if (selectedCount == scope.memberIds.size) {
                                                 selectedIds - scope.memberIds
                                             } else {
                                                 selectedIds + scope.memberIds
                                             }
+                                            updateSelection(next)
                                         }
                                     )
                                     if (index < visibleLabelScopes.lastIndex) InsetDivider()
@@ -689,11 +725,12 @@ internal fun ContactPickerPage(
                                         selectedCount = selectedCount,
                                         memberUnit = "位好友",
                                         onClick = {
-                                            selectedIds = if (selectedCount == scope.conversationIds.size) {
+                                            val next = if (selectedCount == scope.conversationIds.size) {
                                                 selectedIds - scope.conversationIds
                                             } else {
                                                 selectedIds + scope.conversationIds
                                             }
+                                            updateSelection(next)
                                         }
                                     )
                                     if (index < visibleConversationGroupScopes.lastIndex) InsetDivider()
@@ -709,7 +746,7 @@ internal fun ContactPickerPage(
                         selected = selectedIds.contains(option.id),
                         multiSelect = request.multiSelect,
                         onClick = {
-                            selectedIds = if (request.multiSelect) {
+                            val next = if (request.multiSelect) {
                                 if (selectedIds.contains(option.id)) {
                                     selectedIds - option.id
                                 } else {
@@ -718,6 +755,7 @@ internal fun ContactPickerPage(
                             } else {
                                 setOf(option.id)
                             }
+                            updateSelection(next)
                         }
                     )
                 }

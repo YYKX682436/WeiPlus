@@ -31,6 +31,7 @@ import h.Hchat.hooks.items.hotupdate.DisableHotUpdateFeature;
 import h.Hchat.hooks.items.miniprogrambaselib.FakeMiniProgramBaseLibFeature;
 import h.Hchat.hooks.items.miniprogramsplashad.SkipGlobalMiniProgramSplashAdsFeature;
 import h.Hchat.hooks.items.miniprogramvideoad.SkipMiniProgramVideoAdsFeature;
+import h.Hchat.hooks.items.batch.BatchTaskManager;
 import h.Hchat.hooks.items.tablet.WeChatTabletFeature;
 import h.Hchat.loader.utils.NativeLibraryLoader;
 import h.Hchat.loader.utils.SilkLibrary;
@@ -331,6 +332,7 @@ public class ModuleEntry extends XposedModule {
     if (hostIdentityInvalidated) return;
     hostIdentityInvalidated = true;
     runtimeIdentity.invalidate();
+    BatchTaskManager.shutdownProcessManagerForHostInvalidation();
     HLog.e(TAG + " host_identity=invalidated reason=" + reason);
     DexInstallScheduler.INSTANCE.cancelAll();
     HookRegistry.get().unhookAll();

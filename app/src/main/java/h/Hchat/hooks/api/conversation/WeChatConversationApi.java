@@ -94,6 +94,24 @@ public final class WeChatConversationApi {
         return result;
     }
 
+    /** Returns every stored conversation row; null means the read failed. */
+    public List<String> getExistingConversationUsernames() {
+        if (databaseApi == null || !databaseApi.isAvailable()) return null;
+        try {
+            LinkedHashSet<String> usernames = new LinkedHashSet<>();
+            for (Map<String, Object> row : databaseApi.query(
+                    "SELECT username FROM rconversation WHERE username!='' ORDER BY flag DESC, conversationTime DESC",
+                    null)) {
+                String username = str(row, "username");
+                if (WeChatConversationIdentity.isBatchOperableUsername(username)) usernames.add(username);
+            }
+            return new ArrayList<>(usernames);
+        } catch (Throwable e) {
+            log("读取现有会话记录失败: " + e.getMessage());
+            return null;
+        }
+    }
+
     /**
      * Returns the full root conversation list from WeChat's native ConversationStorage.s query.
      * The native query applies the current parentRef/fold setting and flag/time ordering; a
