@@ -8,12 +8,12 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicReference;
 
 /** Runs short native storage entry points on WeChat's UI looper while callers wait off-main. */
-final class WeChatMainThread {
+public final class WeChatMainThread {
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
 
     private WeChatMainThread() {}
 
-    static <T> T call(Callable<T> action) throws Exception {
+    public static <T> T call(Callable<T> action) throws Exception {
         if (Looper.myLooper() == Looper.getMainLooper()) return action.call();
         CountDownLatch completed = new CountDownLatch(1);
         AtomicReference<T> value = new AtomicReference<>();

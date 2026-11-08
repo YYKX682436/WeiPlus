@@ -246,6 +246,7 @@ public class DexFinder {
     public Class<?> configStorageClass;
     public Class<?> sqliteDbWrapperClass;
     public Method conversationDeleteMethod;
+    public Method conversationDeleteFromHomeMethod;
     public Method nativeConversationHomeListQueryMethod;
     public Method conversationSetPlacedTopMethod;
     public Method conversationUnsetPlacedTopMethod;
@@ -2987,6 +2988,42 @@ public class DexFinder {
         } catch (Throwable e) {
             h.Hchat.utils.HLog.e(TAG + " resolveConversationDeleteApi 失败: " + e.getMessage(), e);
         }
+    }
+
+    /** Resolves the conversation deletion helper invoked by WeChat's confirmed home-row UI path. */
+    public synchronized void resolveConversationDeleteFromHomeApi() {
+        if (isConversationDeleteFromHomeMethod(conversationDeleteFromHomeMethod)) return;
+        conversationDeleteFromHomeMethod = null;
+        try {
+            FindMethod find = new FindMethod();
+            find.matcher(new MethodMatcher().usingEqStrings(
+                    "MicroMsg.ConvDelLogic",
+                    "doDeleteConv() called talker:%s reserveConversation:%s hasLeftChatroom:%s"));
+            List<Method> candidates = new ArrayList<>();
+            for (MethodData data : dexQueries.findMethod(find)) {
+                try {
+                    Method method = data.getMethodInstance(classLoader);
+                    if (isConversationDeleteFromHomeMethod(method) && !candidates.contains(method)) {
+                        candidates.add(KavaReflector.accessible(method));
+                    }
+                } catch (Throwable ignored) {}
+            }
+            if (candidates.size() == 1) {
+                conversationDeleteFromHomeMethod = candidates.get(0);
+                logDetail("微信首页会话删除链路: " + methodName(conversationDeleteFromHomeMethod));
+            } else {
+                h.Hchat.utils.HLog.e(TAG + " 微信首页会话删除链路定位失败: candidates=" + candidates.size());
+            }
+        } catch (Throwable e) {
+            h.Hchat.utils.HLog.e(TAG + " resolveConversationDeleteFromHomeApi 失败: " + e.getMessage(), e);
+        }
+    }
+
+    private boolean isConversationDeleteFromHomeMethod(Method method) {
+        if (method == null || !KavaReflector.isStatic(method) || method.getReturnType() != void.class) return false;
+        Class<?>[] params = method.getParameterTypes();
+        return method.getDeclaringClass().getName().startsWith("com.tencent.mm.ui.conversation.")
+                && params.length == 1 && params[0] == String.class;
     }
 
     /**

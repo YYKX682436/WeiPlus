@@ -13,6 +13,7 @@ import java.util.concurrent.TimeUnit
  * the serial worker instead of synchronously blocking the UI thread.
  */
 internal object BatchOperationExecutor : BatchTaskProcessor {
+    private const val FRIEND_DELETE_OBSERVATION_TIMEOUT_MS = 15_000L
     override fun execute(
         request: BatchTaskRequest,
         stopSignal: BatchTaskRunner.StopSignal
@@ -261,11 +262,19 @@ internal object BatchOperationExecutor : BatchTaskProcessor {
                 else conversations.getNativeHomeConversationUsernames()?.let { it.contains(id) }
             },
             deleteConversation = {
-                if (conversations.deleteConversation(id)) true
-                else when (conversations.conversationEntryExistsState(id)) {
-                    false -> true
-                    true -> false
-                    null -> null
+                when (conversations.deleteConversationFromNativeHome(id)) {
+                    h.Hchat.hooks.api.conversation.WeChatConversationApi.NativeHomeDeleteState.CONFIRMED_REMOVED ->
+                        BatchDeleteOutcomePolicy.NativeHomeDeleteState.CONFIRMED_REMOVED
+                    h.Hchat.hooks.api.conversation.WeChatConversationApi.NativeHomeDeleteState.ROW_REMAINS ->
+                        BatchDeleteOutcomePolicy.NativeHomeDeleteState.ROW_REMAINS
+                    h.Hchat.hooks.api.conversation.WeChatConversationApi.NativeHomeDeleteState.ROW_RECREATED ->
+                        BatchDeleteOutcomePolicy.NativeHomeDeleteState.ROW_RECREATED
+                    h.Hchat.hooks.api.conversation.WeChatConversationApi.NativeHomeDeleteState.HOME_STILL_CONTAINS ->
+                        BatchDeleteOutcomePolicy.NativeHomeDeleteState.HOME_STILL_CONTAINS
+                    h.Hchat.hooks.api.conversation.WeChatConversationApi.NativeHomeDeleteState.SCOPE_CHANGED ->
+                        BatchDeleteOutcomePolicy.NativeHomeDeleteState.SCOPE_CHANGED
+                    h.Hchat.hooks.api.conversation.WeChatConversationApi.NativeHomeDeleteState.UNCONFIRMED ->
+                        BatchDeleteOutcomePolicy.NativeHomeDeleteState.UNCONFIRMED
                 }
             }
         )
@@ -301,41 +310,57 @@ internal object BatchOperationExecutor : BatchTaskProcessor {
         } else {
             result(BatchTaskRunner.Outcome.FAILED, "微信原生删除好友请求未提交或结果回调不可用")
         }
-        val nativeResult = try {
-            nativeDelete.awaitNativeResult(5, TimeUnit.MINUTES)
-        } catch (e: InterruptedException) {
-            Thread.currentThread().interrupt()
-            null
+        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(FRIEND_DELETE_OBSERVATION_TIMEOUT_MS)
+        var lastRelationState = "unread"
+        var lastHistoryState = "unread"
+        try {
+            while (true) {
+                if (stopSignal.isStopped() || !isAccountCurrent(request.expectedAccount)) {
+                    return result(BatchTaskRunner.Outcome.UNCONFIRMED, "删除请求可能已提交；因停止或账号切换未确认")
+                }
+                val nativeResult = nativeDelete.nativeResult()
+                BatchDeleteOutcomePolicy.friendNativeResult(nativeResult)
+                    ?.takeIf { nativeResult != null }?.let { return it }
+
+                val current = contacts.getContactStateResult(id)
+                if (current.success && (!current.found || !current.validFriend)) {
+                    lastRelationState = "removed"
+                    val historyState = messages.hasConversationMessagesState(id)
+                    lastHistoryState = historyState?.toString() ?: "unreadable"
+                    val outcome = BatchDeleteOutcomePolicy.friendState(false, historyState)
+                    if (outcome?.outcome == BatchTaskRunner.Outcome.SUCCESS) return outcome
+                } else if (current.success) {
+                    lastRelationState = "still-friend"
+                } else {
+                    lastRelationState = "unreadable"
+                }
+                if (System.nanoTime() >= deadline) {
+                    contacts.logDeleteFriendObservation(
+                        id,
+                        "relation=$lastRelationState history=$lastHistoryState " +
+                            "responseHook=${nativeDelete.hasResponseHook()} " +
+                            "receiverMismatch=${nativeDelete.receiverMismatch()} " +
+                            "nativeResult=${nativeResult ?: "missing"}"
+                    )
+                    val stateDetail = when {
+                        nativeResult == null && nativeDelete.receiverMismatch() ->
+                            "原生回执由其他Service实例处理；好友或聊天记录状态未确认"
+                        nativeResult == null && !nativeDelete.hasResponseHook() ->
+                            "原生结果Hook不可用，好友或聊天记录状态未确认"
+                        nativeResult == null -> "请求已提交但未收到原生回执，好友或聊天记录状态未确认"
+                        else -> "微信返回成功码，但好友或聊天记录状态未确认"
+                    }
+                    return result(BatchTaskRunner.Outcome.UNCONFIRMED, stateDetail)
+                }
+                try {
+                    Thread.sleep(200)
+                } catch (e: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    return result(BatchTaskRunner.Outcome.UNCONFIRMED, "删除请求可能已提交；任务中断，结果未确认")
+                }
+            }
         } finally {
             nativeDelete.close()
-        }
-        BatchDeleteOutcomePolicy.friendNativeResult(nativeResult)?.let { return it }
-        if (!isAccountCurrent(request.expectedAccount)) {
-            return result(BatchTaskRunner.Outcome.UNCONFIRMED, "好友删除已获原生确认；账号已切换，聊天记录未复核")
-        }
-
-        val deadline = System.nanoTime() + TimeUnit.MINUTES.toNanos(5)
-        while (true) {
-            if (stopSignal.isStopped() || !isAccountCurrent(request.expectedAccount)) {
-                return result(BatchTaskRunner.Outcome.UNCONFIRMED, "删除已获原生确认；因停止或账号切换未确认聊天记录")
-            }
-            val current = contacts.getContactStateResult(id)
-            val outcome = BatchDeleteOutcomePolicy.friendState(
-                validFriend = if (current.success) current.found && current.validFriend else null,
-                messagesRemain = if (current.success && (!current.found || !current.validFriend)) {
-                    messages.hasConversationMessagesState(id)
-                } else null
-            )
-            if (outcome != null) return outcome
-            if (System.nanoTime() >= deadline) {
-                return result(BatchTaskRunner.Outcome.UNCONFIRMED, "好友删除已获原生确认；聊天记录清理仍未确认")
-            }
-            try {
-                Thread.sleep(200)
-            } catch (e: InterruptedException) {
-                Thread.currentThread().interrupt()
-                return result(BatchTaskRunner.Outcome.UNCONFIRMED, "好友删除已获原生确认；任务中断，聊天记录未确认")
-            }
         }
     }
 

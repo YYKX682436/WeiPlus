@@ -22,7 +22,10 @@ class BatchDeleteOutcomePolicyTest {
         val result = BatchDeleteOutcomePolicy.deleteChat(
             clearMessages = { BatchDeleteOutcomePolicy.ChatClearState.UNCONFIRMED },
             mayDeleteConversation = { true },
-            deleteConversation = { removedConversation = true; true }
+            deleteConversation = {
+                removedConversation = true
+                BatchDeleteOutcomePolicy.NativeHomeDeleteState.CONFIRMED_REMOVED
+            }
         )
 
         assertEquals(BatchTaskRunner.Outcome.UNCONFIRMED, result.outcome)
@@ -34,7 +37,7 @@ class BatchDeleteOutcomePolicyTest {
         val clearFailure = BatchDeleteOutcomePolicy.deleteChat(
             clearMessages = { BatchDeleteOutcomePolicy.ChatClearState.NOT_SUBMITTED },
             mayDeleteConversation = { true },
-            deleteConversation = { true }
+            deleteConversation = { BatchDeleteOutcomePolicy.NativeHomeDeleteState.CONFIRMED_REMOVED }
         )
         assertEquals(BatchTaskRunner.Outcome.FAILED, clearFailure.outcome)
 
@@ -48,9 +51,23 @@ class BatchDeleteOutcomePolicyTest {
         val removalFailure = BatchDeleteOutcomePolicy.deleteChat(
             clearMessages = { BatchDeleteOutcomePolicy.ChatClearState.COMPLETED },
             mayDeleteConversation = { true },
-            deleteConversation = { false }
+            deleteConversation = { BatchDeleteOutcomePolicy.NativeHomeDeleteState.ROW_REMAINS }
         )
         assertEquals(BatchTaskRunner.Outcome.FAILED, removalFailure.outcome)
+
+        val recreated = BatchDeleteOutcomePolicy.deleteChat(
+            clearMessages = { BatchDeleteOutcomePolicy.ChatClearState.COMPLETED },
+            mayDeleteConversation = { true },
+            deleteConversation = { BatchDeleteOutcomePolicy.NativeHomeDeleteState.ROW_RECREATED }
+        )
+        assertEquals(BatchTaskRunner.Outcome.FAILED, recreated.outcome)
+
+        val nativeHomeStale = BatchDeleteOutcomePolicy.deleteChat(
+            clearMessages = { BatchDeleteOutcomePolicy.ChatClearState.COMPLETED },
+            mayDeleteConversation = { true },
+            deleteConversation = { BatchDeleteOutcomePolicy.NativeHomeDeleteState.HOME_STILL_CONTAINS }
+        )
+        assertEquals(BatchTaskRunner.Outcome.UNCONFIRMED, nativeHomeStale.outcome)
     }
 
     @Test

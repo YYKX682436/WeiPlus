@@ -5,6 +5,8 @@ import android.text.TextUtils;
 
 import h.Hchat.dexkit.DexFinder;
 import h.Hchat.hooks.api.contact.WeChatContactApi;
+import h.Hchat.hooks.api.contact.WeChatMainThread;
+import h.Hchat.hooks.api.core.WeChatApis;
 import h.Hchat.hooks.api.media.WeChatInternalServices;
 import h.Hchat.hooks.api.model.WeChatConversation;
 import h.Hchat.hooks.api.runtime.WeChatDatabaseApi;
@@ -23,6 +25,14 @@ import java.util.Map;
  * 会话查询只读取 rconversation 稳定字段，删除使用微信原生会话存储入口。
  */
 public final class WeChatConversationApi {
+    public enum NativeHomeDeleteState {
+        CONFIRMED_REMOVED,
+        ROW_REMAINS,
+        ROW_RECREATED,
+        HOME_STILL_CONTAINS,
+        SCOPE_CHANGED,
+        UNCONFIRMED
+    }
     private static final String HCHAT_INTERNAL_PREFIX = "wxid_hchat_group_";
     private static final String HIDDEN_CONVERSATION_PARENT = "hidden_conv_parent";
     private static final long CONVERSATION_TOP_FLAG = 1L << 62;
@@ -444,6 +454,88 @@ public final class WeChatConversationApi {
         String target = username != null ? username.trim() : "";
         if (TextUtils.isEmpty(target) || databaseApi == null) return null;
         return conversationEntryExists(target);
+    }
+
+    /**
+     * Runs WeChat's own home-row delete helper after messages have been confirmed clear.
+     * The helper performs native conversation bookkeeping and storage notifications used by
+     * the home adapter. The result checks the row, native home query, and observed row writes.
+     */
+    public NativeHomeDeleteState deleteConversationFromNativeHome(String username) {
+        String target = username == null ? "" : username.trim();
+        if (target.isEmpty() || databaseApi == null || dexFinder == null) {
+            return NativeHomeDeleteState.UNCONFIRMED;
+        }
+        Boolean rowBefore = conversationEntryExists(target);
+        List<String> homeBefore = getNativeHomeConversationUsernames();
+        if (rowBefore == null || homeBefore == null) return NativeHomeDeleteState.UNCONFIRMED;
+        if (!Boolean.TRUE.equals(rowBefore) || !homeBefore.contains(target)) {
+            logDeleteDiagnostic(target, "precondition", rowBefore, homeBefore.contains(target), 0, 0, "out-of-scope");
+            return NativeHomeDeleteState.SCOPE_CHANGED;
+        }
+
+        dexFinder.resolveConversationDeleteFromHomeApi();
+        Method method = dexFinder.conversationDeleteFromHomeMethod;
+        if (method == null) return NativeHomeDeleteState.UNCONFIRMED;
+        java.util.concurrent.atomic.AtomicInteger deletes = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.atomic.AtomicInteger inserts = new java.util.concurrent.atomic.AtomicInteger();
+        WeChatConversationChangeApi changes = WeChatApis.conversationChanges();
+        WeChatConversationChangeApi.Subscription subscription = changes != null
+                ? changes.subscribe(change -> {
+                    if (change == null) return;
+                    boolean matches = false;
+                    for (String affected : change.affectedUsernames()) {
+                        if (target.equals(affected)) { matches = true; break; }
+                    }
+                    if (!matches || change.databaseChange == null) return;
+                    if (change.databaseChange.isDelete()) deletes.incrementAndGet();
+                    else if (change.databaseChange.isInsert()) inserts.incrementAndGet();
+                }) : null;
+        try {
+            WeChatMainThread.call(() -> {
+                KavaReflector.invokeOrThrow(method, null, target);
+                return null;
+            });
+        } catch (Throwable e) {
+            logDeleteDiagnostic(target, "native-helper-threw", rowBefore, true,
+                    deletes.get(), inserts.get(), method.toGenericString() + ":" + e.getClass().getSimpleName());
+            return NativeHomeDeleteState.UNCONFIRMED;
+        } finally {
+            if (subscription != null) subscription.unsubscribe();
+        }
+
+        Boolean rowAfter = conversationEntryExists(target);
+        List<String> homeAfter = getNativeHomeConversationUsernames();
+        if (rowAfter == null || homeAfter == null) {
+            logDeleteDiagnostic(target, "post-state-unavailable", rowAfter,
+                    homeAfter != null && homeAfter.contains(target), deletes.get(), inserts.get(), method.toGenericString());
+            return NativeHomeDeleteState.UNCONFIRMED;
+        }
+        boolean inHome = homeAfter.contains(target);
+        String phase = !Boolean.TRUE.equals(rowAfter) && !inHome ? "removed"
+                : Boolean.TRUE.equals(rowAfter) && deletes.get() > 0 && inserts.get() > 0 ? "recreated"
+                : Boolean.TRUE.equals(rowAfter) && inHome ? "still-in-home"
+                : Boolean.TRUE.equals(rowAfter) ? "row-remains" : "row-missing-home-inconsistent";
+        logDeleteDiagnostic(target, phase, rowAfter, inHome,
+                deletes.get(), inserts.get(), method.toGenericString());
+        if (!Boolean.TRUE.equals(rowAfter) && !inHome) return NativeHomeDeleteState.CONFIRMED_REMOVED;
+        if (Boolean.TRUE.equals(rowAfter) && deletes.get() > 0 && inserts.get() > 0) {
+            return NativeHomeDeleteState.ROW_RECREATED;
+        }
+        if (Boolean.TRUE.equals(rowAfter) && inHome) return NativeHomeDeleteState.HOME_STILL_CONTAINS;
+        return NativeHomeDeleteState.ROW_REMAINS;
+    }
+
+    private void logDeleteDiagnostic(String username, String phase, Boolean rowPresent,
+                                     boolean inNativeHome, int deleteEvents, int insertEvents,
+                                     String detail) {
+        log("批量删除聊天核验 phase=" + phase
+                + " targetHash=" + Integer.toHexString(username.hashCode())
+                + " rconversationPresent=" + rowPresent
+                + " nativeHomeContains=" + inNativeHome
+                + " deleteEvents=" + deleteEvents
+                + " insertEvents=" + insertEvents
+                + " detail=" + detail);
     }
 
     private Boolean conversationEntryExists(String username) {

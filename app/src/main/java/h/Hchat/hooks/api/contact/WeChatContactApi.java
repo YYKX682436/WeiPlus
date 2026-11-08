@@ -30,9 +30,7 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -122,9 +120,9 @@ public final class WeChatContactApi {
 
     /** Native DeleteContactService response for a submitted batch deletion. */
     public static final class DeleteFriendRequest implements AutoCloseable {
-        private final CountDownLatch responseLatch = new CountDownLatch(1);
         private final XposedInterface.HookHandle hookHandle;
         private volatile Integer nativeResult;
+        private volatile boolean receiverMismatch;
 
         private DeleteFriendRequest(XposedInterface.HookHandle hookHandle) {
             this.hookHandle = hookHandle;
@@ -132,18 +130,22 @@ public final class WeChatContactApi {
 
         private void complete(int result) {
             nativeResult = result;
-            responseLatch.countDown();
         }
 
-        /** null means that the native service did not report a response before the bound. */
-        public Integer awaitNativeResult(long timeout, TimeUnit unit) throws InterruptedException {
-            if (!responseLatch.await(timeout, unit)) return null;
-            return nativeResult;
-        }
+        private void noteReceiverMismatch() { receiverMismatch = true; }
+
+        public boolean hasResponseHook() { return hookHandle != null; }
+
+        /** null means no native response was observed yet. */
+        public Integer nativeResult() { return nativeResult; }
+
+        public boolean receiverMismatch() { return receiverMismatch; }
 
         @Override
         public void close() {
-            try { HookRegistry.get().unhook(hookHandle); } catch (Throwable ignored) {}
+            if (hookHandle != null) {
+                try { HookRegistry.get().unhook(hookHandle); } catch (Throwable ignored) {}
+            }
         }
     }
 
@@ -580,11 +582,26 @@ public final class WeChatContactApi {
     public DeleteFriendRequest submitDeleteFriendWithResult(
             String username, boolean clearRecord, BatchSubmissionGuard guard) {
         String target = username == null ? "" : username.trim();
-        if (!clearRecord || !isCurrentValidFriendDeleteTarget(target)
-                || !supportsDeleteFriendRecordClear()) return null;
+        if (!clearRecord) {
+            logDeleteDiagnostic(target, "preflight-invalid-clear-option", "clearRecord=false");
+            return null;
+        }
+        String preflightFailure = deleteFriendTargetCheckFailure(target);
+        if (preflightFailure != null) {
+            logDeleteDiagnostic(target, "preflight-state-failed", preflightFailure);
+            return null;
+        }
+        if (!supportsDeleteFriendRecordClear()) {
+            logDeleteDiagnostic(target, "native-method-unavailable", "explicit clear-record argument unavailable");
+            return null;
+        }
         Method submitMethod = dexFinder.deleteContactServiceMethod;
-        Object service = resolveDeleteContactService(submitMethod);
-        if (service == null) return null;
+        Object service = resolveDeleteContactServiceFromContainer(submitMethod);
+        if (service == null) {
+            logDeleteDiagnostic(target, "service-instance-unavailable",
+                    submitMethod != null ? submitMethod.toGenericString() : "method=null");
+            return null;
+        }
         List<Method> responseMethods = new ArrayList<>();
         for (Method method : KavaReflector.declaredMethods(submitMethod.getDeclaringClass())) {
             Class<?>[] params = method.getParameterTypes();
@@ -592,27 +609,38 @@ public final class WeChatContactApi {
                     && params[0] == String.class && params[1] == int.class
                     && params[2] == boolean.class) responseMethods.add(method);
         }
-        if (responseMethods.size() != 1) {
-            log("原生好友删除结果入口定位不唯一: candidates=" + responseMethods.size());
-            return null;
+        Method responseMethod = responseMethods.size() == 1 ? responseMethods.get(0) : null;
+        if (responseMethod == null) {
+            logDeleteDiagnostic(target, "response-method-unavailable",
+                    submitMethod.toGenericString() + " candidates=" + responseMethods.size());
         }
         AtomicReference<DeleteFriendRequest> requestRef = new AtomicReference<>();
-        final XposedInterface.HookHandle handle;
-        try {
-            handle = HookRegistry.get().hook(responseMethods.get(0), chain -> {
-                Object[] args = chain.getArgs().toArray();
-                Object receiver = chain.getThisObject();
-                Object result = chain.proceed();
-                if (receiver == service && args != null && args.length == 3
-                        && target.equals(args[0]) && args[1] instanceof Number) {
-                    DeleteFriendRequest request = requestRef.get();
-                    if (request != null) request.complete(((Number) args[1]).intValue());
-                }
-                return result;
-            });
-        } catch (Throwable e) {
-            log("原生好友删除结果Hook安装失败: " + e.getMessage());
-            return null;
+        XposedInterface.HookHandle handle = null;
+        if (responseMethod != null) {
+            try {
+                handle = HookRegistry.get().hook(responseMethod, chain -> {
+                    Object[] args = chain.getArgs().toArray();
+                    Object receiver = chain.getThisObject();
+                    Object result = chain.proceed();
+                    if (args != null && args.length == 3 && target.equals(args[0])) {
+                        DeleteFriendRequest request = requestRef.get();
+                        if (request != null && receiver != service) {
+                            request.noteReceiverMismatch();
+                            logDeleteDiagnostic(target, "response-receiver-mismatch",
+                                    "expected=" + service.getClass().getName() + " actual=" +
+                                            (receiver != null ? receiver.getClass().getName() : "null"));
+                        } else if (request != null && args[1] instanceof Number) {
+                            int resultCode = ((Number) args[1]).intValue();
+                            request.complete(resultCode);
+                            logDeleteDiagnostic(target, "native-response", "returnCode=" + resultCode);
+                        }
+                    }
+                    return result;
+                });
+            } catch (Throwable e) {
+                logDeleteDiagnostic(target, "response-hook-unavailable",
+                        responseMethod.toGenericString() + " error=" + e.getClass().getSimpleName());
+            }
         }
         DeleteFriendRequest request = new DeleteFriendRequest(handle);
         requestRef.set(request);
@@ -624,21 +652,41 @@ public final class WeChatContactApi {
             KavaReflector.invokeOrThrow(submitMethod, service, target, true);
             return request;
         } catch (Throwable e) {
-            request.close();
-            log("原生删除好友请求提交失败: " + e.getMessage());
-            return null;
+            logDeleteDiagnostic(target, "native-invocation-threw",
+                    submitMethod.toGenericString() + " error=" + e.getClass().getSimpleName());
+            // Invocation may have crossed WeChat's submission point. Keep the one-shot handle
+            // so callers observe actual state and never retry this potentially submitted request.
+            return request;
         }
     }
 
+    private void logDeleteDiagnostic(String target, String phase, String detail) {
+        log("批量删除好友诊断 phase=" + phase
+                + " targetHash=" + Integer.toHexString(target.hashCode())
+                + " detail=" + detail);
+    }
+
+    public void logDeleteFriendObservation(String username, String detail) {
+        logDeleteDiagnostic(username == null ? "" : username.trim(), "observation-timeout", detail);
+    }
+
     private boolean isCurrentValidFriendDeleteTarget(String target) {
-        if (target == null || target.isEmpty() || dexFinder == null || !isAvailable()) return false;
+        return deleteFriendTargetCheckFailure(target) == null;
+    }
+
+    private String deleteFriendTargetCheckFailure(String target) {
+        if (target == null || target.isEmpty()) return "对象为空";
+        if (dexFinder == null || databaseApi == null || !isAvailable()) return "联系人数据库不可用";
         String self = databaseApi.queryFirstString(
                 "SELECT value FROM userinfo WHERE id=? LIMIT 1",
                 new String[]{String.valueOf(SELF_FIELD_WXID)}, "value");
-        if (target.equals(self == null ? "" : self.trim())) return false;
+        if (TextUtils.isEmpty(self)) return "当前账号标识不可用";
+        if (target.equals(self.trim())) return "目标是当前账号";
         ContactStateResult state = getContactStateResult(target);
-        return state.success && state.found && state.validFriend && !isGroup(target)
-                && !target.startsWith("gh_");
+        if (!state.success) return state.error.isBlank() ? "好友状态读取失败" : state.error;
+        if (!state.found) return "好友关系已不存在";
+        if (!state.validFriend || isGroup(target) || target.startsWith("gh_")) return "对象不是有效好友";
+        return null;
     }
 
     private Object resolveDeleteContactService(Method method) {
@@ -652,6 +700,16 @@ public final class WeChatContactApi {
                     .findFirst().orElse(null);
             if (constructor != null) service = KavaReflector.newInstance(constructor);
         }
+        if (service != null && method.getDeclaringClass().isInstance(service)) return service;
+        log("原生删除好友服务实例解析失败: " + method.toGenericString());
+        return null;
+    }
+
+    /** Uses the same service container lookup used by WeChat's own contact deletion UI. */
+    private Object resolveDeleteContactServiceFromContainer(Method method) {
+        if (method == null || dexFinder == null) return null;
+        if (dexFinder.serviceGetterMethod == null) dexFinder.resolveServiceManagerApi();
+        Object service = WeChatInternalServices.getService(dexFinder, method.getDeclaringClass());
         return service != null && method.getDeclaringClass().isInstance(service) ? service : null;
     }
 

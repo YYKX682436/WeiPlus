@@ -213,17 +213,30 @@ try {
     assert.match(executor, /hideConversationFromHome\(id\)/,
         'hide must use WeChat native hide behavior');
     const deleteChatMethod = methodBody(executor, 'private fun deleteChat(');
-    assert.ok(deleteChatMethod.indexOf('clearConversationMessagesAndWait') < deleteChatMethod.indexOf('deleteConversation(id)'),
-        'chat index removal must happen only after confirmed native message cleanup');
+    assert.ok(deleteChatMethod.indexOf('clearConversationMessagesAndWait') < deleteChatMethod.indexOf('deleteConversationFromNativeHome(id)'),
+        'WeChat home deletion helper must run only after confirmed native message cleanup');
     assert.match(deleteChatMethod, /getNativeHomeConversationUsernames\(\)[\s\S]*?home\.contains\(id\)/,
         'a chat must still be in the current root home list when its delete begins');
+    const nativeHomeDeleteMethod = methodBody(conversationApi, 'public NativeHomeDeleteState deleteConversationFromNativeHome(');
+    assert.match(nativeHomeDeleteMethod, /conversationDeleteFromHomeMethod/);
+    assert.match(nativeHomeDeleteMethod, /getNativeHomeConversationUsernames\(\)[\s\S]*?AtomicInteger deletes[\s\S]*?AtomicInteger inserts[\s\S]*?ROW_RECREATED/,
+        'post-delete verification must distinguish database, native-home and recreated-row states');
+    assert.match(nativeHomeDeleteMethod, /WeChatMainThread\.call[\s\S]*?KavaReflector\.invokeOrThrow\(method, null, target\)/,
+        'home deletion must run through the confirmed native UI helper on WeChat main looper');
+    assert.match(dexFinder, /doDeleteConv\(\) called talker:%s reserveConversation:%s hasLeftChatroom:%s[\s\S]*?resolveConversationDeleteFromHomeApi/,
+        'the batch path must locate WeChat ConvDelLogic rather than call only ConversationStorage.k');
     const deleteFriendMethod = methodBody(executor, 'private fun deleteFriend(');
-    assert.match(deleteFriendMethod, /submitDeleteFriendWithResult\(id, true\)[\s\S]*?awaitNativeResult[\s\S]*?friendNativeResult\(nativeResult\)[\s\S]*?hasConversationMessagesState\(id\)/,
+    assert.match(deleteFriendMethod, /submitDeleteFriendWithResult\(id, true\)[\s\S]*?FRIEND_DELETE_OBSERVATION_TIMEOUT_MS[\s\S]*?friendNativeResult\(nativeResult\)[\s\S]*?hasConversationMessagesState\(id\)/,
         'friend deletion must distinguish a native rejection, a missing response and cleared message rows');
     assert.match(contactApi, /resolveDeleteContactServiceApi\(\)[\s\S]*?KavaReflector\.invokeOrThrow\(method, service, target, clearRecord\)/,
         'native DeleteContactService must live in the common contact API with its clear-record argument');
-    assert.match(contactApi, /submitDeleteFriendWithResult[\s\S]*?HookRegistry\.get\(\)\.hook[\s\S]*?request\.complete\(\(\(Number\) args\[1\]\)\.intValue\(\)\)/,
+    assert.match(contactApi, /submitDeleteFriendWithResult[\s\S]*?HookRegistry\.get\(\)\.hook[\s\S]*?request\.complete\(resultCode\)/,
         'the common contact API must capture the native response code for batch outcome classification');
+    const trackedDelete = methodBody(contactApi, 'public DeleteFriendRequest submitDeleteFriendWithResult(\n            String username, boolean clearRecord, BatchSubmissionGuard guard)');
+    assert.match(trackedDelete, /response-method-unavailable[\s\S]*?XposedInterface\.HookHandle handle = null[\s\S]*?KavaReflector\.invokeOrThrow\(submitMethod, service, target, true\)/,
+        'response hook lookup or installation failure must not prevent one native submission');
+    assert.match(executor, /FRIEND_DELETE_OBSERVATION_TIMEOUT_MS = 15_000L[\s\S]*?nativeDelete\.hasResponseHook\(\)[\s\S]*?nativeDelete\.receiverMismatch\(\)[\s\S]*?nativeDelete\.close\(\)/,
+        'friend deletion must observe hook and actual state within one short bounded window');
     assert.match(zombieFeature, /submitDeleteFriend\(wxid, shouldClearRecord\(wxid, clearRecord\)\)/,
         'zombie-check deletion must reuse the common native entry');
     assert.match(messageStore, /stageOne\.await[\s\S]*?hasConversationMessagesState\(target\)[\s\S]*?ConversationClearResult\.COMPLETED/,

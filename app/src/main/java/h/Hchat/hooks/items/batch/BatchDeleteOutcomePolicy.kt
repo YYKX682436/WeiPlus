@@ -3,6 +3,9 @@ package h.Hchat.hooks.items.batch
 /** Shared destructive-operation outcome gates, kept pure so ordering and uncertainty can be tested. */
 internal object BatchDeleteOutcomePolicy {
     enum class ChatClearState { COMPLETED, NOT_SUBMITTED, UNCONFIRMED, STOPPED }
+    enum class NativeHomeDeleteState {
+        CONFIRMED_REMOVED, ROW_REMAINS, ROW_RECREATED, HOME_STILL_CONTAINS, SCOPE_CHANGED, UNCONFIRMED
+    }
 
     /** A native response code of zero confirms the server mutation, but not local cleanup yet. */
     fun friendNativeResult(resultCode: Int?): BatchTaskRunner.TaskResult? = when {
@@ -17,7 +20,7 @@ internal object BatchDeleteOutcomePolicy {
     fun deleteChat(
         clearMessages: () -> ChatClearState,
         mayDeleteConversation: () -> Boolean?,
-        deleteConversation: () -> Boolean?
+        deleteConversation: () -> NativeHomeDeleteState
     ): BatchTaskRunner.TaskResult {
         when (clearMessages()) {
             ChatClearState.NOT_SUBMITTED -> return result(BatchTaskRunner.Outcome.FAILED,
@@ -36,9 +39,18 @@ internal object BatchDeleteOutcomePolicy {
             true -> Unit
         }
         return when (deleteConversation()) {
-            true -> result(BatchTaskRunner.Outcome.SUCCESS, "聊天与聊天记录已删除；关系保留")
-            false -> result(BatchTaskRunner.Outcome.FAILED, "聊天记录已清理，但会话删除失败")
-            null -> result(BatchTaskRunner.Outcome.UNCONFIRMED, "聊天记录已清理；会话删除状态未确认")
+            NativeHomeDeleteState.CONFIRMED_REMOVED ->
+                result(BatchTaskRunner.Outcome.SUCCESS, "聊天与聊天记录已删除；关系保留")
+            NativeHomeDeleteState.ROW_REMAINS ->
+                result(BatchTaskRunner.Outcome.FAILED, "聊天记录已清理，但原生删除后会话行仍存在")
+            NativeHomeDeleteState.ROW_RECREATED ->
+                result(BatchTaskRunner.Outcome.FAILED, "聊天记录已清理，但原生删除后会话行被重新创建")
+            NativeHomeDeleteState.HOME_STILL_CONTAINS ->
+                result(BatchTaskRunner.Outcome.UNCONFIRMED, "聊天记录已清理；原生首页仍显示该会话")
+            NativeHomeDeleteState.SCOPE_CHANGED ->
+                result(BatchTaskRunner.Outcome.FAILED, "聊天记录已清理；会话范围变化，原生删除未执行")
+            NativeHomeDeleteState.UNCONFIRMED ->
+                result(BatchTaskRunner.Outcome.UNCONFIRMED, "聊天记录已清理；原生会话移除状态未确认")
         }
     }
 
