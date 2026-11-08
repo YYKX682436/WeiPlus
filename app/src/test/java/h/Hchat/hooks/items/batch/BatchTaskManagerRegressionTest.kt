@@ -4,6 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import h.Hchat.hooks.api.contact.WeChatNativeMutationResult
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
@@ -39,28 +40,36 @@ class BatchTaskManagerRegressionTest {
                 listOf("friend-only-chat"),
                 "account-A",
                 true,
-                friendPermission = BatchFriendPermission.ONLY_CHAT
+                friendPermissionSelection = BatchFriendPermissionSelection(
+                    access = BatchFriendAccessChoice.ONLY_CHAT
+                )
             ),
             BatchTaskRequest(
                 BatchOperation.FRIEND_PERMISSION,
                 listOf("friend-normal"),
                 "account-A",
                 false,
-                friendPermission = BatchFriendPermission.ONLY_CHAT
+                friendPermissionSelection = BatchFriendPermissionSelection(
+                    access = BatchFriendAccessChoice.NORMAL
+                )
             ),
             BatchTaskRequest(
                 BatchOperation.FRIEND_PERMISSION,
                 listOf("friend-hide-moments"),
                 "account-A",
                 true,
-                friendPermission = BatchFriendPermission.DONT_SEE_MOMENTS
+                friendPermissionSelection = BatchFriendPermissionSelection(
+                    dontSee = BatchPermissionToggle.ENABLE
+                )
             ),
             BatchTaskRequest(
                 BatchOperation.FRIEND_PERMISSION,
                 listOf("friend-show-moments"),
                 "account-A",
                 false,
-                friendPermission = BatchFriendPermission.DONT_LET_SEE_MOMENTS
+                friendPermissionSelection = BatchFriendPermissionSelection(
+                    dontLetSee = BatchPermissionToggle.DISABLE
+                )
             ),
             BatchTaskRequest(BatchOperation.GROUP_SAVE_TO_CONTACTS, listOf("room-save"), "account-A", true),
             BatchTaskRequest(BatchOperation.GROUP_SAVE_TO_CONTACTS, listOf("room-unsave"), "account-A", false),
@@ -134,6 +143,137 @@ class BatchTaskManagerRegressionTest {
         } finally {
             manager.shutdownForTesting()
         }
+    }
+
+    @Test
+    fun friendPermissionSelectionDefaultsToNoChangeAndMapsOnlyExplicitChoices() {
+        val unchanged = BatchFriendPermissionSelection()
+        assertTrue(unchanged.actions().isEmpty())
+        val manager = BatchTaskManager.createForTesting(BatchTaskProcessor { request, _ ->
+            BatchTaskRunner.fromResults(
+                request.targetIds,
+                request.targetIds.map { BatchTaskRunner.TaskResult.of(BatchTaskRunner.Outcome.SUCCESS, "test") },
+                ""
+            )
+        })
+        try {
+            assertEquals(
+                BatchTaskSubmitResult.INVALID,
+                manager.submit(BatchTaskRequest(
+                    BatchOperation.FRIEND_PERMISSION,
+                    listOf("friend"),
+                    "account-A",
+                    enabled = false
+                ))
+            )
+        } finally {
+            manager.shutdownForTesting()
+        }
+
+        val single = BatchFriendPermissionSelection(access = BatchFriendAccessChoice.NORMAL).actions()
+        assertEquals(1, single.size)
+        assertEquals(BatchFriendPermissionSetting.ONLY_CHAT, single[0].setting)
+        assertEquals(false, single[0].enabled)
+
+        val multiple = BatchFriendPermissionSelection(
+            access = BatchFriendAccessChoice.ONLY_CHAT,
+            dontLetSee = BatchPermissionToggle.DISABLE,
+            dontSee = BatchPermissionToggle.ENABLE
+        ).actions()
+        assertEquals(3, multiple.size)
+        assertEquals(listOf(
+            BatchFriendPermissionSetting.ONLY_CHAT,
+            BatchFriendPermissionSetting.DONT_LET_SEE_MOMENTS,
+            BatchFriendPermissionSetting.DONT_SEE_MOMENTS
+        ), multiple.map { it.setting })
+        assertEquals(listOf(true, false, true), multiple.map { it.enabled })
+    }
+
+    @Test
+    fun friendPermissionRunnerSurfacesPartialFailureInsteadOfMaskingConfirmedChanges() {
+        val selection = BatchFriendPermissionSelection(
+            access = BatchFriendAccessChoice.NORMAL,
+            dontLetSee = BatchPermissionToggle.ENABLE,
+            dontSee = BatchPermissionToggle.DISABLE
+        )
+        val submitted = mutableListOf<BatchFriendPermissionSetting>()
+        val result = BatchFriendPermissionExecution.executeOne(
+            id = "friend",
+            expectedAccount = "account-A",
+            selection = selection,
+            stopSignal = BatchTaskRunner.StopSignal(),
+            currentAccount = { "account-A" },
+            validateTarget = { null },
+            mutate = { setting, _, _ ->
+                submitted += setting
+                when (setting) {
+                    BatchFriendPermissionSetting.ONLY_CHAT,
+                    BatchFriendPermissionSetting.DONT_SEE_MOMENTS ->
+                        WeChatNativeMutationResult.of(
+                            WeChatNativeMutationResult.Outcome.CONFIRMED, "confirmed"
+                        )
+                    BatchFriendPermissionSetting.DONT_LET_SEE_MOMENTS ->
+                        WeChatNativeMutationResult.of(
+                            WeChatNativeMutationResult.Outcome.SERVER_REJECTED, "rejected"
+                        )
+                }
+            }
+        )
+
+        assertEquals(BatchTaskRunner.Outcome.FAILED, result.outcome)
+        assertEquals(3, submitted.size)
+        assertTrue(result.message.contains("聊天、朋友圈、微信运动等：已确认"))
+        assertTrue(result.message.contains("服务端拒绝"))
+        assertTrue(result.message.contains("不看他（她）：关闭：已确认"))
+    }
+
+    @Test
+    fun friendPermissionRunnerStopsBeforeNextSettingAfterStopOrAccountSwitch() {
+        val stop = BatchTaskRunner.StopSignal()
+        val stoppedCalls = mutableListOf<BatchFriendPermissionSetting>()
+        val selection = BatchFriendPermissionSelection(
+            access = BatchFriendAccessChoice.ONLY_CHAT,
+            dontLetSee = BatchPermissionToggle.ENABLE
+        )
+        val stopped = BatchFriendPermissionExecution.executeOne(
+            id = "friend",
+            expectedAccount = "account-A",
+            selection = selection,
+            stopSignal = stop,
+            currentAccount = { "account-A" },
+            validateTarget = { null },
+            mutate = { setting, _, _ ->
+                stoppedCalls += setting
+                stop.stop()
+                WeChatNativeMutationResult.of(
+                    WeChatNativeMutationResult.Outcome.CONFIRMED, "confirmed"
+                )
+            }
+        )
+        assertEquals(1, stoppedCalls.size)
+        assertEquals(BatchTaskRunner.Outcome.UNCONFIRMED, stopped.outcome)
+        assertTrue(stopped.message.contains("停止后未提交"))
+
+        var identity = "account-A"
+        val accountCalls = mutableListOf<BatchFriendPermissionSetting>()
+        val switched = BatchFriendPermissionExecution.executeOne(
+            id = "friend",
+            expectedAccount = "account-A",
+            selection = selection,
+            stopSignal = BatchTaskRunner.StopSignal(),
+            currentAccount = { identity },
+            validateTarget = { null },
+            mutate = { setting, _, _ ->
+                accountCalls += setting
+                identity = "account-B"
+                WeChatNativeMutationResult.of(
+                    WeChatNativeMutationResult.Outcome.CONFIRMED, "confirmed"
+                )
+            }
+        )
+        assertEquals(1, accountCalls.size)
+        assertEquals(BatchTaskRunner.Outcome.UNCONFIRMED, switched.outcome)
+        assertTrue(switched.message.contains("账号切换后未提交"))
     }
 
     @Test
@@ -331,7 +471,9 @@ class BatchTaskManagerRegressionTest {
                     listOf("one", "two"),
                     "account-A",
                     enabled = true,
-                    friendPermission = BatchFriendPermission.DONT_SEE_MOMENTS
+                    friendPermissionSelection = BatchFriendPermissionSelection(
+                        dontSee = BatchPermissionToggle.ENABLE
+                    )
                 ))
             )
             assertTrue(secondFinished.await(5, TimeUnit.SECONDS))

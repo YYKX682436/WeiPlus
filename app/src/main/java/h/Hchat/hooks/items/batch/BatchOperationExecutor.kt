@@ -173,12 +173,30 @@ internal object BatchOperationExecutor : BatchTaskProcessor {
             }
             BatchOperation.FRIEND_PERMISSION -> {
                 val contactApi = contacts ?: return result(BatchTaskRunner.Outcome.FAILED, "微信联系人 API 不可用")
-                return mapNativeResult(contactApi.setFriendPermission(
-                    id,
-                    request.friendPermission.toApiPermission(),
-                    request.enabled,
-                    nativeSubmissionGuard(request, stopSignal)
-                ), request, stopSignal)
+                return BatchFriendPermissionExecution.executeOne(
+                    id = id,
+                    expectedAccount = request.expectedAccount,
+                    selection = request.friendPermissionSelection,
+                    stopSignal = stopSignal,
+                    currentAccount = { accountIdentity() },
+                    validateTarget = {
+                        val state = contactApi.getContactStateResult(id)
+                        when {
+                            !state.success -> result(
+                                BatchTaskRunner.Outcome.FAILED,
+                                state.error.ifBlank { "读取好友关系失败，未提交权限修改" }
+                            )
+                            !state.found || !state.validFriend -> result(
+                                BatchTaskRunner.Outcome.SKIPPED,
+                                "好友关系已失效，未提交权限修改"
+                            )
+                            else -> null
+                        }
+                    },
+                    mutate = { setting, desiredState, guard ->
+                        contactApi.setFriendPermission(id, setting.toApiPermission(), desiredState, guard)
+                    }
+                )
             }
             BatchOperation.GROUP_SAVE_TO_CONTACTS -> {
                 val api = chatrooms ?: return result(BatchTaskRunner.Outcome.FAILED, "微信群 API 不可用")
@@ -233,10 +251,10 @@ internal object BatchOperationExecutor : BatchTaskProcessor {
         }
     }
 
-    private fun BatchFriendPermission.toApiPermission() = when (this) {
-        BatchFriendPermission.ONLY_CHAT -> WeChatContactApi.FriendPermissionSetting.ONLY_CHAT
-        BatchFriendPermission.DONT_SEE_MOMENTS -> WeChatContactApi.FriendPermissionSetting.DONT_SEE_MOMENTS
-        BatchFriendPermission.DONT_LET_SEE_MOMENTS -> WeChatContactApi.FriendPermissionSetting.DONT_LET_SEE_MOMENTS
+    private fun BatchFriendPermissionSetting.toApiPermission() = when (this) {
+        BatchFriendPermissionSetting.ONLY_CHAT -> WeChatContactApi.FriendPermissionSetting.ONLY_CHAT
+        BatchFriendPermissionSetting.DONT_SEE_MOMENTS -> WeChatContactApi.FriendPermissionSetting.DONT_SEE_MOMENTS
+        BatchFriendPermissionSetting.DONT_LET_SEE_MOMENTS -> WeChatContactApi.FriendPermissionSetting.DONT_LET_SEE_MOMENTS
     }
 
     private fun failedReport(ids: List<String>, message: String): BatchTaskRunner.Report =
@@ -262,4 +280,123 @@ internal object BatchOperationExecutor : BatchTaskProcessor {
 
     private fun stopReason(stopSignal: BatchTaskRunner.StopSignal): String =
         if (stopSignal.isStopped()) "任务已停止，未提交" else "账号已切换，未提交"
+}
+
+/** Serial per-friend permission plan; no-op dimensions never become off/clear operations. */
+internal object BatchFriendPermissionExecution {
+    fun executeOne(
+        id: String,
+        expectedAccount: String,
+        selection: BatchFriendPermissionSelection,
+        stopSignal: BatchTaskRunner.StopSignal,
+        currentAccount: () -> String,
+        validateTarget: () -> BatchTaskRunner.TaskResult?,
+        mutate: (
+            BatchFriendPermissionSetting,
+            Boolean,
+            WeChatContactApi.BatchSubmissionGuard
+        ) -> WeChatNativeMutationResult
+    ): BatchTaskRunner.TaskResult {
+        val actions = selection.actions()
+        if (actions.isEmpty()) return taskResult(BatchTaskRunner.Outcome.FAILED, "未选择要修改的朋友权限")
+
+        fun accountIsCurrent(): Boolean = runCatching {
+            expectedAccount.isNotBlank() && currentAccount().trim() == expectedAccount.trim()
+        }.getOrDefault(false)
+
+        fun mayContinue(): Boolean = !stopSignal.isStopped() && accountIsCurrent()
+
+        if (!mayContinue()) return taskResult(
+            BatchTaskRunner.Outcome.SKIPPED,
+            if (stopSignal.isStopped()) "任务已停止，未提交权限修改" else "账号已切换，未提交权限修改"
+        )
+        validateTarget()?.let { return it }
+
+        val completed = mutableListOf<Pair<BatchFriendPermissionAction, WeChatNativeMutationResult>>()
+        var interrupted = false
+        for (action in actions) {
+            if (!mayContinue()) {
+                interrupted = true
+                break
+            }
+            val native = try {
+                mutate(
+                    action.setting,
+                    action.enabled,
+                    WeChatContactApi.BatchSubmissionGuard { mayContinue() }
+                )
+            } catch (failure: Throwable) {
+                WeChatNativeMutationResult.of(
+                    WeChatNativeMutationResult.Outcome.NOT_SUBMITTED,
+                    failure.message ?: failure.javaClass.simpleName
+                )
+            }
+            completed += action to native
+            if (!mayContinue() && (completed.size < actions.size ||
+                    native.outcome == WeChatNativeMutationResult.Outcome.NOT_SUBMITTED)) {
+                interrupted = true
+                break
+            }
+        }
+
+        val remaining = actions.drop(completed.size)
+        val outcomes = completed.map { it.second.outcome }
+        val allInvalid = outcomes.isNotEmpty() && outcomes.all {
+            it == WeChatNativeMutationResult.Outcome.INVALID_TARGET
+        }
+        val failed = outcomes.any {
+            it == WeChatNativeMutationResult.Outcome.SERVER_REJECTED ||
+                it == WeChatNativeMutationResult.Outcome.READ_FAILED ||
+                (it == WeChatNativeMutationResult.Outcome.NOT_SUBMITTED && !interrupted)
+        } || (WeChatNativeMutationResult.Outcome.INVALID_TARGET in outcomes && !allInvalid)
+        val unconfirmed = outcomes.any {
+            it == WeChatNativeMutationResult.Outcome.SERVER_ACCEPTED ||
+                it == WeChatNativeMutationResult.Outcome.SUBMITTED_UNCONFIRMED
+        }
+        val nativeRequestMayHaveBeenSent = outcomes.any {
+            it == WeChatNativeMutationResult.Outcome.CONFIRMED ||
+                it == WeChatNativeMutationResult.Outcome.SERVER_ACCEPTED ||
+                it == WeChatNativeMutationResult.Outcome.SUBMITTED_UNCONFIRMED ||
+                it == WeChatNativeMutationResult.Outcome.SERVER_REJECTED
+        }
+        val confirmed = outcomes.count { it == WeChatNativeMutationResult.Outcome.CONFIRMED }
+        val skipped = outcomes.count {
+            it == WeChatNativeMutationResult.Outcome.ALREADY_SATISFIED ||
+                it == WeChatNativeMutationResult.Outcome.INVALID_TARGET ||
+                (it == WeChatNativeMutationResult.Outcome.NOT_SUBMITTED && interrupted)
+        }
+
+        val details = completed.map { (action, native) ->
+            "${action.label}：${permissionOutcomeText(native)}"
+        }.toMutableList()
+        if (remaining.isNotEmpty()) {
+            details += "${if (stopSignal.isStopped()) "停止后" else "账号切换后"}未提交：" +
+                remaining.joinToString("、") { it.label }
+        }
+        val message = "朋友权限逐项结果：${details.joinToString("；")}".ifBlank { "权限修改未执行" }
+
+        val outcome = when {
+            failed -> BatchTaskRunner.Outcome.FAILED
+            unconfirmed || (interrupted && nativeRequestMayHaveBeenSent) -> BatchTaskRunner.Outcome.UNCONFIRMED
+            confirmed > 0 -> BatchTaskRunner.Outcome.SUCCESS
+            skipped == actions.size -> BatchTaskRunner.Outcome.SKIPPED
+            interrupted -> BatchTaskRunner.Outcome.SKIPPED
+            else -> BatchTaskRunner.Outcome.FAILED
+        }
+        return taskResult(outcome, message)
+    }
+
+    private fun permissionOutcomeText(result: WeChatNativeMutationResult): String = when (result.outcome) {
+        WeChatNativeMutationResult.Outcome.CONFIRMED -> "已确认"
+        WeChatNativeMutationResult.Outcome.SERVER_ACCEPTED -> "服务端已接受，状态未确认"
+        WeChatNativeMutationResult.Outcome.SUBMITTED_UNCONFIRMED -> "已提交／未确认"
+        WeChatNativeMutationResult.Outcome.SERVER_REJECTED -> "服务端拒绝"
+        WeChatNativeMutationResult.Outcome.NOT_SUBMITTED -> result.message.ifBlank { "未提交" }
+        WeChatNativeMutationResult.Outcome.ALREADY_SATISFIED -> "已符合目标"
+        WeChatNativeMutationResult.Outcome.INVALID_TARGET -> result.message.ifBlank { "对象已失效" }
+        WeChatNativeMutationResult.Outcome.READ_FAILED -> result.message.ifBlank { "状态读取失败" }
+    }
+
+    private fun taskResult(outcome: BatchTaskRunner.Outcome, message: String) =
+        BatchTaskRunner.TaskResult.of(outcome, message)
 }

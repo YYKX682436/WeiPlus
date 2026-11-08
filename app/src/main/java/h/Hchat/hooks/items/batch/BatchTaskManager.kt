@@ -20,10 +20,57 @@ internal enum class BatchOperation(val title: String) {
     GROUP_NICKNAME("批量修改我在群里的昵称")
 }
 
-internal enum class BatchFriendPermission(val label: String) {
-    ONLY_CHAT("仅聊天／普通朋友"),
-    DONT_SEE_MOMENTS("不看对方朋友圈"),
-    DONT_LET_SEE_MOMENTS("不让对方看我的朋友圈")
+internal enum class BatchFriendAccessChoice(val label: String) {
+    UNCHANGED("不修改"),
+    NORMAL("聊天、朋友圈、微信运动等"),
+    ONLY_CHAT("仅聊天")
+}
+
+internal enum class BatchPermissionToggle(val label: String) {
+    UNCHANGED("不修改"),
+    ENABLE("开启"),
+    DISABLE("关闭")
+}
+
+internal enum class BatchFriendPermissionSetting {
+    ONLY_CHAT,
+    DONT_LET_SEE_MOMENTS,
+    DONT_SEE_MOMENTS
+}
+
+internal data class BatchFriendPermissionAction(
+    val setting: BatchFriendPermissionSetting,
+    val enabled: Boolean,
+    val label: String
+)
+
+/** Request-only target choices; unchanged dimensions create no native operation. */
+internal data class BatchFriendPermissionSelection(
+    val access: BatchFriendAccessChoice = BatchFriendAccessChoice.UNCHANGED,
+    val dontLetSee: BatchPermissionToggle = BatchPermissionToggle.UNCHANGED,
+    val dontSee: BatchPermissionToggle = BatchPermissionToggle.UNCHANGED
+) {
+    fun actions(): List<BatchFriendPermissionAction> = buildList {
+        when (access) {
+            BatchFriendAccessChoice.UNCHANGED -> Unit
+            BatchFriendAccessChoice.NORMAL -> add(BatchFriendPermissionAction(
+                BatchFriendPermissionSetting.ONLY_CHAT, false, access.label
+            ))
+            BatchFriendAccessChoice.ONLY_CHAT -> add(BatchFriendPermissionAction(
+                BatchFriendPermissionSetting.ONLY_CHAT, true, access.label
+            ))
+        }
+        if (dontLetSee != BatchPermissionToggle.UNCHANGED) add(BatchFriendPermissionAction(
+            BatchFriendPermissionSetting.DONT_LET_SEE_MOMENTS,
+            dontLetSee == BatchPermissionToggle.ENABLE,
+            "不让他（她）看：${dontLetSee.label}"
+        ))
+        if (dontSee != BatchPermissionToggle.UNCHANGED) add(BatchFriendPermissionAction(
+            BatchFriendPermissionSetting.DONT_SEE_MOMENTS,
+            dontSee == BatchPermissionToggle.ENABLE,
+            "不看他（她）：${dontSee.label}"
+        ))
+    }
 }
 
 internal data class BatchTaskRequest(
@@ -32,7 +79,7 @@ internal data class BatchTaskRequest(
     val expectedAccount: String,
     val enabled: Boolean,
     val labelId: String = "",
-    val friendPermission: BatchFriendPermission = BatchFriendPermission.ONLY_CHAT,
+    val friendPermissionSelection: BatchFriendPermissionSelection = BatchFriendPermissionSelection(),
     val groupNickname: String = ""
 )
 
@@ -168,6 +215,9 @@ internal class BatchTaskManager private constructor(
     private fun normalize(request: BatchTaskRequest): BatchTaskRequest? {
         if (request.expectedAccount.isBlank()) return null
         if (request.operation == BatchOperation.FRIEND_LABEL && request.labelId.isBlank()) return null
+        if (request.operation == BatchOperation.FRIEND_PERMISSION && request.friendPermissionSelection.actions().isEmpty()) {
+            return null
+        }
         if (request.operation == BatchOperation.GROUP_NICKNAME) {
             val nickname = request.groupNickname.trim()
             val codePoints = nickname.codePointCount(0, nickname.length)

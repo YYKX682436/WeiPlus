@@ -15,6 +15,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 public final class BatchOperationRegression {
     public static void main(String[] args) {
         selectionFiltering();
+        starredFriendCandidatesAreFilteredAgainstNativeSnapshot();
         labelMemberCandidatesAreExactAndOrdered();
         multiScopeSelectionState();
         searchSeparatesSelectedItemsFromMatches();
@@ -59,6 +60,18 @@ public final class BatchOperationRegression {
                 candidates, sessions, friends, groups, true, false, false);
         assertEquals(Arrays.asList("friend1", "group1@chatroom", "nonfriend@chat", "filehelper"), nativeHome,
                 "native home rows must keep non-friend chats and operable system chats while filtering virtual/pseudo rows");
+    }
+
+    private static void starredFriendCandidatesAreFilteredAgainstNativeSnapshot() {
+        List<String> candidates = BatchSelectionPolicy.filterStarredFriendCandidates(
+                Arrays.asList("friend-b", "friend-a", "group@chatroom", "wxid_hchat_group_fake", "friend-b"),
+                new HashSet<>(Arrays.asList("friend-a", "friend-b", "group@chatroom", "stale-friend")));
+        assertEquals(Arrays.asList("friend-b", "friend-a"), candidates,
+                "unstar must show only ordered valid starred friend candidates");
+        assertEquals(new java.util.ArrayList<String>(),
+                BatchSelectionPolicy.filterStarredFriendCandidates(
+                        Arrays.asList("friend-a"), new HashSet<String>()),
+                "a successful empty starred state must produce an empty list");
     }
 
     private static void multiScopeSelectionState() {
@@ -139,6 +152,8 @@ public final class BatchOperationRegression {
                 "switching between append and removal must clear stale selections");
         assertTrue(!BatchSelectionState.shouldResetForKeyChange("false:label-a", "false:label-a"),
                 "reloading the same tag/action must preserve the current selection");
+        assertTrue(BatchSelectionState.shouldResetForKeyChange("starred", "all-friends"),
+                "switching star/unstar candidate modes must clear the prior selection");
     }
 
     private static void labelMembershipEdits() {

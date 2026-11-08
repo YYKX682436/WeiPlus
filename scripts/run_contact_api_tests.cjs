@@ -6,6 +6,17 @@ const { spawnSync } = require('node:child_process');
 
 const root = path.resolve(__dirname, '..');
 const output = fs.mkdtempSync(path.join(os.tmpdir(), 'hchat-contact-api-tests-'));
+function methodBody(source, signature) {
+    const start = source.indexOf(signature);
+    assert.notEqual(start, -1, `missing method: ${signature}`);
+    const open = source.indexOf('{', start);
+    let depth = 0;
+    for (let index = open; index < source.length; index++) {
+        if (source[index] === '{') depth++;
+        else if (source[index] === '}' && --depth === 0) return source.slice(open, index + 1);
+    }
+    throw new Error(`unclosed method: ${signature}`);
+}
 function run(command, args) {
     const result = spawnSync(command, args, { cwd: root, encoding: 'utf8', timeout: 60000 });
     process.stdout.write(result.stdout || '');
@@ -16,6 +27,9 @@ function run(command, args) {
 try {
     run(process.env.JAVAC || 'javac', ['-encoding', 'UTF-8', '-d', output,
         'app/src/main/java/h/Hchat/hooks/api/contact/ContactRequestDispatch.java',
+        'app/src/main/java/h/Hchat/hooks/api/contact/NativeSceneResponse.java',
+        'app/src/main/java/h/Hchat/hooks/api/contact/WeChatNativeMutationResult.java',
+        'app/src/main/java/h/Hchat/hooks/api/contact/WeChatPermissionResultPolicy.java',
         'app/src/main/java/h/Hchat/dexkit/RetryableLocatorState.java',
         'app/src/main/java/h/Hchat/dexkit/DexFinderCacheStore.java',
         'scripts/tests/contact_api/ContactDispatchRegression.java',
@@ -27,6 +41,10 @@ try {
 
     const api = fs.readFileSync(path.join(root,
         'app/src/main/java/h/Hchat/hooks/api/contact/WeChatContactApi.java'), 'utf8');
+    const sceneDispatch = fs.readFileSync(path.join(root,
+        'app/src/main/java/h/Hchat/hooks/api/contact/NativeSceneDispatch.java'), 'utf8');
+    const sceneResponse = fs.readFileSync(path.join(root,
+        'app/src/main/java/h/Hchat/hooks/api/contact/NativeSceneResponse.java'), 'utf8');
     const sharedPicker = fs.readFileSync(path.join(root,
         'app/src/main/java/h/Hchat/ui/miuix/MiuixSharedComponents.kt'), 'utf8');
     assert.match(api, /result == null \|\| !result\.serverAccepted\(\)/,
@@ -51,6 +69,20 @@ try {
         'server acceptance and final label state confirmation must remain separate');
     assert.match(api, /dispatch\.wasSubmitted\(\)[\s\S]*?ContactLabelMutationResult\.SUBMITTED_UNCONFIRMED/,
         'submitted requests without an accepted final state must be reported as unconfirmed');
+    assert.match(sceneDispatch, /NativeSceneResponse\.fromArguments\(args\)/,
+        'six-argument native scene callbacks must use the verified argument decoder');
+    assert.doesNotMatch(sceneDispatch, /args\[0\].*args\[1\]/,
+        'native scene dispatch must not interpret netId and errType as the error pair');
+    assert.match(sceneResponse, /args\[1\].*args\[2\]/,
+        'the error decoder must read errType and errCode from the second and third integer arguments');
+    const onlyChatMethod = methodBody(api, 'public WeChatNativeMutationResult setFriendPermission');
+    assert.match(onlyChatMethod, /dispatch\.outcome == ContactRequestDispatch\.Outcome\.SERVER_REJECTED[\s\S]*?WeChatPermissionResultPolicy\.classify/,
+        'explicit server rejection must be handled before final local state can confirm a permission change');
+    const snsMethod = methodBody(api, 'private WeChatNativeMutationResult setSnsTagPermission');
+    assert.match(snsMethod, /dispatch\.outcome == ContactRequestDispatch\.Outcome\.SERVER_REJECTED[\s\S]*?WeChatPermissionResultPolicy\.classify/,
+        'SNS permission rejection must also take precedence over local tag state');
+    assert.match(api, /WeChatPermissionResultPolicy\.classify\(/,
+        'friend permission status must use the production server-acceptance and state-read classifier');
     console.log('Contact API call-chain regression assertions passed');
 } finally {
     fs.rmSync(output, { recursive: true, force: true });

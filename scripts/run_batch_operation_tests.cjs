@@ -89,14 +89,24 @@ try {
         'friend label selection and append/remove controls must be visible');
     assert.match(batchUi, /BatchOperation\.STAR_FRIEND -> PopupChoiceRow[\s\S]*?设为星标朋友[\s\S]*?取消星标朋友/,
         'star enable and disable must be explicit compact choices');
-    assert.match(batchUi, /BatchOperation\.FRIEND_PERMISSION ->[\s\S]*?BatchFriendPermission\.entries[\s\S]*?目标状态/,
-        'friend permission selection must expose the setting and the matching target state');
+    assert.match(batchUi, /title = "设置朋友权限"[\s\S]*?BatchFriendAccessChoice\.entries[\s\S]*?title = "不让他（她）看"[\s\S]*?title = "不看他（她）"/,
+        'friend permission must expose the three native control rows in the requested order');
+    assert.match(manager, /BatchFriendAccessChoice[\s\S]*?UNCHANGED\("不修改"\)[\s\S]*?NORMAL\("聊天、朋友圈、微信运动等"\)[\s\S]*?ONLY_CHAT\("仅聊天"\)/,
+        'friend access choices must include no-change and map standard access/only-chat separately');
+    assert.match(batchUi, /BatchPermissionToggle\.entries\.map[\s\S]*?friendPermissionSelection\.dontLetSee[\s\S]*?BatchPermissionToggle\.entries\.map[\s\S]*?friendPermissionSelection\.dontSee/,
+        'both Moments controls must include their default no-change choice');
+    assert.match(batchUi, /friendPermissionSelection\.actions\(\)\.isNotEmpty\(\)/,
+        'friend permission cannot submit while all three rows remain no-change');
     assert.match(batchUi, /BatchOperation\.GROUP_SAVE_TO_CONTACTS -> PopupChoiceRow[\s\S]*?保存[\s\S]*?取消保存/,
         'group save and unsave must be explicit compact choices');
     assert.match(batchUi, /BatchOperation\.GROUP_NICKNAME -> InputRow[\s\S]*?value = groupNickname/,
         'group nickname must be entered once in the shared picker header');
-    assert.match(batchUi, /BatchOperation\.STAR_FRIEND, BatchOperation\.FRIEND_PERMISSION -> BatchCandidateMode\.ALL_FRIENDS[\s\S]*?GROUP_SAVE_TO_CONTACTS, BatchOperation\.GROUP_NICKNAME -> BatchCandidateMode\.ALL_GROUPS/,
-        'new friend operations use all valid friends and group operations use all groups');
+    assert.match(batchUi, /BatchOperation\.STAR_FRIEND -> if \(enabled\)[\s\S]*?BatchCandidateMode\.ALL_FRIENDS[\s\S]*?BatchCandidateMode\.STARRED_FRIENDS/,
+        'star uses all valid friends and unstar uses only the starred-friend candidate mode');
+    assert.match(batchUi, /BatchOperation\.FRIEND_PERMISSION -> BatchCandidateMode\.ALL_FRIENDS[\s\S]*?GROUP_SAVE_TO_CONTACTS, BatchOperation\.GROUP_NICKNAME -> BatchCandidateMode\.ALL_GROUPS/,
+        'permission operations use friends and group operations use groups');
+    assert.match(batchUi, /BatchOperation\.STAR_FRIEND -> enabled\.toString\(\)/,
+        'switching between star and unstar resets the previous selection');
     assert.match(batchUi, /validGroupNickname\(groupNickname\)/,
         'invalid empty or overlength group nicknames must not enable submission');
     assert.doesNotMatch(batchUi, /当前聊天中的好友|全部好友"\s*,\s*BatchScope/,
@@ -144,6 +154,10 @@ try {
         'remove-tag candidates must come from a successfully-read tag membership snapshot intersected with valid friends');
     assert.match(shared, /getFriendsResult\(\)[\s\S]*?读取有效好友失败/,
         'friend candidates must distinguish a successful empty list from database failure');
+    assert.match(shared, /BatchCandidateMode\.STARRED_FRIENDS ->[\s\S]*?WeChatContactTypeState\.STARRED_FRIEND[\s\S]*?filterStarredFriendCandidates/,
+        'unstar candidates must be filtered from the successful valid-friend result using type bit 0x40');
+    assert.match(shared, /BatchCandidateMode\.STARRED_FRIENDS,/,
+        'starred candidate loading must share the database success state instead of treating a read failure as empty');
     assert.match(shared, /getGroupsResult\(\)[\s\S]*?读取有效群聊失败/,
         'group candidates must distinguish a successful empty list from database failure');
     assert.match(shared, /!labelSnapshot\.success[\s\S]*?读取好友标签成员失败/,
@@ -161,6 +175,10 @@ try {
         'the process manager must use a bounded serial daemon queue');
     assert.match(manager, /if \(current != null\) return BatchTaskSubmitResult\.BUSY/,
         'the process manager must reject overlapping tasks');
+    assert.match(manager, /FRIEND_PERMISSION && request\.friendPermissionSelection\.actions\(\)\.isEmpty\(\)/,
+        'the manager must reject a friend-permission task with all rows set to no-change');
+    assert.match(manager, /FRIEND_PERMISSION && request\.friendPermissionSelection\.actions\(\)\.isEmpty\(\)/,
+        'the task manager must reject an all-no-change friend-permission request');
     assert.match(manager, /completionNotifier\.notify\(snapshot\)/,
         'the process manager must send one completion notification after storing the final report');
     assert.match(manager, /shouldNotify = !shutDown/,
@@ -186,6 +204,14 @@ try {
         'hide must use WeChat native hide behavior');
     assert.match(executor, /setStarredFriend\([\s\S]*?setFriendPermission\([\s\S]*?setGroupSavedToContacts\([\s\S]*?setMyGroupNickname\(/,
         'the four new actions must enter their public WeChat APIs');
+    assert.match(executor, /BatchFriendPermissionExecution\.executeOne\([\s\S]*?request\.friendPermissionSelection[\s\S]*?setFriendPermission\(/,
+        'the selected friend permission plan must run through the serial production executor');
+    assert.match(executor, /BatchFriendPermissionExecution[\s\S]*?Outcome\.SERVER_REJECTED[\s\S]*?Outcome\.READ_FAILED/,
+        'partial permission server rejection and state-read failures must remain distinguishable');
+    assert.match(executor, /unconfirmed \|\| \(interrupted && nativeRequestMayHaveBeenSent\)/,
+        'a partially executed permission plan interrupted by stop/account switch cannot be reported as success');
+    assert.match(executor, /停止后.*未提交|账号切换后.*未提交/,
+        'unsubmitted settings after a stop or account switch must be listed in the per-target result');
     assert.match(executor, /setContactLabelMembershipsById\(/,
         'label batch tasks must enter the safe native bulk API');
     assert.match(executor, /ContactLabelMutationResult\.INVALID_TARGET ->\s*result\(BatchTaskRunner\.Outcome\.SKIPPED/,

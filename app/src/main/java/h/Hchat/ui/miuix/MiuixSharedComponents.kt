@@ -23,6 +23,7 @@ import android.widget.Toast
 import android.widget.VideoView
 import h.Hchat.BuildConfig
 import h.Hchat.hooks.api.contact.WeChatContactApi
+import h.Hchat.hooks.api.contact.WeChatContactTypeState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
@@ -2758,6 +2759,7 @@ internal enum class BatchCandidateMode {
     PINNABLE_FRIENDS_AND_GROUPS,
     CURRENT_FRIENDS,
     ALL_FRIENDS,
+    STARRED_FRIENDS,
     ALL_GROUPS,
     ALL_FRIENDS_WITH_LABEL
 }
@@ -4083,6 +4085,7 @@ internal fun loadContacts(
                 BatchCandidateMode.ALL_FRIENDS_AND_GROUPS,
                 BatchCandidateMode.PINNABLE_FRIENDS_AND_GROUPS,
                 BatchCandidateMode.ALL_FRIENDS,
+                BatchCandidateMode.STARRED_FRIENDS,
                 BatchCandidateMode.ALL_FRIENDS_WITH_LABEL
             )
             val needsFriendIds = strictFriendsOnly || strictFriendsAndGroupsOnly ||
@@ -4177,6 +4180,21 @@ internal fun loadContacts(
                     BatchCandidateMode.ALL_FRIENDS -> {
                         rows += friends.asSequence().filter { it.wxId in batchValidFriendIds }
                             .mapNotNull { it.toOption(false) }.toList()
+                    }
+                    BatchCandidateMode.STARRED_FRIENDS -> {
+                        val starredFriendIds = friends.asSequence()
+                            .filter { WeChatContactTypeState.isEnabled(
+                                it.type, WeChatContactTypeState.STARRED_FRIEND
+                            ) }
+                            .mapNotNull { it.wxId.takeIf(String::isNotBlank) }
+                            .toSet()
+                        val starredCandidates = BatchSelectionPolicy.filterStarredFriendCandidates(
+                            batchValidFriendIds, starredFriendIds
+                        ).toSet()
+                        rows += friends.asSequence()
+                            .filter { it.wxId in starredCandidates }
+                            .mapNotNull { it.toOption(false) }
+                            .toList()
                     }
                     BatchCandidateMode.ALL_GROUPS -> {
                         rows += groups.asSequence().filter { it.wxId in batchValidGroupIds }

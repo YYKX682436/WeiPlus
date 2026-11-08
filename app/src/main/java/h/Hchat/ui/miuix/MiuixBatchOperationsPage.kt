@@ -23,7 +23,9 @@ import androidx.compose.ui.unit.dp
 import h.Hchat.hooks.api.core.WeChatApis
 import h.Hchat.hooks.api.model.ContactLabelBean
 import h.Hchat.hooks.items.batch.BatchOperation
-import h.Hchat.hooks.items.batch.BatchFriendPermission
+import h.Hchat.hooks.items.batch.BatchFriendAccessChoice
+import h.Hchat.hooks.items.batch.BatchFriendPermissionSelection
+import h.Hchat.hooks.items.batch.BatchPermissionToggle
 import h.Hchat.hooks.items.batch.BatchTaskManager
 import h.Hchat.hooks.items.batch.BatchTaskRequest
 import h.Hchat.hooks.items.batch.BatchTaskStatus
@@ -47,7 +49,7 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
     var feature by remember { mutableStateOf<BatchOperation?>(null) }
     var enabled by remember { mutableStateOf(true) }
     var scope by remember { mutableStateOf(BatchScope.CURRENT) }
-    var friendPermission by remember { mutableStateOf(BatchFriendPermission.ONLY_CHAT) }
+    var friendPermissionSelection by remember { mutableStateOf(BatchFriendPermissionSelection()) }
     var groupNickname by remember { mutableStateOf("") }
     var labelChoices by remember { mutableStateOf(emptyList<ContactLabelBean>()) }
     var labelsLoaded by remember { mutableStateOf(false) }
@@ -107,7 +109,7 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
     val latestFeature = rememberUpdatedState(currentFeature)
     val latestScope = rememberUpdatedState(scope)
     val latestEnabled = rememberUpdatedState(enabled)
-    val latestFriendPermission = rememberUpdatedState(friendPermission)
+    val latestFriendPermissionSelection = rememberUpdatedState(friendPermissionSelection)
     val latestGroupNickname = rememberUpdatedState(groupNickname)
     val latestLabels = rememberUpdatedState(labelChoices)
     val latestLabelsLoaded = rememberUpdatedState(labelsLoaded)
@@ -118,6 +120,8 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
         accountReady && accountIdentity.isNotBlank() &&
             (currentFeature != BatchOperation.FRIEND_LABEL ||
                 (labelsLoaded && labelsError.isBlank() && selectedLabelName.isNotBlank())) &&
+            (currentFeature != BatchOperation.FRIEND_PERMISSION ||
+                friendPermissionSelection.actions().isNotEmpty()) &&
             (currentFeature != BatchOperation.GROUP_NICKNAME || validGroupNickname(groupNickname))
     )
     val latestCandidateMode = rememberUpdatedState(candidateMode(currentFeature, scope, enabled))
@@ -125,7 +129,11 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
         selectedLabelId.takeIf { currentFeature == BatchOperation.FRIEND_LABEL && !enabled }
     )
     val latestSelectionResetKey = rememberUpdatedState(
-        if (currentFeature == BatchOperation.FRIEND_LABEL) "$enabled:$selectedLabelId" else null
+        when (currentFeature) {
+            BatchOperation.FRIEND_LABEL -> "$enabled:$selectedLabelId"
+            BatchOperation.STAR_FRIEND -> enabled.toString()
+            else -> null
+        }
     )
 
     val pickerRequest = remember(currentFeature) {
@@ -149,8 +157,8 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
                         feature = latestFeature.value,
                         enabled = latestEnabled.value,
                         onEnabledChange = { enabled = it },
-                        friendPermission = latestFriendPermission.value,
-                        onFriendPermissionChange = { friendPermission = it },
+                        friendPermissionSelection = latestFriendPermissionSelection.value,
+                        onFriendPermissionSelectionChange = { friendPermissionSelection = it },
                         groupNickname = latestGroupNickname.value,
                         onGroupNicknameChange = { groupNickname = it },
                         scope = latestScope.value,
@@ -189,6 +197,12 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
             Toast.makeText(context, "请先选择有效好友标签", Toast.LENGTH_SHORT).show()
             return
         }
+        if (currentFeature == BatchOperation.FRIEND_PERMISSION &&
+            friendPermissionSelection.actions().isEmpty()
+        ) {
+            Toast.makeText(context, "请至少选择一项朋友权限修改", Toast.LENGTH_SHORT).show()
+            return
+        }
         if (currentFeature == BatchOperation.GROUP_NICKNAME && !validGroupNickname(groupNickname)) {
             Toast.makeText(context, "请输入不超过16个汉字的群聊昵称", Toast.LENGTH_SHORT).show()
             return
@@ -201,7 +215,7 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
                 expectedAccount = accountIdentity,
                 enabled = enabled,
                 labelId = selectedLabelId,
-                friendPermission = friendPermission,
+                friendPermissionSelection = friendPermissionSelection,
                 groupNickname = groupNickname
             )
         )
@@ -252,7 +266,7 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
                             feature = operation
                             enabled = true
                             scope = BatchScope.CURRENT
-                            friendPermission = BatchFriendPermission.ONLY_CHAT
+                            friendPermissionSelection = BatchFriendPermissionSelection()
                             groupNickname = ""
                             if (operation == BatchOperation.FRIEND_LABEL && labelsLoaded) {
                                 selectedLabelId = labelChoices.firstOrNull()?.labelId.orEmpty()
@@ -291,8 +305,8 @@ private fun BatchPickerControls(
     feature: BatchOperation?,
     enabled: Boolean,
     onEnabledChange: (Boolean) -> Unit,
-    friendPermission: BatchFriendPermission,
-    onFriendPermissionChange: (BatchFriendPermission) -> Unit,
+    friendPermissionSelection: BatchFriendPermissionSelection,
+    onFriendPermissionSelectionChange: (BatchFriendPermissionSelection) -> Unit,
     groupNickname: String,
     onGroupNicknameChange: (String) -> Unit,
     scope: BatchScope,
@@ -381,27 +395,39 @@ private fun BatchPickerControls(
             )
             BatchOperation.FRIEND_PERMISSION -> {
                 PopupChoiceRow(
-                    title = "设置项",
-                    summary = friendPermission.label,
-                    options = BatchFriendPermission.entries.map { PopupChoice(it.label, it.name) },
-                    currentValue = friendPermission.name,
+                    title = "设置朋友权限",
+                    summary = friendPermissionSelection.access.label,
+                    options = BatchFriendAccessChoice.entries.map { PopupChoice(it.label, it.name) },
+                    currentValue = friendPermissionSelection.access.name,
                     onValueChanged = { value ->
-                        BatchFriendPermission.entries.firstOrNull { it.name == value }
-                            ?.let(onFriendPermissionChange)
+                        BatchFriendAccessChoice.entries.firstOrNull { it.name == value }?.let { selected ->
+                            onFriendPermissionSelectionChange(friendPermissionSelection.copy(access = selected))
+                        }
                     }
                 )
                 InsetDivider()
-                val targetOptions = if (friendPermission == BatchFriendPermission.ONLY_CHAT) {
-                    listOf(PopupChoice("仅聊天", "true"), PopupChoice("普通朋友", "false"))
-                } else {
-                    listOf(PopupChoice("开启", "true"), PopupChoice("关闭", "false"))
-                }
                 PopupChoiceRow(
-                    title = "目标状态",
-                    summary = targetOptions.firstOrNull { it.value == enabled.toString() }?.label.orEmpty(),
-                    options = targetOptions,
-                    currentValue = enabled.toString(),
-                    onValueChanged = { onEnabledChange(it.toBooleanStrictOrNull() ?: enabled) }
+                    title = "不让他（她）看",
+                    summary = friendPermissionSelection.dontLetSee.label,
+                    options = BatchPermissionToggle.entries.map { PopupChoice(it.label, it.name) },
+                    currentValue = friendPermissionSelection.dontLetSee.name,
+                    onValueChanged = { value ->
+                        BatchPermissionToggle.entries.firstOrNull { it.name == value }?.let { selected ->
+                            onFriendPermissionSelectionChange(friendPermissionSelection.copy(dontLetSee = selected))
+                        }
+                    }
+                )
+                InsetDivider()
+                PopupChoiceRow(
+                    title = "不看他（她）",
+                    summary = friendPermissionSelection.dontSee.label,
+                    options = BatchPermissionToggle.entries.map { PopupChoice(it.label, it.name) },
+                    currentValue = friendPermissionSelection.dontSee.name,
+                    onValueChanged = { value ->
+                        BatchPermissionToggle.entries.firstOrNull { it.name == value }?.let { selected ->
+                            onFriendPermissionSelectionChange(friendPermissionSelection.copy(dontSee = selected))
+                        }
+                    }
                 )
             }
             BatchOperation.GROUP_SAVE_TO_CONTACTS -> PopupChoiceRow(
@@ -443,7 +469,12 @@ private fun candidateMode(
     } else {
         BatchCandidateMode.ALL_FRIENDS_WITH_LABEL
     }
-    BatchOperation.STAR_FRIEND, BatchOperation.FRIEND_PERMISSION -> BatchCandidateMode.ALL_FRIENDS
+    BatchOperation.STAR_FRIEND -> if (enabled) {
+        BatchCandidateMode.ALL_FRIENDS
+    } else {
+        BatchCandidateMode.STARRED_FRIENDS
+    }
+    BatchOperation.FRIEND_PERMISSION -> BatchCandidateMode.ALL_FRIENDS
     BatchOperation.GROUP_SAVE_TO_CONTACTS, BatchOperation.GROUP_NICKNAME -> BatchCandidateMode.ALL_GROUPS
     null -> null
 }

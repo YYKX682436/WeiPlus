@@ -32,9 +32,9 @@ final class NativeSceneDispatch {
                     Object receiver = chain.getThisObject();
                     Object result = chain.proceed();
                     ContactRequestDispatch.Callback target = pending.get();
-                    if (receiver == scene && target != null && args != null && args.length == 6
-                            && args[0] instanceof Number && args[1] instanceof Number) {
-                        target.onResponse(((Number) args[0]).intValue(), ((Number) args[1]).intValue());
+                    NativeSceneResponse response = NativeSceneResponse.fromArguments(args);
+                    if (receiver == scene && target != null && response != null) {
+                        target.onResponse(response.errorType, response.errorCode);
                     }
                     return result;
                 }

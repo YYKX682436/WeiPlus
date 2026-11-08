@@ -765,6 +765,10 @@ internal fun ContactPickerPage(
                             candidateContacts.isEmpty() && query.isBlank()
                         ) {
                             "该标签下没有有效好友"
+                        } else if (batchCandidateMode == BatchCandidateMode.STARRED_FRIENDS &&
+                            candidateContacts.isEmpty() && query.isBlank()
+                        ) {
+                            "没有已星标的有效好友"
                         } else {
                             "没有匹配结果"
                         }

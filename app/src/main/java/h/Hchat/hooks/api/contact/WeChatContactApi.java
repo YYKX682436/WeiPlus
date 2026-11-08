@@ -568,6 +568,7 @@ public final class WeChatContactApi {
         if (loader == null || networkDispatcher == null) {
             return nativeResult(WeChatNativeMutationResult.Outcome.NOT_SUBMITTED, "微信原生请求 API 不可用");
         }
+        AtomicBoolean permissionDispatchStarted = new AtomicBoolean(false);
         try {
             // 8.0.80 OnlyChatContactMgrUI creates q61.i0(users, 0x800000, op, maxNum).
             Class<?> sceneClass = Class.forName("q61.i0", false, loader);
@@ -587,33 +588,24 @@ public final class WeChatContactApi {
                 return nativeResult(WeChatNativeMutationResult.Outcome.NOT_SUBMITTED, "账号已切换或任务已停止");
             }
             installNetworkHook();
+            permissionDispatchStarted.set(true);
             ContactRequestDispatch.Result dispatch = NativeSceneDispatch.submitAndAwait(
                     scene, networkDispatcher, () -> maySubmit(guard), (errorType, errorCode) -> {});
-            ContactStateResult after = getContactStateResult(username);
-            if (!after.success) return nativeResult(WeChatNativeMutationResult.Outcome.READ_FAILED,
-                    "原生请求已结束，但读取权限状态失败");
-            if (after.found && WeChatContactTypeState.matches(after.type, bit, enabled)) {
-                return nativeResult(WeChatNativeMutationResult.Outcome.CONFIRMED, feature + "状态已确认");
-            }
             if (dispatch.outcome == ContactRequestDispatch.Outcome.SERVER_REJECTED) {
                 return nativeResult(WeChatNativeMutationResult.Outcome.SERVER_REJECTED, feature + "服务端拒绝");
             }
-            if (dispatch.outcome == ContactRequestDispatch.Outcome.SERVER_ACCEPTED) {
-                return nativeResult(WeChatNativeMutationResult.Outcome.SERVER_ACCEPTED,
-                        "服务端已接受，最终状态未确认");
-            }
-            if (dispatch.wasSubmitted()) {
-                return nativeResult(WeChatNativeMutationResult.Outcome.SUBMITTED_UNCONFIRMED,
-                        "已提交／未确认");
-            }
-            if (dispatch.outcome == ContactRequestDispatch.Outcome.DISPATCH_FAILED) {
-                return nativeResult(WeChatNativeMutationResult.Outcome.SUBMITTED_UNCONFIRMED,
-                        "请求调用结果未知，未重试");
-            }
-            return nativeResult(WeChatNativeMutationResult.Outcome.NOT_SUBMITTED, "微信原生权限请求未提交");
+            ContactStateResult after = getContactStateResult(username);
+            boolean matches = after.success && after.found && after.validFriend
+                    && WeChatContactTypeState.matches(after.type, bit, enabled);
+            WeChatNativeMutationResult.Outcome outcome = WeChatPermissionResultPolicy.classify(
+                    dispatch, after.success, matches);
+            return nativeResult(outcome, permissionResultMessage(outcome, feature));
         } catch (Throwable e) {
             log("提交好友权限失败: " + e.getMessage());
-            return nativeResult(WeChatNativeMutationResult.Outcome.NOT_SUBMITTED, "微信原生权限请求不可用");
+            return permissionDispatchStarted.get()
+                    ? nativeResult(WeChatNativeMutationResult.Outcome.SUBMITTED_UNCONFIRMED,
+                            "请求结果未知，未重试")
+                    : nativeResult(WeChatNativeMutationResult.Outcome.NOT_SUBMITTED, "微信原生权限请求不可用");
         }
     }
 
@@ -647,6 +639,7 @@ public final class WeChatContactApi {
             return nativeResult(WeChatNativeMutationResult.Outcome.READ_FAILED,
                     "微信朋友圈权限 API 不可用，未提交");
         }
+        AtomicBoolean permissionDispatchStarted = new AtomicBoolean(false);
         try {
             ContactStateResult latest = getContactStateResult(username);
             if (!latest.success) return nativeResult(WeChatNativeMutationResult.Outcome.READ_FAILED,
@@ -670,37 +663,24 @@ public final class WeChatContactApi {
             Object scene = ctor.newInstance(enabled ? 1 : 2, 5L, "", 1,
                     Collections.singletonList(username), 0);
             installNetworkHook();
+            permissionDispatchStarted.set(true);
             ContactRequestDispatch.Result dispatch = NativeSceneDispatch.submitAndAwait(
                     scene, networkDispatcher, () -> maySubmit(guard), (errorType, errorCode) -> {});
-            Boolean after = readSnsTagMembership(username, 5L);
-            if (after == null) {
-                return nativeResult(dispatch.wasSubmitted()
-                                ? WeChatNativeMutationResult.Outcome.SUBMITTED_UNCONFIRMED
-                                : WeChatNativeMutationResult.Outcome.READ_FAILED,
-                        "朋友圈权限请求已结束，但标签成员状态读取失败");
-            }
-            if (after == enabled) return nativeResult(
-                    WeChatNativeMutationResult.Outcome.CONFIRMED, "不看对方朋友圈状态已确认");
             if (dispatch.outcome == ContactRequestDispatch.Outcome.SERVER_REJECTED) {
                 return nativeResult(WeChatNativeMutationResult.Outcome.SERVER_REJECTED,
                         "微信服务端拒绝朋友圈权限修改");
             }
-            if (dispatch.outcome == ContactRequestDispatch.Outcome.SERVER_ACCEPTED) {
-                return nativeResult(WeChatNativeMutationResult.Outcome.SERVER_ACCEPTED,
-                        "服务端已接受，朋友圈权限标签状态未确认");
-            }
-            if (dispatch.wasSubmitted()) return nativeResult(
-                    WeChatNativeMutationResult.Outcome.SUBMITTED_UNCONFIRMED, "已提交／未确认");
-            if (dispatch.outcome == ContactRequestDispatch.Outcome.DISPATCH_FAILED) {
-                return nativeResult(WeChatNativeMutationResult.Outcome.SUBMITTED_UNCONFIRMED,
-                        "请求调用结果未知，未重试");
-            }
-            return nativeResult(WeChatNativeMutationResult.Outcome.NOT_SUBMITTED,
-                    "微信原生朋友圈权限请求未提交");
+            Boolean after = readSnsTagMembership(username, 5L);
+            WeChatNativeMutationResult.Outcome outcome = WeChatPermissionResultPolicy.classify(
+                    dispatch, after != null, Boolean.valueOf(enabled).equals(after));
+            return nativeResult(outcome, permissionResultMessage(outcome, "不看对方朋友圈"));
         } catch (Throwable e) {
             log("提交不看对方朋友圈失败: " + e.getMessage());
-            return nativeResult(WeChatNativeMutationResult.Outcome.NOT_SUBMITTED,
-                    "微信原生朋友圈权限 API 不可用");
+            return permissionDispatchStarted.get()
+                    ? nativeResult(WeChatNativeMutationResult.Outcome.SUBMITTED_UNCONFIRMED,
+                            "请求结果未知，未重试")
+                    : nativeResult(WeChatNativeMutationResult.Outcome.NOT_SUBMITTED,
+                            "微信原生朋友圈权限 API 不可用");
         }
     }
 
@@ -849,6 +829,20 @@ public final class WeChatContactApi {
     private static WeChatNativeMutationResult nativeResult(
             WeChatNativeMutationResult.Outcome outcome, String message) {
         return WeChatNativeMutationResult.of(outcome, message);
+    }
+
+    private static String permissionResultMessage(
+            WeChatNativeMutationResult.Outcome outcome, String feature) {
+        return switch (outcome) {
+            case CONFIRMED -> feature + "状态已确认";
+            case SERVER_ACCEPTED -> "服务端已接受，" + feature + "状态未确认";
+            case SERVER_REJECTED -> feature + "服务端拒绝";
+            case ALREADY_SATISFIED -> feature + "已符合目标";
+            case NOT_SUBMITTED -> "微信原生" + feature + "请求未提交";
+            case READ_FAILED -> "读取" + feature + "状态失败";
+            case SUBMITTED_UNCONFIRMED -> "已提交或请求结果未知，" + feature + "状态未确认；未重试";
+            case INVALID_TARGET -> "好友关系已失效，" + feature + "未提交";
+        };
     }
 
     /**

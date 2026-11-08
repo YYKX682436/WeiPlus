@@ -48,4 +48,18 @@ public final class BatchSelectionPolicy {
         }
         return new ArrayList<>(result);
     }
+
+    /** Intersects the ordered valid-friend list with the current native starred-ID snapshot. */
+    public static List<String> filterStarredFriendCandidates(Iterable<String> validFriendIds,
+                                                              Set<String> starredFriendIds) {
+        LinkedHashSet<String> result = new LinkedHashSet<>();
+        if (validFriendIds == null || starredFriendIds == null) return new ArrayList<>();
+        for (String id : validFriendIds) {
+            if (!WeChatConversationIdentity.isBatchOperableUsername(id)) continue;
+            String target = id.trim();
+            if (target.endsWith("@chatroom") || target.endsWith("@im.chatroom")) continue;
+            if (starredFriendIds.contains(target)) result.add(target);
+        }
+        return new ArrayList<>(result);
+    }
 }
