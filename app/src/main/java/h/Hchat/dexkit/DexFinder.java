@@ -241,12 +241,9 @@ public class DexFinder {
     public Method favoriteListNextMethod;
     public Method favoriteListCursorMethod;
     public Method favoriteGetMethod;
-    public Method favoriteDeleteItemsMethod;
-    public Method favoriteDeleteSceneCallbackMethod;
     // Native business-account unsubscribe scene used by FlutterBizConversationPlugin.
     public Class<?> batchOfficialUnfollowSceneClass;
     public Constructor<?> batchOfficialUnfollowSceneCtor;
-    public Method batchOfficialUnfollowSceneCallbackMethod;
     public Method favoriteSendMethod;
     // 微信数据库/联系人 API
     public Class<?> mmKernelClass;
@@ -2279,52 +2276,6 @@ public class DexFinder {
         }
     }
 
-    public void resolveFavoriteDeleteApi() {
-        try {
-            if (isFavoriteDeleteItemsMethod(favoriteDeleteItemsMethod)
-                    && isFavoriteDeleteSceneCallbackMethod(favoriteDeleteSceneCallbackMethod)) return;
-
-            if (!isFavoriteDeleteItemsMethod(favoriteDeleteItemsMethod)) {
-                favoriteDeleteItemsMethod = null;
-                List<MethodData> candidates = dexQueries.findMethod(
-                        mkMethodUsingStrings("deleteFavItems execute items:%s"));
-                for (MethodData candidate : candidates) {
-                    Method method;
-                    try {
-                        method = candidate.getMethodInstance(classLoader);
-                    } catch (Throwable ignored) {
-                        continue;
-                    }
-                    if (!isFavoriteDeleteItemsMethod(method)) continue;
-                    favoriteDeleteItemsMethod = KavaReflector.accessible(method);
-                    break;
-                }
-            }
-
-            if (!isFavoriteDeleteSceneCallbackMethod(favoriteDeleteSceneCallbackMethod)) {
-                favoriteDeleteSceneCallbackMethod = null;
-                List<MethodData> candidates = dexQueries.findMethod(
-                        mkMethodUsingStrings("/cgi-bin/micromsg-bin/batchdelfavitem"));
-                for (MethodData candidate : candidates) {
-                    Method anchor;
-                    try {
-                        anchor = candidate.getMethodInstance(classLoader);
-                    } catch (Throwable ignored) {
-                        continue;
-                    }
-                    for (Method method : KavaReflector.declaredMethods(anchor.getDeclaringClass())) {
-                        if (!isFavoriteDeleteSceneCallbackMethod(method)) continue;
-                        favoriteDeleteSceneCallbackMethod = KavaReflector.accessible(method);
-                        break;
-                    }
-                    if (favoriteDeleteSceneCallbackMethod != null) break;
-                }
-            }
-        } catch (Throwable e) {
-            h.Hchat.utils.HLog.e(TAG + " resolveFavoriteDeleteApi 失败: " + e.getMessage(), e);
-        }
-    }
-
     /** Resolve WeChat's native batchmodcontacttype scene used for bulk biz-account unsubscribe. */
     public synchronized boolean resolveBatchOfficialUnfollowApi() {
         if (isBatchOfficialUnfollowApiReady()) return true;
@@ -2345,7 +2296,6 @@ public class DexFinder {
                 if (constructor == null) continue;
                 batchOfficialUnfollowSceneClass = sceneClass;
                 batchOfficialUnfollowSceneCtor = KavaReflector.accessible(constructor);
-                batchOfficialUnfollowSceneCallbackMethod = KavaReflector.accessible(callback);
                 break;
             }
             return isBatchOfficialUnfollowApiReady();
@@ -2369,31 +2319,7 @@ public class DexFinder {
 
     public synchronized boolean isBatchOfficialUnfollowApiReady() {
         return batchOfficialUnfollowSceneClass != null
-                && batchOfficialUnfollowSceneCtor != null
-                && batchOfficialUnfollowSceneCallbackMethod != null;
-    }
-
-    private boolean isFavoriteDeleteItemsMethod(Method method) {
-        if (method == null || !java.lang.reflect.Modifier.isStatic(method.getModifiers())
-                || method.getReturnType() != boolean.class) return false;
-        Class<?>[] p = method.getParameterTypes();
-        return p.length == 3
-                && List.class.isAssignableFrom(p[0])
-                && p[1] == int.class
-                && Map.class.isAssignableFrom(p[2]);
-    }
-
-    private boolean isFavoriteDeleteSceneCallbackMethod(Method method) {
-        if (method == null || !"onGYNetEnd".equals(method.getName())
-                || method.getReturnType() != void.class) return false;
-        Class<?>[] p = method.getParameterTypes();
-        return p.length == 6
-                && p[0] == int.class
-                && p[1] == int.class
-                && p[2] == int.class
-                && p[3] == String.class
-                && !p[4].isPrimitive()
-                && p[5] == byte[].class;
+                && batchOfficialUnfollowSceneCtor != null;
     }
 
     private void resolveFavoriteListApi() {
@@ -4782,8 +4708,6 @@ public class DexFinder {
             favoriteListNextMethod = loadMethod("favoriteListNextMethod");
             favoriteListCursorMethod = loadMethod("favoriteListCursorMethod");
             favoriteGetMethod = loadMethod("favoriteGetMethod");
-            favoriteDeleteItemsMethod = loadMethod("favoriteDeleteItemsMethod");
-            favoriteDeleteSceneCallbackMethod = loadMethod("favoriteDeleteSceneCallbackMethod");
             favoriteSendMethod = loadMethod("favoriteSendMethod");
             mmKernelClass = loadClass("mmKernelClass");
             coreStorageClass = loadClass("coreStorageClass");
@@ -6125,8 +6049,6 @@ public class DexFinder {
             putMethod(editor, "favoriteListNextMethod", favoriteListNextMethod);
             putMethod(editor, "favoriteListCursorMethod", favoriteListCursorMethod);
             putMethod(editor, "favoriteGetMethod", favoriteGetMethod);
-            putMethod(editor, "favoriteDeleteItemsMethod", favoriteDeleteItemsMethod);
-            putMethod(editor, "favoriteDeleteSceneCallbackMethod", favoriteDeleteSceneCallbackMethod);
             putMethod(editor, "favoriteSendMethod", favoriteSendMethod);
             putClass(editor, "mmKernelClass", mmKernelClass);
             putClass(editor, "coreStorageClass", coreStorageClass);

@@ -2818,9 +2818,7 @@ internal data class FavoritePickerRequest(
     val existingValue: String,
     val onValue: (String) -> Unit,
     val multiSelect: Boolean = true,
-    val delimiter: String = "|",
-    val destructiveDelete: Boolean = false,
-    val onDelete: ((List<WeChatFavoriteItem>) -> Boolean)? = null
+    val delimiter: String = "|"
 )
 
 internal enum class FavoritePickerFilter(val label: String) {

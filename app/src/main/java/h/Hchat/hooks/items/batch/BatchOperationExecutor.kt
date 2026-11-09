@@ -4,7 +4,6 @@ import h.Hchat.hooks.api.contact.WeChatContactApi
 import h.Hchat.hooks.api.contact.WeChatNativeMutationResult
 import h.Hchat.hooks.api.contact.NativeBatchQuitChatroomProcess
 import h.Hchat.hooks.api.core.WeChatApis
-import h.Hchat.hooks.api.media.WeChatFavoriteApi
 import h.Hchat.hooks.api.message.WeChatMessageStoreApi
 import h.Hchat.utils.HLog
 import java.util.LinkedHashMap
@@ -24,9 +23,6 @@ internal object BatchOperationExecutor : BatchTaskProcessor {
     ): BatchTaskRunner.Report {
         if (request.operation == BatchOperation.UNFOLLOW_OFFICIAL_ACCOUNTS) {
             return executeOfficialAccountUnfollowBatch(request, stopSignal)
-        }
-        if (request.operation == BatchOperation.DELETE_FAVORITES) {
-            return executeFavoriteDeleteBatch(request, stopSignal)
         }
         if (request.operation == BatchOperation.FRIEND_LABEL) {
             return executeLabelBatch(request, stopSignal)
@@ -170,69 +166,6 @@ internal object BatchOperationExecutor : BatchTaskProcessor {
                 }
             }
             if (stopAfterChunk) break
-        }
-
-        val completeResults = request.targetIds.map { id ->
-            results[id] ?: result(
-                BatchTaskRunner.Outcome.SKIPPED,
-                if (stopReason.isNotBlank()) stopReason else "未提交"
-            )
-        }
-        return BatchTaskRunner.fromResults(request.targetIds, completeResults, stopReason)
-    }
-
-    private fun executeFavoriteDeleteBatch(
-        request: BatchTaskRequest,
-        stopSignal: BatchTaskRunner.StopSignal
-    ): BatchTaskRunner.Report {
-        val favorites = WeChatApis.media()?.favorites()
-            ?: return failedReport(request.targetIds, "微信收藏 API 不可用")
-        val results = LinkedHashMap<String, BatchTaskRunner.TaskResult>()
-        var stopReason = ""
-
-        for (chunk in request.favoriteDeleteTargets.chunked(WeChatFavoriteApi.MAX_DELETE_BATCH_SIZE)) {
-            if (stopSignal.isStopped()) {
-                stopReason = "已停止后续操作"
-                break
-            }
-            if (!isAccountCurrent(request.expectedAccount)) {
-                stopReason = "账号已切换或账号状态不可用"
-                break
-            }
-            val native = favorites.submitNativeDeleteBatch(
-                chunk,
-                mayContinue = { !stopSignal.isStopped() && isAccountCurrent(request.expectedAccount) },
-                accountCurrent = { isAccountCurrent(request.expectedAccount) }
-            )
-            for (item in native.items) {
-                val id = item.localId.toString()
-                val mapped = when (item.status) {
-                    WeChatFavoriteApi.FavoriteDeleteStatus.CONFIRMED ->
-                        result(BatchTaskRunner.Outcome.SUCCESS, item.message)
-                    WeChatFavoriteApi.FavoriteDeleteStatus.REJECTED ->
-                        result(BatchTaskRunner.Outcome.FAILED, item.message)
-                    WeChatFavoriteApi.FavoriteDeleteStatus.SKIPPED ->
-                        result(BatchTaskRunner.Outcome.SKIPPED, item.message)
-                    WeChatFavoriteApi.FavoriteDeleteStatus.NOT_SUBMITTED ->
-                        if (stopSignal.isStopped() || !isAccountCurrent(request.expectedAccount)) {
-                            result(BatchTaskRunner.Outcome.SKIPPED, item.message)
-                        } else {
-                            result(BatchTaskRunner.Outcome.FAILED, item.message)
-                        }
-                    WeChatFavoriteApi.FavoriteDeleteStatus.UNCONFIRMED ->
-                        result(BatchTaskRunner.Outcome.UNCONFIRMED, item.message)
-                }
-                results[id] = mapped
-            }
-            val stopDecision = BatchFavoriteDeleteExecutionPolicy.afterNativeBatch(
-                outcomes = native.items.map { it.status },
-                accountCurrent = isAccountCurrent(request.expectedAccount),
-                stopRequested = stopSignal.isStopped()
-            )
-            if (stopDecision.stopLater) {
-                stopReason = stopDecision.reason
-                break
-            }
         }
 
         val completeResults = request.targetIds.map { id ->
@@ -568,8 +501,6 @@ internal object BatchOperationExecutor : BatchTaskProcessor {
             BatchOperation.DELETE_FRIENDS -> deleteFriend(id, request, stopSignal)
             BatchOperation.UNFOLLOW_OFFICIAL_ACCOUNTS ->
                 result(BatchTaskRunner.Outcome.FAILED, "公众号取消关注必须使用账号隔离的原生流程")
-            BatchOperation.DELETE_FAVORITES ->
-                result(BatchTaskRunner.Outcome.FAILED, "收藏删除必须使用经确认的原生批量流程")
         }
     }
 

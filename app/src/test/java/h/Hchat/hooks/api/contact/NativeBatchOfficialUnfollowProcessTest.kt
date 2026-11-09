@@ -11,17 +11,17 @@ import org.junit.Test
 
 class NativeBatchOfficialUnfollowProcessTest {
     @Test
-    fun sceneResponseReleasesWaiterBeforeQueueObserverRuns() {
+    fun nativeQueueObserverReleasesWaiterAfterSceneProcessing() {
         val scene = Any()
         val completed = CountDownLatch(1)
         val observed = AtomicBoolean(false)
         val errorType = AtomicInteger(Int.MIN_VALUE)
         val errorCode = AtomicInteger(Int.MIN_VALUE)
 
-        val recorded = NativeBatchOfficialUnfollowProcess.recordSceneCallback(
+        val recorded = NativeBatchOfficialUnfollowProcess.recordQueueCallback(
             scene,
-            scene,
-            arrayOf<Any?>(0, 0, 0, "", Any(), ByteArray(0)),
+            "onSceneEnd",
+            arrayOf<Any?>(0, 0, "", scene),
             completed,
             observed,
             errorType,
@@ -36,17 +36,17 @@ class NativeBatchOfficialUnfollowProcessTest {
     }
 
     @Test
-    fun unrelatedSceneAndMalformedArgumentsCannotCompleteRequest() {
+    fun unrelatedAndMalformedQueueCallbacksCannotCompleteRequest() {
         val completed = CountDownLatch(1)
         val observed = AtomicBoolean(false)
         val errorType = AtomicInteger(Int.MIN_VALUE)
         val errorCode = AtomicInteger(Int.MIN_VALUE)
 
         assertFalse(
-            NativeBatchOfficialUnfollowProcess.recordSceneCallback(
+            NativeBatchOfficialUnfollowProcess.recordQueueCallback(
                 Any(),
-                Any(),
-                arrayOf<Any?>(0, 0, 0, "", Any(), ByteArray(0)),
+                "onSceneEnd",
+                arrayOf<Any?>(0, 0, "", Any()),
                 completed,
                 observed,
                 errorType,
@@ -55,9 +55,9 @@ class NativeBatchOfficialUnfollowProcessTest {
         )
         val scene = Any()
         assertFalse(
-            NativeBatchOfficialUnfollowProcess.recordSceneCallback(
+            NativeBatchOfficialUnfollowProcess.recordQueueCallback(
                 scene,
-                scene,
+                "onSceneEnd",
                 arrayOf<Any?>(0, 0),
                 completed,
                 observed,
@@ -67,5 +67,38 @@ class NativeBatchOfficialUnfollowProcessTest {
         )
         assertFalse(completed.await(1, TimeUnit.MILLISECONDS))
         assertFalse(observed.get())
+    }
+
+    @Test
+    fun observerReadFailureDoesNotPreventCompletionCallback() {
+        val scene = Any()
+        val completed = CountDownLatch(1)
+        val observed = AtomicBoolean(false)
+        val errorType = AtomicInteger(Int.MIN_VALUE)
+        val errorCode = AtomicInteger(Int.MIN_VALUE)
+
+        assertFalse(
+            NativeBatchOfficialUnfollowProcess.runObserverSafely(
+                { throw IllegalStateException("bad native field") },
+                null,
+                "测试结果"
+            )
+        )
+        assertTrue(
+            NativeBatchOfficialUnfollowProcess.recordQueueCallback(
+                scene,
+                "onSceneEnd",
+                arrayOf<Any?>(0, 0, "", scene),
+                completed,
+                observed,
+                errorType,
+                errorCode
+            )
+        )
+
+        assertTrue(completed.await(1, TimeUnit.MILLISECONDS))
+        assertTrue(observed.get())
+        assertEquals(0, errorType.get())
+        assertEquals(0, errorCode.get())
     }
 }

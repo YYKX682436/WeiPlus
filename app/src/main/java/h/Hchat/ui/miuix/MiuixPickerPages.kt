@@ -14,7 +14,6 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
@@ -24,7 +23,6 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import h.Hchat.hooks.api.core.WeChatApis
-import h.Hchat.hooks.api.media.FavoriteSnapshotPolicy
 import h.Hchat.hooks.items.batch.BatchCandidateLoadGate
 import h.Hchat.hooks.items.batch.BatchSelectionState
 import h.Hchat.hooks.items.conversationgroup.ConversationGroupPickerSupport
@@ -881,18 +879,11 @@ internal fun FavoritePickerPage(
 ) {
     val context = LocalContext.current
     val favoriteApi = WeChatApis.media()?.favorites()
-    val deleteMode = request.destructiveDelete && request.onDelete != null
     val initialCache = remember(request) { favoriteApi?.cachedList() }
     var loading by remember(request) { mutableStateOf(initialCache?.items.isNullOrEmpty()) }
     var error by remember(request) { mutableStateOf("") }
     var favorites by remember(request) { mutableStateOf(initialCache?.items.orEmpty()) }
     var backgroundLoading by remember(request) { mutableStateOf(false) }
-    var listComplete by remember(request) {
-        mutableStateOf(!deleteMode && initialCache?.hasMore == false && initialCache.error == null)
-    }
-    var staleCacheChanged by remember(request) { mutableStateOf(false) }
-    var reloadGeneration by remember(request) { mutableIntStateOf(0) }
-    var pendingDelete by remember(request) { mutableStateOf(false) }
     var query by remember(request) { mutableStateOf("") }
     var filter by remember(request) { mutableStateOf(FavoritePickerFilter.ALL) }
     var preview by remember(request) { mutableStateOf<FavoriteMediaPreview?>(null) }
@@ -901,12 +892,10 @@ internal fun FavoritePickerPage(
     val listState = rememberLazyListState()
     val scrollBehavior = MiuixScrollBehavior()
 
-    LaunchedEffect(request, reloadGeneration) {
+    LaunchedEffect(request) {
         loading = true
         backgroundLoading = false
-        listComplete = false
         error = ""
-        staleCacheChanged = false
         val result = withContext(Dispatchers.IO) {
             runCatching {
                 val api = favoriteApi
@@ -914,8 +903,8 @@ internal fun FavoritePickerPage(
                 if (!api.canList()) {
                     throw IllegalStateException("收藏列表不可用")
                 }
-                var page = if (deleteMode) api.beginFreshRead() else api.openCachedList()
-                if (!deleteMode && page.items.isEmpty() && page.error == null) {
+                var page = api.openCachedList()
+                if (page.items.isEmpty() && page.error == null) {
                     for (attempt in 0..2) {
                         if (attempt == 2) break
                         delay(350L)
@@ -929,7 +918,6 @@ internal fun FavoritePickerPage(
         loading = false
         result.onSuccess {
             favorites = it.items
-            staleCacheChanged = it.changed
             if (it.error != null) {
                 error = it.error
             } else if (it.hasMore) {
@@ -948,7 +936,6 @@ internal fun FavoritePickerPage(
                     if (next.isFailure) break
                     page = next.getOrThrow()
                     favorites = page.items
-                    staleCacheChanged = staleCacheChanged || page.changed
                     if (page.error != null) {
                         error = page.error
                         break
@@ -957,55 +944,30 @@ internal fun FavoritePickerPage(
                 }
                 backgroundLoading = false
             }
-            if (deleteMode) {
-                listComplete = error.isBlank() && !it.hasMore && it.error == null
-                if (error.isBlank() && !listComplete) {
-                    listComplete = !backgroundLoading && favoriteApi?.cachedList()?.hasMore == false
-                }
-                if (listComplete) {
-                    val loadedIds = favorites.mapTo(hashSetOf()) { it.localId.toString() }
-                    selectedIds = selectedIds.intersect(loadedIds)
-                }
-            } else {
-                listComplete = error.isBlank() && !backgroundLoading &&
-                    (favoriteApi?.cachedList()?.hasMore == false)
-            }
         }
             .onFailure {
                 error = it.message ?: "读取收藏失败"
                 if (favorites.isEmpty()) favorites = emptyList()
                 backgroundLoading = false
-                listComplete = false
             }
     }
 
-    val selectedFirstIds = if (deleteMode) selectedIds else initialSelectedIds
+    val selectedFirstIds = initialSelectedIds
     val visible = FavoritePickerSelectionPolicy.visibleItems(
         favorites, filter, query, selectedFirstIds
     )
     val visibleIds = visible.map { it.localId.toString() }.toSet()
     val visibleAllSelected = visibleIds.isNotEmpty() && visibleIds.all { selectedIds.contains(it) }
-    val selectedFavorites = selectedIds.mapNotNull { id ->
-        favorites.firstOrNull { it.localId.toString() == id }
-    }
-    val selectedFavoritesDeletable = selectedFavorites.size == selectedIds.size &&
-        selectedFavorites.all { it.supportsNativeDelete && it.serverId > 0 }
     PageScaffold(
         title = request.title,
         largeTitle = request.title,
         scrollBehavior = scrollBehavior,
         bottomBar = {
             BottomActionBar(
-                primaryText = if (deleteMode) "删除（${selectedIds.size}）" else "保存选择",
+                primaryText = "保存选择",
                 onPrimaryClick = {
-                    if (deleteMode && (!listComplete || error.isNotBlank())) {
-                        Toast.makeText(context, "收藏尚未完整读取，不能删除", Toast.LENGTH_SHORT).show()
-                    } else if (!request.multiSelect && selectedIds.isEmpty()) {
+                    if (!request.multiSelect && selectedIds.isEmpty()) {
                         Toast.makeText(context, "请选择收藏", Toast.LENGTH_SHORT).show()
-                    } else if (deleteMode && (selectedIds.isEmpty() || !selectedFavoritesDeletable)) {
-                        Toast.makeText(context, "请选择可通过微信原生入口删除的收藏", Toast.LENGTH_SHORT).show()
-                    } else if (deleteMode) {
-                        pendingDelete = true
                     } else {
                         request.onValue(formatFavoriteIds(selectedIds, request.delimiter, request.multiSelect))
                         onBack()
@@ -1013,18 +975,17 @@ internal fun FavoritePickerPage(
                 },
                 secondaryText = "返回",
                 onSecondaryClick = onBack,
-                middleText = if (request.multiSelect && visibleIds.isNotEmpty() && (!deleteMode || listComplete)) {
+                middleText = if (request.multiSelect && visibleIds.isNotEmpty()) {
                     if (visibleAllSelected) "取消全选" else "全选"
                 } else {
                     null
                 },
-                onMiddleClick = if (request.multiSelect && visibleIds.isNotEmpty() && (!deleteMode || listComplete)) {
+                onMiddleClick = if (request.multiSelect && visibleIds.isNotEmpty()) {
                     {
                         selectedIds = FavoritePickerSelectionPolicy.toggleVisible(selectedIds, visibleIds)
                     }
                 } else null,
-                primaryEnabled = !deleteMode ||
-                    (listComplete && error.isBlank() && selectedIds.isNotEmpty() && selectedFavoritesDeletable)
+                primaryEnabled = true
             )
         }
     ) { padding ->
@@ -1046,29 +1007,13 @@ internal fun FavoritePickerPage(
                 PickerSectionHeader(
                     text = when {
                         backgroundLoading -> "${filter.label}收藏 · 已读 ${favorites.size} 项 · 正在读取后续分页"
-                        deleteMode && error.isNotBlank() -> "${filter.label}收藏 · 已读 ${favorites.size} 项 · 全量读取失败"
-                        deleteMode && !listComplete -> "${filter.label}收藏 · 正在确认完整列表"
                         else -> "${filter.label}收藏 · ${visible.size} / ${favorites.size} 项"
                     }
                 )
             }
-            if (deleteMode && staleCacheChanged && listComplete) {
-                item { SettingsCard { EmptyText("收藏状态与旧缓存不同，已按微信当前列表刷新") } }
-            }
-            if (deleteMode && error.isNotBlank()) {
-                item {
-                    SettingsCard {
-                        EmptyText("${error}。当前只读到 ${favorites.size} 项，未完成全量校验，不能删除。")
-                        InsetDivider()
-                        ActionRow("重试读取全部收藏", "重新从微信原生收藏列表读取分页") {
-                            reloadGeneration++
-                        }
-                    }
-                }
-            }
             when {
                 loading -> item { SettingsCard { EmptyText("正在载入收藏...") } }
-                !deleteMode && error.isNotEmpty() -> item { SettingsCard { EmptyText(error) } }
+                error.isNotEmpty() -> item { SettingsCard { EmptyText(error) } }
                 visible.isEmpty() && !backgroundLoading && error.isBlank() -> item {
                     SettingsCard {
                         EmptyText(if (query.isBlank()) "没有可选收藏" else "没有匹配收藏")
@@ -1079,17 +1024,11 @@ internal fun FavoritePickerPage(
                 else -> visible.forEach { favorite ->
                     item {
                         val id = favorite.localId.toString()
-                        val selectable = !deleteMode || FavoriteSnapshotPolicy.isSelectableForBatchDelete(favorite)
                         FavoriteListCard(
                             item = favorite,
                             selected = selectedIds.contains(id),
                             multiSelect = request.multiSelect,
                             onPreview = { path -> preview = FavoriteMediaPreview(favorite, path) },
-                            selectable = selectable,
-                            unavailableSummary = if (!selectable) {
-                                if (!favorite.supportsNativeDelete) "微信特殊收藏不支持通用批量删除"
-                                else "服务器收藏 ID 不可用"
-                            } else "",
                             onClick = {
                                 selectedIds = if (request.multiSelect) {
                                     if (selectedIds.contains(id)) selectedIds - id else selectedIds + id
@@ -1105,20 +1044,6 @@ internal fun FavoritePickerPage(
                 item { SettingsCard { EmptyText("正在后台加载更多收藏...") } }
             }
         }
-    }
-    if (deleteMode) {
-        BatchDeleteConfirmDialog(
-            show = pendingDelete,
-            message = "将通过微信原生批量删除入口删除已选 ${selectedFavorites.size} 项收藏。只删除明确选中的项目；此操作不可恢复，结果未知的请求不会自动重试。",
-            labels = selectedFavorites.map { "${it.displayTitle()} · ${it.typeLabel()}" },
-            title = "确认删除收藏",
-            confirmText = "确认删除收藏",
-            onDismiss = { pendingDelete = false },
-            onConfirm = {
-                pendingDelete = false
-                if (request.onDelete.invoke(selectedFavorites)) onBack()
-            }
-        )
     }
     preview?.let { media ->
         FavoriteMediaPreviewDialog(media = media, onClose = { preview = null })

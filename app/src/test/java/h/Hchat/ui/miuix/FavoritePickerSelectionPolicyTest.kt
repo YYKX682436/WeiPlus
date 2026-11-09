@@ -34,5 +34,5 @@ class FavoritePickerSelectionPolicyTest {
         title: String,
         summary: String,
         tags: List<String>
-    ) = WeChatFavoriteItem(id, type, title, summary, 0, 0, tags, id.toInt())
+    ) = WeChatFavoriteItem(id, type, title, summary, 0, 0, tags)
 }

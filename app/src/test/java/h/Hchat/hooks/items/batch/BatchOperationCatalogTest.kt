@@ -1,18 +1,13 @@
 package h.Hchat.hooks.items.batch
 
-import h.Hchat.hooks.api.media.WeChatFavoriteApi
 import h.Hchat.ui.miuix.batchOperationsFeatureCount
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class BatchOperationCatalogTest {
     @Test
-    fun `the original twelve operations remain and round 2c adds two`() {
-        assertEquals(14, batchOperationsFeatureCount())
-        assertTrue(BatchOperation.entries.contains(BatchOperation.UNFOLLOW_OFFICIAL_ACCOUNTS))
-        assertTrue(BatchOperation.entries.contains(BatchOperation.DELETE_FAVORITES))
+    fun `the original twelve operations remain and round 2c keeps only unfollow`() {
+        assertEquals(13, batchOperationsFeatureCount())
         assertEquals(
             listOf(
                 BatchOperation.HIDE,
@@ -26,25 +21,10 @@ class BatchOperationCatalogTest {
                 BatchOperation.GROUP_LEAVE,
                 BatchOperation.DELETE_INVALID_GROUPS,
                 BatchOperation.DELETE_CHATS,
-                BatchOperation.DELETE_FRIENDS
+                BatchOperation.DELETE_FRIENDS,
+                BatchOperation.UNFOLLOW_OFFICIAL_ACCOUNTS
             ),
-            BatchOperation.entries.take(12)
+            BatchOperation.entries
         )
-    }
-
-    @Test
-    fun `favorite batch stops after unknown outcome account change or explicit stop`() {
-        assertFalse(BatchFavoriteDeleteExecutionPolicy.afterNativeBatch(
-            listOf(WeChatFavoriteApi.FavoriteDeleteStatus.CONFIRMED), true, false
-        ).stopLater)
-        assertTrue(BatchFavoriteDeleteExecutionPolicy.afterNativeBatch(
-            listOf(WeChatFavoriteApi.FavoriteDeleteStatus.UNCONFIRMED), true, false
-        ).stopLater)
-        assertTrue(BatchFavoriteDeleteExecutionPolicy.afterNativeBatch(
-            listOf(WeChatFavoriteApi.FavoriteDeleteStatus.CONFIRMED), false, false
-        ).stopLater)
-        assertTrue(BatchFavoriteDeleteExecutionPolicy.afterNativeBatch(
-            listOf(WeChatFavoriteApi.FavoriteDeleteStatus.CONFIRMED), true, true
-        ).stopLater)
     }
 }

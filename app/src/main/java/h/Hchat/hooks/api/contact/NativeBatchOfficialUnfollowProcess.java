@@ -1,12 +1,8 @@
 package h.Hchat.hooks.api.contact;
 
 import h.Hchat.dexkit.DexFinder;
-import h.Hchat.hooks.core.HookRegistry;
 import h.Hchat.utils.KavaReflector;
 
-import io.github.libxposed.api.XposedInterface;
-
-import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.Proxy;
@@ -137,7 +133,6 @@ public final class NativeBatchOfficialUnfollowProcess {
         AtomicBoolean timedOut = new AtomicBoolean();
         AtomicInteger callbackErrorType = new AtomicInteger(Integer.MIN_VALUE);
         AtomicInteger callbackErrorCode = new AtomicInteger(Integer.MIN_VALUE);
-        HookLease hookLease = new HookLease();
         LinkedHashSet<String> requestObserved = new LinkedHashSet<>();
         LinkedHashSet<String> locallyConfirmed = new LinkedHashSet<>();
         LinkedHashSet<String> localCleanupFailed = new LinkedHashSet<>();
@@ -145,6 +140,8 @@ public final class NativeBatchOfficialUnfollowProcess {
         Set<String> ambiguousResponses = new HashSet<>();
         String[] error = {""};
         Object[] callbackBox = new Object[1];
+        AtomicBoolean callbackRegistrationAttempted = new AtomicBoolean();
+        AtomicBoolean callbackRemoved = new AtomicBoolean();
 
         try {
             Object callback = Proxy.newProxyInstance(queue.callbackType.getClassLoader(),
@@ -156,39 +153,29 @@ public final class NativeBatchOfficialUnfollowProcess {
                         }
                         if ("onSceneEnd".equals(method.getName()) && args != null && args.length == 4
                                 && args[3] == scene) {
-                            callbackErrorType.set(args[0] instanceof Number ? ((Number) args[0]).intValue() : -1);
-                            callbackErrorCode.set(args[1] instanceof Number ? ((Number) args[1]).intValue() : -1);
-                            callbackObserved.set(true);
-                            try { KavaReflector.invokeOrThrow(queue.removeCallback, queue.manager, SCENE_TYPE, proxy); }
-                            catch (Throwable e) { log(logger, "注销公众号批量回调失败: " + e.getClass().getSimpleName()); }
+                            if (number(args[0]) == 0 && number(args[1]) == 0) {
+                                runObserverSafely(() -> collectServerResults(scene, usernames, requestObserved,
+                                        serverResults, ambiguousResponses), logger, "服务端逐项结果");
+                            }
+                            runObserverSafely(() -> {
+                                copyStrings(KavaReflector.readField(scene, "e"), locallyConfirmed);
+                                copyStrings(KavaReflector.readField(scene, "q"), localCleanupFailed);
+                            }, logger, "微信本地联系人结果");
+                            if (number(args[0]) != 0 || number(args[1]) != 0) {
+                                error[0] = "微信批量取消关注网络回调失败";
+                            }
+                            if (recordQueueCallback(scene, method.getName(), args, completed,
+                                    callbackObserved, callbackErrorType, callbackErrorCode)) {
+                                log(logger, "公众号批量取消关注原生回调已到达: errType="
+                                        + callbackErrorType.get() + " errCode=" + callbackErrorCode.get()
+                                        + " responseItems=" + serverResults.size() + "/" + usernames.size());
+                            }
+                            removeQueueCallback(queue, proxy, callbackRemoved, logger);
                         }
                         return defaultValue(method.getReturnType());
                     });
             callbackBox[0] = callback;
-
-            XposedInterface.HookHandle handle = HookRegistry.get().hook(
-                    dexFinder.batchOfficialUnfollowSceneCallbackMethod, chain -> {
-                        if (chain.getThisObject() != scene) return chain.proceed();
-                        Object[] args = chain.getArgs().toArray();
-                        if (args.length >= 6 && number(args[0]) == 0 && number(args[1]) == 0) {
-                            collectServerResults(scene, usernames, requestObserved,
-                                    serverResults, ambiguousResponses);
-                        }
-                        Object value = chain.proceed();
-                        copyStrings(KavaReflector.readField(scene, "e"), locallyConfirmed);
-                        copyStrings(KavaReflector.readField(scene, "q"), localCleanupFailed);
-                        if (recordSceneCallback(scene, chain.getThisObject(), args, completed,
-                                callbackObserved, callbackErrorType, callbackErrorCode)) {
-                            if (callbackErrorType.get() != 0 || callbackErrorCode.get() != 0) {
-                                error[0] = "微信批量取消关注网络回调失败";
-                            }
-                            if (timedOut.get()) hookLease.release();
-                        }
-                        return value;
-                    });
-            if (handle == null) return failed("微信原生批量取消关注结果观察器不可用");
-            hookLease.add(handle);
-
+            callbackRegistrationAttempted.set(true);
             KavaReflector.invokeOrThrow(queue.addCallback, queue.manager, SCENE_TYPE, callback);
             try {
                 Object accepted = KavaReflector.invokeOrThrow(queue.submitScene, queue.manager, scene);
@@ -232,17 +219,18 @@ public final class NativeBatchOfficialUnfollowProcess {
                     resultItems(usernames, requestObserved, serverResults,
                             locallyConfirmed, localCleanupFailed, ambiguousResponses));
         } finally {
-            if (!submitted.get() || (callbackObserved.get() && completed.getCount() == 0)) {
-                hookLease.release();
+            if (callbackRegistrationAttempted.get()) {
+                removeQueueCallback(queue, callbackBox[0], callbackRemoved, logger);
             }
         }
     }
 
-    /** The native scene callback completes before NetSceneQueue dispatches its u0 observer. */
-    static boolean recordSceneCallback(Object expectedScene, Object callbackScene, Object[] args,
+    /** The queue dispatches u0 only after WeChat's native scene has processed the response. */
+    static boolean recordQueueCallback(Object expectedScene, String methodName, Object[] args,
                                        CountDownLatch completed, AtomicBoolean callbackObserved,
                                        AtomicInteger callbackErrorType, AtomicInteger callbackErrorCode) {
-        if (expectedScene == null || callbackScene != expectedScene || args == null || args.length < 6) {
+        if (expectedScene == null || !"onSceneEnd".equals(methodName) || args == null
+                || args.length != 4 || args[3] != expectedScene) {
             return false;
         }
         callbackErrorType.set(number(args[0]));
@@ -250,6 +238,26 @@ public final class NativeBatchOfficialUnfollowProcess {
         callbackObserved.set(true);
         completed.countDown();
         return true;
+    }
+
+    static boolean runObserverSafely(Runnable observer, Logger logger, String phase) {
+        try {
+            observer.run();
+            return true;
+        } catch (Throwable e) {
+            log(logger, "读取公众号批量取消关注" + phase + "失败: " + e.getClass().getSimpleName());
+            return false;
+        }
+    }
+
+    private static void removeQueueCallback(NativeQueue queue, Object callback,
+                                            AtomicBoolean callbackRemoved, Logger logger) {
+        if (callback == null || !callbackRemoved.compareAndSet(false, true)) return;
+        try {
+            KavaReflector.invokeOrThrow(queue.removeCallback, queue.manager, SCENE_TYPE, callback);
+        } catch (Throwable e) {
+            log(logger, "注销公众号批量回调失败: " + e.getClass().getSimpleName());
+        }
     }
 
     private static List<ItemResult> resultItems(List<String> usernames, Set<String> requestObserved,
@@ -373,28 +381,6 @@ public final class NativeBatchOfficialUnfollowProcess {
             if (name.equals(method.getName()) && check.matches(method)) return method;
         }
         return null;
-    }
-
-    private static final class HookLease {
-        private XposedInterface.HookHandle handle;
-        private boolean released;
-
-        synchronized void add(XposedInterface.HookHandle value) {
-            if (released) {
-                if (value != null) HookRegistry.get().unhook(value);
-                return;
-            }
-            handle = value;
-        }
-
-        synchronized void release() {
-            if (released) return;
-            released = true;
-            if (handle != null) {
-                try { HookRegistry.get().unhook(handle); } catch (Throwable ignored) {}
-                handle = null;
-            }
-        }
     }
 
     private static List<String> clean(List<String> values) {
