@@ -10,15 +10,40 @@ class SnsFriendMomentsPolicyTest {
     private val target = NativeSnsFeed(80L, "friend", 123L)
 
     @Test fun friendAlbumDistinguishesEmptyRestrictedAndTransportFailure() {
-        val empty = NativeSnsPage(emptyList(), 0, 0, 207, errType = 4, errCode = 207)
+        val empty = NativeSnsPage(emptyList(), 0, 0, 0, downAll = true, errType = 0, errCode = 0)
         assertTrue(SnsHistoryCursor(isSelf = false).advance(empty).complete)
         assertFalse(SnsHistoryCursor().advance(empty).complete)
         assertEquals("privacy_boundary",
             SnsHistoryCursor(isSelf = false).advance(empty.copy(recentLimitId = 80)).failure)
         assertEquals("privacy_boundary",
-            SnsHistoryCursor(isSelf = false).advance(empty.copy(ret = 203, errCode = 203)).failure)
+            SnsHistoryCursor(isSelf = false).advance(empty.copy(ret = 203, errType = 4, errCode = 203)).failure)
         assertEquals("response",
-            SnsHistoryCursor(isSelf = false).advance(empty.copy(ret = 0, errType = 2, errCode = -1)).failure)
+            SnsHistoryCursor(isSelf = false).advance(empty.copy(errType = 2, errCode = -1, hasRecentTips = true)).failure)
+    }
+
+    @Test fun theNative207EndIsNeitherAnEmptyAlbumNorANetworkFailure() {
+        val empty = NativeSnsPage(emptyList(), 0, 0, 207, downAll = true, errType = 4, errCode = 207)
+        val boundary = empty.copy(feeds = listOf(target), count = 1, lastId = target.id)
+        val noTip = SnsHistoryCursor(isSelf = false).advance(boundary)
+        assertEquals("visible_history_boundary", noTip.failure)
+        assertTrue(noTip.includePage)
+        assertFalse(noTip.complete)
+        assertNull(noTip.next)
+        assertEquals("visible_history_boundary", SnsHistoryCursor(isSelf = false).advance(empty).failure)
+        assertEquals("privacy_boundary", SnsHistoryCursor(isSelf = false).advance(boundary.copy(hasRecentTips = true)).failure)
+        assertEquals("privacy_boundary", SnsHistoryCursor(isSelf = false).advance(empty.copy(recentLimitId = 80)).failure)
+        assertFalse(SnsHistoryCursor(isSelf = false).advance(boundary.copy(lastId = 0)).includePage)
+        assertEquals("response", SnsHistoryCursor(isSelf = false).advance(boundary.copy(errType = 2)).failure)
+    }
+
+    @Test fun aNormalFirstPageMayAlreadyCarryTheNativeRangeTip() {
+        val first = NativeSnsPage(listOf(target), 1, 0, 0, lastId = target.id,
+            errType = 0, errCode = 0, hasRecentTips = true)
+        val step = SnsHistoryCursor(isSelf = false).advance(first)
+        assertEquals("privacy_boundary", step.failure)
+        assertTrue(step.includePage)
+        assertNull(step.next)
+        assertEquals(80L, SnsHistoryCursor().advance(first).next)
     }
 
     @Test fun stopAtTheServerLimitAndKeepTheVisibleBoundaryPage() {
@@ -32,15 +57,19 @@ class SnsFriendMomentsPolicyTest {
         assertNull(step.next)
     }
 
-    @Test fun aNative2004BoundaryCanCarryTheLastVisiblePage() {
-        val boundary = NativeSnsPage(listOf(target), 1, 0, 2004, lastId = target.id,
-            errType = 4, errCode = 2004)
-        val step = SnsHistoryCursor(isSelf = false).advance(boundary)
-        assertEquals("privacy_boundary", step.failure)
-        assertTrue(step.includePage)
-        assertNull(step.next)
-        assertFalse(SnsHistoryCursor(isSelf = false).advance(boundary.copy(lastId = 0)).includePage)
-        assertFalse(SnsHistoryCursor(isSelf = false).advance(boundary.copy(ret = 203, errCode = 203)).includePage)
+    @Test fun nativeRangeResponsesCanCarryTheLastVisiblePage() {
+        for (code in listOf(2001, 2004, 2005)) {
+            val boundary = NativeSnsPage(listOf(target), 1, 0, code, lastId = target.id,
+                errType = 4, errCode = code)
+            val step = SnsHistoryCursor(isSelf = false).advance(boundary)
+            assertEquals("privacy_boundary", step.failure)
+            assertTrue(step.includePage)
+            assertNull(step.next)
+            assertFalse(SnsHistoryCursor(isSelf = false).advance(boundary.copy(lastId = 0)).includePage)
+            assertFalse(SnsHistoryCursor(isSelf = false).advance(boundary.copy(count = 2)).includePage)
+            assertFalse(SnsHistoryCursor(isSelf = false).advance(boundary.copy(errCode = 203)).includePage)
+            assertFalse(SnsHistoryCursor(isSelf = false).advance(boundary.copy(ret = 203, errCode = 203)).includePage)
+        }
     }
 
     @Test fun likeFlagAndCurrentUserMustAgreeAndPendingActionsAreNeverSelectable() {

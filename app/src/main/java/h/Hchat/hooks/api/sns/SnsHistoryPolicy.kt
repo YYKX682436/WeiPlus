@@ -12,27 +12,32 @@ internal class SnsHistoryCursor(private val isSelf: Boolean = true) {
 
     fun advance(page: NativeSnsPage): SnsPageAdvance {
         val normal = page.errType == 0 && page.errCode == 0 && page.ret == 0
-        if (page.ret == 203 || !isSelf && (page.privacy ||
-                page.ret in restrictedAlbumCodes || page.errType == 4 && page.errCode in restrictedAlbumCodes)
-        ) {
-            // 2004 may carry the last visible objects. r3 runs J and advances D for them
-            // before the privacy callback. An unprocessed or incomplete payload stays hidden.
-            val visibleBoundary = !isSelf && !page.privacy && page.ret == 2004 &&
-                page.errType == 4 && page.errCode == 2004 && page.feeds.isNotEmpty() &&
-                page.count == page.feeds.size && page.lastId == page.feeds.last().id
-            return SnsPageAdvance(failure = "privacy_boundary", includePage = visibleBoundary)
-        }
-        if (!isSelf && (normal || page.ret == 207 && page.errType == 4 && page.errCode == 207) &&
-            java.lang.Long.compareUnsigned(page.recentLimitId, recentLimitId) > 0
-        ) recentLimitId = page.recentLimitId
-        if (!isSelf && page.count == 0 && page.feeds.isEmpty() && page.continuation == 0L) {
-            if (recentLimitId != 0L && (normal || page.ret == 207 && page.errType == 4 && page.errCode == 207)) {
-                return SnsPageAdvance(failure = "privacy_boundary")
+        if (page.ret == 203) return SnsPageAdvance(failure = "privacy_boundary")
+        if (!isSelf) {
+            val albumEnd = page.ret == 207 && page.errType == 4 && page.errCode == 207
+            val nativeRangeCode = page.ret in restrictedAlbumCodes ||
+                page.errType == 4 && page.errCode in restrictedAlbumCodes
+            val nativeRangeTip = normal && page.hasRecentTips && (cursor == 0L || page.downAll)
+            val rangeLimited = page.privacy || nativeRangeCode || nativeRangeTip ||
+                albumEnd && (page.hasRecentTips || page.recentLimitId != 0L || recentLimitId != 0L)
+            if (rangeLimited || albumEnd) {
+                // r3 feeds 207/2001/2004/2005 through the same J() storage branch. Confirm
+                // that this scene processed the returned list before retaining a boundary page.
+                val trustedPayload = albumEnd || nativeRangeTip ||
+                    page.ret in rangeCodesWithPayload && page.errType == 4 && page.errCode == page.ret
+                val visibleBoundary = !page.privacy && trustedPayload && page.feeds.isNotEmpty() &&
+                    page.count == page.feeds.size && page.lastId == page.feeds.last().id
+                return SnsPageAdvance(
+                    failure = if (rangeLimited) "privacy_boundary" else "visible_history_boundary",
+                    includePage = visibleBoundary
+                )
             }
-            // r3's 207 empty branch explicitly clears the normal user-page result and sets D=MaxId.
-            val emptyReply = page.ret == 207 && page.errType == 4 && page.errCode == 207
-            if ((emptyReply || normal && page.downAll) && page.lastId == cursor) {
-                return SnsPageAdvance(complete = true)
+            if (normal && java.lang.Long.compareUnsigned(page.recentLimitId, recentLimitId) > 0) {
+                recentLimitId = page.recentLimitId
+            }
+            if (normal && page.count == 0 && page.feeds.isEmpty() && page.continuation == 0L) {
+                if (recentLimitId != 0L) return SnsPageAdvance(failure = "privacy_boundary")
+                if (page.downAll && page.lastId == cursor) return SnsPageAdvance(complete = true)
             }
         }
         if (!normal) return SnsPageAdvance(failure = "response")
@@ -61,6 +66,7 @@ internal class SnsHistoryCursor(private val isSelf: Boolean = true) {
 
     private companion object {
         val restrictedAlbumCodes = setOf(203, 2001, 2003, 2004, 2005)
+        val rangeCodesWithPayload = setOf(2001, 2004, 2005)
     }
 }
 

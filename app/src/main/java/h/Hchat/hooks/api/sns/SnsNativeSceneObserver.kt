@@ -25,7 +25,8 @@ internal data class NativeSnsPage(
     val errCode: Int = -1,
     val evidence: Map<Long, SnsObjectEvidence> = emptyMap(),
     val recentLimitId: Long = 0,
-    val privacy: Boolean = false
+    val privacy: Boolean = false,
+    val hasRecentTips: Boolean = false
 )
 
 internal enum class SnsDetailState { OWN_PRESENT, OTHER_PRESENT, UNAVAILABLE, UNKNOWN }
@@ -176,6 +177,8 @@ internal class SnsNativeSceneObserver(
         val count = (KavaReflector.readField(proto, "e") as? Number)?.toInt() ?: return response
         val continuation = (KavaReflector.readField(proto, "p") as? Number)?.toLong() ?: return response
         val recentLimitId = (KavaReflector.readField(proto, "o") as? Number)?.toLong() ?: 0L
+        // r3.m() is getRecentTips (rj6.q). Only the presence of the server tip is needed.
+        val hasRecentTips = withLikes && (KavaReflector.readField(proto, "q") as? String)?.isNotBlank() == true
         val evidence = if (withLikes) objects.filterNotNull().mapNotNull { obj ->
             feed(obj)?.let { it to snsObjectEvidence(obj) }
         }.groupBy { it.first.id }.mapNotNull { (id, entries) ->
@@ -185,7 +188,8 @@ internal class SnsNativeSceneObserver(
             else id to first.second.copy(likes = first.second.likes.takeIf { entries.all { it.second == first.second } })
         }.toMap() else emptyMap()
         return response.copy(page = NativeSnsPage(objects.mapNotNull(::feed), count, continuation, ret ?: return response,
-            errType = errType, errCode = errCode, evidence = evidence, recentLimitId = recentLimitId))
+            errType = errType, errCode = errCode, evidence = evidence, recentLimitId = recentLimitId,
+            hasRecentTips = hasRecentTips))
     }
 
     private fun feed(obj: Any?): NativeSnsFeed? {

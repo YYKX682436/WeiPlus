@@ -286,11 +286,12 @@ internal fun BatchMomentsPickerPage(
             item {
                 SettingsCard {
                     val title = when {
-                        accessLimited -> "好友朋友圈可见范围受限"
+                        accessLimited -> "已到微信可见范围边界"
                         error.isNotEmpty() -> if (forLike) "好友朋友圈读取失败" else "历史读取未完成"
                         stopped && !complete -> "已停止读取"
                         loading -> if (received == 0) "正在读取最新动态" else "正在读取更早内容"
-                        complete && forLike && received == 0 -> "暂无朋友圈动态"
+                        complete && forLike && received == 0 -> "暂无可见朋友圈动态"
+                        complete && forLike -> "已读到当前可见动态末尾"
                         complete -> "已读到历史末尾"
                         else -> "历史读取未完成"
                     }
@@ -314,7 +315,8 @@ internal fun BatchMomentsPickerPage(
                 item {
                     SettingsCard {
                         InfoRow("暂无匹配动态", when {
-                            complete && received == 0 -> "服务器已确认历史结束，未返回动态"
+                            complete && received == 0 -> if (forLike) "微信没有返回当前账号可见的动态"
+                                else "服务器已确认历史结束，未返回动态"
                             pending + unreadable > 0 -> "部分动态内容暂不可显示"
                             !complete -> "尚未读取全部历史"
                             else -> "没有符合当前筛选条件的动态"

@@ -218,7 +218,9 @@ class WeChatSnsApi(
         }
         val posts = ArrayList<WeChatSnsPost>()
         val likes = LinkedHashMap<String, SnsLikeState>()
-        if ((stage.isEmpty() || step?.includePage == true && stage == "privacy_boundary") && raw != null) {
+        val atVisibleBoundary = !session.isSelf &&
+            (stage == "privacy_boundary" || stage == "visible_history_boundary")
+        if ((stage.isEmpty() || step?.includePage == true && atVisibleBoundary) && raw != null) {
             for (feed in raw.feeds) {
                 if (!session.received.add(feed.id)) continue
                 if (feed.author != session.owner || feed.time <= 0) {
@@ -242,6 +244,7 @@ class WeChatSnsApi(
             "count=${raw?.count} decoded=${raw?.feeds?.size} mapped=${posts.size} pending=${session.pending.size} " +
             "unreadable=${session.unreadable.size} end=${raw?.downAll} complete=${step?.complete == true && stage.isEmpty()} " +
             "ret=${raw?.ret} err=${response?.errType}/${response?.errCode} " +
+            "recentTip=${raw?.hasRecentTips} rangeLimit=${raw?.recentLimitId?.let { it != 0L }} " +
             "liked=${likes.values.count { it == SnsLikeState.LIKED }} " +
             "notLiked=${likes.values.count { it == SnsLikeState.NOT_LIKED }} " +
             "unknown=${likes.values.count { it == SnsLikeState.UNKNOWN }} ms=${android.os.SystemClock.elapsedRealtime() - start}")
@@ -251,11 +254,12 @@ class WeChatSnsApi(
                 "" -> ""
                 "account" -> "微信账号已变化"
                 "privacy_boundary" -> "微信限制了可读范围，未确认全部历史"
+                "visible_history_boundary" -> "微信已结束可见动态读取，未确认全部历史"
                 "queue" -> "微信正在处理请求或未接受本页读取，请重新读取"
                 "cursor_not_advanced", "empty_or_unmatched_cursor" -> "服务器未提供可继续的游标，历史读取未完成"
                 else -> "朋友圈读取未完成（$stage）"
             }, accountChanged = stage == "account", likeStates = likes,
-            accessLimited = !session.isSelf && stage == "privacy_boundary")
+            accessLimited = atVisibleBoundary)
     }
 
     /** Recheck delayed storage once, without fetching a new page or changing the server ID set. */
