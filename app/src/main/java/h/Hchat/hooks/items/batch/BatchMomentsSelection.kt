@@ -20,7 +20,6 @@ internal data class BatchMomentItem(
     val createTimeSeconds: Long,
     val contentType: BatchMomentContentType,
     val text: String,
-    val previewUrl: String = "",
     val mediaCount: Int = 0
 )
 

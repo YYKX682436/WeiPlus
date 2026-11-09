@@ -89,7 +89,8 @@ internal data class BatchTaskRequest(
     val friendPermissionSelection: BatchFriendPermissionSelection = BatchFriendPermissionSelection(),
     val groupNickname: String = "",
     val deleteFriendClearHistory: Boolean = false,
-    val groupCleanupReasons: Map<String, String> = emptyMap()
+    val groupCleanupReasons: Map<String, String> = emptyMap(),
+    val momentTimes: Map<String, Long> = emptyMap()
 )
 
 internal enum class BatchTaskStatus {
@@ -284,6 +285,7 @@ internal class BatchTaskManager private constructor(
             }
         ) return null
         return request.copy(
+            momentTimes = request.momentTimes.filterKeys { it in ids },
             targetIds = ids,
             expectedAccount = request.expectedAccount.trim(),
             labelId = request.labelId.trim(),

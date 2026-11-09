@@ -59,6 +59,7 @@ internal object BatchOperationExecutor : BatchTaskProcessor {
                 ?: return@run result(BatchTaskRunner.Outcome.FAILED, "微信朋友圈 API 不可用")
             val outcome = sns.deleteOwnSnsPost(
                 rawSnsId = snsId,
+                selectedTime = request.momentTimes[snsId],
                 expectedAccount = request.expectedAccount,
                 shouldContinue = { !signal.isStopped() && isAccountCurrent(request.expectedAccount) }
             )
@@ -66,7 +67,8 @@ internal object BatchOperationExecutor : BatchTaskProcessor {
                 OwnSnsDeleteKind.SUCCESS -> result(BatchTaskRunner.Outcome.SUCCESS, outcome.message)
                 OwnSnsDeleteKind.SKIPPED -> result(BatchTaskRunner.Outcome.SKIPPED, outcome.message)
                 OwnSnsDeleteKind.SERVER_REJECTED -> result(BatchTaskRunner.Outcome.FAILED, outcome.message)
-                OwnSnsDeleteKind.UNCONFIRMED -> result(BatchTaskRunner.Outcome.UNCONFIRMED, outcome.message)
+                OwnSnsDeleteKind.NO_CALLBACK, OwnSnsDeleteKind.REMOTE_PRESENT,
+                OwnSnsDeleteKind.LOCAL_PENDING, OwnSnsDeleteKind.UNCONFIRMED -> result(BatchTaskRunner.Outcome.UNCONFIRMED, outcome.message)
                 OwnSnsDeleteKind.NOT_SUBMITTED -> result(
                     if (signal.isStopped() || !isAccountCurrent(request.expectedAccount)) {
                         BatchTaskRunner.Outcome.SKIPPED

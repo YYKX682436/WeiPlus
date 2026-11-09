@@ -13,6 +13,7 @@ import h.Hchat.hooks.api.model.WeChatSnsPost
 import h.Hchat.hooks.api.model.WeChatSnsPrepareResult
 import h.Hchat.hooks.api.net.WeChatNetworkApi
 import h.Hchat.hooks.core.FeatureContext
+import h.Hchat.utils.HLog
 import h.Hchat.utils.KavaReflector
 import org.luckypray.dexkit.DexKitBridge
 import org.json.JSONObject
@@ -20,38 +21,33 @@ import java.io.File
 import java.io.FileOutputStream
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier
-import java.lang.reflect.Proxy
 import java.security.MessageDigest
 import java.util.ArrayList
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 
 private const val MAX_SNS_IMAGES = 9
-private const val OWN_SNS_PAGE_TIMEOUT_MS = 45_000L
-private const val SNS_CORE_CLASS = "com.tencent.mm.plugin.sns.model.p4"
-private const val SNS_SERVER_CALLBACK_CLASS = "th4.m0"
-
 internal data class OwnSnsHistoryPage(
-    val success: Boolean,
     val posts: List<WeChatSnsPost> = emptyList(),
-    val serverIds: List<String> = emptyList(),
-    val hasMore: Boolean = false,
     val complete: Boolean = false,
-    val error: String = ""
+    val received: Int = 0,
+    val pending: Int = 0,
+    val unreadable: Int = 0,
+    val error: String = "",
+    val accountChanged: Boolean = false
 )
 
-internal data class OwnSnsHistorySnapshot(
-    val success: Boolean,
-    val ids: Set<String> = emptySet(),
-    val error: String = ""
-)
+internal class OwnSnsHistorySession(val account: String, val owner: String) {
+    val cursor = SnsHistoryCursor()
+    val received = HashSet<Long>()
+    val pending = LinkedHashMap<Long, NativeSnsFeed>()
+    val unreadable = HashSet<Long>()
+    var terminal = false
+    val token = java.util.UUID.randomUUID().toString().take(8)
+    var pages = 0
+}
 
-internal enum class OwnSnsDeleteKind { SUCCESS, NOT_SUBMITTED, SERVER_REJECTED, UNCONFIRMED, SKIPPED }
-
-internal data class OwnSnsDeleteResult(
-    val kind: OwnSnsDeleteKind,
-    val message: String
-)
+internal data class OwnSnsDeleteResult(val kind: OwnSnsDeleteKind, val message: String)
 
 /**
  * 微信朋友圈发布、互动和时间线 API。
@@ -92,15 +88,13 @@ class WeChatSnsApi(
         val bridge = dexKitBridge ?: return@lazy null
         SnsCachedPostStorage(context, loader, bridge, ::log)
     }
-    private val nativeSceneObserver: SnsNativeSceneObserver? by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+    private val ownTimelineNative by lazy {
         val loader = classLoader ?: return@lazy null
-        SnsNativeSceneObserver(loader, ::log)
+        val context = hostContext ?: return@lazy null
+        @Suppress("DEPRECATION")
+        val build = runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionCode }.getOrNull()
+        if (build == 3220) SnsOwnTimelineNative(loader) else null
     }
-    private val ownTimelineLock = Any()
-    @Volatile private var ownTimelineOwner = ""
-    @Volatile private var ownTimelineHasMore = false
-    @Volatile private var ownTimelineStarted = false
-    @Volatile private var ownTimelineComplete = false
     private val contentResolver: SnsForwardContentResolver? by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
         val context = featureContext ?: return@lazy null
         SnsForwardContentResolver(context) { message, throwable ->
@@ -176,311 +170,188 @@ class WeChatSnsApi(
             ?: SnsCachedNativeLookup(false, null)
     }
 
-    /** Reads exactly one page from WeChat's own-user server timeline and maps every server SNS ID. */
-    internal fun loadOwnSnsHistoryPage(
-        expectedAccount: String,
-        restart: Boolean,
-        shouldContinue: () -> Boolean = { true },
-        timeoutMs: Long = OWN_SNS_PAGE_TIMEOUT_MS
-    ): OwnSnsHistoryPage = synchronized(ownTimelineLock) {
-        val account = accountApi?.sessionIdentity()?.trim().orEmpty()
+    internal fun newOwnSnsHistorySession(expectedAccount: String): OwnSnsHistorySession? {
+        if (!isExpectedAccount(expectedAccount)) return null
         val owner = accountApi?.selfWxId()?.trim().orEmpty()
-        if (expectedAccount.isBlank() || account != expectedAccount.trim() || owner.isBlank()) {
-            return@synchronized OwnSnsHistoryPage(false, error = "无法确认当前账号的朋友圈身份")
-        }
-        if (!shouldContinue()) return@synchronized OwnSnsHistoryPage(false, error = "已停止后续读取")
-        if (restart) {
-            ownTimelineOwner = owner
-            ownTimelineStarted = false
-            ownTimelineHasMore = false
-            ownTimelineComplete = false
-        } else if (!ownTimelineStarted || ownTimelineOwner != owner || !ownTimelineHasMore || ownTimelineComplete) {
-            return@synchronized OwnSnsHistoryPage(false, error = "当前朋友圈分页游标不可继续，请重新读取")
-        }
-
-        val observer = nativeSceneObserver
-            ?: return@synchronized OwnSnsHistoryPage(false, error = "微信原生朋友圈分页观察器不可用")
-        val firstPage = restart || !ownTimelineStarted
-        val waitResult = observer.requestPage(owner, timeoutMs) {
-            if (!shouldContinue() || accountApi?.sessionIdentity()?.trim() != expectedAccount.trim()) {
-                return@requestPage false
-            }
-            submitNativeOwnSnsPage(owner, firstPage)
-        }
-        val callback = when (waitResult) {
-            is NativeSnsPageWaitResult.Completed -> waitResult.callback
-            is NativeSnsPageWaitResult.NotStarted -> return@synchronized OwnSnsHistoryPage(false, error = waitResult.message)
-            is NativeSnsPageWaitResult.Failed -> return@synchronized OwnSnsHistoryPage(false, error = waitResult.message)
-            NativeSnsPageWaitResult.TimedOut -> return@synchronized OwnSnsHistoryPage(false, error = "微信朋友圈分页请求超时，尚未确认读取完成")
-        }
-        if (accountApi?.sessionIdentity()?.trim() != expectedAccount.trim()) {
-            ownTimelineStarted = false
-            return@synchronized OwnSnsHistoryPage(false, error = "分页期间账号已切换")
-        }
-        if (callback.errType != 0 || callback.errCode != 0) {
-            ownTimelineStarted = false
-            val detail = callback.errorMessage.ifBlank { "errType=${callback.errType} errCode=${callback.errCode}" }
-            return@synchronized OwnSnsHistoryPage(false, error = "微信服务器读取朋友圈失败：$detail")
-        }
-        if (!callback.responseCaptured || callback.downAll == null) {
-            ownTimelineStarted = false
-            return@synchronized OwnSnsHistoryPage(false, error = "朋友圈服务器响应或分页结束标记缺失")
-        }
-        if (callback.responseCount != callback.serverIds.size) {
-            ownTimelineStarted = false
-            return@synchronized OwnSnsHistoryPage(false, error = "朋友圈服务器动态数量与 SNS ID 数量不一致")
-        }
-
-        val posts = ArrayList<WeChatSnsPost>(callback.serverIds.size)
-        for (serverId in callback.serverIds) {
-            val lookup = cachedPostStorage?.lookupNativeBySnsId(serverId)
-                ?: return@synchronized OwnSnsHistoryPage(false, error = "朋友圈缓存读取入口不可用，无法核对服务端动态")
-            if (!lookup.querySucceeded) {
-                ownTimelineStarted = false
-                return@synchronized OwnSnsHistoryPage(false, error = "读取朋友圈 SNS ID=$serverId 的本地映射失败")
-            }
-            val nativeInfo = lookup.nativeInfo
-                ?: return@synchronized OwnSnsHistoryPage(false, error = "服务端动态 SNS ID=$serverId 尚未写入本地映射，不能确认内容")
-            val record = cachedPostStorage?.recordFromNative(nativeInfo)
-                ?: return@synchronized OwnSnsHistoryPage(false, error = "SNS ID=$serverId 的本地朋友圈记录无法解析")
-            val post = postFromRecord(record)
-                ?: return@synchronized OwnSnsHistoryPage(false, error = "SNS ID=$serverId 的朋友圈内容无法读取")
-            if (post.getSnsId() != serverId || post.getUserName() != owner || !post.isSelf()) {
-                ownTimelineStarted = false
-                return@synchronized OwnSnsHistoryPage(false, error = "SNS ID=$serverId 的作者或 ID 与当前账号不匹配")
-            }
-            posts += post
-        }
-
-        val pageDecision = NativeSnsPagePolicy.classify(callback, posts.map(WeChatSnsPost::getSnsId))
-        if (pageDecision.state == NativeSnsPageState.READ_FAILED) {
-            ownTimelineStarted = false
-            return@synchronized OwnSnsHistoryPage(false, error = pageDecision.error)
-        }
-        val hasNext = pageDecision.state == NativeSnsPageState.HAS_NEXT
-        val complete = pageDecision.state == NativeSnsPageState.COMPLETE || pageDecision.state == NativeSnsPageState.EMPTY
-
-        ownTimelineStarted = true
-        ownTimelineHasMore = hasNext
-        ownTimelineComplete = complete
-        OwnSnsHistoryPage(
-            success = true,
-            posts = posts,
-            serverIds = callback.serverIds,
-            hasMore = hasNext,
-            complete = complete
-        )
+        return owner.takeIf(String::isNotEmpty)?.let { OwnSnsHistorySession(expectedAccount, it) }
     }
 
-    /** A complete fresh server scan is required before each target can enter the delete request path. */
-    internal fun scanOwnSnsHistory(
-        expectedAccount: String,
-        shouldContinue: () -> Boolean,
-        maxPages: Int = 10_000
-    ): OwnSnsHistorySnapshot {
-        val seen = LinkedHashSet<String>()
-        var restart = true
-        var pages = 0
-        while (pages < maxPages) {
-            if (!shouldContinue()) return OwnSnsHistorySnapshot(false, error = "已停止后续读取")
-            val page = loadOwnSnsHistoryPage(expectedAccount, restart, shouldContinue)
-            if (!page.success) return OwnSnsHistorySnapshot(false, error = page.error)
-            pages++
-            val added = page.serverIds.count { seen.add(it) }
-            if (page.hasMore && page.serverIds.isNotEmpty() && added == 0) {
-                return OwnSnsHistorySnapshot(false, error = "朋友圈服务端分页游标没有前进，不能确认完整动态范围")
-            }
-            if (page.complete) return OwnSnsHistorySnapshot(true, seen)
-            if (!page.hasMore) return OwnSnsHistorySnapshot(false, error = "朋友圈历史范围尚未确认结束")
-            restart = false
+    internal fun loadOwnSnsHistoryPage(session: OwnSnsHistorySession, shouldContinue: () -> Boolean): OwnSnsHistoryPage {
+        val native = ownTimelineNative ?: return OwnSnsHistoryPage(error = "当前微信版本未验证朋友圈读取")
+        val guard = { shouldContinue() && isCurrent(session) }
+        if (!isCurrent(session)) return OwnSnsHistoryPage(error = "微信账号已变化", accountChanged = true)
+        fun stoppedPage() = OwnSnsHistoryPage(received = session.received.size,
+            pending = session.pending.size, unreadable = session.unreadable.size)
+        if (session.terminal || !shouldContinue()) return stoppedPage()
+        val cursor = session.cursor.cursor
+        val pageNo = ++session.pages
+        val start = android.os.SystemClock.elapsedRealtime()
+        val result = native.page(session.owner, cursor, guard)
+        if (result is SnsSceneResult.NotSubmitted && !shouldContinue() && isCurrent(session)) return stoppedPage()
+        val response = (result as? SnsSceneResult.Completed)?.response
+        val raw = response?.page
+        val step = raw?.let(session.cursor::advance)
+        val stage = when {
+            !isCurrent(session) -> "account"
+            result is SnsSceneResult.NotSubmitted -> result.stage
+            result == SnsSceneResult.Unknown -> "callback_unknown"
+            step == null -> "missing_response"
+            else -> step.failure
         }
-        return OwnSnsHistorySnapshot(false, error = "朋友圈历史页数超过安全读取上限，未宣称加载完成")
+        val posts = ArrayList<WeChatSnsPost>()
+        if (stage.isEmpty() && raw != null) {
+            for (feed in raw.feeds) {
+                if (!session.received.add(feed.id)) continue
+                if (feed.author != session.owner || feed.time <= 0) {
+                    session.unreadable += feed.id
+                    continue
+                }
+                val post = mapOwnFeed(session, feed)
+                if (post == null) session.pending[feed.id] = feed else posts += post
+            }
+        }
+        HLog.i("sns_r1 phase=page session=${session.token} request=$pageNo stage=${stage.ifEmpty { "ok" }} " +
+            "in=${maskSnsId(cursor)} next=${maskSnsId(step?.next)} continue=${maskSnsId(raw?.continuation)} " +
+            "first=${maskSnsId(raw?.feeds?.firstOrNull()?.id)} last=${maskSnsId(raw?.feeds?.lastOrNull()?.id)} " +
+            "count=${raw?.count} decoded=${raw?.feeds?.size} mapped=${posts.size} pending=${session.pending.size} " +
+            "unreadable=${session.unreadable.size} end=${raw?.downAll} complete=${step?.complete == true && stage.isEmpty()} " +
+            "ret=${raw?.ret} err=${response?.errType}/${response?.errCode} ms=${android.os.SystemClock.elapsedRealtime() - start}")
+        session.terminal = stage.isNotEmpty() || step?.complete == true
+        return OwnSnsHistoryPage(posts, step?.complete == true && stage.isEmpty(), session.received.size,
+            session.pending.size, session.unreadable.size, when (stage) {
+                "" -> ""
+                "account" -> "微信账号已变化"
+                "privacy_boundary" -> "微信限制了可读范围，未确认全部历史"
+                "queue" -> "微信正在处理请求或未接受本页读取，请重新读取"
+                "cursor_not_advanced", "empty_or_unmatched_cursor" -> "服务器未提供可继续的游标，历史读取未完成"
+                else -> "朋友圈读取未完成（$stage）"
+            }, accountChanged = stage == "account")
     }
 
-    /** Submits one native delete scene after server-history and exact-owner preflight. */
+    /** Recheck delayed storage once, without fetching a new page or changing the server ID set. */
+    internal fun finishOwnSnsMapping(session: OwnSnsHistorySession, shouldContinue: () -> Boolean): OwnSnsHistoryPage {
+        val posts = ArrayList<WeChatSnsPost>()
+        val entries = session.pending.values.iterator()
+        while (entries.hasNext() && shouldContinue() && isCurrent(session)) {
+            val feed = entries.next()
+            val post = mapOwnFeed(session, feed)
+            if (post != null) posts += post else session.unreadable += feed.id
+            entries.remove()
+        }
+        if (!isCurrent(session)) return OwnSnsHistoryPage(error = "微信账号已变化", accountChanged = true)
+        HLog.i("sns_r1 phase=mapping session=${session.token} mapped=${posts.size} pending=${session.pending.size} unreadable=${session.unreadable.size}")
+        return OwnSnsHistoryPage(posts, received = session.received.size,
+            pending = session.pending.size, unreadable = session.unreadable.size)
+    }
+
+    private fun mapOwnFeed(session: OwnSnsHistorySession, feed: NativeSnsFeed): WeChatSnsPost? {
+        val id = java.lang.Long.toUnsignedString(feed.id)
+        val record = cachedPostStorage?.queryBySnsId(id) ?: return null
+        return postFromRecord(record, session.owner)?.takeIf {
+            it.getSnsId() == id && it.getUserName() == session.owner && it.isSelf() &&
+                it.getCreateTimeSeconds() == feed.time
+        }
+    }
+
     internal fun deleteOwnSnsPost(
         rawSnsId: String,
+        selectedTime: Long?,
         expectedAccount: String,
-        shouldContinue: () -> Boolean,
-        timeoutMs: Long = OWN_SNS_PAGE_TIMEOUT_MS
+        shouldContinue: () -> Boolean
     ): OwnSnsDeleteResult {
-        val snsId = normalizeSnsId(rawSnsId)
-            ?: return OwnSnsDeleteResult(OwnSnsDeleteKind.SKIPPED, "SNS ID 无效，未提交")
-        if (!shouldContinue() || !isExpectedAccount(expectedAccount)) {
-            return OwnSnsDeleteResult(OwnSnsDeleteKind.NOT_SUBMITTED, "停止请求或账号变化，未提交删除")
+        fun outcome(kind: OwnSnsDeleteKind, message: String) = OwnSnsDeleteResult(kind, message)
+        val id = rawSnsId.toLongOrNull() ?: runCatching { java.lang.Long.parseUnsignedLong(rawSnsId) }.getOrNull()
+        val session = newOwnSnsHistorySession(expectedAccount)
+        val native = ownTimelineNative
+        if (id == null || id == 0L || selectedTime == null || selectedTime <= 0 || session == null || native == null) {
+            return outcome(OwnSnsDeleteKind.NOT_SUBMITTED, "没有有效的本人朋友圈选择凭据")
         }
-        val history = scanOwnSnsHistory(expectedAccount, shouldContinue)
-        if (!history.success) return OwnSnsDeleteResult(OwnSnsDeleteKind.NOT_SUBMITTED, history.error)
-        if (snsId !in history.ids) return OwnSnsDeleteResult(OwnSnsDeleteKind.SKIPPED, "服务端已无此动态，跳过删除")
-
-        val owner = accountApi?.selfWxId()?.trim().orEmpty()
-        val lookup = cachedPostStorage?.lookupNativeBySnsId(snsId)
-            ?: return OwnSnsDeleteResult(OwnSnsDeleteKind.NOT_SUBMITTED, "朋友圈缓存读取入口不可用，未提交")
-        if (!lookup.querySucceeded) {
-            return OwnSnsDeleteResult(OwnSnsDeleteKind.NOT_SUBMITTED, "无法复核朋友圈本地状态，未提交")
+        val guard = { shouldContinue() && isCurrent(session) }
+        val prefs = hostContext?.getSharedPreferences("hchat_sns_single_send", Context.MODE_PRIVATE)
+            ?: return outcome(OwnSnsDeleteKind.NOT_SUBMITTED, "无法记录删除请求状态")
+        val key = MessageDigest.getInstance("SHA-256").digest(
+            (session.account + ":" + java.lang.Long.toUnsignedString(id)).toByteArray()
+        ).joinToString("") { "%02x".format(it) }
+        if (!guard()) return outcome(OwnSnsDeleteKind.NOT_SUBMITTED, "任务已停止或账号已变化")
+        if (prefs.contains(key) || native.hasNativePendingDelete(id) != false) {
+            return outcome(OwnSnsDeleteKind.SKIPPED, "该动态已有删除记录、原生待删项或队列状态不可核实，未再次提交")
         }
-        val nativeInfo = lookup.nativeInfo
-            ?: return OwnSnsDeleteResult(OwnSnsDeleteKind.SKIPPED, "动态已从本地状态移除，跳过删除")
-        val record = cachedPostStorage?.recordFromNative(nativeInfo)
-            ?: return OwnSnsDeleteResult(OwnSnsDeleteKind.NOT_SUBMITTED, "无法解析动态作者，未提交删除")
-        val post = postFromRecord(record)
-            ?: return OwnSnsDeleteResult(OwnSnsDeleteKind.NOT_SUBMITTED, "无法读取动态内容与作者，未提交删除")
-        if (post.getSnsId() != snsId || post.getUserName() != owner || !post.isSelf()) {
-            return OwnSnsDeleteResult(OwnSnsDeleteKind.NOT_SUBMITTED, "动态 ID 或作者与当前账号不匹配，未提交")
+        val before = (native.detail(id, guard) as? SnsSceneResult.Completed)?.response
+        if (before?.detailState(id, session.owner) != SnsDetailState.OWN_PRESENT ||
+            before.detail?.time != selectedTime || !guard()) {
+            return outcome(OwnSnsDeleteKind.NOT_SUBMITTED, "单条详情无法确认动态仍属于当前账号，未提交")
         }
-        if (KavaReflector.invokeMethod(nativeInfo, "isInvalid") == true) {
-            return OwnSnsDeleteResult(OwnSnsDeleteKind.SKIPPED, "微信已将该动态标记为无效，跳过删除")
+        var reserved = false
+        val result = native.delete(id, guard) {
+            if (prefs.contains(key)) false else prefs.edit().putBoolean(key, true).commit().also { reserved = it }
         }
-        if (!shouldContinue() || !isExpectedAccount(expectedAccount)) {
-            return OwnSnsDeleteResult(OwnSnsDeleteKind.NOT_SUBMITTED, "停止请求或账号变化，未提交删除")
+        val ack = classifySnsDeleteReply(result)
+        HLog.i("sns_r1 phase=delete target=${maskSnsId(id)} ack=$ack")
+        if (ack == SnsDeleteAck.NOT_SUBMITTED) {
+            if (reserved) prefs.edit().remove(key).commit()
+            return outcome(OwnSnsDeleteKind.NOT_SUBMITTED, "微信未接受删除请求（${(result as SnsSceneResult.NotSubmitted).stage}）")
         }
-
-        val loader = classLoader
-            ?: return OwnSnsDeleteResult(OwnSnsDeleteKind.NOT_SUBMITTED, "微信类加载器不可用，未提交删除")
-        val sceneClass = KavaReflector.loadClass(SnsNativeSceneObserver.DELETE_SCENE_CLASS, loader)
-            ?: return OwnSnsDeleteResult(OwnSnsDeleteKind.NOT_SUBMITTED, "微信原生删除场景不可用，未提交")
-        val scene = KavaReflector.newInstance(
-            KavaReflector.findConstructor(sceneClass, Long::class.javaPrimitiveType!!, Int::class.javaPrimitiveType!!),
-            java.lang.Long.parseUnsignedLong(snsId), SnsNativeSceneObserver.DELETE_OWN_POST_OPERATION
-        ) ?: return OwnSnsDeleteResult(OwnSnsDeleteKind.NOT_SUBMITTED, "微信原生删除请求构造失败，未提交")
-        if (!prepareNativeDeleteQueue(java.lang.Long.parseUnsignedLong(snsId))) {
-            return OwnSnsDeleteResult(OwnSnsDeleteKind.NOT_SUBMITTED, "微信原生删除队列预处理失败，未提交")
+        val reply = (result as? SnsSceneResult.Completed)?.response
+            ?: return outcome(OwnSnsDeleteKind.NO_CALLBACK, "没有收到可靠的删除回调，已禁止重复提交")
+        if (ack == SnsDeleteAck.REJECTED) {
+            prefs.edit().remove(key).commit()
+            return outcome(OwnSnsDeleteKind.SERVER_REJECTED, "微信服务端拒绝删除（${reply.errType}/${reply.errCode}）")
         }
-        if (!shouldContinue() || !isExpectedAccount(expectedAccount)) {
-            removeNativeDeleteQueue(java.lang.Long.parseUnsignedLong(snsId))
-            return OwnSnsDeleteResult(OwnSnsDeleteKind.NOT_SUBMITTED, "停止请求或账号变化，未提交删除")
+        if (ack != SnsDeleteAck.ACCEPTED || !guard()) {
+            return outcome(OwnSnsDeleteKind.UNCONFIRMED, "删除结果未确认，已禁止重复提交")
         }
-        val observer = nativeSceneObserver
-            ?: run {
-                removeNativeDeleteQueue(java.lang.Long.parseUnsignedLong(snsId))
-                return OwnSnsDeleteResult(OwnSnsDeleteKind.NOT_SUBMITTED, "微信原生删除回调观察器不可用，未提交")
-            }
-        val wait = observer.requestDelete(scene, timeoutMs) {
-            shouldContinue() && isExpectedAccount(expectedAccount) && networkApi?.sendRequest(scene) == true
-        }
-        val callback = when (wait) {
-            NativeSnsDeleteWaitResult.NotSubmitted -> {
-                removeNativeDeleteQueue(java.lang.Long.parseUnsignedLong(snsId))
-                return OwnSnsDeleteResult(OwnSnsDeleteKind.NOT_SUBMITTED, "微信网络队列未接受删除请求")
-            }
-            NativeSnsDeleteWaitResult.TimedOut ->
-                return OwnSnsDeleteResult(OwnSnsDeleteKind.UNCONFIRMED, "删除请求可能已提交但回调超时；未自动重试")
-            is NativeSnsDeleteWaitResult.Failed -> {
-                removeNativeDeleteQueue(java.lang.Long.parseUnsignedLong(snsId))
-                return OwnSnsDeleteResult(OwnSnsDeleteKind.NOT_SUBMITTED, wait.message)
-            }
-            is NativeSnsDeleteWaitResult.Callback -> wait.value
-        }
-        if (NativeSnsDeletePolicy.classify(
-                submitted = true,
-                callback = callback,
-                timedOut = false,
-                accountCurrent = isExpectedAccount(expectedAccount),
-                localCheckSucceeded = null,
-                localStillPresent = null
-            ) == NativeSnsDeleteDecisionKind.SERVER_REJECTED
-        ) {
-            return OwnSnsDeleteResult(
-                OwnSnsDeleteKind.SERVER_REJECTED,
-                callback.errorMessage.ifBlank { "微信服务器拒绝删除（errCode=${callback.errCode}）" }
-            )
-        }
-        if (callback.kind != NativeSnsDeleteCallbackKind.SERVER_ACCEPTED) {
-            return OwnSnsDeleteResult(OwnSnsDeleteKind.UNCONFIRMED, "删除请求已提交但服务器状态未确认；未自动重试")
-        }
-        val after = cachedPostStorage?.lookupNativeBySnsId(snsId)
-        val decision = NativeSnsDeletePolicy.classify(
-            submitted = true,
-            callback = callback,
-            timedOut = false,
-            accountCurrent = isExpectedAccount(expectedAccount),
-            localCheckSucceeded = after?.querySucceeded,
-            localStillPresent = after?.nativeInfo != null
-        )
-        if (decision == NativeSnsDeleteDecisionKind.SUCCESS) {
-            val afterHistory = scanOwnSnsHistory(expectedAccount, shouldContinue)
-            if (!afterHistory.success) {
-                return OwnSnsDeleteResult(
-                    OwnSnsDeleteKind.UNCONFIRMED,
-                    "微信原生回调已接受删除，但删除后服务端状态复读失败：${afterHistory.error}"
-                )
-            }
-            if (snsId in afterHistory.ids) {
-                return OwnSnsDeleteResult(OwnSnsDeleteKind.UNCONFIRMED, "微信原生回调已接受删除，但服务端仍返回此动态")
-            }
-            return OwnSnsDeleteResult(OwnSnsDeleteKind.SUCCESS, "微信服务器已不再返回此动态，原生回调与本地同步状态均已确认")
-        }
-        val finalMessage = if (!isExpectedAccount(expectedAccount)) {
-            "服务器已接受删除，但账号在回调期间切换，最终状态未确认"
-        } else {
-            "服务器已接受删除，但本地朋友圈状态未确认移除"
-        }
-        return OwnSnsDeleteResult(OwnSnsDeleteKind.UNCONFIRMED, finalMessage)
+        val after = cachedNativeSnsInfoLookup(java.lang.Long.toUnsignedString(id))
+        val detail = (native.detail(id, guard) as? SnsSceneResult.Completed)?.response
+            ?.detailState(id, session.owner) ?: SnsDetailState.UNKNOWN
+        val kind = if (isCurrent(session)) classifyAcceptedSnsDelete(detail,
+            after.nativeInfo?.let { true } ?: false.takeIf { after.querySucceeded })
+            else OwnSnsDeleteKind.UNCONFIRMED
+        HLog.i("sns_r1 phase=delete target=${maskSnsId(id)} callback=accepted localRead=${after.querySucceeded} " +
+            "localPresent=${after.nativeInfo != null} detail=$detail outcome=$kind")
+        return outcome(kind, when (kind) {
+            OwnSnsDeleteKind.SUCCESS -> "微信接受删除，单条详情已不可访问且本地已同步"
+            OwnSnsDeleteKind.REMOTE_PRESENT -> "微信返回接受，但服务器仍返回该动态"
+            OwnSnsDeleteKind.LOCAL_PENDING -> "微信返回接受，本地状态尚未确认同步"
+            else -> "微信返回接受，单条远端状态尚未确认"
+        })
     }
+
+    private fun isCurrent(session: OwnSnsHistorySession): Boolean =
+        isExpectedAccount(session.account) && accountApi?.selfWxId()?.trim() == session.owner
 
     private fun isExpectedAccount(expectedAccount: String): Boolean =
         expectedAccount.isNotBlank() && accountApi?.sessionIdentity()?.trim() == expectedAccount.trim()
 
-    private fun normalizeSnsId(raw: String): String? {
-        val value = raw.trim().trim('"', '\'')
-        val parsed = value.toLongOrNull() ?: runCatching { java.lang.Long.parseUnsignedLong(value) }.getOrNull()
-            ?: return null
-        return parsed.takeIf { it != 0L }?.let(java.lang.Long::toUnsignedString)
+    private val snsLogSalt = java.util.UUID.randomUUID().toString()
+
+    private fun maskSnsId(id: Long?): String = when (id) {
+        null -> "-"
+        0L -> "0"
+        else -> MessageDigest.getInstance("SHA-256").digest((snsLogSalt + id).toByteArray())
+            .take(4).joinToString("") { "%02x".format(it) }
     }
 
-    private fun submitNativeOwnSnsPage(owner: String, firstPage: Boolean): Boolean = runCatching {
-        val loader = classLoader ?: throw IllegalStateException("微信类加载器不可用")
-        val coreClass = KavaReflector.loadClass(SNS_CORE_CLASS, loader)
-            ?: throw IllegalStateException("微信朋友圈服务入口不可用")
-        val server = KavaReflector.invokeStaticMethod(coreClass, "rk")
-            ?: throw IllegalStateException("微信朋友圈服务器实例不可用")
-        if (firstPage) {
-            val callbackClass = KavaReflector.loadClass(SNS_SERVER_CALLBACK_CLASS, loader)
-                ?: throw IllegalStateException("微信朋友圈服务回调类型不可用")
-            val callback = Proxy.newProxyInstance(loader, arrayOf(callbackClass)) { proxy, method, args ->
-                when (method.name) {
-                    "toString" -> "WeiPlusOwnSnsPageCallback"
-                    "hashCode" -> System.identityHashCode(proxy)
-                    "equals" -> proxy === args?.firstOrNull()
-                    else -> when (method.returnType) {
-                        java.lang.Boolean.TYPE -> false
-                        java.lang.Integer.TYPE -> 0
-                        java.lang.Long.TYPE -> 0L
-                        java.lang.Float.TYPE -> 0f
-                        java.lang.Double.TYPE -> 0.0
-                        else -> null
-                    }
-                }
-            }
-            val start = KavaReflector.findCompatibleMethod(server.javaClass, "w", 2, owner, callback)
-                ?: throw NoSuchMethodException("SnsServer.startServer")
-            KavaReflector.invokeOrThrow(start, server, 2, owner, callback)
-        }
-        val methodName = if (firstPage) "e" else "f"
-        val pageMethod = KavaReflector.findCompatibleMethod(
-            server.javaClass, methodName, 2, owner, owner.endsWith("@openim"), true, 0
-        ) ?: throw NoSuchMethodException("SnsServer.$methodName")
-        val result = KavaReflector.invokeOrThrow(pageMethod, server, 2, owner, owner.endsWith("@openim"), true, 0)
-        result !is Boolean || result
-    }.onFailure { log("启动微信原生朋友圈分页失败: ${it.message}") }.getOrDefault(false)
+    private val ownCoverCache = android.util.LruCache<String, Any>(160)
 
-    private fun prepareNativeDeleteQueue(snsId: Long): Boolean = runCatching {
-        val loader = classLoader ?: return false
-        val coreClass = KavaReflector.loadClass(SNS_CORE_CLASS, loader) ?: return false
-        val queue = KavaReflector.invokeStaticMethod(coreClass, "ek") ?: return false
-        val add = KavaReflector.findCompatibleMethod(queue.javaClass, "c", snsId) ?: return false
-        KavaReflector.invokeOrThrow(add, queue, snsId)
-        true
-    }.onFailure { log("准备微信原生朋友圈删除队列失败: ${it.message}") }.getOrDefault(false)
+    internal fun ownSnsCover(expectedAccount: String, id: String): Any? {
+        val session = newOwnSnsHistorySession(expectedAccount) ?: return null
+        val key = expectedAccount + ":" + id
+        ownCoverCache.get(key)?.let { return it }
+        val record = cachedPostStorage?.queryBySnsId(id) ?: return null
+        val owner = record.values.getAsString("userName") ?: record.values.getAsString("field_userName")
+        if (owner != session.owner) return null
+        return contentResolver?.snapshotFromSnsInfo(record.nativeInfo)?.media?.firstOrNull()?.nativeObject
+            ?.also { ownCoverCache.put(key, it) }
+    }
 
-    private fun removeNativeDeleteQueue(snsId: Long) {
-        runCatching {
-            val loader = classLoader ?: return
-            val coreClass = KavaReflector.loadClass(SNS_CORE_CLASS, loader) ?: return
-            val queue = KavaReflector.invokeStaticMethod(coreClass, "ek") ?: return
-            val remove = KavaReflector.findCompatibleMethod(queue.javaClass, "w", snsId) ?: return
-            KavaReflector.invokeOrThrow(remove, queue, snsId)
-        }.onFailure { log("清理未提交的微信朋友圈删除队列失败: ${it.message}") }
+    internal fun cachedOwnSnsCover(account: String, media: Any): Bitmap? =
+        if (isExpectedAccount(account)) ownSnsCoverLoader?.cached(media) else null
+
+    internal fun bindOwnSnsCover(account: String, media: Any, view: android.widget.ImageView, video: Boolean): (() -> Unit)? =
+        if (isExpectedAccount(account)) ownSnsCoverLoader?.bind(media, view, video) else null
+
+    private val ownSnsCoverLoader by lazy {
+        classLoader?.let(::SnsOwnCoverLoader)
     }
 
     internal fun localInteractionNodeClass(): Class<*>? {
@@ -632,7 +503,9 @@ class WeChatSnsApi(
         }
     }
 
-    private fun postFromRecord(record: SnsCachedPostRecord): WeChatSnsPost? {
+    private fun postFromRecord(record: SnsCachedPostRecord): WeChatSnsPost? = postFromRecord(record, null)
+
+    private fun postFromRecord(record: SnsCachedPostRecord, confirmedOwner: String?): WeChatSnsPost? {
         val nativeInfo = record.nativeInfo
         val values = record.values
         if (KavaReflector.invokeMethod(nativeInfo, "isAd") == true) return null
@@ -656,12 +529,12 @@ class WeChatSnsApi(
         val storageType = values.getAsInteger("type")
             ?: values.getAsInteger("field_type")
             ?: -1
-        val selfWxId = accountApi?.selfWxId().orEmpty()
+        val selfWxId = confirmedOwner ?: accountApi?.selfWxId().orEmpty()
         return WeChatSnsPost(
             snsId = java.lang.Long.toUnsignedString(signedId),
             localId = localId,
             userName = userName,
-            displayName = contactApi?.getDisplayName(userName).orEmpty().ifBlank { userName },
+            displayName = confirmedOwner ?: contactApi?.getDisplayName(userName).orEmpty().ifBlank { userName },
             createTimeSeconds = createTime,
             storageType = storageType,
             contentType = snapshot.type,

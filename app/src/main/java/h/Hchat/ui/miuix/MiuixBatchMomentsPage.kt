@@ -1,9 +1,23 @@
 package h.Hchat.ui.miuix
 
 import android.app.DatePickerDialog
+import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
+import android.graphics.Canvas
 import androidx.compose.foundation.Image
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import android.widget.ImageView
+import androidx.compose.foundation.layout.height
+import androidx.compose.runtime.key
+import androidx.compose.ui.viewinterop.AndroidView
+import h.Hchat.hooks.api.sns.OwnSnsHistoryPage
+import h.Hchat.hooks.api.sns.OwnSnsHistorySession
+import h.Hchat.utils.HLog
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.isActive
+import top.yukonga.miuix.kmp.window.WindowDialog
+import java.util.concurrent.atomic.AtomicBoolean
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -24,14 +38,11 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -50,13 +61,11 @@ import h.Hchat.hooks.items.batch.BatchTaskRequest
 import h.Hchat.hooks.items.batch.BatchTaskStatus
 import h.Hchat.hooks.items.batch.BatchTaskSubmitResult
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
 import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -70,82 +79,85 @@ internal fun BatchMomentsPickerPage(
     onSubmitted: () -> Unit
 ) {
     val context = LocalContext.current
-    val coroutineScope = rememberCoroutineScope()
     val taskSnapshot by manager.snapshot.collectAsState()
     val scrollBehavior = MiuixScrollBehavior()
-    var posts by remember { mutableStateOf<List<BatchMomentItem>>(emptyList()) }
-    var selectedIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var reload by remember { mutableStateOf(0) }
+    var posts by remember(accountIdentity, reload) { mutableStateOf<List<BatchMomentItem>>(emptyList()) }
+    var selectedIds by remember(accountIdentity, reload) { mutableStateOf<Set<String>>(emptySet()) }
     var filter by remember { mutableStateOf(BatchMomentFilter(timeZoneId = TimeZone.getDefault().id)) }
-    var loading by remember { mutableStateOf(false) }
-    var hasMore by remember { mutableStateOf(false) }
-    var complete by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf("") }
-    var pendingDelete by remember { mutableStateOf<List<BatchMomentItem>?>(null) }
-    var ownerUserName by remember { mutableStateOf("") }
+    var run by remember { mutableStateOf(0) }
+    val stop = remember(accountIdentity, reload, run) { AtomicBoolean(false) }
+    var stopped by remember(accountIdentity, reload, run) { mutableStateOf(false) }
+    var session by remember(accountIdentity, reload) { mutableStateOf<OwnSnsHistorySession?>(null) }
+    var loading by remember(accountIdentity, reload, run) { mutableStateOf(true) }
+    var complete by remember(accountIdentity, reload) { mutableStateOf(false) }
+    var received by remember(accountIdentity, reload) { mutableStateOf(0) }
+    var pending by remember(accountIdentity, reload) { mutableStateOf(0) }
+    var unreadable by remember(accountIdentity, reload) { mutableStateOf(0) }
+    var error by remember(accountIdentity, reload) { mutableStateOf("") }
+    var pendingDelete by remember(accountIdentity, reload) { mutableStateOf<List<BatchMomentItem>?>(null) }
+    var preview by remember(accountIdentity, reload) { mutableStateOf<BatchMomentItem?>(null) }
+    val ownerUserName = session?.owner.orEmpty()
 
-    suspend fun loadPage(restart: Boolean) {
-        if (loading) return
-        loading = true
-        error = ""
-        val result = withContext(Dispatchers.IO) {
-            runCatching {
-                val owner = WeChatApis.account()?.selfWxId()?.trim().orEmpty()
-                val page = WeChatApis.snsApi()?.loadOwnSnsHistoryPage(
-                    expectedAccount = accountIdentity,
-                    restart = restart
-                ) ?: throw IllegalStateException("微信朋友圈 API 不可用")
-                owner to page
+    fun applyPage(page: OwnSnsHistoryPage) {
+        if (page.accountChanged) {
+            posts = emptyList()
+            selectedIds = emptySet()
+            pendingDelete = null
+            preview = null
+            complete = false
+        }
+        val converted = page.posts.mapNotNull(::momentFromPost)
+        if (converted.isNotEmpty()) posts = (posts + converted).distinctBy(BatchMomentItem::snsId)
+        received = page.received
+        pending = page.pending
+        unreadable = page.unreadable
+        if (page.error.isNotEmpty()) error = page.error
+        complete = complete || page.complete
+    }
+
+    LaunchedEffect(accountIdentity, reload, run) {
+        val job = coroutineContext[Job]
+        val allowed = { job?.isActive == true && !stop.get() }
+        val api = WeChatApis.snsApi()
+        val current = session ?: withContext(Dispatchers.IO) {
+            api?.newOwnSnsHistorySession(accountIdentity)
+        }
+        if (current == null || api == null) {
+            error = "无法确认当前微信账号或朋友圈服务"
+            loading = false
+            return@LaunchedEffect
+        }
+        session = current
+        try {
+            while (allowed() && !current.terminal) {
+                val page = withContext(Dispatchers.IO) { api.loadOwnSnsHistoryPage(current, allowed) }
+                if (!isActive) break
+                applyPage(page)
+                if (page.error.isNotEmpty() || page.complete) break
+                // No evidence that all albums (including pinned posts) are ordered by CreateTime.
+                // Date filters apply as pages arrive; only a native terminal response ends history.
             }
-        }
-        result.fold(
-            onSuccess = { (owner, page) ->
-                ownerUserName = owner
-                if (!page.success) {
-                    error = page.error.ifBlank { "朋友圈读取失败" }
-                    hasMore = false
-                    complete = false
-                } else {
-                    val converted = page.posts.mapNotNull(::momentFromPost)
-                    if (converted.size != page.posts.size) {
-                        error = "服务端动态中存在无法确认作者身份的记录，本页未展示"
-                        hasMore = false
-                        complete = false
-                    } else {
-                        posts = (posts + converted).distinctBy(BatchMomentItem::snsId)
-                            .sortedByDescending(BatchMomentItem::createTimeSeconds)
-                        selectedIds = BatchMomentsSelection.keepKnownSelections(selectedIds, posts)
-                        hasMore = page.hasMore
-                        complete = page.complete
-                    }
-                }
-            },
-            onFailure = { error = it.message ?: "朋友圈读取失败" }
-        )
-        loading = false
-    }
-
-    LaunchedEffect(accountIdentity) {
-        posts = emptyList()
-        selectedIds = emptySet()
-        ownerUserName = ""
-        hasMore = false
-        complete = false
-        error = ""
-        filter = BatchMomentFilter(timeZoneId = TimeZone.getDefault().id)
-        if (accountIdentity.isBlank()) {
-            error = "无法确认当前微信账号，未读取朋友圈"
-        } else {
-            loadPage(restart = true)
+            if (allowed() && pending > 0) {
+                applyPage(withContext(Dispatchers.IO) { api.finishOwnSnsMapping(current, allowed) })
+            }
+        } finally {
+            if (isActive) loading = false
         }
     }
 
-    val filtered = BatchMomentsSelection.filter(posts, ownerUserName, filter)
-    val visible = BatchMomentsSelection.selectedFirst(filtered, selectedIds)
+    val refresh: () -> Unit = {
+        stop.set(true)
+        reload++
+    }
+
+    val filtered = remember(posts, ownerUserName, filter) { BatchMomentsSelection.filter(posts, ownerUserName, filter) }
+    val visible = remember(filtered, selectedIds) { BatchMomentsSelection.selectedFirst(filtered, selectedIds) }
     val allVisibleSelected = visible.isNotEmpty() && visible.all { it.snsId in selectedIds }
 
     BatchDeleteConfirmDialog(
         show = pendingDelete != null,
-        message = "将通过微信原生删除请求删除所选 ${pendingDelete?.size ?: 0} 条自己的朋友圈。每条动态都会重新读取完整服务端历史并核对账号、作者和 SNS ID；结果未知的请求不会自动重试。此操作不可恢复。",
+        message = "将通过微信原生删除请求删除所选 ${pendingDelete?.size ?: 0} 条自己的朋友圈。提交前会复核所选动态；结果未知的请求不会重复提交。此操作不可恢复。",
         labels = pendingDelete.orEmpty().map { item ->
             val summary = BatchMomentsSelection.summary(item.text).ifBlank { "（${momentTypeLabel(item.contentType)}）" }
             "${formatMomentTime(item.createTimeSeconds)} · $summary"
@@ -166,16 +178,28 @@ internal fun BatchMomentsPickerPage(
                     operation = BatchOperation.DELETE_OWN_MOMENTS,
                     targetIds = targets.map(BatchMomentItem::snsId),
                     expectedAccount = accountIdentity,
-                    enabled = true
+                    enabled = true,
+                    momentTimes = targets.associate { it.snsId to it.createTimeSeconds }
                 )
             )) {
-                BatchTaskSubmitResult.STARTED -> onSubmitted()
+                BatchTaskSubmitResult.STARTED -> { stop.set(true); onSubmitted() }
                 BatchTaskSubmitResult.BUSY -> Toast.makeText(context, "已有批量任务正在执行", Toast.LENGTH_SHORT).show()
                 BatchTaskSubmitResult.UNAVAILABLE -> Toast.makeText(context, "后台任务队列不可用，未启动", Toast.LENGTH_SHORT).show()
                 BatchTaskSubmitResult.INVALID -> Toast.makeText(context, "删除对象无效，未启动", Toast.LENGTH_SHORT).show()
             }
         }
     )
+
+    preview?.let { item ->
+        WindowDialog(
+            show = true,
+            title = if (item.contentType == BatchMomentContentType.VIDEO) "视频封面" else "图片预览",
+            onDismissRequest = { preview = null }
+        ) {
+            MomentMediaPreview(accountIdentity, item, Modifier.fillMaxWidth().height(300.dp), null)
+            ActionRow("关闭预览", "") { preview = null }
+        }
+    }
 
     PageScaffold(
         title = "删除自己的朋友圈",
@@ -186,7 +210,7 @@ internal fun BatchMomentsPickerPage(
             BottomActionBar(
                 primaryText = "删除（${selectedIds.size}）",
                 onPrimaryClick = { if (selectedIds.isNotEmpty()) pendingDelete = posts.filter { it.snsId in selectedIds } },
-                primaryEnabled = selectedIds.isNotEmpty() && !loading && taskSnapshot.status != BatchTaskStatus.RUNNING && taskSnapshot.status != BatchTaskStatus.STOPPING,
+                primaryEnabled = selectedIds.isNotEmpty() && taskSnapshot.status != BatchTaskStatus.RUNNING && taskSnapshot.status != BatchTaskStatus.STOPPING,
                 secondaryText = "返回",
                 onSecondaryClick = onBack
             )
@@ -240,46 +264,47 @@ internal fun BatchMomentsPickerPage(
                     }
                 }
             }
-            if (loading && posts.isEmpty()) {
-                item { SettingsCard { InfoRow("朋友圈读取中", "正在从微信服务器读取当前账号自己的动态") } }
-            }
-            if (error.isNotBlank()) {
-                item {
-                    SettingsCard {
-                        InfoRow("本页读取失败", error)
-                        ActionRow("重新读取首页", "读取失败不会显示为无动态或历史已完成") {
-                            if (!loading) coroutineScope.launch { loadPage(restart = true) }
+            item {
+                SettingsCard {
+                    val title = when {
+                        error.isNotEmpty() -> "历史读取未完成"
+                        stopped && !complete -> "已停止读取"
+                        loading -> if (received == 0) "正在读取最新动态" else "正在读取更早内容"
+                        complete -> "已读到历史末尾"
+                        else -> "历史读取未完成"
+                    }
+                    InfoRow(title, buildString {
+                        append("已读取 $received 条")
+                        if (pending > 0) append(" · $pending 条内容待同步")
+                        if (unreadable > 0) append(" · $unreadable 条内容不可读")
+                        if (error.isNotEmpty()) append(" · $error")
+                    })
+                    when {
+                        loading && !stopped -> ActionRow("停止读取", "当前已提交的请求会自然结束") {
+                            stop.set(true)
+                            stopped = true
                         }
+                        !loading && stopped && !complete && error.isEmpty() -> ActionRow("继续读取", "从当前游标继续") { run++ }
+                        !loading -> ActionRow("重新读取", "从最新动态开始") { refresh() }
                     }
                 }
             }
-            if (visible.isEmpty() && !loading && error.isBlank()) {
+            if (visible.isEmpty() && !loading && error.isEmpty()) {
                 item {
                     SettingsCard {
-                        val emptyText = if (complete && posts.isEmpty()) "已收到服务器结束标记，此账号没有朋友圈动态" else if (posts.isEmpty()) "尚未读取到动态；历史范围仍可能未完成" else "没有符合当前筛选条件的动态"
-                        InfoRow("暂无匹配动态", emptyText)
+                        InfoRow("暂无匹配动态", when {
+                            complete && received == 0 -> "服务器已确认历史结束，未返回动态"
+                            pending + unreadable > 0 -> "部分动态内容暂不可显示"
+                            !complete -> "尚未读取全部历史"
+                            else -> "没有符合当前筛选条件的动态"
+                        })
                     }
                 }
             }
             items(visible, key = BatchMomentItem::snsId) { item ->
-                BatchMomentCard(item, item.snsId in selectedIds) {
+                BatchMomentCard(accountIdentity, item, item.snsId in selectedIds, onPreview = { preview = item }) {
                     selectedIds = if (item.snsId in selectedIds) selectedIds - item.snsId else selectedIds + item.snsId
                 }
-            }
-            if (loading && posts.isNotEmpty()) {
-                item { SettingsCard { InfoRow("正在读取更早动态", "已加载内容仍可查看和筛选") } }
-            }
-            if (hasMore && !loading) {
-                item {
-                    SettingsCard {
-                        ActionRow("读取更早动态", "已读 ${posts.size} 条；仍有历史范围尚未读取") {
-                            if (!loading) coroutineScope.launch { loadPage(restart = false) }
-                        }
-                    }
-                }
-            }
-            if (complete && error.isBlank()) {
-                item { SettingsCard { InfoRow("历史读取完成", "已收到微信服务端结束标记 · ${posts.size} 条动态") } }
             }
         }
     }
@@ -315,15 +340,17 @@ private fun MomentDateFilterRow(label: String, value: String, onDate: (String) -
 }
 
 @Composable
-private fun BatchMomentCard(item: BatchMomentItem, selected: Boolean, onClick: () -> Unit) {
+private fun BatchMomentCard(
+    account: String, item: BatchMomentItem, selected: Boolean, onPreview: () -> Unit, onClick: () -> Unit
+) {
     SettingsCard {
         Row(
-            modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 14.dp, vertical = 12.dp),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            MomentMediaPreview(item)
-            Column(modifier = Modifier.weight(1f)) {
+            if (item.mediaCount > 0) MomentMediaPreview(account, item, Modifier.size(68.dp), onPreview)
+            Column(modifier = Modifier.weight(1f).clickable(onClick = onClick)) {
                 Text(formatMomentTime(item.createTimeSeconds), color = MiuixTheme.colorScheme.onSurfaceVariantSummary, fontSize = 12.sp)
                 Text(
                     BatchMomentsSelection.summary(item.text).ifBlank { "（${momentTypeLabel(item.contentType)}）" },
@@ -339,51 +366,70 @@ private fun BatchMomentCard(item: BatchMomentItem, selected: Boolean, onClick: (
                     modifier = Modifier.padding(top = 4.dp)
                 )
             }
-            SelectionMark(selected = selected, multiSelect = true)
+            Box(Modifier.clickable(onClick = onClick)) { SelectionMark(selected = selected, multiSelect = true) }
         }
     }
 }
 
 @Composable
-private fun MomentMediaPreview(item: BatchMomentItem) {
-    val url = item.previewUrl.takeIf { it.startsWith("https://", ignoreCase = true) }
-    val bitmap by produceState<Bitmap?>(initialValue = null, url) {
-        value = if (url == null) null else withContext(Dispatchers.IO) {
-            runCatching {
-                val connection = URL(url).openConnection().apply {
-                    connectTimeout = 3_000
-                    readTimeout = 4_000
-                    useCaches = true
-                }
-                connection.getInputStream().use { input ->
-                    val options = BitmapFactory.Options().apply { inSampleSize = 4 }
-                    BitmapFactory.decodeStream(input, null, options)
-                }
-            }.getOrNull()
+private fun MomentMediaPreview(account: String, item: BatchMomentItem, modifier: Modifier, onPreview: (() -> Unit)?) {
+    val api = WeChatApis.snsApi()
+    val video = item.contentType == BatchMomentContentType.VIDEO
+    val cover by produceState<Pair<Any, Bitmap?>?>(null, account, item.snsId) {
+        value = withContext(Dispatchers.IO) {
+            val media = runCatching { api?.ownSnsCover(account, item.snsId) }.getOrNull()
+            media?.let { it to runCatching { api?.cachedOwnSnsCover(account, it) }.getOrNull() }
         }
     }
-    Box(
-        modifier = Modifier.size(68.dp).clip(RoundedCornerShape(10.dp))
-            .background(MiuixTheme.colorScheme.secondaryVariant),
-        contentAlignment = Alignment.Center
-    ) {
-        if (bitmap != null) Image(
-            bitmap = bitmap!!.asImageBitmap(),
-            contentDescription = "朋友圈媒体预览",
-            contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize()
-        ) else Text(
-            text = if (item.mediaCount > 0) momentTypeLabel(item.contentType) else "文字",
-            color = MiuixTheme.colorScheme.onSecondaryVariant,
-            fontSize = 12.sp
-        )
-        if (item.mediaCount > 1) Text(
-            "${item.mediaCount}",
-            color = androidx.compose.ui.graphics.Color.White,
-            fontSize = 11.sp,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier.align(Alignment.BottomEnd).background(androidx.compose.ui.graphics.Color.Black.copy(alpha = .65f)).padding(horizontal = 5.dp, vertical = 2.dp)
-        )
+    val tap = onPreview?.let { Modifier.clickable(onClick = it) } ?: Modifier
+    Box(modifier.clip(RoundedCornerShape(10.dp)).background(MiuixTheme.colorScheme.secondaryVariant).then(tap),
+        contentAlignment = Alignment.Center) {
+        Text(momentTypeLabel(item.contentType), color = MiuixTheme.colorScheme.onSecondaryVariant, fontSize = 12.sp)
+        val local = cover?.second
+        if (local != null) {
+            Image(
+                bitmap = local.asImageBitmap(),
+                contentDescription = if (video) "视频封面" else "朋友圈图片封面",
+                modifier = Modifier.fillMaxSize(),
+                contentScale = if (onPreview == null) ContentScale.Fit else ContentScale.Crop
+            )
+            LaunchedEffect(local) {
+                HLog.i("sns_r1 phase=cover rendered=true source=cache kind=${if (video) "video" else "image"}")
+            }
+        } else cover?.first?.let { nativeMedia ->
+            key(account, item.snsId, nativeMedia) {
+                AndroidView(
+                    factory = { context ->
+                        MomentCoverView(context, video).apply {
+                            scaleType = if (onPreview == null) ImageView.ScaleType.FIT_CENTER else ImageView.ScaleType.CENTER_CROP
+                            contentDescription = if (video) "视频封面" else "朋友圈图片封面"
+                            unbind = api?.bindOwnSnsCover(account, nativeMedia, this, video)
+                            if (onPreview != null) setOnClickListener { onPreview() }
+                        }
+                    },
+                    modifier = Modifier.fillMaxSize(),
+                    onReset = null,
+                    onRelease = { it.unbind?.invoke(); it.unbind = null }
+                )
+            }
+        }
+        val badge = if (video) "视频" else if (item.mediaCount > 1) "${item.mediaCount} 张" else ""
+        if (badge.isNotEmpty()) Text(badge, color = androidx.compose.ui.graphics.Color.White, fontSize = 11.sp,
+            modifier = Modifier.align(Alignment.BottomEnd).background(androidx.compose.ui.graphics.Color.Black.copy(alpha = .65f))
+                .padding(horizontal = 5.dp, vertical = 2.dp))
+    }
+}
+
+private class MomentCoverView(context: Context, private val video: Boolean) : ImageView(context) {
+    var unbind: (() -> Unit)? = null
+    private var logged = false
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        if (!logged && drawable?.let { it.intrinsicWidth > 2 && it.intrinsicHeight > 2 } == true) {
+            logged = true
+            HLog.i("sns_r1 phase=cover rendered=true source=loader kind=${if (video) "video" else "image"}")
+        }
     }
 }
 
@@ -395,7 +441,6 @@ private fun momentFromPost(post: WeChatSnsPost): BatchMomentItem? {
         createTimeSeconds = post.getCreateTimeSeconds(),
         contentType = BatchMomentsSelection.contentTypeFromNative(post.getType()),
         text = post.getText(),
-        previewUrl = post.getMediaList().firstOrNull()?.getThumbUrl().orEmpty(),
         mediaCount = post.getMediaList().size
     )
 }
