@@ -178,10 +178,17 @@ class WeChatFavoriteApi(
         favoriteHasMore = nativeItems.size >= FAVORITE_PAGE_SIZE
         if (favoriteHasMore) {
             val nextCursor = nextFavoriteCursor(nativeItems, previousCursor)
-            if (nextCursor <= 0L || nextCursor == previousCursor) {
-                return makeFavoritePage(error = "收藏分页游标没有前进，不能确认全部收藏")
+            when (FavoritePaginationPolicy.decide(previousCursor, nextCursor)) {
+                FavoritePaginationDecision.ADVANCE -> favoriteCursor = nextCursor
+                FavoritePaginationDecision.COMPLETE -> {
+                    // WeChat returns the cursor unchanged when its native older-than-cursor query is empty.
+                    favoriteHasMore = false
+                    favoriteCursor = previousCursor
+                }
+                FavoritePaginationDecision.INVALID -> {
+                    return makeFavoritePage(error = "收藏分页游标异常，不能确认全部收藏")
+                }
             }
-            favoriteCursor = nextCursor
         }
         if (favoriteHeadMarker.isBlank()) {
             favoriteHeadMarker = favoriteMarker(favoriteItems.values.firstOrNull())
@@ -597,7 +604,7 @@ class WeChatFavoriteApi(
         val next = (KavaReflector.invoke(
             cursorMethod, null, base, FAVORITE_TYPE_ALL, FAVORITE_PAGE_SIZE
         ) as? Number)?.toLong() ?: return 0L
-        return next.takeIf { it > 0L && it != base } ?: 0L
+        return next
     }
 
     private fun favoriteMarker(item: WeChatFavoriteItem?): String {

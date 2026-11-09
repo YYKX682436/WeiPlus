@@ -1,5 +1,17 @@
 package h.Hchat.hooks.api.media
 
+internal enum class FavoritePaginationDecision { ADVANCE, COMPLETE, INVALID }
+
+internal object FavoritePaginationPolicy {
+    fun decide(currentCursor: Long, nextCursor: Long): FavoritePaginationDecision = when {
+        currentCursor < 0L || nextCursor <= 0L -> FavoritePaginationDecision.INVALID
+        currentCursor == 0L -> FavoritePaginationDecision.ADVANCE
+        nextCursor == currentCursor -> FavoritePaginationDecision.COMPLETE
+        nextCursor < currentCursor -> FavoritePaginationDecision.ADVANCE
+        else -> FavoritePaginationDecision.INVALID
+    }
+}
+
 internal object FavoriteSnapshotPolicy {
     fun isComplete(hasMore: Boolean, error: String?): Boolean = !hasMore && error.isNullOrBlank()
 

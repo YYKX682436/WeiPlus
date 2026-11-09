@@ -96,6 +96,30 @@ class FavoriteBatchPoliciesTest {
         assertFalse(confirmed.stopLater)
     }
 
+    @Test
+    fun nativeCursorOrderingAndTerminalSignalAreSafe() {
+        assertEquals(
+            FavoritePaginationDecision.ADVANCE,
+            FavoritePaginationPolicy.decide(currentCursor = 0L, nextCursor = 900L)
+        )
+        assertEquals(
+            FavoritePaginationDecision.ADVANCE,
+            FavoritePaginationPolicy.decide(currentCursor = 900L, nextCursor = 700L)
+        )
+        assertEquals(
+            FavoritePaginationDecision.COMPLETE,
+            FavoritePaginationPolicy.decide(currentCursor = 700L, nextCursor = 700L)
+        )
+        assertEquals(
+            FavoritePaginationDecision.INVALID,
+            FavoritePaginationPolicy.decide(currentCursor = 700L, nextCursor = 900L)
+        )
+        assertEquals(
+            FavoritePaginationDecision.INVALID,
+            FavoritePaginationPolicy.decide(currentCursor = 0L, nextCursor = 0L)
+        )
+    }
+
     private fun item(
         localId: Long,
         serverId: Int,

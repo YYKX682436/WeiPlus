@@ -23,7 +23,7 @@ internal enum class BatchOperation(val title: String) {
     DELETE_INVALID_GROUPS("批量删除无效群聊"),
     DELETE_CHATS("批量删除聊天"),
     DELETE_FRIENDS("批量删除好友"),
-    UNFOLLOW_OFFICIAL_ACCOUNTS("批量取消关注公众号"),
+    UNFOLLOW_OFFICIAL_ACCOUNTS("批量取消关注公众号/服务号"),
     DELETE_FAVORITES("批量清理收藏")
 }
 

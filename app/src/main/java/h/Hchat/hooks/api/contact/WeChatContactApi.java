@@ -560,27 +560,13 @@ public final class WeChatContactApi {
             return new ContactListResult(false, Collections.emptyList(), "当前微信账号标识为空");
         }
 
-        StringBuilder sql = new StringBuilder("SELECT ")
-                .append(contactFields())
-                .append(", r.verifyFlag AS verifyFlag, b.username AS bizUsername, b.type AS bizType ")
-                .append("FROM rcontact r INNER JOIN bizinfo b ON b.username = r.username ")
-                .append("WHERE (r.type & 1) != 0 ");
+        String sql = buildFollowedOfficialAccountsSql(contactFields(), targets == null ? 0 : targets.size());
         String[] args = null;
         if (targets != null) {
-            sql.append("AND r.username IN (");
-            for (int i = 0; i < targets.size(); i++) {
-                if (i > 0) sql.append(',');
-                sql.append('?');
-            }
-            sql.append(") ");
             args = targets.toArray(new String[0]);
         }
-        sql.append("ORDER BY r.showHead ASC, ")
-                .append("CASE WHEN length(r.conRemarkPYFull) > 0 THEN upper(r.conRemarkPYFull) ELSE upper(r.quanPin) END ASC, ")
-                .append("CASE WHEN length(r.conRemark) > 0 THEN upper(r.conRemark) ELSE upper(r.quanPin) END ASC, ")
-                .append("upper(r.quanPin) ASC, upper(r.nickname) ASC, upper(r.username) ASC");
 
-        WeChatDatabaseApi.QueryResult query = databaseApi.queryWithStatus(sql.toString(), args);
+        WeChatDatabaseApi.QueryResult query = databaseApi.queryWithStatus(sql, args);
         if (!query.success) {
             return new ContactListResult(false, Collections.emptyList(),
                     query.error.isBlank() ? "读取已关注公众号失败" : query.error);
@@ -611,6 +597,28 @@ public final class WeChatContactApi {
             log("解析已关注公众号列表失败: " + e.getMessage());
             return new ContactListResult(false, Collections.emptyList(), "解析已关注公众号列表失败");
         }
+    }
+
+    static String buildFollowedOfficialAccountsSql(String contactProjection, int targetCount) {
+        StringBuilder sql = new StringBuilder("SELECT ")
+                .append(contactProjection)
+                .append(", r.verifyFlag AS verifyFlag, b.username AS bizUsername, b.type AS bizType ")
+                .append("FROM rcontact r LEFT JOIN img_flag i ON r.username = i.username ")
+                .append("INNER JOIN bizinfo b ON b.username = r.username ")
+                .append("WHERE (r.type & 1) != 0 ");
+        if (targetCount > 0) {
+            sql.append("AND r.username IN (");
+            for (int i = 0; i < targetCount; i++) {
+                if (i > 0) sql.append(',');
+                sql.append('?');
+            }
+            sql.append(") ");
+        }
+        return sql.append("ORDER BY r.showHead ASC, ")
+                .append("CASE WHEN length(r.conRemarkPYFull) > 0 THEN upper(r.conRemarkPYFull) ELSE upper(r.quanPin) END ASC, ")
+                .append("CASE WHEN length(r.conRemark) > 0 THEN upper(r.conRemark) ELSE upper(r.quanPin) END ASC, ")
+                .append("upper(r.quanPin) ASC, upper(r.nickname) ASC, upper(r.username) ASC")
+                .toString();
     }
 
     public ContactStateResult getContactStateResult(String wxId) {

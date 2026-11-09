@@ -177,11 +177,11 @@ public final class NativeBatchOfficialUnfollowProcess {
                         Object value = chain.proceed();
                         copyStrings(KavaReflector.readField(scene, "e"), locallyConfirmed);
                         copyStrings(KavaReflector.readField(scene, "q"), localCleanupFailed);
-                        if (callbackObserved.get()) {
+                        if (recordSceneCallback(scene, chain.getThisObject(), args, completed,
+                                callbackObserved, callbackErrorType, callbackErrorCode)) {
                             if (callbackErrorType.get() != 0 || callbackErrorCode.get() != 0) {
                                 error[0] = "微信批量取消关注网络回调失败";
                             }
-                            completed.countDown();
                             if (timedOut.get()) hookLease.release();
                         }
                         return value;
@@ -236,6 +236,20 @@ public final class NativeBatchOfficialUnfollowProcess {
                 hookLease.release();
             }
         }
+    }
+
+    /** The native scene callback completes before NetSceneQueue dispatches its u0 observer. */
+    static boolean recordSceneCallback(Object expectedScene, Object callbackScene, Object[] args,
+                                       CountDownLatch completed, AtomicBoolean callbackObserved,
+                                       AtomicInteger callbackErrorType, AtomicInteger callbackErrorCode) {
+        if (expectedScene == null || callbackScene != expectedScene || args == null || args.length < 6) {
+            return false;
+        }
+        callbackErrorType.set(number(args[0]));
+        callbackErrorCode.set(number(args[1]));
+        callbackObserved.set(true);
+        completed.countDown();
+        return true;
     }
 
     private static List<ItemResult> resultItems(List<String> usernames, Set<String> requestObserved,

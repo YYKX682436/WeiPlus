@@ -104,7 +104,7 @@ public final class WeChatDatabaseApi {
         Cursor cursor = rawQuery(sql, args);
         if (cursor == null) return rows;
         try {
-            String[] columns = cursor.getColumnNames();
+            String[] columns = cursorColumnNames(cursor);
             if (columns == null || !cursor.moveToFirst()) return rows;
             do {
                 Map<String, Object> row = new HashMap<>();
@@ -139,8 +139,13 @@ public final class WeChatDatabaseApi {
         Cursor cursor = query.cursor;
         List<Map<String, Object>> rows = new ArrayList<>();
         try {
-            String[] columns = cursor.getColumnNames();
-            if (columns == null) return new QueryResult(false, null, "微信数据库列信息不可用");
+            String[] columns = cursorColumnNames(cursor);
+            if (columns == null) {
+                int columnCount = -1;
+                try { columnCount = cursor.getColumnCount(); } catch (Throwable ignored) {}
+                log("SQL 状态查询无法读取列名: count=" + columnCount + " sql=" + sql);
+                return new QueryResult(false, null, "微信数据库列信息不可用");
+            }
             if (cursor.moveToFirst()) {
                 do {
                     Map<String, Object> row = new HashMap<>();
@@ -402,6 +407,28 @@ public final class WeChatDatabaseApi {
         CursorQueryResult query = executeRawQuery(sql, args);
         if (query.cursor == null && logError) log("SQL 查询异常: " + query.error + " sql=" + sql);
         return query.cursor;
+    }
+
+    /** Some WeChat cursor wrappers return null from getColumnNames but expose indexed names. */
+    static String[] cursorColumnNames(Cursor cursor) {
+        if (cursor == null) return null;
+        try {
+            String[] names = cursor.getColumnNames();
+            if (names != null && names.length > 0) return names;
+        } catch (Throwable ignored) {}
+        try {
+            int count = cursor.getColumnCount();
+            if (count <= 0) return null;
+            String[] names = new String[count];
+            for (int i = 0; i < count; i++) {
+                String name = cursor.getColumnName(i);
+                if (name == null || name.isEmpty()) return null;
+                names[i] = name;
+            }
+            return names;
+        } catch (Throwable ignored) {
+            return null;
+        }
     }
 
     private CursorQueryResult executeRawQuery(String sql, String[] args) {

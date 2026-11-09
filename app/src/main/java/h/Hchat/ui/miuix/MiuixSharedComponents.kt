@@ -1581,12 +1581,14 @@ internal fun BatchDeleteConfirmDialog(
     message: String,
     labels: List<String>,
     onDismiss: () -> Unit,
-    onConfirm: () -> Unit
+    onConfirm: () -> Unit,
+    title: String = "确认批量删除",
+    confirmText: String = "确认删除"
 ) {
     if (!show) return
     WindowDialog(
         show = true,
-        title = "确认批量删除",
+        title = title,
         onDismissRequest = onDismiss,
         content = {
             Column {
@@ -1611,7 +1613,7 @@ internal fun BatchDeleteConfirmDialog(
                         colors = ButtonDefaults.textButtonColorsPrimary()
                     )
                     TextButton(
-                        text = "确认删除",
+                        text = confirmText,
                         onClick = onConfirm,
                         modifier = Modifier.weight(1f),
                         colors = ButtonDefaults.textButtonColorsPrimary()

@@ -338,12 +338,14 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
             } else {
                 "将删除所选 ${pendingDeleteTargets?.size ?: 0} 位好友；聊天记录按微信原生删除行为处理，不主动清空。此操作不可恢复。"
             }
-            BatchOperation.UNFOLLOW_OFFICIAL_ACCOUNTS -> "将通过微信原生批量接口取消关注所选 ${pendingDeleteTargets?.size ?: 0} 个公众号。之后如需接收其内容，需要重新关注。本操作不另外删除会话或聊天记录；结果未知的请求不会重试。"
+            BatchOperation.UNFOLLOW_OFFICIAL_ACCOUNTS -> "将通过微信原生批量接口取消关注所选 ${pendingDeleteTargets?.size ?: 0} 个公众号/服务号。之后如需接收其内容，需要重新关注。本操作不另外删除会话或聊天记录；结果未知的请求不会重试。"
             BatchOperation.GROUP_LEAVE -> "将通过微信原生批量退群流程退出所选 ${pendingDeleteTargets?.size ?: 0} 个群聊。群主群聊不在候选列表中；结果未知的请求不会重试。此操作不可恢复。"
             BatchOperation.DELETE_INVALID_GROUPS -> "将按微信原生方式移除所选 ${pendingDeleteTargets?.size ?: 0} 个已确认失效群聊的残留群资料与会话，不额外清空聊天记录。此操作不可恢复。"
             else -> ""
         },
         labels = pendingDeleteTargets.orEmpty().map { it.label },
+        title = if (currentFeature == BatchOperation.UNFOLLOW_OFFICIAL_ACCOUNTS) "确认取消关注" else "确认批量删除",
+        confirmText = if (currentFeature == BatchOperation.UNFOLLOW_OFFICIAL_ACCOUNTS) "确认取消关注" else "确认删除",
         onDismiss = {
             pendingDeleteTargets = null
             pendingDeleteClearHistory = false
@@ -474,7 +476,7 @@ private fun BatchPickerControls(
             BatchOperation.DELETE_INVALID_GROUPS -> InfoRow("清理范围", "仅列出已解散或成员名单确认不含当前账号的群聊")
             BatchOperation.UNFOLLOW_OFFICIAL_ACCOUNTS -> InfoRow(
                 "候选范围",
-                "仅列出微信当前确认仍关注且具有公众号资料的账号"
+                "仅列出微信当前确认仍关注且具有公众号或服务号资料的账号"
             )
             BatchOperation.DO_NOT_DISTURB -> {
                 PopupChoiceRow(
@@ -654,7 +656,7 @@ private fun operationSummary(operation: BatchOperation): String = when (operatio
     BatchOperation.DELETE_INVALID_GROUPS -> "清理已经退出、被移出或解散后仍残留的群聊"
     BatchOperation.DELETE_CHATS -> "删除微信首页当前聊天，并清理对应聊天记录；保留好友与群成员关系"
     BatchOperation.DELETE_FRIENDS -> "删除全部有效好友，可选同时清空聊天记录；不含自己、公众号和群聊"
-    BatchOperation.UNFOLLOW_OFFICIAL_ACCOUNTS -> "显示当前仍关注的公众号；使用微信原生批量接口取消关注"
+    BatchOperation.UNFOLLOW_OFFICIAL_ACCOUNTS -> "显示当前仍关注的公众号和服务号；使用微信原生批量接口取消关注"
     BatchOperation.DELETE_FAVORITES -> "从微信完整收藏列表中选择内容，并通过微信原生批量删除入口清理"
 }
 

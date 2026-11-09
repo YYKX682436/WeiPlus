@@ -1111,6 +1111,8 @@ internal fun FavoritePickerPage(
             show = pendingDelete,
             message = "将通过微信原生批量删除入口删除已选 ${selectedFavorites.size} 项收藏。只删除明确选中的项目；此操作不可恢复，结果未知的请求不会自动重试。",
             labels = selectedFavorites.map { "${it.displayTitle()} · ${it.typeLabel()}" },
+            title = "确认删除收藏",
+            confirmText = "确认删除收藏",
             onDismiss = { pendingDelete = false },
             onConfirm = {
                 pendingDelete = false

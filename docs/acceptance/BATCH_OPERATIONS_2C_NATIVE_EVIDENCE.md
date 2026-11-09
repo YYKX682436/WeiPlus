@@ -4,7 +4,7 @@
 
 - 目标包：官方微信 8.0.80，`versionCode=3220`。
 - 静态分析对象：从本机已安装包提取的 APK；SHA-256 `c35a05d5c13bd43cf1f7ff42c13fab070d21509ab2e233596f776d1afcae52f5`。
-- DexSQL 仅用于只读 DEX/Smali 查询。本次没有实际取消关注公众号，也没有删除收藏。
+- DexSQL 仅用于只读 DEX/Smali 查询。后续经用户回复“随便取”后，真机提交过一次两项原生批量取关请求；未删除收藏。
 - 下文的调用链、参数和回调结论来自 APK 字节码；服务端业务效果与真实 UI 写入仍为 `NOT_VERIFIED`。
 
 ## 公众号：读取当前关注关系
@@ -76,4 +76,20 @@ WeiPlus 直接构造这个原生 scene，不调用带进度弹窗的 `unSubscrib
 
 收藏选择器沿用 `WeChatFavoriteApi` 原生分页读取：批量清理时清空旧页缓存，从第一页重新读取；每次加载返回 `hasMore/error/changed`；游标不前进、重复 ID 内容冲突、解码失败或数据库读取失败都阻止删除。只有读到结束页且无错误后才允许“全选当前筛选结果”和提交。结果分别记录服务端接受、本地对象移除和最终确认，任务完成后失效插件收藏缓存；现有收藏发送 API 不调用删除路径。
 
-收藏原生写入、服务器接受、微信 UI 刷新行为及设备预览均为 `NOT_VERIFIED`；本次未实际删除任何真实收藏。
+收藏原生写入、服务器接受及删除后的微信 UI 刷新行为均为 `NOT_VERIFIED`；本次未实际删除任何真实收藏。选择器已在官方微信 8.0.80/3220 真机打开。首次验收显示已读 29 项后报“收藏分页游标没有前进”。
+
+### 收藏分页补充证据
+
+- 官方列表分页由 `Lcom/tencent/mm/plugin/fav/ui/adapter/c;->a()V` 发起：从父类 `Lcom/tencent/mm/plugin/fav/ui/adapter/b;` 读取 `d:J`（游标）和 `e:I`（类型），页大小为 20，调用静态 `Lbe2/a3;->R0(JII)J` 并保存返回游标。
+- `Lcom/tencent/mm/plugin/fav/ui/adapter/c;->o()V` 从 `Lcom/tencent/mm/plugin/fav/n;->Vj()Lbe2/q5;` 取得收藏存储实例。游标为 0 时调用 `Lbe2/q5;->w6(IILjava/util/List;Ljava/util/Set;Lbe2/o5;)Ljava/util/List;`；后续调用 `Lbe2/q5;->ee(JILjava/util/List;Ljava/util/Set;Lbe2/o5;)Ljava/util/List;`。实参包括类型、20 项首批限制、列表/排除集合及回调。
+- `Lbe2/a3;->R0(JII)J` 在同一个存储实例上调用 `W0(JII)J` 与 `Z(JII)J`，并按原生逻辑决定游标及是否安排收藏补取。`Lme2/f;->Z(JII)J` 的本机查询按更新时间小于输入游标、倒序并限制数量；没有更旧行时返回原游标。`Lme2/f;->ee(JI, List, Set, callback)` 查询更新时间大于或等于游标的记录且无 LIMIT，因此后续结果会包含已读记录并非“每页最多 20 条”。另一实现 `Loe2/d;` 也实现 `Lbe2/q5;`。
+- WeiPlus 首批使用 `w6(...,20,...)`，后续使用 `ee(cursor,...)` 并按本地收藏 ID 合并。设备上的 29 项是累计结果；重复游标来自原生查询已没有更旧记录，是终止标记，不是分页失败。读取成功但重复 ID 内容冲突、非法或倒退游标仍保持失败关闭。
+- 真机复验：公众号/服务号合并选择页读取 9 个候选，勾选两项显示“取消关注（2）”，确认文案正确。用户授权任意两项后，提交一次真实原生批量请求；60 秒内未观察到原生回调，后续重新读取时两项仍在候选列表。请求结果保持 `UNCONFIRMED/NOT_VERIFIED`，未重试、未报告成功。
+- 收藏页修复后真机读到 `29 / 29` 项，无分页错误；图片筛选显示 `1 / 29`，选中一项显示“删除（1）”，最终确认标题和按钮均为“确认删除收藏”。随后取消弹窗，没有实际删除收藏。服务端删除及删除后的微信 UI 刷新仍为 `NOT_VERIFIED`。
+- 首轮取关选择页出现“微信数据库列信息不可用”。设备侧对应查询使用 `contactFields()` 投影，其中头像列来自 `img_flag`；原 SQL 漏了该表连接。补上 `LEFT JOIN img_flag i ON r.username = i.username`，并为 `getColumnNames()` 不可用的游标增加 `getColumnCount()/getColumnName(i)` 读取回退后，真机可加载候选页。
+
+### 取关回调等待补充
+
+- `Lq61/i0;->onGYNetEnd(IIILjava/lang/String;Lcom/tencent/mm/network/y0;[B)V` 是原生批量场景响应处理。其后由 `Lcom/tencent/mm/modelbase/s1;->onSceneEnd(IILjava/lang/String;Lcom/tencent/mm/modelbase/n1;)V` 调 `s1.b(II,String,n1)`；`s1.b` 将 `v1` Runnable post 到 `n3`，随后才由 `u0.onSceneEnd(IILjava/lang/String;Lcom/tencent/mm/modelbase/n1;)V` 分发队列观察回调。因此场景回调先于 `u0` 队列观察回调。
+- 首次真机请求使用旧等待条件，已提交但未在 60 秒内观察到队列回调；任务报告未确认，重新读取仍看到 9 个候选。请求未重试，实际关注关系保持 `UNCONFIRMED/NOT_VERIFIED`。
+- 等待器现改为在本机 `onGYNetEnd` 原方法返回后记录 errType/errCode 并释放等待；队列级回调只负责后续注销。增加单元测试模拟“场景响应先到、队列观察器尚未运行”的顺序。修复后的真实取关请求未再次提交。
