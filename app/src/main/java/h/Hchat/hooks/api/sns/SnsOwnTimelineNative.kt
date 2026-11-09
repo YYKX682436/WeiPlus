@@ -44,6 +44,16 @@ internal class SnsOwnTimelineNative(private val loader: ClassLoader) {
         return observer.request(scene, READ_TIMEOUT_MS) { guard() && sendOnce(scene) }
     }
 
+    fun cachedTimelineIdentity(info: Any): NativeSnsFeed? {
+        val timeline = R.invokeMethod(info, "getTimeLine") ?: return null
+        val rawId = R.readField(timeline, "Id") as? String ?: return null
+        val id = rawId.toLongOrNull() ?: runCatching { java.lang.Long.parseUnsignedLong(rawId) }.getOrNull()
+            ?: return null
+        val author = R.readField(timeline, "UserName") as? String ?: return null
+        val time = (R.readField(timeline, "CreateTime") as? Number)?.toInt() ?: return null
+        return NativeSnsFeed(id, author, Integer.toUnsignedLong(time))
+    }
+
     fun delete(id: Long, guard: () -> Boolean, reserve: () -> Boolean): SnsSceneResult {
         val type = R.loadClass(SnsNativeSceneObserver.DELETE, loader) ?: return unavailable("delete_class")
         val scene = R.newInstance(R.findConstructor(type, Long::class.javaPrimitiveType!!, ints), id, 1)

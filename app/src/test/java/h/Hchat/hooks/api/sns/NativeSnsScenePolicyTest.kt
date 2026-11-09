@@ -54,6 +54,19 @@ class NativeSnsScenePolicyTest {
         assertEquals(40L, cursor.advance(page(listOf(49, 40))).next)
     }
 
+    @Test fun verifiesServerTimestampInTheTimelineWhenTheLocalPublishClockDiffers() {
+        val server = NativeSnsFeed(-76L, owner, 1_789_998_018L)
+        val local = server.copy(time = server.time - 5)
+        assertTrue(server.matchesCachedIdentity(local) { server })
+        assertTrue(server.matchesCachedIdentity(server) { error("No second lookup is needed") })
+        assertFalse(server.matchesCachedIdentity(local) { null })
+        assertFalse(server.matchesCachedIdentity(local) { server.copy(time = server.time - 1) })
+        assertFalse(server.matchesCachedIdentity(local) { server.copy(id = -77) })
+        assertFalse(server.matchesCachedIdentity(local) { server.copy(author = "other") })
+        assertFalse(server.matchesCachedIdentity(local.copy(author = "other")) { server })
+        assertFalse(server.matchesCachedIdentity(local.copy(id = -77)) { server })
+    }
+
     @Test fun targetDetailRequiresAnExactObjectOrAnExplicitUnavailableResponse() {
         assertEquals(SnsDetailState.OWN_PRESENT, SnsSceneResponse(0, 0,
             detail = NativeSnsFeed(7, owner, 9)).detailState(7, owner))

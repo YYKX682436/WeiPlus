@@ -41,6 +41,12 @@ internal fun SnsSceneResponse.detailState(id: Long, owner: String): SnsDetailSta
     return if (detail == null && unavailableReason != 0) SnsDetailState.UNAVAILABLE else SnsDetailState.UNKNOWN
 }
 
+/** A self post can keep its local publish time in SnsInfo even after the server assigns CreateTime. */
+internal fun NativeSnsFeed.matchesCachedIdentity(row: NativeSnsFeed, timeline: () -> NativeSnsFeed?): Boolean {
+    if (id == 0L || author.isBlank() || time <= 0 || row.id != id || row.author != author) return false
+    return row.time == time || timeline() == this
+}
+
 internal enum class OwnSnsDeleteKind {
     SUCCESS, NOT_SUBMITTED, SERVER_REJECTED, NO_CALLBACK, REMOTE_PRESENT, LOCAL_PENDING, UNCONFIRMED, SKIPPED
 }

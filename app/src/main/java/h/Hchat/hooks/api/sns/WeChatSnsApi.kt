@@ -245,12 +245,10 @@ class WeChatSnsApi(
     }
 
     private fun mapOwnFeed(session: OwnSnsHistorySession, feed: NativeSnsFeed): WeChatSnsPost? {
+        if (feed.author != session.owner) return null
         val id = java.lang.Long.toUnsignedString(feed.id)
         val record = cachedPostStorage?.queryBySnsId(id) ?: return null
-        return postFromRecord(record, session.owner)?.takeIf {
-            it.getSnsId() == id && it.getUserName() == session.owner && it.isSelf() &&
-                it.getCreateTimeSeconds() == feed.time
-        }
+        return postFromRecord(record, session.owner, feed)
     }
 
     internal fun deleteOwnSnsPost(
@@ -505,7 +503,11 @@ class WeChatSnsApi(
 
     private fun postFromRecord(record: SnsCachedPostRecord): WeChatSnsPost? = postFromRecord(record, null)
 
-    private fun postFromRecord(record: SnsCachedPostRecord, confirmedOwner: String?): WeChatSnsPost? {
+    private fun postFromRecord(
+        record: SnsCachedPostRecord,
+        confirmedOwner: String?,
+        serverFeed: NativeSnsFeed? = null
+    ): WeChatSnsPost? {
         val nativeInfo = record.nativeInfo
         val values = record.values
         if (KavaReflector.invokeMethod(nativeInfo, "isAd") == true) return null
@@ -523,9 +525,15 @@ class WeChatSnsApi(
             ?: (KavaReflector.invokeMethod(nativeInfo, "getLocalid") as? Number)?.toLong()
             ?: (KavaReflector.readField(nativeInfo, "localid") as? Number)?.toLong()
             ?: 0L
-        val createTime = values.getAsLong("createTime")
+        val rowTime = values.getAsLong("createTime")
             ?: values.getAsLong("field_createTime")
             ?: 0L
+        if (serverFeed != null) {
+            val row = NativeSnsFeed(signedId, userName, rowTime)
+            if (!serverFeed.matchesCachedIdentity(row) { ownTimelineNative?.cachedTimelineIdentity(nativeInfo) }) return null
+        }
+        // The delete detail must compare against the selected server timestamp, not the local publish clock.
+        val createTime = serverFeed?.time ?: rowTime
         val storageType = values.getAsInteger("type")
             ?: values.getAsInteger("field_type")
             ?: -1
