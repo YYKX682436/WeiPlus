@@ -302,6 +302,16 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
         }
     )
 
+    if (phase == BatchPage.MOMENTS_PICKER) {
+        BatchMomentsPickerPage(
+            accountIdentity = accountIdentity,
+            manager = manager,
+            onBack = { returnHome() },
+            onSubmitted = { returnHome() }
+        )
+        return
+    }
+
     if (phase == BatchPage.PICKER) {
         ContactPickerPage(
             context = context,
@@ -342,7 +352,11 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
                             if (operation == BatchOperation.FRIEND_LABEL && labelsLoaded) {
                                 selectedLabelId = labelChoices.firstOrNull()?.labelId.orEmpty()
                             }
-                            phase = BatchPage.PICKER
+                            phase = if (operation == BatchOperation.DELETE_OWN_MOMENTS) {
+                                BatchPage.MOMENTS_PICKER
+                            } else {
+                                BatchPage.PICKER
+                            }
                         }
                         if (index < BatchOperation.entries.lastIndex) InsetDivider()
                     }
@@ -570,6 +584,7 @@ private fun candidateMode(
     BatchOperation.DELETE_CHATS -> BatchCandidateMode.HOME_CONVERSATIONS
     BatchOperation.DELETE_FRIENDS -> BatchCandidateMode.ALL_FRIENDS
     BatchOperation.UNFOLLOW_OFFICIAL_ACCOUNTS -> BatchCandidateMode.FOLLOWED_OFFICIAL_ACCOUNTS
+    BatchOperation.DELETE_OWN_MOMENTS -> null
     null -> null
 }
 
@@ -587,9 +602,10 @@ private fun operationSummary(operation: BatchOperation): String = when (operatio
     BatchOperation.DELETE_CHATS -> "删除微信首页当前聊天，并清理对应聊天记录；保留好友与群成员关系"
     BatchOperation.DELETE_FRIENDS -> "删除全部有效好友，可选同时清空聊天记录；不含自己、公众号和群聊"
     BatchOperation.UNFOLLOW_OFFICIAL_ACCOUNTS -> "显示当前仍关注的公众号和服务号；使用微信原生批量接口取消关注"
+    BatchOperation.DELETE_OWN_MOMENTS -> "按时间与内容筛选本人朋友圈；通过微信服务器分页读取并逐条调用原生删除"
 }
 
 private fun validGroupNickname(value: String): Boolean =
     value.isNotBlank() && value.trim().length <= 16
 
-private enum class BatchPage { HOME, PICKER }
+private enum class BatchPage { HOME, PICKER, MOMENTS_PICKER }

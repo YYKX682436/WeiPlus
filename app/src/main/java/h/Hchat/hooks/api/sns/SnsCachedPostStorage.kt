@@ -353,7 +353,7 @@ internal class SnsCachedPostStorage(
         return result
     }
 
-    private fun recordFromNative(nativeInfo: Any, localId: Long? = null): SnsCachedPostRecord? {
+    internal fun recordFromNative(nativeInfo: Any, localId: Long? = null): SnsCachedPostRecord? {
         if (nativeInfo.javaClass.name != SnsInteractionLocator.SNS_INFO_CLASS) return null
         val values = (KavaReflector.invokeMethod(nativeInfo, "convertTo") as? ContentValues)
             ?.let(::ContentValues)

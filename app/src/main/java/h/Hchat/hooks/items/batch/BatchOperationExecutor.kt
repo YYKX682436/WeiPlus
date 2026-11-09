@@ -4,6 +4,7 @@ import h.Hchat.hooks.api.contact.WeChatContactApi
 import h.Hchat.hooks.api.contact.WeChatNativeMutationResult
 import h.Hchat.hooks.api.contact.NativeBatchQuitChatroomProcess
 import h.Hchat.hooks.api.core.WeChatApis
+import h.Hchat.hooks.api.sns.OwnSnsDeleteKind
 import h.Hchat.hooks.api.message.WeChatMessageStoreApi
 import h.Hchat.utils.HLog
 import java.util.LinkedHashMap
@@ -30,6 +31,9 @@ internal object BatchOperationExecutor : BatchTaskProcessor {
         if (request.operation == BatchOperation.GROUP_LEAVE) {
             return executeGroupLeaveBatch(request, stopSignal)
         }
+        if (request.operation == BatchOperation.DELETE_OWN_MOMENTS) {
+            return executeOwnMomentsDeleteBatch(request, stopSignal)
+        }
         return BatchTaskRunner.run(
             request.targetIds,
             request.expectedAccount,
@@ -40,6 +44,41 @@ internal object BatchOperationExecutor : BatchTaskProcessor {
             null
         )
     }
+
+    private fun executeOwnMomentsDeleteBatch(
+        request: BatchTaskRequest,
+        stopSignal: BatchTaskRunner.StopSignal
+    ): BatchTaskRunner.Report = BatchTaskRunner.run(
+        request.targetIds,
+        request.expectedAccount,
+        { accountIdentity() },
+        stopSignal,
+        0L,
+        { snsId, signal ->
+            val sns = WeChatApis.snsApi()
+                ?: return@run result(BatchTaskRunner.Outcome.FAILED, "微信朋友圈 API 不可用")
+            val outcome = sns.deleteOwnSnsPost(
+                rawSnsId = snsId,
+                expectedAccount = request.expectedAccount,
+                shouldContinue = { !signal.isStopped() && isAccountCurrent(request.expectedAccount) }
+            )
+            when (outcome.kind) {
+                OwnSnsDeleteKind.SUCCESS -> result(BatchTaskRunner.Outcome.SUCCESS, outcome.message)
+                OwnSnsDeleteKind.SKIPPED -> result(BatchTaskRunner.Outcome.SKIPPED, outcome.message)
+                OwnSnsDeleteKind.SERVER_REJECTED -> result(BatchTaskRunner.Outcome.FAILED, outcome.message)
+                OwnSnsDeleteKind.UNCONFIRMED -> result(BatchTaskRunner.Outcome.UNCONFIRMED, outcome.message)
+                OwnSnsDeleteKind.NOT_SUBMITTED -> result(
+                    if (signal.isStopped() || !isAccountCurrent(request.expectedAccount)) {
+                        BatchTaskRunner.Outcome.SKIPPED
+                    } else {
+                        BatchTaskRunner.Outcome.FAILED
+                    },
+                    outcome.message
+                )
+            }
+        },
+        null
+    )
 
     private fun executeOfficialAccountUnfollowBatch(
         request: BatchTaskRequest,
@@ -553,6 +592,8 @@ internal object BatchOperationExecutor : BatchTaskProcessor {
             BatchOperation.DELETE_FRIENDS -> deleteFriend(id, request, stopSignal)
             BatchOperation.UNFOLLOW_OFFICIAL_ACCOUNTS ->
                 result(BatchTaskRunner.Outcome.FAILED, "公众号取消关注必须使用账号隔离的原生流程")
+            BatchOperation.DELETE_OWN_MOMENTS ->
+                result(BatchTaskRunner.Outcome.FAILED, "删除自己的朋友圈必须使用服务端复核和微信原生删除流程")
         }
     }
 

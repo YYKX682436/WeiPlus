@@ -6,8 +6,8 @@ import org.junit.Test
 
 class BatchOperationCatalogTest {
     @Test
-    fun `the original twelve operations remain and round 2c keeps only unfollow`() {
-        assertEquals(13, batchOperationsFeatureCount())
+    fun `the original thirteen operations remain and own moments deletion is appended`() {
+        assertEquals(14, batchOperationsFeatureCount())
         assertEquals(
             listOf(
                 BatchOperation.HIDE,
@@ -22,7 +22,8 @@ class BatchOperationCatalogTest {
                 BatchOperation.DELETE_INVALID_GROUPS,
                 BatchOperation.DELETE_CHATS,
                 BatchOperation.DELETE_FRIENDS,
-                BatchOperation.UNFOLLOW_OFFICIAL_ACCOUNTS
+                BatchOperation.UNFOLLOW_OFFICIAL_ACCOUNTS,
+                BatchOperation.DELETE_OWN_MOMENTS
             ),
             BatchOperation.entries
         )
