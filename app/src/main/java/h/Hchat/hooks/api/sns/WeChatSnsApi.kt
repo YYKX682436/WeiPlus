@@ -255,6 +255,7 @@ class WeChatSnsApi(
                 "account" -> "微信账号已变化"
                 "privacy_boundary" -> "微信限制了可读范围，未确认全部历史"
                 "visible_history_boundary" -> "微信已结束可见动态读取，未确认全部历史"
+                "boundary_payload_unverified" -> "部分动态尚未核实，请重新读取"
                 "queue" -> "微信正在处理请求或未接受本页读取，请重新读取"
                 "cursor_not_advanced", "empty_or_unmatched_cursor" -> "服务器未提供可继续的游标，历史读取未完成"
                 else -> "朋友圈读取未完成（$stage）"

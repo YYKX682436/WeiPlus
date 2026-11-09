@@ -32,7 +32,9 @@ class SnsFriendMomentsPolicyTest {
         assertEquals("visible_history_boundary", SnsHistoryCursor(isSelf = false).advance(empty).failure)
         assertEquals("privacy_boundary", SnsHistoryCursor(isSelf = false).advance(boundary.copy(hasRecentTips = true)).failure)
         assertEquals("privacy_boundary", SnsHistoryCursor(isSelf = false).advance(empty.copy(recentLimitId = 80)).failure)
-        assertFalse(SnsHistoryCursor(isSelf = false).advance(boundary.copy(lastId = 0)).includePage)
+        val unverified = SnsHistoryCursor(isSelf = false).advance(boundary.copy(lastId = 0))
+        assertFalse(unverified.includePage)
+        assertEquals("boundary_payload_unverified", unverified.failure)
         assertEquals("response", SnsHistoryCursor(isSelf = false).advance(boundary.copy(errType = 2)).failure)
     }
 
@@ -66,7 +68,8 @@ class SnsFriendMomentsPolicyTest {
             assertTrue(step.includePage)
             assertNull(step.next)
             assertFalse(SnsHistoryCursor(isSelf = false).advance(boundary.copy(lastId = 0)).includePage)
-            assertFalse(SnsHistoryCursor(isSelf = false).advance(boundary.copy(count = 2)).includePage)
+            assertEquals("boundary_payload_unverified",
+                SnsHistoryCursor(isSelf = false).advance(boundary.copy(count = 2)).failure)
             assertFalse(SnsHistoryCursor(isSelf = false).advance(boundary.copy(errCode = 203)).includePage)
             assertFalse(SnsHistoryCursor(isSelf = false).advance(boundary.copy(ret = 203, errCode = 203)).includePage)
         }

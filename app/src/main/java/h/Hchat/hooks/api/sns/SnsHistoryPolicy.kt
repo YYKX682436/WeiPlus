@@ -23,13 +23,16 @@ internal class SnsHistoryCursor(private val isSelf: Boolean = true) {
             if (rangeLimited || albumEnd) {
                 // r3 feeds 207/2001/2004/2005 through the same J() storage branch. Confirm
                 // that this scene processed the returned list before retaining a boundary page.
-                val trustedPayload = albumEnd || nativeRangeTip ||
-                    page.ret in rangeCodesWithPayload && page.errType == 4 && page.errCode == page.ret
-                val visibleBoundary = !page.privacy && trustedPayload && page.feeds.isNotEmpty() &&
-                    page.count == page.feeds.size && page.lastId == page.feeds.last().id
+                val expectsVisiblePayload = !page.privacy && (albumEnd || nativeRangeTip ||
+                    page.ret in rangeCodesWithPayload && page.errType == 4 && page.errCode == page.ret)
+                val hasPayload = page.count != 0 || page.feeds.isNotEmpty()
+                val includePage = expectsVisiblePayload && hasPayload
+                if (includePage && (page.feeds.isEmpty() || page.count != page.feeds.size ||
+                        page.lastId != page.feeds.last().id)
+                ) return SnsPageAdvance(failure = "boundary_payload_unverified")
                 return SnsPageAdvance(
                     failure = if (rangeLimited) "privacy_boundary" else "visible_history_boundary",
-                    includePage = visibleBoundary
+                    includePage = includePage
                 )
             }
             if (normal && java.lang.Long.compareUnsigned(page.recentLimitId, recentLimitId) > 0) {

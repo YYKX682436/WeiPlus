@@ -112,6 +112,7 @@ internal fun BatchMomentsPickerPage(
             pendingAction = null
             preview = null
             complete = false
+            accessLimited = false
         }
         val converted = page.posts.mapNotNull { post ->
             momentFromPost(post, forLike, page.likeStates[post.getSnsId()] ?: SnsLikeState.UNKNOWN)
@@ -120,7 +121,7 @@ internal fun BatchMomentsPickerPage(
         received = page.received
         pending = page.pending
         unreadable = page.unreadable
-        if (page.error.isNotEmpty()) error = page.error
+        if (page.error.isNotEmpty() && !page.accessLimited) error = page.error
         accessLimited = accessLimited || page.accessLimited
         complete = complete || page.complete
     }
@@ -162,6 +163,8 @@ internal fun BatchMomentsPickerPage(
         reload++
     }
 
+    val readFinished = complete || accessLimited
+    val friendReadFinished = forLike && readFinished && !loading && error.isEmpty()
     val filtered = remember(posts, ownerUserName, filter) { BatchMomentsSelection.filter(posts, ownerUserName, filter) }
     val visible = remember(filtered, selectedIds) { BatchMomentsSelection.selectedFirst(filtered, selectedIds) }
     val selectable = remember(visible, forLike) { BatchMomentsSelection.selectable(visible, forLike) }
@@ -286,16 +289,15 @@ internal fun BatchMomentsPickerPage(
             item {
                 SettingsCard {
                     val title = when {
-                        accessLimited -> "已到微信可见范围边界"
                         error.isNotEmpty() -> if (forLike) "好友朋友圈读取失败" else "历史读取未完成"
-                        stopped && !complete -> "已停止读取"
+                        stopped && !readFinished -> "已停止读取"
                         loading -> if (received == 0) "正在读取最新动态" else "正在读取更早内容"
-                        complete && forLike && received == 0 -> "暂无可见朋友圈动态"
-                        complete && forLike -> "已读到当前可见动态末尾"
+                        friendReadFinished && pending + unreadable > 0 -> "部分动态未能读取"
+                        friendReadFinished -> "已读完"
                         complete -> "已读到历史末尾"
                         else -> "历史读取未完成"
                     }
-                    InfoRow(title, buildString {
+                    InfoRow(title, if (friendReadFinished && pending + unreadable == 0) "" else buildString {
                         append("已读取 $received 条")
                         if (pending > 0) append(" · $pending 条内容待同步")
                         if (unreadable > 0) append(" · $unreadable 条内容不可读")
@@ -306,19 +308,18 @@ internal fun BatchMomentsPickerPage(
                             stop.set(true)
                             stopped = true
                         }
-                        !loading && stopped && !complete && error.isEmpty() -> ActionRow("继续读取", "从当前游标继续") { run++ }
+                        !loading && stopped && !readFinished && error.isEmpty() -> ActionRow("继续读取", "从当前游标继续") { run++ }
                         !loading -> ActionRow("重新读取", "从最新动态开始") { refresh() }
                     }
                 }
             }
-            if (visible.isEmpty() && !loading && error.isEmpty()) {
+            if (visible.isEmpty() && !loading && error.isEmpty() && !(friendReadFinished && received == 0)) {
                 item {
                     SettingsCard {
                         InfoRow("暂无匹配动态", when {
-                            complete && received == 0 -> if (forLike) "微信没有返回当前账号可见的动态"
-                                else "服务器已确认历史结束，未返回动态"
+                            complete && received == 0 -> "服务器已确认历史结束，未返回动态"
                             pending + unreadable > 0 -> "部分动态内容暂不可显示"
-                            !complete -> "尚未读取全部历史"
+                            !readFinished -> "尚未读取全部历史"
                             else -> "没有符合当前筛选条件的动态"
                         })
                     }
