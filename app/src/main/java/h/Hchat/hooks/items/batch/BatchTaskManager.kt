@@ -1,5 +1,6 @@
 package h.Hchat.hooks.items.batch
 
+import h.Hchat.utils.HLog
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -138,10 +139,26 @@ internal class BatchTaskManager private constructor(
     private var shutDown = false
 
     fun submit(request: BatchTaskRequest): BatchTaskSubmitResult {
-        val normalized = normalize(request) ?: return BatchTaskSubmitResult.INVALID
+        val normalized = normalize(request)
+        if (normalized == null) {
+            if (request.operation == BatchOperation.UNFOLLOW_OFFICIAL_ACCOUNTS) {
+                HLog.i("取关诊断 stage=task-submit result=invalid targetCount=${request.targetIds.size}")
+            }
+            return BatchTaskSubmitResult.INVALID
+        }
         synchronized(lock) {
-            if (shutDown) return BatchTaskSubmitResult.UNAVAILABLE
-            if (current != null) return BatchTaskSubmitResult.BUSY
+            if (shutDown) {
+                if (normalized.operation == BatchOperation.UNFOLLOW_OFFICIAL_ACCOUNTS) {
+                    HLog.i("取关诊断 stage=task-submit result=unavailable")
+                }
+                return BatchTaskSubmitResult.UNAVAILABLE
+            }
+            if (current != null) {
+                if (normalized.operation == BatchOperation.UNFOLLOW_OFFICIAL_ACCOUNTS) {
+                    HLog.i("取关诊断 stage=task-submit result=busy")
+                }
+                return BatchTaskSubmitResult.BUSY
+            }
             val session = Session(++nextId, normalized, BatchTaskRunner.StopSignal())
             current = session
             mutableSnapshot.value = BatchTaskSnapshot(
@@ -159,7 +176,14 @@ internal class BatchTaskManager private constructor(
                     total = normalized.targetIds.size,
                     failure = "后台任务队列不可用"
                 )
+                if (normalized.operation == BatchOperation.UNFOLLOW_OFFICIAL_ACCOUNTS) {
+                    HLog.i("取关诊断 stage=task-submit result=executor-rejected")
+                }
                 return BatchTaskSubmitResult.UNAVAILABLE
+            }
+            if (normalized.operation == BatchOperation.UNFOLLOW_OFFICIAL_ACCOUNTS) {
+                HLog.i("取关诊断 stage=task-submit result=started " +
+                    "targetCount=${normalized.targetIds.size} session=${session.id}")
             }
             return BatchTaskSubmitResult.STARTED
         }
@@ -187,10 +211,25 @@ internal class BatchTaskManager private constructor(
     internal fun shutdownForTesting() = shutdownForHostInvalidation()
 
     private fun run(session: Session) {
+        val logUnfollow = session.request.operation == BatchOperation.UNFOLLOW_OFFICIAL_ACCOUNTS
+        if (logUnfollow) {
+            HLog.i("取关诊断 stage=task-run-start " +
+                "targetCount=${session.request.targetIds.size} session=${session.id}")
+        }
         val (report, failure) = try {
             processor.execute(session.request, session.stopSignal) to ""
         } catch (failure: Throwable) {
+            if (logUnfollow) {
+                HLog.e("取关诊断 stage=task-run-exception " +
+                    "type=${failure.javaClass.simpleName} message=${failure.message}", failure)
+            }
             null to (failure.message ?: failure.javaClass.simpleName)
+        }
+        if (logUnfollow) {
+            HLog.i("取关诊断 stage=task-run-finish " +
+                "total=${report?.total ?: session.request.targetIds.size} success=${report?.success ?: 0} " +
+                "failed=${report?.failed ?: 0} skipped=${report?.skipped ?: 0} " +
+                "unconfirmed=${report?.unconfirmed ?: 0} session=${session.id}")
         }
         var finishedSnapshot: BatchTaskSnapshot? = null
         var shouldNotify = false

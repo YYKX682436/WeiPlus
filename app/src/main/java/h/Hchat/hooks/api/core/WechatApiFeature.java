@@ -216,7 +216,7 @@ public class WechatApiFeature implements Feature {
             HLog.i(TAG + " " + message);
             return;
         }
-        if (isBatchDeleteDiagnostic(message)) {
+        if (isBatchOperationDiagnostic(message)) {
             HLog.i(TAG + " " + message);
             return;
         }
@@ -225,8 +225,9 @@ public class WechatApiFeature implements Feature {
         }
     }
 
-    private boolean isBatchDeleteDiagnostic(String message) {
+    private boolean isBatchOperationDiagnostic(String message) {
         return message != null && (message.startsWith("[WeChatContactApi] 批量删除好友诊断 phase=")
+                || message.startsWith("[WeChatContactApi] 取关诊断 ")
                 || message.startsWith("[WeChatMessageStoreApi] 批量删除聊天核验 phase=")
                 || message.startsWith("[WeChatConversationApi] 批量删除聊天核验 phase=")
                 || message.startsWith("[WeChatChatroomApi] 已核验群状态 SQLite 表结构")

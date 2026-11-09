@@ -799,32 +799,60 @@ public final class WeChatContactApi {
 
     /** Reads WeChat's live MMBatchModContactTypeMaxNumForServer setting. */
     public int getOfficialUnfollowBatchLimit() {
-        return NativeBatchOfficialUnfollowProcess.configuredBatchLimit(dexFinder);
+        int limit = NativeBatchOfficialUnfollowProcess.configuredBatchLimit(dexFinder, this::log);
+        log("取关诊断 stage=api-limit result=" + limit);
+        return limit;
     }
 
     /** Uses WeChat's native batchmodcontacttype operation (type=1, operation=2). */
     public NativeBatchOfficialUnfollowProcess.Result submitUnfollowOfficialAccountsWithResult(
             List<String> usernames, BatchSubmissionGuard guard) {
-        if (usernames == null || usernames.isEmpty() || dexFinder == null || !isAvailable()) return null;
+        int selectedCount = usernames == null ? 0 : usernames.size();
+        log("取关诊断 stage=api-submit begin selectedCount=" + selectedCount);
+        if (usernames == null || usernames.isEmpty()) {
+            log("取关诊断 stage=api-submit result=empty-selection");
+            return null;
+        }
+        if (dexFinder == null) {
+            log("取关诊断 stage=api-submit result=dex-finder-missing");
+            return null;
+        }
+        if (!isAvailable()) {
+            log("取关诊断 stage=api-submit result=contact-api-unavailable");
+            return null;
+        }
         List<String> targets = new ArrayList<>();
         for (String username : usernames) {
             String target = username == null ? "" : username.trim();
             if (!target.isEmpty() && !targets.contains(target)) targets.add(target);
         }
-        if (targets.isEmpty()) return null;
+        if (targets.isEmpty()) {
+            log("取关诊断 stage=api-submit result=empty-normalized-selection");
+            return null;
+        }
         ContactListResult state = getFollowedOfficialAccountsResult(targets);
         if (!state.success) {
-            log("公众号批量取消关注提交前复核失败: " + state.error);
+            log("取关诊断 stage=precheck result=read-failed error=" + state.error);
             return null;
         }
         Set<String> followed = new LinkedHashSet<>();
         for (WeChatContact contact : state.contacts) followed.add(contact.wxId);
         if (!followed.containsAll(targets)) {
-            log("公众号批量取消关注提交前发现已失效对象，未提交");
+            log("取关诊断 stage=precheck result=selection-no-longer-followed selectedCount="
+                    + targets.size() + " followedCount=" + followed.size());
             return null;
         }
-        return NativeBatchOfficialUnfollowProcess.execute(
+        log("取关诊断 stage=precheck result=passed selectedCount=" + targets.size());
+        NativeBatchOfficialUnfollowProcess.Result result = NativeBatchOfficialUnfollowProcess.execute(
                 dexFinder, targets, guard == null ? null : guard::mayContinue, this::log);
+        if (result == null) {
+            log("取关诊断 stage=api-submit result=native-result-null");
+        } else {
+            log("取关诊断 stage=api-submit result=native-return submitted=" + result.submitted
+                    + " completed=" + result.completed + " timedOut=" + result.timedOut
+                    + " items=" + result.items.size());
+        }
+        return result;
     }
 
     private void logDeleteDiagnostic(String target, String phase, String detail) {

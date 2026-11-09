@@ -45,11 +45,15 @@ internal object BatchOperationExecutor : BatchTaskProcessor {
         request: BatchTaskRequest,
         stopSignal: BatchTaskRunner.StopSignal
     ): BatchTaskRunner.Report {
+        HLog.i("取关诊断 stage=executor-start targetCount=${request.targetIds.size}")
         val contacts = WeChatApis.contacts()
-            ?: return failedReport(request.targetIds, "微信联系人 API 不可用")
+            ?: return failedReport(request.targetIds, "微信联系人 API 不可用").also {
+                HLog.i("取关诊断 stage=contacts-api result=missing")
+            }
         val results = LinkedHashMap<String, BatchTaskRunner.TaskResult>()
         var stopReason = ""
         val batchLimit = contacts.officialUnfollowBatchLimit
+        HLog.i("取关诊断 stage=batch-limit value=$batchLimit")
         if (batchLimit <= 0) {
             return failedReport(request.targetIds, "微信原生公众号批量操作上限不可用")
         }
@@ -66,6 +70,7 @@ internal object BatchOperationExecutor : BatchTaskProcessor {
 
             val latest = contacts.getFollowedOfficialAccountsResult(chunk)
             if (!latest.success) {
+                HLog.i("取关诊断 stage=executor-precheck result=read-failed error=${latest.error}")
                 for (username in chunk) {
                     results[username] = result(
                         BatchTaskRunner.Outcome.FAILED,
@@ -76,6 +81,7 @@ internal object BatchOperationExecutor : BatchTaskProcessor {
                 break
             }
             val stillFollowed = latest.contacts.mapTo(HashSet()) { it.wxId }
+            HLog.i("取关诊断 stage=executor-precheck result=read count=${chunk.size} stillFollowed=${stillFollowed.size}")
             val eligible = chunk.filter { username ->
                 if (username in stillFollowed) true else {
                     results[username] = result(
@@ -86,6 +92,7 @@ internal object BatchOperationExecutor : BatchTaskProcessor {
                 }
             }
             if (eligible.isEmpty()) continue
+            HLog.i("取关诊断 stage=submit begin count=${eligible.size}")
             if (stopSignal.isStopped() || !isAccountCurrent(request.expectedAccount)) {
                 stopReason = if (stopSignal.isStopped()) "已停止后续操作" else "账号已切换或账号状态不可用"
                 break
@@ -98,6 +105,7 @@ internal object BatchOperationExecutor : BatchTaskProcessor {
                 }
             )
             if (native == null) {
+                HLog.i("取关诊断 stage=submit result=native-null")
                 val check = contacts.getFollowedOfficialAccountsResult(eligible)
                 if (check.success) {
                     val active = check.contacts.mapTo(HashSet()) { it.wxId }
@@ -121,14 +129,45 @@ internal object BatchOperationExecutor : BatchTaskProcessor {
                 if (stopReason.isNotBlank()) break
                 continue
             }
+            HLog.i("取关诊断 stage=native-return submitted=${native.submitted} completed=${native.completed} " +
+                "timedOut=${native.timedOut} callbackErrType=${native.callbackErrorType} " +
+                "callbackErrCode=${native.callbackErrorCode} items=${native.items.size} error=${native.error}")
 
             val accountCurrent = isAccountCurrent(request.expectedAccount)
-            val finalState = if (native.submitted && native.completed && accountCurrent) {
-                contacts.getFollowedOfficialAccountsResult(eligible)
+            val itemByUsername = native.items.associateBy { it.username }
+            val confirmationTargets = eligible.filter { username ->
+                val item = itemByUsername[username]
+                native.submitted && native.completed &&
+                    native.callbackErrorType == 0 && native.callbackErrorCode == 0 &&
+                    item?.requestObserved == true && item.serverResult == 0 &&
+                    item.nativeLocalResult && !item.nativeCleanupFailed
+            }
+            val verification = if (confirmationTargets.isNotEmpty() && accountCurrent) {
+                BatchOfficialUnfollowFinalStateVerifier.awaitRemoval(
+                    targets = confirmationTargets.toSet(),
+                    shouldContinue = { !stopSignal.isStopped() },
+                    isAccountCurrent = { isAccountCurrent(request.expectedAccount) },
+                    read = {
+                        val state = contacts.getFollowedOfficialAccountsResult(confirmationTargets)
+                        BatchOfficialUnfollowFinalStateVerifier.Read(
+                            success = state.success,
+                            followedUsernames = state.contacts.mapTo(HashSet()) { it.wxId },
+                            error = state.error
+                        )
+                    }
+                )
             } else null
-            val finalReadSucceeded = finalState?.success == true
-            val stillActive = finalState?.contacts?.mapTo(HashSet()) { it.wxId } ?: emptySet()
-            var stopAfterChunk = !native.submitted || !native.completed || !accountCurrent || !finalReadSucceeded
+            val accountStillCurrent =
+                isAccountCurrent(request.expectedAccount) && verification?.accountCurrent != false
+            val finalReadSucceeded = verification?.lastRead?.success == true
+            val stillActive = verification?.stillFollowed.orEmpty()
+            if (confirmationTargets.isNotEmpty()) {
+                HLog.i("取关诊断 stage=final-state-poll targets=${confirmationTargets.size} " +
+                    "attempts=${verification?.attempts ?: 0} accountCurrent=$accountStillCurrent " +
+                    "stopped=${verification?.stopped == true} readSucceeded=$finalReadSucceeded " +
+                    "stillFollowed=${stillActive.size} error=${verification?.lastRead?.error.orEmpty()}")
+            }
+            var stopAfterChunk = !native.submitted || !native.completed || !accountStillCurrent
             if (!native.submitted) {
                 for (username in eligible) {
                     results[username] = result(
@@ -138,28 +177,37 @@ internal object BatchOperationExecutor : BatchTaskProcessor {
                 }
                 stopReason = native.error.ifBlank { "微信原生批量请求未提交" }
             } else {
-                val itemByUsername = native.items.associateBy { it.username }
-                for (username in eligible) {
+                for ((targetIndex, username) in eligible.withIndex()) {
                     val item = itemByUsername[username]
                     val decision = BatchOfficialUnfollowOutcomePolicy.classify(
                         submitted = native.submitted,
                         responseObserved = native.completed && native.callbackErrorType == 0 &&
                             native.callbackErrorCode == 0 && item?.requestObserved == true,
-                        accountCurrent = accountCurrent,
+                        accountCurrent = accountStillCurrent,
                         serverResult = item?.serverResult,
                         nativeLocalResult = item?.nativeLocalResult == true,
                         nativeCleanupFailed = item?.nativeCleanupFailed == true,
                         finalStateReadSucceeded = finalReadSucceeded,
                         stillFollowed = username in stillActive
                     )
+                    HLog.i("取关诊断 stage=outcome targetIndex=$targetIndex " +
+                        "responseObserved=${native.completed && native.callbackErrorType == 0 &&
+                            native.callbackErrorCode == 0 && item?.requestObserved == true} " +
+                        "serverResult=${item?.serverResult} nativeLocal=${item?.nativeLocalResult} " +
+                        "cleanupFailed=${item?.nativeCleanupFailed} finalRead=$finalReadSucceeded " +
+                        "stillFollowed=${username in stillActive} outcome=${decision.outcome} " +
+                        "message=${decision.message}")
                     results[username] = result(decision.outcome, decision.message)
                     if (decision.stopLater) stopAfterChunk = true
                 }
                 if (stopAfterChunk) {
                     stopReason = when {
-                        !accountCurrent -> "账号已切换，已停止后续提交"
+                        !accountStillCurrent ->
+                            "账号已切换，已停止后续提交"
+                        stopSignal.isStopped() -> "已停止后续操作"
                         !native.completed -> native.error.ifBlank { "微信原生批量请求结果未知，未重试" }
-                        !finalReadSucceeded -> finalState?.error?.takeIf { it.isNotBlank() }
+                        confirmationTargets.isNotEmpty() && !finalReadSucceeded ->
+                            verification?.lastRead?.error?.takeIf { it.isNotBlank() }
                             ?: "公众号状态无法复核，已停止后续提交"
                         else -> "批量取消关注存在失败或未确认对象，已停止后续提交"
                     }
@@ -174,7 +222,11 @@ internal object BatchOperationExecutor : BatchTaskProcessor {
                 if (stopReason.isNotBlank()) stopReason else "未提交"
             )
         }
-        return BatchTaskRunner.fromResults(request.targetIds, completeResults, stopReason)
+        val report = BatchTaskRunner.fromResults(request.targetIds, completeResults, stopReason)
+        HLog.i("取关诊断 stage=executor-finish total=${report.total} success=${report.success} " +
+            "failed=${report.failed} skipped=${report.skipped} unconfirmed=${report.unconfirmed} " +
+            "stopReason=$stopReason")
+        return report
     }
 
     private fun executeGroupLeaveBatch(

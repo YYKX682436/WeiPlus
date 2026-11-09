@@ -77,29 +77,62 @@ public final class NativeBatchOfficialUnfollowProcess {
 
     /** Returns the live native server limit, bounded by the verified 8.0.80 default of 50. */
     public static int configuredBatchLimit(DexFinder dexFinder) {
-        if (dexFinder == null || !dexFinder.resolveBatchOfficialUnfollowApi()) return 0;
+        return configuredBatchLimit(dexFinder, null);
+    }
+
+    public static int configuredBatchLimit(DexFinder dexFinder, Logger logger) {
+        if (dexFinder == null || !dexFinder.resolveBatchOfficialUnfollowApi()) {
+            log(logger, "取关诊断 stage=resolve-scene result=unavailable");
+            return 0;
+        }
         ClassLoader loader = dexFinder.batchOfficialUnfollowSceneClass.getClassLoader();
         try {
             Class<?> serviceKey = KavaReflector.loadClass("ra5.e", loader);
-            Class<?> serviceLocator = KavaReflector.loadClass("fi5.n0", loader);
+            Class<?> serviceLocator = KavaReflector.loadClass("zp0.j1", loader);
             Class<?> serviceApi = KavaReflector.loadClass("com.tencent.mm.plugin.zero.a", loader);
             Class<?> configApi = KavaReflector.loadClass("rp.j", loader);
-            if (serviceKey == null || serviceLocator == null || serviceApi == null || configApi == null) return 0;
-            Method resolve = KavaReflector.findMethodRecursive(serviceLocator, "c", Class.class);
-            if (resolve == null || !Modifier.isStatic(resolve.getModifiers())) return 0;
+            if (serviceKey == null || serviceLocator == null || serviceApi == null || configApi == null) {
+                log(logger, "取关诊断 stage=resolve-limit result=required-class-missing");
+                return 0;
+            }
+            Method resolve = KavaReflector.findMethodRecursive(serviceLocator, "v", Class.class);
+            if (resolve == null || !Modifier.isStatic(resolve.getModifiers())) {
+                log(logger, "取关诊断 stage=resolve-limit result=service-locator-method-missing");
+                return 0;
+            }
             Object service = KavaReflector.invokeOrThrow(resolve, null, serviceKey);
             Method getConfig = KavaReflector.findMethodRecursive(serviceApi, "b");
-            if (service == null || getConfig == null) return 0;
+            if (service == null) {
+                log(logger, "取关诊断 stage=resolve-limit result=service-instance-null locator="
+                        + resolve.toGenericString());
+                return 0;
+            }
+            if (getConfig == null) {
+                log(logger, "取关诊断 stage=resolve-limit result=config-getter-missing serviceClass="
+                        + service.getClass().getName());
+                return 0;
+            }
             Object config = KavaReflector.invokeOrThrow(getConfig, service);
             Method getInt = KavaReflector.findMethodRecursive(configApi, "c", String.class, int.class);
-            if (config == null || getInt == null) return 0;
+            if (config == null || getInt == null) {
+                log(logger, "取关诊断 stage=resolve-limit result=config-reader-missing config="
+                        + (config != null) + " getter=" + (getInt != null));
+                return 0;
+            }
             Object raw = KavaReflector.invokeOrThrow(getInt, config, BATCH_LIMIT_CONFIG,
                     NATIVE_MAX_BATCH_SIZE);
-            if (!(raw instanceof Number)) return 0;
+            if (!(raw instanceof Number)) {
+                log(logger, "取关诊断 stage=resolve-limit result=non-numeric");
+                return 0;
+            }
             int configured = ((Number) raw).intValue();
-            return configured > 0 ? Math.min(configured, NATIVE_MAX_BATCH_SIZE) : 0;
+            int bounded = configured > 0 ? Math.min(configured, NATIVE_MAX_BATCH_SIZE) : 0;
+            log(logger, "取关诊断 stage=resolve-limit result=ready serverLimit=" + configured
+                    + " effectiveLimit=" + bounded);
+            return bounded;
         } catch (Throwable e) {
-            log(null, "无法读取微信批量取消关注上限: " + e.getClass().getSimpleName());
+            log(logger, "取关诊断 stage=resolve-limit result=exception type="
+                    + e.getClass().getSimpleName() + " message=" + safeMessage(e));
             return 0;
         }
     }
@@ -107,25 +140,45 @@ public final class NativeBatchOfficialUnfollowProcess {
     public static Result execute(DexFinder dexFinder, List<String> selectedUsernames,
                                  SubmissionGuard guard, Logger logger) {
         List<String> usernames = clean(selectedUsernames);
-        if (usernames.isEmpty()) return failed("没有可提交的公众号");
+        log(logger, "取关诊断 stage=begin selectedCount=" + usernames.size());
+        if (usernames.isEmpty()) {
+            log(logger, "取关诊断 stage=validate result=empty-selection");
+            return failed("没有可提交的公众号");
+        }
         if (dexFinder == null || !dexFinder.resolveBatchOfficialUnfollowApi()) {
+            log(logger, "取关诊断 stage=resolve-scene result=unavailable");
             return failed("微信原生批量取消关注 API 不可用");
         }
-        int batchLimit = configuredBatchLimit(dexFinder);
+        Class<?> sceneClass = dexFinder.batchOfficialUnfollowSceneClass;
+        log(logger, "取关诊断 stage=resolve-scene result=ready sceneClass=" + sceneClass.getName()
+                + " constructor=" + dexFinder.batchOfficialUnfollowSceneCtor.toGenericString());
+        int batchLimit = configuredBatchLimit(dexFinder, logger);
         if (batchLimit <= 0 || usernames.size() > batchLimit) {
+            log(logger, "取关诊断 stage=validate result=invalid-batch-limit selectedCount="
+                    + usernames.size() + " batchLimit=" + batchLimit);
             return failed("微信原生批量取消关注上限不可用或对象数量超限");
         }
-        if (guard != null && !guard.mayContinue()) return failed("提交前已停止");
+        if (guard != null && !guard.mayContinue()) {
+            log(logger, "取关诊断 stage=guard result=stopped-before-submit");
+            return failed("提交前已停止");
+        }
 
-        Class<?> sceneClass = dexFinder.batchOfficialUnfollowSceneClass;
         ClassLoader loader = sceneClass.getClassLoader();
-        NativeQueue queue = NativeQueue.resolve(loader, sceneClass);
-        if (queue == null) return failed("微信原生网络回调队列不可用");
+        NativeQueue queue = NativeQueue.resolve(loader, sceneClass, logger);
+        if (queue == null) {
+            log(logger, "取关诊断 stage=resolve-queue result=unavailable");
+            return failed("微信原生网络回调队列不可用");
+        }
 
         Object scene = KavaReflector.newInstance(dexFinder.batchOfficialUnfollowSceneCtor,
                 new java.util.LinkedList<>(usernames), CONTACT_TYPE_FOLLOWED_OFFICIAL_ACCOUNT,
                 CONTACT_TYPE_OPERATION_UNSUBSCRIBE, batchLimit);
-        if (scene == null || !sceneClass.isInstance(scene)) return failed("微信批量取消关注场景初始化失败");
+        if (scene == null || !sceneClass.isInstance(scene)) {
+            log(logger, "取关诊断 stage=construct-scene result=invalid-scene");
+            return failed("微信批量取消关注场景初始化失败");
+        }
+        log(logger, "取关诊断 stage=construct-scene result=ready type=" + CONTACT_TYPE_FOLLOWED_OFFICIAL_ACCOUNT
+                + " operation=" + CONTACT_TYPE_OPERATION_UNSUBSCRIBE + " itemCount=" + usernames.size());
 
         CountDownLatch completed = new CountDownLatch(1);
         AtomicBoolean submitted = new AtomicBoolean();
@@ -166,9 +219,14 @@ public final class NativeBatchOfficialUnfollowProcess {
                             }
                             if (recordQueueCallback(scene, method.getName(), args, completed,
                                     callbackObserved, callbackErrorType, callbackErrorCode)) {
-                                log(logger, "公众号批量取消关注原生回调已到达: errType="
+                                log(logger, "取关诊断 stage=queue-callback result=received errType="
                                         + callbackErrorType.get() + " errCode=" + callbackErrorCode.get()
-                                        + " responseItems=" + serverResults.size() + "/" + usernames.size());
+                                        + " requestItems=" + requestObserved.size() + "/" + usernames.size()
+                                        + " responseItems=" + serverResults.size()
+                                        + " serverCodes=" + serverResults.values()
+                                        + " ambiguousResponses=" + ambiguousResponses.size()
+                                        + " localSuccess=" + locallyConfirmed.size()
+                                        + " localCleanupFailed=" + localCleanupFailed.size());
                             }
                             removeQueueCallback(queue, proxy, callbackRemoved, logger);
                         }
@@ -177,8 +235,10 @@ public final class NativeBatchOfficialUnfollowProcess {
             callbackBox[0] = callback;
             callbackRegistrationAttempted.set(true);
             KavaReflector.invokeOrThrow(queue.addCallback, queue.manager, SCENE_TYPE, callback);
+            log(logger, "取关诊断 stage=register-callback result=registered sceneType=" + SCENE_TYPE);
             try {
                 Object accepted = KavaReflector.invokeOrThrow(queue.submitScene, queue.manager, scene);
+                log(logger, "取关诊断 stage=submit-scene result=" + accepted);
                 if (!(accepted instanceof Boolean) || !((Boolean) accepted)) {
                     error[0] = "微信网络队列未接受公众号批量请求";
                     try { KavaReflector.invokeOrThrow(queue.removeCallback, queue.manager, SCENE_TYPE, callback); }
@@ -192,9 +252,12 @@ public final class NativeBatchOfficialUnfollowProcess {
                 // The queue call can throw after enqueue; preserve the observation hook and never retry.
                 submitted.set(true);
                 error[0] = "微信网络队列提交结果未知";
-                log(logger, error[0] + ": " + e.getClass().getSimpleName());
+                log(logger, "取关诊断 stage=submit-scene result=exception-after-possible-enqueue type="
+                        + e.getClass().getSimpleName() + " message=" + safeMessage(e));
             }
 
+            log(logger, "取关诊断 stage=await-callback result=waiting timeoutSeconds="
+                    + COMPLETION_TIMEOUT_SECONDS);
             boolean finished;
             try {
                 finished = completed.await(COMPLETION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
@@ -206,6 +269,13 @@ public final class NativeBatchOfficialUnfollowProcess {
             if (!finished) {
                 timedOut.set(true);
                 if (!callbackObserved.get()) error[0] = "微信公众号批量请求结果超时；未重试";
+                log(logger, "取关诊断 stage=await-callback result=timeout submitted=" + submitted.get()
+                        + " callbackObserved=" + callbackObserved.get()
+                        + " requestItems=" + requestObserved.size() + "/" + usernames.size()
+                        + " responseItems=" + serverResults.size());
+            } else {
+                log(logger, "取关诊断 stage=await-callback result=completed callbackErrorType="
+                        + callbackErrorType.get() + " callbackErrorCode=" + callbackErrorCode.get());
             }
             return new Result(submitted.get(), callbackObserved.get() && finished,
                     timedOut.get(), callbackErrorType.get(), callbackErrorCode.get(), error[0],
@@ -213,7 +283,8 @@ public final class NativeBatchOfficialUnfollowProcess {
                             locallyConfirmed, localCleanupFailed, ambiguousResponses));
         } catch (Throwable e) {
             error[0] = e.getClass().getSimpleName();
-            log(logger, "微信原生公众号批量取消关注失败: " + error[0]);
+            log(logger, "取关诊断 stage=execute result=exception type=" + error[0]
+                    + " message=" + safeMessage(e));
             return new Result(submitted.get(), callbackObserved.get(), timedOut.get(),
                     callbackErrorType.get(), callbackErrorCode.get(), error[0],
                     resultItems(usernames, requestObserved, serverResults,
@@ -340,16 +411,28 @@ public final class NativeBatchOfficialUnfollowProcess {
             this.submitScene = submitScene;
         }
 
-        static NativeQueue resolve(ClassLoader loader, Class<?> sceneClass) {
+        static NativeQueue resolve(ClassLoader loader, Class<?> sceneClass, Logger logger) {
             try {
                 Class<?> callbackType = KavaReflector.loadClass("com.tencent.mm.modelbase.u0", loader);
                 Class<?> managerEntry = KavaReflector.loadClass("zp0.j1", loader);
-                if (callbackType == null || !callbackType.isInterface() || managerEntry == null) return null;
+                if (callbackType == null || !callbackType.isInterface() || managerEntry == null) {
+                    log(logger, "取关诊断 stage=resolve-queue result=required-class-missing callbackInterface="
+                            + (callbackType != null && callbackType.isInterface())
+                            + " managerEntry=" + (managerEntry != null));
+                    return null;
+                }
                 Method getter = findMethod(managerEntry, "e", method ->
                         Modifier.isStatic(method.getModifiers()) && method.getParameterTypes().length == 0
                                 && !method.getReturnType().isPrimitive());
+                if (getter == null) {
+                    log(logger, "取关诊断 stage=resolve-queue result=manager-getter-missing");
+                    return null;
+                }
                 Object manager = KavaReflector.invokeOrThrow(getter, null);
-                if (manager == null) return null;
+                if (manager == null) {
+                    log(logger, "取关诊断 stage=resolve-queue result=manager-null");
+                    return null;
+                }
                 Method add = findMethod(manager.getClass(), "a", method ->
                         !Modifier.isStatic(method.getModifiers()) && method.getReturnType() == void.class
                                 && callbackRegistrationSignature(method, callbackType));
@@ -360,9 +443,19 @@ public final class NativeBatchOfficialUnfollowProcess {
                         !Modifier.isStatic(method.getModifiers()) && method.getReturnType() == boolean.class
                                 && method.getParameterTypes().length == 1
                                 && method.getParameterTypes()[0].isAssignableFrom(sceneClass));
-                if (add == null || remove == null || submit == null) return null;
+                if (add == null || remove == null || submit == null) {
+                    log(logger, "取关诊断 stage=resolve-queue result=method-missing managerClass="
+                            + manager.getClass().getName() + " add=" + (add != null)
+                            + " remove=" + (remove != null) + " submit=" + (submit != null));
+                    return null;
+                }
+                log(logger, "取关诊断 stage=resolve-queue result=ready managerClass="
+                        + manager.getClass().getName() + " add=" + add.toGenericString()
+                        + " remove=" + remove.toGenericString() + " submit=" + submit.toGenericString());
                 return new NativeQueue(manager, callbackType, add, remove, submit);
-            } catch (Throwable ignored) {
+            } catch (Throwable e) {
+                log(logger, "取关诊断 stage=resolve-queue result=exception type="
+                        + e.getClass().getSimpleName() + " message=" + safeMessage(e));
                 return null;
             }
         }
@@ -398,6 +491,12 @@ public final class NativeBatchOfficialUnfollowProcess {
     private static int integer(Object value) { return value instanceof Number ? ((Number) value).intValue() : Integer.MIN_VALUE; }
     private static int number(Object value) { return integer(value); }
     private static String string(Object value) { return value instanceof String ? ((String) value).trim() : ""; }
+
+    private static String safeMessage(Throwable failure) {
+        String message = failure == null ? "" : failure.getMessage();
+        if (message == null || message.isBlank()) return "<none>";
+        return message.replace('\n', ' ').replace('\r', ' ');
+    }
 
     private static void copyStrings(Object source, Set<String> destination) {
         if (!(source instanceof Iterable)) return;
