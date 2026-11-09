@@ -6,7 +6,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
@@ -15,7 +17,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -311,13 +312,17 @@ internal fun ContactPickerPage(
     var contacts by remember(request) { mutableStateOf(emptyList<ContactOption>()) }
     var query by remember(request) { mutableStateOf("") }
     val initialSelectedIds = remember(request) { parseIds(request.existingValue) }
-    var selectedIds by remember(request) { mutableStateOf(initialSelectedIds) }
-    var batchSelectionOrder by remember(request) { mutableStateOf(initialSelectedIds.toList()) }
-    val batchOptionCache = remember(request) { mutableStateMapOf<String, ContactOption>() }
     val batchCandidateMode = request.batchCandidateMode()
     val batchLabelFilterId = request.batchLabelFilterId()?.trim()?.takeIf { it.isNotEmpty() }
     val batchSelectionResetKey = request.batchSelectionResetKey()
     val candidateLoadToken = remember(request, batchCandidateMode, batchLabelFilterId) { Any() }
+    // Scope and action changes discard selection immediately; searches leave these keys unchanged.
+    var selectedIds by remember(request, candidateLoadToken, batchSelectionResetKey) {
+        mutableStateOf(initialSelectedIds)
+    }
+    var batchSelectionOrder by remember(request, candidateLoadToken, batchSelectionResetKey) {
+        mutableStateOf(initialSelectedIds.toList())
+    }
     var loadedCandidateLoadToken by remember(request) { mutableStateOf<Any?>(null) }
     val candidateStateFresh = !request.flatBatchSelection || loadedCandidateLoadToken === candidateLoadToken
     val candidateLoading = loading || (request.flatBatchSelection && !candidateStateFresh)
@@ -326,20 +331,30 @@ internal fun ContactPickerPage(
     } else {
         contacts
     }
-    var appliedBatchSelectionResetKey by remember(request) { mutableStateOf(batchSelectionResetKey) }
-    val batchSelectionStateFresh = !request.flatBatchSelection ||
-        !BatchSelectionState.shouldResetForKeyChange(appliedBatchSelectionResetKey, batchSelectionResetKey)
-    val selectedIdsForUi = if (batchSelectionStateFresh) selectedIds else emptySet()
-    val batchSelectionOrderForUi = if (batchSelectionStateFresh) batchSelectionOrder else emptyList()
+    val selectableBatchContacts = remember(candidateContacts, request.flatBatchSelection) {
+        if (request.flatBatchSelection) candidateContacts.filter { it.selectable }.associateBy { it.id }
+        else emptyMap()
+    }
+    val batchSelectionOrderForUi = batchSelectionOrder.filter { it in selectableBatchContacts }
+    val selectedIdsForUi = if (request.flatBatchSelection) batchSelectionOrderForUi.toSet() else selectedIds
     val loadGate = remember(request) { BatchCandidateLoadGate() }
 
+    fun canUseBatchCandidates(): Boolean =
+        !loading && error.isBlank() && loadedCandidateLoadToken === candidateLoadToken &&
+            batchCandidateMode == request.batchCandidateMode() &&
+            batchLabelFilterId == request.batchLabelFilterId()?.trim()?.takeIf { it.isNotEmpty() } &&
+            !BatchSelectionState.shouldResetForKeyChange(batchSelectionResetKey, request.batchSelectionResetKey())
+
     fun updateSelection(next: Set<String>) {
-        selectedIds = next
-        if (!request.flatBatchSelection) return
+        if (!request.flatBatchSelection) {
+            selectedIds = next
+            return
+        }
+        if (!canUseBatchCandidates()) return
         batchSelectionOrder = BatchSelectionState.updateOrder(
             batchSelectionOrderForUi,
-            next,
-            if (candidateStateFresh) contacts.map { it.id } else emptyList()
+            next.intersect(selectableBatchContacts.keys),
+            selectableBatchContacts.keys
         )
     }
     val scopeSelectionEnabled = !request.flatBatchSelection && request.enableScopeSelection &&
@@ -370,18 +385,6 @@ internal fun ContactPickerPage(
     DisposableEffect(loadGate) {
         onDispose { loadGate.invalidate() }
     }
-    LaunchedEffect(request, batchSelectionResetKey) {
-        if (request.flatBatchSelection && BatchSelectionState.shouldResetForKeyChange(
-                appliedBatchSelectionResetKey,
-                batchSelectionResetKey
-            )
-        ) {
-            selectedIds = emptySet()
-            batchSelectionOrder = emptyList()
-            batchOptionCache.clear()
-        }
-        appliedBatchSelectionResetKey = batchSelectionResetKey
-    }
     LaunchedEffect(request, candidateLoadToken) {
         val generation = loadGate.beginLoad()
         loading = true
@@ -408,7 +411,6 @@ internal fun ContactPickerPage(
                 error = throwable.message ?: "读取联系人失败"
             } else {
                 contacts = result
-                if (request.flatBatchSelection) result.forEach { batchOptionCache[it.id] = it }
             }
         }
     }
@@ -496,7 +498,7 @@ internal fun ContactPickerPage(
         BatchSelectionState.selectedOutsideMatches(
             batchSelectionOrderForUi,
             filteredContacts.map { it.id }
-        ).mapNotNull { id -> batchOptionCache[id] ?: currentBatchContacts[id] }
+        ).mapNotNull(selectableBatchContacts::get)
     } else {
         emptyList()
     }
@@ -546,8 +548,8 @@ internal fun ContactPickerPage(
     val bottomVisibleAllSelected = bottomVisibleIds.isNotEmpty() && bottomVisibleIds.all { selectedIdsForUi.contains(it) }
     val genericSelectedCount = remember(selectedIdsForUi, contacts) { contacts.count { it.id in selectedIdsForUi } }
     val selectedContactCount = if (request.flatBatchSelection) batchSelectionOrderForUi.size else genericSelectedCount
-    val batchConfirmEnabled = request.multiSelectConfirmPrefix == null ||
-        (request.confirmEnabled() && selectedContactCount > 0 && !candidateLoading && error.isBlank() && candidateStateFresh)
+    val batchConfirmEnabled = !request.flatBatchSelection ||
+        (request.confirmEnabled() && selectedContactCount > 0 && canUseBatchCandidates())
 
     PageScaffold(
         title = request.title,
@@ -561,9 +563,10 @@ internal fun ContactPickerPage(
                     request.multiSelect -> "保存选择"
                     else -> request.singleConfirmText
                 },
-                onPrimaryClick = {
+                onPrimaryClick = confirm@{
                     val picked = if (request.flatBatchSelection) {
-                        batchSelectionOrderForUi.mapNotNull { batchOptionCache[it] }
+                        if (!canUseBatchCandidates()) return@confirm
+                        batchSelectionOrder.mapNotNull(selectableBatchContacts::get)
                     } else {
                         contacts.filter { selectedIdsForUi.contains(it.id) }
                     }
@@ -608,11 +611,17 @@ internal fun ContactPickerPage(
                 bottom = padding.calculateBottomPadding() + 84.dp
             )
         ) {
+            var hasControlCard = false
+            fun controlCard(content: @Composable () -> Unit) {
+                if (hasControlCard) item { Spacer(Modifier.height(8.dp)) }
+                item { content() }
+                hasControlCard = true
+            }
             request.operationHeader?.let { header ->
-                item { header() }
+                controlCard(header)
             }
             if (scopeSelectionEnabled) {
-                item {
+                controlCard {
                     SettingsCard {
                         ContactPickerScopeFilterRow(
                             selected = scopeTab,
@@ -625,7 +634,7 @@ internal fun ContactPickerPage(
                     }
                 }
             } else if (!request.flatBatchSelection && request.mode == ContactPickerMode.FRIENDS && request.enableLabels) {
-                item {
+                controlCard {
                     SettingsCard {
                         FriendContactFilterRow(
                             selected = contactFilter,
@@ -637,7 +646,7 @@ internal fun ContactPickerPage(
                     }
                 }
             } else if (!request.flatBatchSelection && (request.mode == ContactPickerMode.BOTH || request.mode == ContactPickerMode.ALL_CHATS)) {
-                item {
+                controlCard {
                     SettingsCard {
                         ContactFilterRow(
                             selected = contactFilter,
@@ -652,7 +661,7 @@ internal fun ContactPickerPage(
                 }
             }
             if (!request.flatBatchSelection && !scopeSelectionEnabled && request.enableLabels && contactFilter == ContactPickerFilter.LABELS) {
-                item {
+                controlCard {
                     SettingsCard {
                         ContactLabelFilterRow(
                             labels = labels,
@@ -666,7 +675,7 @@ internal fun ContactPickerPage(
                 }
             }
             if (!request.flatBatchSelection && !scopeSelectionEnabled && conversationGroupChoices.size > 1) {
-                item {
+                controlCard {
                     SettingsCard {
                         PopupChoiceRow(
                             title = "聊天分组",
@@ -682,7 +691,7 @@ internal fun ContactPickerPage(
                 }
             }
             if (showGroupLabels && selectableGroupLabels.isNotEmpty()) {
-                item { PickerSectionHeader(text = "群聊标签") }
+                controlCard { PickerSectionHeader(text = "群聊标签") }
                 item {
                     SettingsCard {
                         selectableGroupLabels.forEachIndexed { index, label ->
@@ -703,7 +712,7 @@ internal fun ContactPickerPage(
                     }
                 }
             }
-            if (!request.hideSearch) item {
+            if (!request.hideSearch) controlCard {
                 SettingsCard {
                     InputRow(
                         title = "搜索",
@@ -718,12 +727,7 @@ internal fun ContactPickerPage(
                     )
                 }
             }
-            if (request.flatBatchSelection && selectedBatchContacts.isNotEmpty()) item {
-                PickerSectionHeader(text = "已选 · ${selectedBatchContacts.size}")
-            }
-            if (request.flatBatchSelection && !candidateLoading && error.isBlank()) item {
-                PickerSectionHeader(text = "匹配结果 · ${filteredContacts.size}")
-            }
+            if (hasControlCard) item { Spacer(Modifier.height(8.dp)) }
             if (!request.flatBatchSelection) item {
                 PickerSectionHeader(
                     text = when {
@@ -744,6 +748,7 @@ internal fun ContactPickerPage(
                 error.isNotEmpty() -> item { SettingsCard { EmptyText(error) } }
                 request.flatBatchSelection -> {
                     if (selectedBatchContacts.isNotEmpty()) {
+                        item { PickerSectionHeader(text = "已选 · ${selectedBatchContacts.size}") }
                         items(items = selectedBatchContacts, key = { it.id }) { option ->
                             ContactListCard(
                                 option = option,
@@ -759,7 +764,9 @@ internal fun ContactPickerPage(
                                 }
                             )
                         }
+                        item { Spacer(Modifier.height(8.dp)) }
                     }
+                    item { PickerSectionHeader(text = "匹配结果 · ${filteredContacts.size}") }
                     if (batchMatchingContacts.isEmpty()) {
                         val emptyText = if (batchCandidateMode == BatchCandidateMode.ALL_FRIENDS_WITH_LABEL &&
                             candidateContacts.isEmpty() && query.isBlank()

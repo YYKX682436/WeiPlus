@@ -2758,19 +2758,45 @@ internal enum class MessageBlockContactFilter(
     ALL("全部", "全部")
 }
 
-internal enum class BatchCandidateMode {
-    HOME_CONVERSATIONS,
-    CURRENT_FRIENDS_AND_GROUPS,
-    ALL_FRIENDS_AND_GROUPS,
-    PINNABLE_FRIENDS_AND_GROUPS,
-    CURRENT_FRIENDS,
-    ALL_FRIENDS,
+internal enum class BatchCandidateMode(
+    val usesHomeConversations: Boolean = false,
+    val includesDirectoryFriends: Boolean = false,
+    val includesDirectoryGroups: Boolean = false,
+    val requiresExistingConversation: Boolean = false
+) {
+    HOME_CONVERSATIONS(usesHomeConversations = true),
+    CURRENT_FRIENDS_AND_GROUPS(usesHomeConversations = true),
+    ALL_FRIENDS_AND_GROUPS(includesDirectoryFriends = true, includesDirectoryGroups = true),
+    CURRENT_PINNABLE_CONVERSATIONS(usesHomeConversations = true, requiresExistingConversation = true),
+    PINNABLE_FRIENDS(includesDirectoryFriends = true, requiresExistingConversation = true),
+    PINNABLE_GROUPS(includesDirectoryGroups = true, requiresExistingConversation = true),
+    PINNABLE_FRIENDS_AND_GROUPS(
+        includesDirectoryFriends = true, includesDirectoryGroups = true, requiresExistingConversation = true
+    ),
+    CURRENT_FRIENDS(usesHomeConversations = true),
+    ALL_FRIENDS(includesDirectoryFriends = true),
     STARRED_FRIENDS,
-    ALL_GROUPS,
+    ALL_GROUPS(includesDirectoryGroups = true),
     JOINED_GROUPS,
     INVALID_GROUPS,
     ALL_FRIENDS_WITH_LABEL,
-    FOLLOWED_OFFICIAL_ACCOUNTS
+    FOLLOWED_OFFICIAL_ACCOUNTS;
+
+    fun scopedCandidateIds(
+        homeIds: List<String>,
+        friendIds: Set<String>,
+        groupIds: Set<String>,
+        existingIds: Set<String>
+    ): List<String> {
+        val source = if (usesHomeConversations) homeIds else buildList {
+            if (includesDirectoryFriends) addAll(friendIds)
+            if (includesDirectoryGroups) addAll(groupIds)
+        }
+        return BatchSelectionPolicy.filterCandidateIds(
+            source, existingIds, friendIds, groupIds, requiresExistingConversation,
+            this == CURRENT_FRIENDS, this == CURRENT_FRIENDS_AND_GROUPS
+        )
+    }
 }
 
 internal data class ContactPickerRequest(
@@ -4080,21 +4106,14 @@ internal fun loadContacts(
         try {
             val rows = mutableListOf<ContactOption>()
             val conversations = WeChatApis.conversations()
-            val needsHomeRows = nativeHomeConversationList || batchCandidateMode in setOf(
-                BatchCandidateMode.HOME_CONVERSATIONS,
-                BatchCandidateMode.CURRENT_FRIENDS_AND_GROUPS,
-                BatchCandidateMode.CURRENT_FRIENDS
-            )
+            val needsHomeRows = nativeHomeConversationList || batchCandidateMode?.usesHomeConversations == true
             val nativeHomeIds = if (needsHomeRows) {
                 conversations?.getNativeHomeConversationUsernames()
                     ?: throw IllegalStateException("读取微信首页原生会话列表失败")
             } else {
                 emptyList()
             }
-            val needsAllFriends = batchCandidateMode in setOf(
-                BatchCandidateMode.ALL_FRIENDS_AND_GROUPS,
-                BatchCandidateMode.PINNABLE_FRIENDS_AND_GROUPS,
-                BatchCandidateMode.ALL_FRIENDS,
+            val needsAllFriends = batchCandidateMode?.includesDirectoryFriends == true || batchCandidateMode in setOf(
                 BatchCandidateMode.STARRED_FRIENDS,
                 BatchCandidateMode.ALL_FRIENDS_WITH_LABEL
             )
@@ -4121,11 +4140,9 @@ internal fun loadContacts(
             }
             val friends = friendResult?.contacts.orEmpty()
             val friendIds = friends.mapNotNull { it.wxId.takeIf(String::isNotBlank) }.toSet()
-            val needsGroups = batchCandidateMode in setOf(
+            val needsGroups = batchCandidateMode?.includesDirectoryGroups == true ||
+                batchCandidateMode in setOf(
                     BatchCandidateMode.CURRENT_FRIENDS_AND_GROUPS,
-                    BatchCandidateMode.ALL_FRIENDS_AND_GROUPS,
-                    BatchCandidateMode.PINNABLE_FRIENDS_AND_GROUPS,
-                    BatchCandidateMode.ALL_GROUPS,
                     BatchCandidateMode.JOINED_GROUPS,
                     BatchCandidateMode.INVALID_GROUPS
                 ) || strictFriendsAndGroupsOnly
@@ -4153,10 +4170,6 @@ internal fun loadContacts(
             val batchValidFriendIds = BatchSelectionPolicy.filterCandidateIds(
                 friends.mapNotNull { it.wxId.takeIf(String::isNotBlank) },
                 emptySet(), friendIds, emptySet(), false, true, false
-            ).toSet()
-            val batchValidGroupIds = BatchSelectionPolicy.filterCandidateIds(
-                groups.mapNotNull { it.wxId.takeIf(String::isNotBlank) },
-                emptySet(), emptySet(), allGroupIds, false, false, true
             ).toSet()
             val labelMemberIds = if (batchCandidateMode == BatchCandidateMode.ALL_FRIENDS_WITH_LABEL) {
                 val targetLabelId = batchLabelFilterId?.trim().orEmpty()
@@ -4198,27 +4211,30 @@ internal fun loadContacts(
             }.toSet()
             if (batchCandidateMode != null) {
                 when (batchCandidateMode) {
-                    BatchCandidateMode.HOME_CONVERSATIONS -> {
-                        val eligible = BatchSelectionPolicy.filterCandidateIds(
-                            nativeHomeIds, nativeHomeIds.toSet(), emptySet(), emptySet(), true, false, false
-                        )
-                        rows += nativeContactOptions(eligible, api, conversations)
-                    }
-                    BatchCandidateMode.CURRENT_FRIENDS_AND_GROUPS -> {
-                        val eligible = BatchSelectionPolicy.filterCandidateIds(
-                            nativeHomeIds, nativeHomeIds.toSet(), friendIds, allGroupIds, true, false, true
-                        )
-                        rows += nativeContactOptions(eligible, api, conversations)
-                    }
-                    BatchCandidateMode.CURRENT_FRIENDS -> {
-                        val eligible = BatchSelectionPolicy.filterCandidateIds(
-                            nativeHomeIds, nativeHomeIds.toSet(), friendIds, emptySet(), true, true, false
-                        )
-                        rows += nativeContactOptions(eligible, api, conversations)
-                    }
-                    BatchCandidateMode.ALL_FRIENDS -> {
-                        rows += friends.asSequence().filter { it.wxId in batchValidFriendIds }
-                            .mapNotNull { it.toOption(false) }.toList()
+                    BatchCandidateMode.HOME_CONVERSATIONS,
+                    BatchCandidateMode.CURRENT_FRIENDS_AND_GROUPS,
+                    BatchCandidateMode.CURRENT_FRIENDS,
+                    BatchCandidateMode.CURRENT_PINNABLE_CONVERSATIONS,
+                    BatchCandidateMode.ALL_FRIENDS,
+                    BatchCandidateMode.ALL_GROUPS,
+                    BatchCandidateMode.ALL_FRIENDS_AND_GROUPS,
+                    BatchCandidateMode.PINNABLE_FRIENDS,
+                    BatchCandidateMode.PINNABLE_GROUPS,
+                    BatchCandidateMode.PINNABLE_FRIENDS_AND_GROUPS -> {
+                        val existingIds = if (batchCandidateMode.requiresExistingConversation) {
+                            conversations?.getExistingConversationUsernames()?.toSet()
+                                ?: throw IllegalStateException("读取现有会话记录失败")
+                        } else emptySet()
+                        val eligible = batchCandidateMode.scopedCandidateIds(nativeHomeIds, friendIds, allGroupIds, existingIds)
+                        if (batchCandidateMode.usesHomeConversations) {
+                            rows += nativeContactOptions(eligible, api, conversations)
+                        } else {
+                            val eligibleIds = eligible.toSet()
+                            rows += friends.asSequence().filter { it.wxId in eligibleIds }
+                                .mapNotNull { it.toOption(false) }.toList()
+                            rows += groups.asSequence().filter { it.wxId in eligibleIds }
+                                .mapNotNull { it.toOption(true) }.toList()
+                        }
                     }
                     BatchCandidateMode.STARRED_FRIENDS -> {
                         val starredFriendIds = friends.asSequence()
@@ -4234,10 +4250,6 @@ internal fun loadContacts(
                             .filter { it.wxId in starredCandidates }
                             .mapNotNull { it.toOption(false) }
                             .toList()
-                    }
-                    BatchCandidateMode.ALL_GROUPS -> {
-                        rows += groups.asSequence().filter { it.wxId in batchValidGroupIds }
-                            .mapNotNull { it.toOption(true) }.toList()
                     }
                     BatchCandidateMode.JOINED_GROUPS -> {
                         rows += specialGroupCandidates.mapNotNull { it.contact?.toOption(true) }
@@ -4265,28 +4277,6 @@ internal fun loadContacts(
                         rows += followedOfficialResult?.contacts.orEmpty()
                             .mapNotNull { it.toOption(group = false, official = true) }
                     }
-                    BatchCandidateMode.ALL_FRIENDS_AND_GROUPS -> {
-                        rows += friends.asSequence().filter { it.wxId in batchValidFriendIds }
-                            .mapNotNull { it.toOption(false) }.toList()
-                        rows += groups.asSequence().filter { it.wxId in batchValidGroupIds }
-                            .mapNotNull { it.toOption(true) }.toList()
-                    }
-                    BatchCandidateMode.PINNABLE_FRIENDS_AND_GROUPS -> {
-                        val existingIds = conversations?.getExistingConversationUsernames()?.toSet()
-                            ?: throw IllegalStateException("无法核对全部候选对象的现有会话记录")
-                        val options = friends.asSequence().filter { it.wxId in batchValidFriendIds }
-                            .mapNotNull { it.toOption(false) }.toList() +
-                            groups.asSequence().filter { it.wxId in batchValidGroupIds }
-                                .mapNotNull { it.toOption(true) }.toList()
-                        rows += options.map { option ->
-                            if (option.id in existingIds) option
-                            else option.copy(
-                                selectable = false,
-                                disabledReason = "无会话记录；微信置顶会创建空会话记录"
-                            )
-                        }
-                    }
-                    null -> Unit
                 }
             } else if (nativeHomeConversationList) {
                 val eligibleNativeIds = BatchSelectionPolicy.filterCandidateIds(
@@ -4330,12 +4320,7 @@ internal fun loadContacts(
                     rows += api.getPickerOfficialAccounts().mapNotNull { it.toOption(false, official = true) }
                 }
             }
-            val preserveNativeHomeOrder = nativeHomeConversationList || batchCandidateMode in setOf(
-                BatchCandidateMode.HOME_CONVERSATIONS,
-                BatchCandidateMode.CURRENT_FRIENDS_AND_GROUPS,
-                BatchCandidateMode.CURRENT_FRIENDS
-            )
-            val conversationOrder = if (preserveNativeHomeOrder) {
+            val conversationOrder = if (needsHomeRows) {
                 nativeHomeIds.mapIndexed { index, username -> username to index }.toMap()
             } else {
                 conversations?.getRecentConversationUsernames(10000)
@@ -4360,7 +4345,7 @@ internal fun loadContacts(
                 rows
             }
             val deduplicated = eligibleRows.distinctBy { it.id }
-            val sorted = if (preserveNativeHomeOrder) deduplicated else deduplicated.sortedWith(
+            val sorted = if (needsHomeRows) deduplicated else deduplicated.sortedWith(
                 compareBy<ContactOption> { conversationOrder[it.id] ?: Int.MAX_VALUE }
                     .thenBy { it.group }
                     .thenBy { it.official }

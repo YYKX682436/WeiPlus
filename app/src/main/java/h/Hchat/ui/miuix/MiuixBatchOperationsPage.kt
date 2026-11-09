@@ -36,7 +36,27 @@ import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
 import top.yukonga.miuix.kmp.basic.SmallTitle
 
-private enum class BatchScope { CURRENT, ALL }
+internal enum class BatchScope(val label: String) {
+    CURRENT("当前聊天"),
+    FRIENDS("全部好友"),
+    GROUPS("全部群聊"),
+    ALL("全部好友与群聊")
+}
+
+private val batchScopeChoices = BatchScope.entries.map { PopupChoice(it.label, it.name) }
+
+private val operationsWithPickerControls = setOf(
+    BatchOperation.DO_NOT_DISTURB, BatchOperation.PIN, BatchOperation.FRIEND_LABEL,
+    BatchOperation.STAR_FRIEND, BatchOperation.FRIEND_PERMISSION, BatchOperation.GROUP_SAVE_TO_CONTACTS,
+    BatchOperation.GROUP_NICKNAME, BatchOperation.DELETE_FRIENDS
+)
+
+private fun BatchOperation?.destructiveActionLabel(): String? = when (this) {
+    BatchOperation.DELETE_CHATS, BatchOperation.DELETE_FRIENDS, BatchOperation.DELETE_INVALID_GROUPS -> "删除"
+    BatchOperation.UNFOLLOW_OFFICIAL_ACCOUNTS -> "取消关注"
+    BatchOperation.GROUP_LEAVE -> "退出"
+    else -> null
+}
 
 internal fun batchOperationsFeatureCount(): Int = BatchOperation.entries.size
 
@@ -128,22 +148,10 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
                 friendPermissionSelection.actions().isNotEmpty()) &&
             (currentFeature != BatchOperation.GROUP_NICKNAME || validGroupNickname(groupNickname))
     )
-    val latestCandidateMode = rememberUpdatedState(candidateMode(currentFeature, scope, enabled))
-    val latestLabelFilterId = rememberUpdatedState(
-        selectedLabelId.takeIf { currentFeature == BatchOperation.FRIEND_LABEL && !enabled }
-    )
-    val latestSelectionResetKey = rememberUpdatedState(
-        when (currentFeature) {
-            BatchOperation.FRIEND_LABEL -> "$enabled:$selectedLabelId"
-            BatchOperation.STAR_FRIEND -> enabled.toString()
-            else -> null
-        }
-    )
-
     var momentsFriend by remember { mutableStateOf<ContactOption?>(null) }
     val momentsFriendPicker = remember {
         ContactPickerRequest(
-            title = "选择一位好友",
+            title = BatchOperation.LIKE_FRIEND_MOMENTS.pickerTitle,
             mode = ContactPickerMode.FRIENDS,
             multiSelect = false,
             existingValue = "",
@@ -158,7 +166,7 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
 
     val pickerRequest = remember(currentFeature) {
         ContactPickerRequest(
-            title = currentFeature?.title ?: "选择对象",
+            title = currentFeature?.pickerTitle ?: "选择对象",
             mode = when (currentFeature) {
                 BatchOperation.FRIEND_LABEL, BatchOperation.DELETE_FRIENDS -> ContactPickerMode.FRIENDS
                 BatchOperation.UNFOLLOW_OFFICIAL_ACCOUNTS -> ContactPickerMode.FRIENDS
@@ -172,16 +180,9 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
             enableGroupLabels = false,
             showSelectedCount = true,
             flatBatchSelection = true,
-            multiSelectConfirmPrefix = when (currentFeature) {
-                BatchOperation.HIDE -> "确定不显示"
-                BatchOperation.DELETE_CHATS, BatchOperation.DELETE_FRIENDS -> "删除"
-                BatchOperation.UNFOLLOW_OFFICIAL_ACCOUNTS -> "取消关注"
-                BatchOperation.GROUP_LEAVE -> "退出"
-                BatchOperation.DELETE_INVALID_GROUPS -> "删除"
-                else -> "确定"
-            },
-            operationHeader = if (currentFeature == BatchOperation.HIDE ||
-                currentFeature == BatchOperation.DELETE_CHATS) null else {
+            multiSelectConfirmPrefix = currentFeature.destructiveActionLabel()
+                ?: if (currentFeature == BatchOperation.HIDE) "确定不显示" else "确定",
+            operationHeader = if (currentFeature in operationsWithPickerControls) {
                 {
                     BatchPickerControls(
                         feature = latestFeature.value,
@@ -203,11 +204,18 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
                         onLabelChange = { selectedLabelId = it }
                     )
                 }
-            },
+            } else null,
             confirmEnabled = { latestConfirmEnabled.value },
-            batchCandidateMode = { latestCandidateMode.value },
-            batchLabelFilterId = { latestLabelFilterId.value },
-            batchSelectionResetKey = { latestSelectionResetKey.value }
+            batchCandidateMode = { candidateMode(feature, scope, enabled) },
+            batchLabelFilterId = { selectedLabelId.takeIf { feature == BatchOperation.FRIEND_LABEL && !enabled } },
+            batchSelectionResetKey = {
+                when (feature) {
+                    BatchOperation.DO_NOT_DISTURB, BatchOperation.PIN -> "${scope.name}:$enabled"
+                    BatchOperation.FRIEND_LABEL -> "$enabled:$selectedLabelId"
+                    BatchOperation.STAR_FRIEND -> enabled.toString()
+                    else -> null
+                }
+            }
         )
     }
 
@@ -261,9 +269,7 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
             )
         )
         when (result) {
-            BatchTaskSubmitResult.STARTED -> {
-                returnHome()
-            }
+            BatchTaskSubmitResult.STARTED -> returnHome()
             BatchTaskSubmitResult.BUSY ->
                 Toast.makeText(context, "已有批量任务正在执行，请完成后再启动", Toast.LENGTH_SHORT).show()
             BatchTaskSubmitResult.UNAVAILABLE ->
@@ -273,15 +279,9 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
         }
     }
 
+    val destructiveAction = currentFeature.destructiveActionLabel()
     fun submitSelection(picked: List<ContactOption>) {
-        if (currentFeature in setOf(
-                BatchOperation.DELETE_CHATS,
-                BatchOperation.DELETE_FRIENDS,
-                BatchOperation.UNFOLLOW_OFFICIAL_ACCOUNTS,
-                BatchOperation.GROUP_LEAVE,
-                BatchOperation.DELETE_INVALID_GROUPS
-            )
-        ) {
+        if (destructiveAction != null) {
             pendingDeleteTargets = picked.toList()
             pendingDeleteClearHistory = currentFeature == BatchOperation.DELETE_FRIENDS && deleteFriendClearHistory
         } else {
@@ -296,16 +296,16 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
             BatchOperation.DELETE_FRIENDS -> if (pendingDeleteClearHistory) {
                 "将删除所选 ${pendingDeleteTargets?.size ?: 0} 位好友，并同时清空对应聊天记录。此操作不可恢复。"
             } else {
-                "将删除所选 ${pendingDeleteTargets?.size ?: 0} 位好友；聊天记录按微信原生删除行为处理，不主动清空。此操作不可恢复。"
+                "将删除所选 ${pendingDeleteTargets?.size ?: 0} 位好友，不额外清空聊天记录。此操作不可恢复。"
             }
-            BatchOperation.UNFOLLOW_OFFICIAL_ACCOUNTS -> "将通过微信原生批量接口取消关注所选 ${pendingDeleteTargets?.size ?: 0} 个公众号/服务号。之后如需接收其内容，需要重新关注。本操作不另外删除会话或聊天记录；结果未知的请求不会重试。"
-            BatchOperation.GROUP_LEAVE -> "将通过微信原生批量退群流程退出所选 ${pendingDeleteTargets?.size ?: 0} 个群聊。群主群聊不在候选列表中；结果未知的请求不会重试。此操作不可恢复。"
-            BatchOperation.DELETE_INVALID_GROUPS -> "将按微信原生方式移除所选 ${pendingDeleteTargets?.size ?: 0} 个已确认失效群聊的残留群资料与会话，不额外清空聊天记录。此操作不可恢复。"
+            BatchOperation.UNFOLLOW_OFFICIAL_ACCOUNTS -> "将取消关注所选 ${pendingDeleteTargets?.size ?: 0} 个公众号。以后可重新关注。"
+            BatchOperation.GROUP_LEAVE -> "将退出所选 ${pendingDeleteTargets?.size ?: 0} 个群聊。此操作不可恢复。"
+            BatchOperation.DELETE_INVALID_GROUPS -> "将移除所选 ${pendingDeleteTargets?.size ?: 0} 个失效群聊的资料与会话，不额外清空聊天记录。此操作不可恢复。"
             else -> ""
         },
         labels = pendingDeleteTargets.orEmpty().map { it.label },
-        title = if (currentFeature == BatchOperation.UNFOLLOW_OFFICIAL_ACCOUNTS) "确认取消关注" else "确认批量删除",
-        confirmText = if (currentFeature == BatchOperation.UNFOLLOW_OFFICIAL_ACCOUNTS) "确认取消关注" else "确认删除",
+        title = "确认${currentFeature?.pickerTitle.orEmpty()}",
+        confirmText = "确认${destructiveAction.orEmpty()}",
         onDismiss = {
             pendingDeleteTargets = null
             pendingDeleteClearHistory = false
@@ -445,53 +445,22 @@ private fun BatchPickerControls(
                 currentValue = deleteFriendClearHistory.toString(),
                 onValueChanged = { onDeleteFriendClearHistoryChange(it.toBooleanStrictOrNull() ?: deleteFriendClearHistory) }
             )
-            BatchOperation.GROUP_LEAVE -> InfoRow(
-                "退群范围",
-                "仅列出确认仍在群内且非群主的群聊；结果未知的群会暂时隐藏，待微信成员状态更新"
-            )
-            BatchOperation.DELETE_INVALID_GROUPS -> InfoRow("清理范围", "仅列出已解散或成员名单确认不含当前账号的群聊")
-            BatchOperation.UNFOLLOW_OFFICIAL_ACCOUNTS -> InfoRow(
-                "候选范围",
-                "仅列出微信当前确认仍关注且具有公众号或服务号资料的账号"
-            )
-            BatchOperation.DO_NOT_DISTURB -> {
+            BatchOperation.DO_NOT_DISTURB, BatchOperation.PIN -> {
+                val pin = feature == BatchOperation.PIN
+                val enableLabel = if (pin) "置顶" else "开启"
+                val disableLabel = if (pin) "取消置顶" else "关闭"
                 PopupChoiceRow(
-                    title = "免打扰",
-                    summary = if (enabled) "开启" else "关闭",
-                    options = listOf(PopupChoice("开启", "true"), PopupChoice("关闭", "false")),
+                    title = if (pin) "置顶操作" else "免打扰",
+                    summary = if (enabled) enableLabel else disableLabel,
+                    options = listOf(PopupChoice(enableLabel, "true"), PopupChoice(disableLabel, "false")),
                     currentValue = enabled.toString(),
                     onValueChanged = { onEnabledChange(it.toBooleanStrictOrNull() ?: enabled) }
                 )
                 InsetDivider()
                 PopupChoiceRow(
                     title = "选择范围",
-                    summary = if (scope == BatchScope.CURRENT) "当前聊天" else "全部好友与群聊",
-                    options = listOf(
-                        PopupChoice("当前聊天", BatchScope.CURRENT.name),
-                        PopupChoice("全部好友与群聊", BatchScope.ALL.name)
-                    ),
-                    currentValue = scope.name,
-                    onValueChanged = { value ->
-                        onScopeChange(BatchScope.entries.firstOrNull { it.name == value } ?: scope)
-                    }
-                )
-            }
-            BatchOperation.PIN -> {
-                PopupChoiceRow(
-                    title = "置顶操作",
-                    summary = if (enabled) "置顶" else "取消置顶",
-                    options = listOf(PopupChoice("置顶", "true"), PopupChoice("取消置顶", "false")),
-                    currentValue = enabled.toString(),
-                    onValueChanged = { onEnabledChange(it.toBooleanStrictOrNull() ?: enabled) }
-                )
-                InsetDivider()
-                PopupChoiceRow(
-                    title = "选择范围",
-                    summary = if (scope == BatchScope.CURRENT) "当前聊天" else "全部好友与群聊",
-                    options = listOf(
-                        PopupChoice("当前聊天", BatchScope.CURRENT.name),
-                        PopupChoice("全部好友与群聊", BatchScope.ALL.name)
-                    ),
+                    summary = scope.label,
+                    options = batchScopeChoices,
                     currentValue = scope.name,
                     onValueChanged = { value ->
                         onScopeChange(BatchScope.entries.firstOrNull { it.name == value } ?: scope)
@@ -582,21 +551,23 @@ private fun BatchPickerControls(
     }
 }
 
-private fun candidateMode(
+internal fun candidateMode(
     feature: BatchOperation?,
     scope: BatchScope,
     enabled: Boolean
 ): BatchCandidateMode? = when (feature) {
     BatchOperation.HIDE -> BatchCandidateMode.HOME_CONVERSATIONS
-    BatchOperation.DO_NOT_DISTURB -> if (scope == BatchScope.CURRENT) {
-        BatchCandidateMode.CURRENT_FRIENDS_AND_GROUPS
-    } else {
-        BatchCandidateMode.ALL_FRIENDS_AND_GROUPS
+    BatchOperation.DO_NOT_DISTURB -> when (scope) {
+        BatchScope.CURRENT -> BatchCandidateMode.CURRENT_FRIENDS_AND_GROUPS
+        BatchScope.FRIENDS -> BatchCandidateMode.ALL_FRIENDS
+        BatchScope.GROUPS -> BatchCandidateMode.ALL_GROUPS
+        BatchScope.ALL -> BatchCandidateMode.ALL_FRIENDS_AND_GROUPS
     }
-    BatchOperation.PIN -> if (scope == BatchScope.CURRENT) {
-        BatchCandidateMode.HOME_CONVERSATIONS
-    } else {
-        BatchCandidateMode.PINNABLE_FRIENDS_AND_GROUPS
+    BatchOperation.PIN -> when (scope) {
+        BatchScope.CURRENT -> BatchCandidateMode.CURRENT_PINNABLE_CONVERSATIONS
+        BatchScope.FRIENDS -> BatchCandidateMode.PINNABLE_FRIENDS
+        BatchScope.GROUPS -> BatchCandidateMode.PINNABLE_GROUPS
+        BatchScope.ALL -> BatchCandidateMode.PINNABLE_FRIENDS_AND_GROUPS
     }
     BatchOperation.FRIEND_LABEL -> if (enabled) {
         BatchCandidateMode.ALL_FRIENDS
@@ -620,20 +591,20 @@ private fun candidateMode(
 }
 
 private fun operationSummary(operation: BatchOperation): String = when (operation) {
-    BatchOperation.HIDE -> "只显示微信首页当前聊天"
-    BatchOperation.DO_NOT_DISTURB -> "开启或关闭当前聊天或全部好友与群聊的免打扰"
-    BatchOperation.PIN -> "置顶或取消置顶当前聊天或全部好友与群聊"
-    BatchOperation.FRIEND_LABEL -> "追加到全部好友，或从指定标签的成员中移除"
-    BatchOperation.STAR_FRIEND -> "为全部有效好友设置或取消星标"
+    BatchOperation.HIDE -> "从微信首页隐藏所选聊天"
+    BatchOperation.DO_NOT_DISTURB -> "开启或关闭免打扰"
+    BatchOperation.PIN -> "置顶或取消置顶已有聊天"
+    BatchOperation.FRIEND_LABEL -> "为所选好友添加或移除标签"
+    BatchOperation.STAR_FRIEND -> "为好友设置或取消星标"
     BatchOperation.FRIEND_PERMISSION -> "修改仅聊天和朋友圈权限"
     BatchOperation.GROUP_SAVE_TO_CONTACTS -> "保存群聊到通讯录或取消保存"
     BatchOperation.GROUP_NICKNAME -> "为所选群聊设置我在群里的昵称"
-    BatchOperation.GROUP_LEAVE -> "批量退出当前确认仍在群内的非群主群聊"
-    BatchOperation.DELETE_INVALID_GROUPS -> "清理已经退出、被移出或解散后仍残留的群聊"
-    BatchOperation.DELETE_CHATS -> "删除微信首页当前聊天，并清理对应聊天记录；保留好友与群成员关系"
-    BatchOperation.DELETE_FRIENDS -> "删除全部有效好友，可选同时清空聊天记录；不含自己、公众号和群聊"
-    BatchOperation.UNFOLLOW_OFFICIAL_ACCOUNTS -> "显示当前仍关注的公众号和服务号；使用微信原生批量接口取消关注"
-    BatchOperation.DELETE_OWN_MOMENTS -> "按时间与内容筛选本人朋友圈；通过微信服务器分页读取并逐条调用原生删除"
+    BatchOperation.GROUP_LEAVE -> "退出所选群聊"
+    BatchOperation.DELETE_INVALID_GROUPS -> "清理已退出、被移出或解散的群聊"
+    BatchOperation.DELETE_CHATS -> "删除所选聊天及对应记录"
+    BatchOperation.DELETE_FRIENDS -> "删除所选好友，可同时清空聊天记录"
+    BatchOperation.UNFOLLOW_OFFICIAL_ACCOUNTS -> "取消关注所选公众号"
+    BatchOperation.DELETE_OWN_MOMENTS -> "按时间和内容筛选并删除自己的朋友圈"
     BatchOperation.LIKE_FRIEND_MOMENTS -> "选择一位好友，筛选并点赞所选的可见动态"
 }
 

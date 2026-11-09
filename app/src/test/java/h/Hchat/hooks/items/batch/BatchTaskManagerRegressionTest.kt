@@ -2,9 +2,12 @@ package h.Hchat.hooks.items.batch
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import h.Hchat.hooks.api.contact.WeChatNativeMutationResult
+import h.Hchat.hooks.core.XposedRuntime
+import h.Hchat.tests.api102.FrameworkFixture
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
@@ -69,7 +72,10 @@ class BatchTaskManagerRegressionTest {
     }
 
     @Test
-    fun allTenProductionTaskKindsStartImmediatelyAndPreserveSelectedState() {
+    fun allFifteenProductionTaskKindsStartImmediatelyAndPreserveSelectedState() {
+        if (runCatching { XposedRuntime.get() }.isFailure) {
+            XposedRuntime.initialize(FrameworkFixture().create())
+        }
         val accepted = LinkedBlockingQueue<BatchTaskRequest>()
         val manager = BatchTaskManager.createForTesting(BatchTaskProcessor { request, _ ->
             accepted.put(request)
@@ -144,10 +150,25 @@ class BatchTaskManagerRegressionTest {
                 "account-A",
                 true,
                 groupNickname = "我的群昵称"
+            ),
+            BatchTaskRequest(BatchOperation.GROUP_LEAVE, listOf("leave@chatroom"), "account-A", true),
+            BatchTaskRequest(
+                BatchOperation.DELETE_INVALID_GROUPS, listOf("invalid@chatroom"), "account-A", true,
+                groupCleanupReasons = mapOf("invalid@chatroom" to "DISBANDED")
+            ),
+            BatchTaskRequest(BatchOperation.UNFOLLOW_OFFICIAL_ACCOUNTS, listOf("gh_test"), "account-A", true),
+            BatchTaskRequest(
+                BatchOperation.DELETE_OWN_MOMENTS, listOf("90"), "account-A", true,
+                momentTimes = mapOf("90" to 1_720_000_000L)
+            ),
+            BatchTaskRequest(
+                BatchOperation.LIKE_FRIEND_MOMENTS, listOf("91"), "account-A", true,
+                momentTimes = mapOf("91" to 1_720_000_000L), momentFriend = "friend-moments"
             )
         )
 
         try {
+            assertEquals(BatchOperation.entries.toSet(), requests.map { it.operation }.toSet())
             requests.forEach { request ->
                 // submit returns as soon as the production process queue accepts the task.
                 assertEquals(BatchTaskSubmitResult.STARTED, manager.submit(request))
@@ -155,7 +176,7 @@ class BatchTaskManagerRegressionTest {
                 awaitStatus(manager, BatchTaskStatus.COMPLETED)
                 assertEquals(BatchTaskStatus.COMPLETED, manager.snapshot.value.status)
                 assertEquals(request.targetIds.size, manager.snapshot.value.report?.success)
-                assertEquals("批量操作成功", BatchTaskCompletionMessage.from(manager.snapshot.value))
+                assertNull(BatchTaskCompletionMessage.from(manager.snapshot.value))
             }
         } finally {
             manager.shutdownForTesting()
@@ -376,9 +397,12 @@ class BatchTaskManagerRegressionTest {
     @Test
     fun completionFeedbackRunsOnceAfterPartialResultsWithoutTreatingThemAsSuccess() {
         val notified = CountDownLatch(1)
+        val allowFinish = CountDownLatch(1)
+        val starts = AtomicInteger()
         val calls = AtomicInteger()
         val manager = BatchTaskManager.createForTesting(
             BatchTaskProcessor { request, _ ->
+                check(allowFinish.await(5, TimeUnit.SECONDS))
                 BatchTaskRunner.fromResults(
                     request.targetIds,
                     listOf(
@@ -389,36 +413,57 @@ class BatchTaskManagerRegressionTest {
                     ""
                 )
             },
-            BatchTaskCompletionNotifier { snapshot ->
-                assertEquals(BatchTaskStatus.COMPLETED, snapshot.status)
-                assertEquals(1, snapshot.report?.success)
-                assertEquals(1, snapshot.report?.failed)
-                assertEquals(1, snapshot.report?.unconfirmed)
-                calls.incrementAndGet()
-                notified.countDown()
+            object : BatchTaskCompletionNotifier {
+                override fun onStarted() { starts.incrementAndGet() }
+
+                override fun notify(snapshot: BatchTaskSnapshot) {
+                    assertEquals(BatchTaskStatus.COMPLETED, snapshot.status)
+                    assertEquals(1, snapshot.report?.success)
+                    assertEquals(1, snapshot.report?.failed)
+                    assertEquals(1, snapshot.report?.unconfirmed)
+                    assertEquals(1, starts.get())
+                    calls.incrementAndGet()
+                    notified.countDown()
+                }
             }
         )
         try {
-            assertEquals(
-                BatchTaskSubmitResult.STARTED,
-                manager.submit(BatchTaskRequest(
-                    BatchOperation.FRIEND_LABEL,
-                    listOf("one", "two", "three"),
-                    "account-A",
-                    enabled = false,
-                    labelId = "label-A"
-                ))
+            val request = BatchTaskRequest(
+                BatchOperation.FRIEND_LABEL, listOf("one", "two", "three"),
+                "account-A", enabled = false, labelId = "label-A"
             )
+            assertEquals(BatchTaskSubmitResult.INVALID, manager.submit(request.copy(labelId = "")))
+            assertEquals(0, starts.get())
+            assertEquals(BatchTaskSubmitResult.STARTED, manager.submit(request))
+            assertEquals(BatchTaskSubmitResult.BUSY, manager.submit(request))
+            assertEquals(1, starts.get())
+            allowFinish.countDown()
             assertTrue("completion feedback should follow the final report", notified.await(5, TimeUnit.SECONDS))
             repeat(3) { manager.snapshot.value }
             assertEquals(1, calls.get())
-            val message = BatchTaskCompletionMessage.from(manager.snapshot.value)
-            assertTrue(message.contains("失败 1"))
-            assertTrue(message.contains("未确认 1"))
-            assertTrue(!message.contains("批量操作成功"))
+            assertEquals("操作失败", BatchTaskCompletionMessage.from(manager.snapshot.value))
         } finally {
+            allowFinish.countDown()
             manager.shutdownForTesting()
         }
+    }
+
+    @Test
+    fun uncertainAndSkippedResultsStaySilentEvenWhenStopped() {
+        val report = BatchTaskRunner.fromResults(
+            listOf("accepted", "skipped"),
+            listOf(
+                BatchTaskRunner.TaskResult.of(BatchTaskRunner.Outcome.UNCONFIRMED, "accepted only"),
+                BatchTaskRunner.TaskResult.of(BatchTaskRunner.Outcome.SKIPPED, "already applied")
+            ),
+            ""
+        )
+        for (status in listOf(BatchTaskStatus.COMPLETED, BatchTaskStatus.STOPPED)) {
+            assertNull(BatchTaskCompletionMessage.from(BatchTaskSnapshot(status = status, report = report)))
+        }
+        assertEquals(0, report.success)
+        assertEquals(1, report.unconfirmed)
+        assertEquals("操作失败", BatchTaskCompletionMessage.from(BatchTaskSnapshot(status = BatchTaskStatus.FAILED)))
     }
 
     @Test
@@ -521,7 +566,7 @@ class BatchTaskManagerRegressionTest {
             assertEquals(BatchTaskStatus.STOPPED, manager.snapshot.value.status)
             assertEquals(1, manager.snapshot.value.report?.success)
             assertEquals(1, manager.snapshot.value.report?.skipped)
-            assertEquals("已停止后续操作", BatchTaskCompletionMessage.from(manager.snapshot.value))
+            assertNull(BatchTaskCompletionMessage.from(manager.snapshot.value))
             assertEquals(1, submissions.get())
 
             val restart = BatchTaskRequest(

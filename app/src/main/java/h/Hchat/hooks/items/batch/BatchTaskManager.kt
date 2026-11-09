@@ -23,9 +23,11 @@ internal enum class BatchOperation(val title: String) {
     DELETE_INVALID_GROUPS("批量删除无效群聊"),
     DELETE_CHATS("批量删除聊天"),
     DELETE_FRIENDS("批量删除好友"),
-    UNFOLLOW_OFFICIAL_ACCOUNTS("批量取消关注公众号/服务号"),
+    UNFOLLOW_OFFICIAL_ACCOUNTS("批量取消关注公众号"),
     DELETE_OWN_MOMENTS("批量删除自己的朋友圈"),
-    LIKE_FRIEND_MOMENTS("批量点赞指定好友的朋友圈")
+    LIKE_FRIEND_MOMENTS("批量点赞指定好友的朋友圈");
+
+    val pickerTitle: String get() = title.removePrefix("批量")
 }
 
 internal enum class BatchFriendAccessChoice(val label: String) {
@@ -119,6 +121,7 @@ internal fun interface BatchTaskProcessor {
 }
 
 internal fun interface BatchTaskCompletionNotifier {
+    fun onStarted() {}
     fun notify(snapshot: BatchTaskSnapshot)
 }
 
@@ -189,6 +192,7 @@ internal class BatchTaskManager private constructor(
                 HLog.i("取关诊断 stage=task-submit result=started " +
                     "targetCount=${normalized.targetIds.size} session=${session.id}")
             }
+            runCatching { completionNotifier.onStarted() }
             return BatchTaskSubmitResult.STARTED
         }
     }

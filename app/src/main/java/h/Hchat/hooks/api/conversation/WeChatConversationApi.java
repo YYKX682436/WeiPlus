@@ -115,10 +115,15 @@ public final class WeChatConversationApi {
     public List<String> getExistingConversationUsernames() {
         if (databaseApi == null || !databaseApi.isAvailable()) return null;
         try {
-            LinkedHashSet<String> usernames = new LinkedHashSet<>();
-            for (Map<String, Object> row : databaseApi.query(
+            WeChatDatabaseApi.QueryResult query = databaseApi.queryWithStatus(
                     "SELECT username FROM rconversation WHERE username!='' ORDER BY flag DESC, conversationTime DESC",
-                    null)) {
+                    null);
+            if (!query.success) {
+                log("读取现有会话记录失败: " + query.error);
+                return null;
+            }
+            LinkedHashSet<String> usernames = new LinkedHashSet<>();
+            for (Map<String, Object> row : query.rows) {
                 String username = str(row, "username");
                 if (WeChatConversationIdentity.isBatchOperableUsername(username)) usernames.add(username);
             }

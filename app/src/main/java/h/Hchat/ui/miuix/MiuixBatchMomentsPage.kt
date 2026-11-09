@@ -172,8 +172,8 @@ internal fun BatchMomentsPickerPage(
 
     BatchDeleteConfirmDialog(
         show = pendingAction != null,
-        message = if (forLike) "将点赞 ${friend.label} 的所选 ${pendingAction?.size ?: 0} 条朋友圈。执行前会复核，已点赞会跳过，结果未知不会重发。"
-        else "将通过微信原生删除请求删除所选 ${pendingAction?.size ?: 0} 条自己的朋友圈。提交前会复核所选动态；结果未知的请求不会重复提交。此操作不可恢复。",
+        message = if (forLike) "将点赞 ${friend.label} 的所选 ${pendingAction?.size ?: 0} 条朋友圈。"
+        else "将删除所选 ${pendingAction?.size ?: 0} 条自己的朋友圈。此操作不可恢复。",
         labels = pendingAction.orEmpty().map { item ->
             val summary = BatchMomentsSelection.summary(item.text).ifBlank { "（${momentTypeLabel(item.contentType)}）" }
             "${formatMomentTime(item.createTimeSeconds)} · $summary"
@@ -219,8 +219,8 @@ internal fun BatchMomentsPickerPage(
     }
 
     PageScaffold(
-        title = if (forLike) "点赞好友朋友圈" else "删除自己的朋友圈",
-        largeTitle = friend?.label ?: "批量删除自己的朋友圈",
+        title = operation.pickerTitle,
+        largeTitle = friend?.label ?: operation.pickerTitle,
         scrollBehavior = scrollBehavior,
         onBack = onBack,
         bottomBar = {

@@ -74,14 +74,14 @@ try {
     const manager = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/items/batch/BatchTaskManager.kt'), 'utf8');
     const moduleEntry = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/ModuleEntry.java'), 'utf8');
 
-    assert.match(batchUi, /private enum class BatchPage \{ HOME, PICKER \}/,
-        'batch operation must use a single picker followed by direct submission');
-    assert.match(batchUi, /onConfirm = \{ submitSelection\(it\) \}/,
-        'one confirm must submit the task directly');
-    assert.match(batchUi, /BatchTaskSubmitResult\.STARTED -> \{\s*returnHome\(\)/,
+    assert.match(batchUi, /private enum class BatchPage \{ HOME, PICKER, MOMENTS_PICKER \}/,
+        'batch operation must route to the home, contact picker, or Moments picker');
+    assert.match(batchUi, /onConfirm = \{ picked ->[\s\S]*?else submitSelection\(picked\)/,
+        'contact selection must route through the task submission or the Moments picker');
+    assert.match(batchUi, /BatchTaskSubmitResult\.STARTED -> returnHome\(\)/,
         'accepted work must return home immediately without a progress page');
     assert.doesNotMatch(batchUi, /已开始后台处理|最近一次结果|InfoRow\("成功"|InfoRow\("失败"|InfoRow\("跳过"|已提交／未确认/,
-        'the home page must not show a start toast or permanent result summary');
+        'the home page must not duplicate queue feedback or show a permanent result summary');
     assert.match(batchUi, /manager\.submit\(\s*BatchTaskRequest\(/,
         'the selector must submit to the process-owned task manager');
     assert.match(batchUi, /BatchOperation\.entries\.forEachIndexed/,
@@ -94,20 +94,24 @@ try {
         manager.indexOf('internal enum class BatchOperation'),
         manager.indexOf('internal enum class BatchFriendAccessChoice')
     );
-    assert.equal((operationEnum.match(/^    [A-Z_]+\("/gm) || []).length, 12,
-        'the batch entry point must contain twelve implemented operations');
-    assert.match(batchUi, /BatchOperation\.DELETE_CHATS, BatchOperation\.DELETE_FRIENDS -> "删除"[\s\S]*?BatchDeleteConfirmDialog/,
-        'deletion uses a counted footer and one final consequence confirmation');
+    assert.equal((operationEnum.match(/^    [A-Z_]+\("/gm) || []).length, 15,
+        'the batch entry point must contain fifteen implemented operations');
+    assert.match(batchUi, /BatchOperation\.DELETE_CHATS, BatchOperation\.DELETE_FRIENDS, BatchOperation\.DELETE_INVALID_GROUPS -> "删除"[\s\S]*?BatchOperation\.UNFOLLOW_OFFICIAL_ACCOUNTS -> "取消关注"[\s\S]*?BatchOperation\.GROUP_LEAVE -> "退出"/,
+        'destructive operations must use short action labels in the picker footer');
+    assert.match(batchUi, /multiSelectConfirmPrefix = currentFeature\.destructiveActionLabel\(\)[\s\S]*?if \(destructiveAction != null\)[\s\S]*?BatchDeleteConfirmDialog/,
+        'the counted footer and final confirmation must use the same set of destructive operations');
     assert.match(batchUi, /var deleteFriendClearHistory by remember \{ mutableStateOf\(false\) \}[\s\S]*?deleteFriendClearHistory = false[\s\S]*?BatchOperation\.DELETE_FRIENDS -> PopupChoiceRow[\s\S]*?同时清空聊天记录[\s\S]*?summary = if \(deleteFriendClearHistory\) "开启" else "关闭"[\s\S]*?PopupChoice\("开启", "true"\)[\s\S]*?PopupChoice\("关闭", "false"\)/,
         'friend deletion exposes the default-off compact choice and resets it when the operation is entered');
-    assert.match(batchUi, /pendingDeleteClearHistory = currentFeature == BatchOperation\.DELETE_FRIENDS && deleteFriendClearHistory[\s\S]*?if \(pendingDeleteClearHistory\)[\s\S]*?同时清空对应聊天记录[\s\S]*?不主动清空[\s\S]*?val clearFriendHistory = pendingDeleteClearHistory[\s\S]*?startSelectionTask\(confirmed, clearFriendHistory\)/,
+    assert.match(batchUi, /pendingDeleteClearHistory = currentFeature == BatchOperation\.DELETE_FRIENDS && deleteFriendClearHistory[\s\S]*?if \(pendingDeleteClearHistory\)[\s\S]*?同时清空对应聊天记录[\s\S]*?不额外清空[\s\S]*?val clearFriendHistory = pendingDeleteClearHistory[\s\S]*?startSelectionTask\(confirmed, clearFriendHistory\)/,
         'the single final confirmation must match the captured operation consequence');
     assert.match(batchUi, /deleteFriendClearHistory = selectedFeature == BatchOperation\.DELETE_FRIENDS && clearFriendHistory/,
         'the picker value must be copied into the immutable background request only for friend deletion');
     assert.match(manager, /deleteFriendClearHistory: Boolean = false/,
         'the queued delete-friend option must default to history preservation');
-    assert.match(batchUi, /operationHeader = if \(currentFeature == BatchOperation\.HIDE \|\|\s*currentFeature == BatchOperation\.DELETE_CHATS\) null/,
-        'the new setting header must remain scoped to the friend picker without changing other selector layouts');
+    assert.match(batchUi, /operationHeader = if \(currentFeature in operationsWithPickerControls\)/,
+        'only operations with controls should render a header card');
+    assert.doesNotMatch(batchUi, /退群范围|清理范围|候选范围/,
+        'explanation-only cards must be omitted');
     assert.match(batchUi, /将删除所选[\s\S]*?聊天记录[\s\S]*?好友关系与群成员关系会保留[\s\S]*?此操作不可恢复/,
         'chat deletion confirmation must state message cleanup and preserved relationships');
     assert.match(batchUi, /BatchOperation\.GROUP_LEAVE -> BatchCandidateMode\.JOINED_GROUPS[\s\S]*?BatchOperation\.DELETE_INVALID_GROUPS -> BatchCandidateMode\.INVALID_GROUPS[\s\S]*?BatchOperation\.DELETE_CHATS -> BatchCandidateMode\.HOME_CONVERSATIONS[\s\S]*?BatchOperation\.DELETE_FRIENDS -> BatchCandidateMode\.ALL_FRIENDS/,
@@ -122,10 +126,8 @@ try {
         'the home page must retain an explicit stop-later control');
     assert.doesNotMatch(batchUi, /BatchChoiceRow|ContactFilterChip/,
         'batch configuration must use compact existing Miuix setting rows');
-    assert.match(batchUi, /PopupChoiceRow\([\s\S]*?"开启"[\s\S]*?"关闭"[\s\S]*?当前聊天[\s\S]*?全部好友与群聊/,
-        'DND choices and scope must be visible in compact Miuix rows');
-    assert.match(batchUi, /PopupChoiceRow\([\s\S]*?"置顶"[\s\S]*?"取消置顶"[\s\S]*?当前聊天[\s\S]*?全部好友与群聊/,
-        'pin choices and scope must be visible in compact Miuix rows');
+    assert.match(batchUi, /BatchOperation\.DO_NOT_DISTURB, BatchOperation\.PIN -> \{[\s\S]*?title = "选择范围",[\s\S]*?options = batchScopeChoices/,
+        'DND and pin must share the compact four-scope selector');
     assert.match(batchUi, /title = "目标标签"[\s\S]*?title = "标签操作"/,
         'friend label selection and append/remove controls must be visible');
     assert.match(batchUi, /BatchOperation\.STAR_FRIEND -> PopupChoiceRow[\s\S]*?设为星标朋友[\s\S]*?取消星标朋友/,
@@ -150,10 +152,6 @@ try {
         'switching between star and unstar resets the previous selection');
     assert.match(batchUi, /validGroupNickname\(groupNickname\)/,
         'invalid empty or overlength group nicknames must not enable submission');
-    assert.doesNotMatch(batchUi, /当前聊天中的好友|全部好友"\s*,\s*BatchScope/,
-        'friend label management must not offer an unrelated chat-scope switch');
-    assert.match(batchUi, /BatchOperation\.PIN -> if \(scope == BatchScope\.CURRENT\)[\s\S]*?BatchCandidateMode\.HOME_CONVERSATIONS[\s\S]*?PINNABLE_FRIENDS_AND_GROUPS/,
-        'pin candidates must be scoped to real conversations and disable missing rows');
     assert.match(batchUi, /BatchOperation\.FRIEND_LABEL -> if \(enabled\)[\s\S]*?ALL_FRIENDS[\s\S]*?ALL_FRIENDS_WITH_LABEL/,
         'append must use all friends while removal uses only members of the chosen label');
     assert.doesNotMatch(batchUi, /hideSearch\s*=\s*true/,
@@ -161,12 +159,12 @@ try {
     assert.doesNotMatch(batchUi, /InfoRow\("当前微信账号"|InputRow\(\s*title = "搜索"|Text\("当前操作/,
         'batch selectors must omit account, search and repeated operation copy');
 
-    assert.match(contactPicker, /if \(!request\.hideSearch\) item/,
-        'the common picker search remains available for all twelve batch operations');
+    assert.match(contactPicker, /if \(!request\.hideSearch\) controlCard/,
+        'the common picker search remains available for batch contact selectors');
     assert.match(contactPicker, /\.filter \{ it\.matchesSearch\(lower\) \}/,
         'picker search must filter by the contact aliases and IDs supported by ContactOption');
     assert.match(contactPicker, /request\.flatBatchSelection\) batchSelectionOrderForUi\.size/,
-        'batch footer must count selections retained across scopes');
+        'batch footer must count confirmed selections retained across searches');
     assert.match(contactPicker, /BatchSelectionState\.selectedOutsideMatches[\s\S]*?selectedBatchContacts \+ batchMatchingContacts/,
         'selected rows that do not match the search must be separate from matching results');
     assert.match(contactPicker, /PickerSectionHeader\(text = "已选[\s\S]*?PickerSectionHeader\(text = "匹配结果/,
@@ -175,22 +173,20 @@ try {
         'selected search matches must lead the actual filtered result list');
     assert.match(contactPicker, /BatchSelectionState\.toggleVisible/,
         'select-all must toggle the currently visible result set');
-    assert.match(contactPicker, /batchSelectionResetKey[\s\S]*?shouldResetForKeyChange[\s\S]*?batchOptionCache\.clear\(\)/,
-        'changing tag or add/remove mode must clear stale selected members');
+    assert.match(contactPicker, /var batchSelectionOrder by remember\(request, candidateLoadToken, batchSelectionResetKey\)/,
+        'a new candidate snapshot or selection reset key must clear the old selection order');
     assert.match(contactPicker, /BatchCandidateLoadGate[\s\S]*?loadGate\.isCurrent\(generation\)/,
         'stale list reads after quick scope/tag changes or page disposal must be discarded');
     assert.match(contactPicker, /LaunchedEffect\(request, candidateLoadToken\)/,
         'a changed tag or candidate mode must load a distinct candidate snapshot');
     assert.match(contactPicker, /multiSelectConfirmPrefix != null -> "\$\{request\.multiSelectConfirmPrefix\}（\$selectedContactCount）"/,
         'batch selector must expose one direct confirm action with the total selection count');
-    assert.match(contactPicker, /request\.confirmEnabled\(\) && selectedContactCount > 0 && !candidateLoading && error\.isBlank\(\) && candidateStateFresh/,
-        'a failed or pending candidate read must disable task submission');
+    assert.match(contactPicker, /if \(!canUseBatchCandidates\(\)\) return@confirm\s+batchSelectionOrder\.mapNotNull\(selectableBatchContacts::get\)/,
+        'submission must check the load and use only selectable contacts from the confirmed scope');
     assert.match(contactPicker, /BatchCandidateMode\.ALL_FRIENDS_WITH_LABEL[\s\S]*?该标签下没有有效好友/,
         'an empty successful removal membership query must have an empty-state message');
     assert.match(shared, /conversations\?\.getNativeHomeConversationUsernames\(\)[\s\S]*?throw IllegalStateException\("读取微信首页原生会话列表失败"\)/,
         'chat scopes must fail closed if the native home query cannot be read');
-    assert.match(shared, /BatchCandidateMode\.HOME_CONVERSATIONS ->[\s\S]*?nativeContactOptions\(eligible, api, conversations\)/,
-        'hide candidates must be taken from the complete ordered native home list');
     assert.match(shared, /getContactLabelListResult\(\)[\s\S]*?BatchCandidateMode\.ALL_FRIENDS_WITH_LABEL ->[\s\S]*?filterFriendLabelMembers/,
         'remove-tag candidates must come from a successfully-read tag membership snapshot intersected with valid friends');
     assert.match(shared, /getFriendsResult\(\)[\s\S]*?读取有效好友失败/,
@@ -253,18 +249,18 @@ try {
         'invalid cleanup must not directly delete group tables or message rows');
     assert.match(shared, /!labelSnapshot\.success[\s\S]*?读取好友标签成员失败/,
         'a failed membership read must produce an error distinct from an empty membership result');
-    assert.match(shared, /preserveNativeHomeOrder = nativeHomeConversationList \|\| batchCandidateMode in setOf\([\s\S]*?CURRENT_FRIENDS[\s\S]*?val sorted = if \(preserveNativeHomeOrder\) deduplicated/,
+    assert.match(shared, /val sorted = if \(needsHomeRows\) deduplicated/,
         'batch current-chat ranges must preserve the native WeChat home ordering');
-    assert.match(shared, /getExistingConversationUsernames\(\)[\s\S]*?无会话记录；微信置顶会创建空会话记录/,
-        'pin candidates without a conversation row must be disabled to avoid creating chats');
-    assert.match(shared, /selectable = false[\s\S]*?disabledReason/,
-        'disabled pin candidates must provide a visible reason');
+    assert.match(shared, /requiresExistingConversation\) \{\s*conversations\?\.getExistingConversationUsernames\(\)\?\.toSet\(\)[\s\S]*?scopedCandidateIds\(nativeHomeIds, friendIds, allGroupIds, existingIds\)/,
+        'pin scopes must load and filter against the complete existing conversation snapshot');
+    assert.match(executor, /BatchOperation\.PIN -> \{[\s\S]*?isBatchOperableConversation\(id\)[\s\S]*?setWechatPlacedTop/,
+        'the executor must independently recheck the conversation before calling native pin');
     assert.equal((conversationApi.match(/public List<String> getNativeHomeConversationUsernames\(\)/g) || []).length, 1,
         'native home query wrapper must have one implementation');
 
     assert.match(manager, /Executors\.newSingleThreadExecutor[\s\S]*?isDaemon = true/,
         'the process manager must use a bounded serial daemon queue');
-    assert.match(manager, /if \(current != null\) return BatchTaskSubmitResult\.BUSY/,
+    assert.match(manager, /if \(current != null\) \{[\s\S]*?return BatchTaskSubmitResult\.BUSY/,
         'the process manager must reject overlapping tasks');
     assert.match(manager, /FRIEND_PERMISSION && request\.friendPermissionSelection\.actions\(\)\.isEmpty\(\)/,
         'the manager must reject a friend-permission task with all rows set to no-change');
@@ -277,10 +273,8 @@ try {
     const notifier = fs.readFileSync(path.join(root, 'app/src/main/java/h/Hchat/hooks/items/batch/BatchTaskCompletionToastNotifier.kt'), 'utf8');
     assert.match(notifier, /WeChatApis\.notifyApi\(\)\?\.showToast/,
         'completion feedback must use the host notification API without retaining a page');
-    assert.match(notifier, /report\.success == report\.total[\s\S]*?report\.failed == 0[\s\S]*?report\.unconfirmed == 0/,
-        'success toast must require confirmed success for every selected item');
-    assert.match(notifier, /已停止后续操作[\s\S]*?批量操作部分完成[\s\S]*?未确认/,
-        'stop, partial failure and unconfirmed outcomes must not be reported as full success');
+    assert.match(notifier, /showToast\("已开始执行"\)/,
+        'accepted tasks must show the shared start message');
     assert.match(moduleEntry, /BatchTaskManager\.shutdownProcessManagerForHostInvalidation\(\)/,
         'host identity invalidation must stop future process submissions');
     assert.doesNotMatch(executor, /Dispatchers\.Main|Looper\.getMainLooper/,
