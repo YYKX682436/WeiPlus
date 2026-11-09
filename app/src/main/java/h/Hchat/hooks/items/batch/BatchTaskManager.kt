@@ -24,7 +24,8 @@ internal enum class BatchOperation(val title: String) {
     DELETE_CHATS("批量删除聊天"),
     DELETE_FRIENDS("批量删除好友"),
     UNFOLLOW_OFFICIAL_ACCOUNTS("批量取消关注公众号/服务号"),
-    DELETE_OWN_MOMENTS("批量删除自己的朋友圈")
+    DELETE_OWN_MOMENTS("批量删除自己的朋友圈"),
+    LIKE_FRIEND_MOMENTS("批量点赞指定好友的朋友圈")
 }
 
 internal enum class BatchFriendAccessChoice(val label: String) {
@@ -90,7 +91,8 @@ internal data class BatchTaskRequest(
     val groupNickname: String = "",
     val deleteFriendClearHistory: Boolean = false,
     val groupCleanupReasons: Map<String, String> = emptyMap(),
-    val momentTimes: Map<String, Long> = emptyMap()
+    val momentTimes: Map<String, Long> = emptyMap(),
+    val momentFriend: String = ""
 )
 
 internal enum class BatchTaskStatus {
@@ -277,6 +279,11 @@ internal class BatchTaskManager private constructor(
             .distinct()
             .toList()
         if (ids.isEmpty()) return null
+        if (request.operation == BatchOperation.LIKE_FRIEND_MOMENTS && (
+                !request.enabled || request.momentFriend.isBlank() || ids.any { id ->
+                    !BatchMomentsSelection.isValidSnsId(id) || (request.momentTimes[id] ?: 0L) <= 0
+                }
+            )) return null
         val cleanupReasons = request.groupCleanupReasons
             .filterKeys { it in ids }
             .mapValues { it.value.trim() }
@@ -286,6 +293,7 @@ internal class BatchTaskManager private constructor(
         ) return null
         return request.copy(
             momentTimes = request.momentTimes.filterKeys { it in ids },
+            momentFriend = request.momentFriend.trim(),
             targetIds = ids,
             expectedAccount = request.expectedAccount.trim(),
             labelId = request.labelId.trim(),

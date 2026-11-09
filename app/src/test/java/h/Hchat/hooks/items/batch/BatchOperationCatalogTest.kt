@@ -6,8 +6,8 @@ import org.junit.Test
 
 class BatchOperationCatalogTest {
     @Test
-    fun `the original thirteen operations remain and own moments deletion is appended`() {
-        assertEquals(14, batchOperationsFeatureCount())
+    fun `the original fourteen operations remain and friend moments like is appended`() {
+        assertEquals(15, batchOperationsFeatureCount())
         assertEquals(
             listOf(
                 BatchOperation.HIDE,
@@ -23,7 +23,8 @@ class BatchOperationCatalogTest {
                 BatchOperation.DELETE_CHATS,
                 BatchOperation.DELETE_FRIENDS,
                 BatchOperation.UNFOLLOW_OFFICIAL_ACCOUNTS,
-                BatchOperation.DELETE_OWN_MOMENTS
+                BatchOperation.DELETE_OWN_MOMENTS,
+                BatchOperation.LIKE_FRIEND_MOMENTS
             ),
             BatchOperation.entries
         )

@@ -13,6 +13,37 @@ import java.util.concurrent.atomic.AtomicReference
 
 class BatchTaskManagerRegressionTest {
     @Test
+    fun likeTaskRequiresFriendAndServerTimeAndCopiesTargetsBeforeDispatch() {
+        val start = CountDownLatch(1)
+        val accepted = LinkedBlockingQueue<BatchTaskRequest>()
+        val manager = BatchTaskManager.createForTesting(BatchTaskProcessor { request, _ ->
+            check(start.await(5, TimeUnit.SECONDS))
+            accepted.put(request)
+            BatchTaskRunner.fromResults(request.targetIds, emptyList(), "")
+        })
+        try {
+            val ids = mutableListOf("90")
+            val times = mutableMapOf("90" to 1_720_000_000L)
+            val request = BatchTaskRequest(BatchOperation.LIKE_FRIEND_MOMENTS, ids, "account-A", true,
+                momentTimes = times, momentFriend = "friend-A")
+            assertEquals(BatchTaskSubmitResult.INVALID, manager.submit(request.copy(momentFriend = "")))
+            assertEquals(BatchTaskSubmitResult.INVALID, manager.submit(request.copy(momentTimes = emptyMap())))
+            assertEquals(BatchTaskSubmitResult.STARTED, manager.submit(request))
+            ids[0] = "91"
+            times["90"] = 99
+            start.countDown()
+            val queued = accepted.poll(5, TimeUnit.SECONDS)
+            assertEquals(listOf("90"), queued?.targetIds)
+            assertEquals(mapOf("90" to 1_720_000_000L), queued?.momentTimes)
+            assertEquals("friend-A", queued?.momentFriend)
+            assertEquals("account-A", queued?.expectedAccount)
+        } finally {
+            start.countDown()
+            manager.shutdownForTesting()
+        }
+    }
+
+    @Test
     fun destructiveSelectionsDeduplicateRepeatedRowsBeforeQueueing() {
         val accepted = LinkedBlockingQueue<BatchTaskRequest>()
         val manager = BatchTaskManager.createForTesting(BatchTaskProcessor { request, _ ->

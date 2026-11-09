@@ -750,10 +750,10 @@ internal fun ContactPickerPage(
                                 selected = selectedIdsForUi.contains(option.id),
                                 multiSelect = request.multiSelect,
                                 onClick = {
-                                    val next = if (selectedIdsForUi.contains(option.id)) {
-                                        selectedIdsForUi - option.id
-                                    } else {
-                                        selectedIdsForUi + option.id
+                                    val next = when {
+                                        option.id in selectedIdsForUi -> selectedIdsForUi - option.id
+                                        request.multiSelect -> selectedIdsForUi + option.id
+                                        else -> setOf(option.id)
                                     }
                                     updateSelection(next)
                                 }
@@ -780,10 +780,10 @@ internal fun ContactPickerPage(
                                 selected = selectedIdsForUi.contains(option.id),
                                 multiSelect = request.multiSelect,
                                 onClick = {
-                                    val next = if (selectedIdsForUi.contains(option.id)) {
-                                        selectedIdsForUi - option.id
-                                    } else {
-                                        selectedIdsForUi + option.id
+                                    val next = when {
+                                        option.id in selectedIdsForUi -> selectedIdsForUi - option.id
+                                        request.multiSelect -> selectedIdsForUi + option.id
+                                        else -> setOf(option.id)
                                     }
                                     updateSelection(next)
                                 }

@@ -11,8 +11,9 @@ import android.widget.ImageView
 import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.key
 import androidx.compose.ui.viewinterop.AndroidView
-import h.Hchat.hooks.api.sns.OwnSnsHistoryPage
-import h.Hchat.hooks.api.sns.OwnSnsHistorySession
+import h.Hchat.hooks.api.sns.SnsHistoryPage
+import h.Hchat.hooks.api.sns.SnsHistorySession
+import h.Hchat.hooks.api.sns.SnsLikeState
 import h.Hchat.utils.HLog
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
@@ -75,10 +76,14 @@ import java.util.TimeZone
 internal fun BatchMomentsPickerPage(
     accountIdentity: String,
     manager: BatchTaskManager,
+    friend: ContactOption?,
     onBack: () -> Unit,
     onSubmitted: () -> Unit
 ) {
     val context = LocalContext.current
+    val forLike = friend != null
+    val operation = if (forLike) BatchOperation.LIKE_FRIEND_MOMENTS else BatchOperation.DELETE_OWN_MOMENTS
+    val action = if (forLike) "点赞" else "删除"
     val taskSnapshot by manager.snapshot.collectAsState()
     val scrollBehavior = MiuixScrollBehavior()
     var reload by remember { mutableStateOf(0) }
@@ -88,31 +93,35 @@ internal fun BatchMomentsPickerPage(
     var run by remember { mutableStateOf(0) }
     val stop = remember(accountIdentity, reload, run) { AtomicBoolean(false) }
     var stopped by remember(accountIdentity, reload, run) { mutableStateOf(false) }
-    var session by remember(accountIdentity, reload) { mutableStateOf<OwnSnsHistorySession?>(null) }
+    var session by remember(accountIdentity, reload) { mutableStateOf<SnsHistorySession?>(null) }
     var loading by remember(accountIdentity, reload, run) { mutableStateOf(true) }
     var complete by remember(accountIdentity, reload) { mutableStateOf(false) }
     var received by remember(accountIdentity, reload) { mutableStateOf(0) }
     var pending by remember(accountIdentity, reload) { mutableStateOf(0) }
     var unreadable by remember(accountIdentity, reload) { mutableStateOf(0) }
     var error by remember(accountIdentity, reload) { mutableStateOf("") }
-    var pendingDelete by remember(accountIdentity, reload) { mutableStateOf<List<BatchMomentItem>?>(null) }
+    var accessLimited by remember(accountIdentity, reload) { mutableStateOf(false) }
+    var pendingAction by remember(accountIdentity, reload) { mutableStateOf<List<BatchMomentItem>?>(null) }
     var preview by remember(accountIdentity, reload) { mutableStateOf<BatchMomentItem?>(null) }
     val ownerUserName = session?.owner.orEmpty()
 
-    fun applyPage(page: OwnSnsHistoryPage) {
+    fun applyPage(page: SnsHistoryPage) {
         if (page.accountChanged) {
             posts = emptyList()
             selectedIds = emptySet()
-            pendingDelete = null
+            pendingAction = null
             preview = null
             complete = false
         }
-        val converted = page.posts.mapNotNull(::momentFromPost)
+        val converted = page.posts.mapNotNull { post ->
+            momentFromPost(post, forLike, page.likeStates[post.getSnsId()] ?: SnsLikeState.UNKNOWN)
+        }
         if (converted.isNotEmpty()) posts = (posts + converted).distinctBy(BatchMomentItem::snsId)
         received = page.received
         pending = page.pending
         unreadable = page.unreadable
         if (page.error.isNotEmpty()) error = page.error
+        accessLimited = accessLimited || page.accessLimited
         complete = complete || page.complete
     }
 
@@ -121,17 +130,19 @@ internal fun BatchMomentsPickerPage(
         val allowed = { job?.isActive == true && !stop.get() }
         val api = WeChatApis.snsApi()
         val current = session ?: withContext(Dispatchers.IO) {
-            api?.newOwnSnsHistorySession(accountIdentity)
+            if (friend == null) api?.newOwnSnsHistorySession(accountIdentity)
+            else api?.newFriendSnsHistorySession(accountIdentity, friend.id)
         }
         if (current == null || api == null) {
-            error = "无法确认当前微信账号或朋友圈服务"
+            error = if (forLike) "无法确认当前微信账号、好友关系或朋友圈服务"
+                else "无法确认当前微信账号或朋友圈服务"
             loading = false
             return@LaunchedEffect
         }
         session = current
         try {
             while (allowed() && !current.terminal) {
-                val page = withContext(Dispatchers.IO) { api.loadOwnSnsHistoryPage(current, allowed) }
+                val page = withContext(Dispatchers.IO) { api.loadSnsHistoryPage(current, allowed) }
                 if (!isActive) break
                 applyPage(page)
                 if (page.error.isNotEmpty() || page.complete) break
@@ -139,7 +150,7 @@ internal fun BatchMomentsPickerPage(
                 // Date filters apply as pages arrive; only a native terminal response ends history.
             }
             if (allowed() && pending > 0) {
-                applyPage(withContext(Dispatchers.IO) { api.finishOwnSnsMapping(current, allowed) })
+                applyPage(withContext(Dispatchers.IO) { api.finishSnsMapping(current, allowed) })
             }
         } finally {
             if (isActive) loading = false
@@ -153,29 +164,32 @@ internal fun BatchMomentsPickerPage(
 
     val filtered = remember(posts, ownerUserName, filter) { BatchMomentsSelection.filter(posts, ownerUserName, filter) }
     val visible = remember(filtered, selectedIds) { BatchMomentsSelection.selectedFirst(filtered, selectedIds) }
-    val allVisibleSelected = visible.isNotEmpty() && visible.all { it.snsId in selectedIds }
+    val selectable = remember(visible, forLike) { BatchMomentsSelection.selectable(visible, forLike) }
+    val allVisibleSelected = selectable.isNotEmpty() && selectable.all { it.snsId in selectedIds }
 
     BatchDeleteConfirmDialog(
-        show = pendingDelete != null,
-        message = "将通过微信原生删除请求删除所选 ${pendingDelete?.size ?: 0} 条自己的朋友圈。提交前会复核所选动态；结果未知的请求不会重复提交。此操作不可恢复。",
-        labels = pendingDelete.orEmpty().map { item ->
+        show = pendingAction != null,
+        message = if (forLike) "将点赞 ${friend.label} 的所选 ${pendingAction?.size ?: 0} 条朋友圈。执行前会复核，已点赞会跳过，结果未知不会重发。"
+        else "将通过微信原生删除请求删除所选 ${pendingAction?.size ?: 0} 条自己的朋友圈。提交前会复核所选动态；结果未知的请求不会重复提交。此操作不可恢复。",
+        labels = pendingAction.orEmpty().map { item ->
             val summary = BatchMomentsSelection.summary(item.text).ifBlank { "（${momentTypeLabel(item.contentType)}）" }
             "${formatMomentTime(item.createTimeSeconds)} · $summary"
         },
-        title = "确认删除朋友圈",
-        confirmText = "确认删除",
-        onDismiss = { pendingDelete = null },
+        title = "确认${action}朋友圈",
+        confirmText = "确认$action",
+        onDismiss = { pendingAction = null },
         onConfirm = {
-            val targets = pendingDelete.orEmpty()
-            pendingDelete = null
+            val targets = BatchMomentsSelection.selectable(pendingAction.orEmpty(), forLike)
+            pendingAction = null
             if (targets.isEmpty()) return@BatchDeleteConfirmDialog
             if (accountIdentity.isBlank() || WeChatApis.account()?.sessionIdentity()?.trim() != accountIdentity) {
-                Toast.makeText(context, "微信账号已变化，未提交删除", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, "微信账号已变化，未提交$action", Toast.LENGTH_SHORT).show()
                 return@BatchDeleteConfirmDialog
             }
             when (manager.submit(
                 BatchTaskRequest(
-                    operation = BatchOperation.DELETE_OWN_MOMENTS,
+                    operation = operation,
+                    momentFriend = friend?.id.orEmpty(),
                     targetIds = targets.map(BatchMomentItem::snsId),
                     expectedAccount = accountIdentity,
                     enabled = true,
@@ -185,7 +199,7 @@ internal fun BatchMomentsPickerPage(
                 BatchTaskSubmitResult.STARTED -> { stop.set(true); onSubmitted() }
                 BatchTaskSubmitResult.BUSY -> Toast.makeText(context, "已有批量任务正在执行", Toast.LENGTH_SHORT).show()
                 BatchTaskSubmitResult.UNAVAILABLE -> Toast.makeText(context, "后台任务队列不可用，未启动", Toast.LENGTH_SHORT).show()
-                BatchTaskSubmitResult.INVALID -> Toast.makeText(context, "删除对象无效，未启动", Toast.LENGTH_SHORT).show()
+                BatchTaskSubmitResult.INVALID -> Toast.makeText(context, "${action}对象无效，未启动", Toast.LENGTH_SHORT).show()
             }
         }
     )
@@ -196,20 +210,24 @@ internal fun BatchMomentsPickerPage(
             title = if (item.contentType == BatchMomentContentType.VIDEO) "视频封面" else "图片预览",
             onDismissRequest = { preview = null }
         ) {
-            MomentMediaPreview(accountIdentity, item, Modifier.fillMaxWidth().height(300.dp), null)
+            MomentMediaPreview(accountIdentity, item, !forLike, Modifier.fillMaxWidth().height(300.dp), null)
             ActionRow("关闭预览", "") { preview = null }
         }
     }
 
     PageScaffold(
-        title = "删除自己的朋友圈",
-        largeTitle = "批量删除自己的朋友圈",
+        title = if (forLike) "点赞好友朋友圈" else "删除自己的朋友圈",
+        largeTitle = friend?.label ?: "批量删除自己的朋友圈",
         scrollBehavior = scrollBehavior,
         onBack = onBack,
         bottomBar = {
             BottomActionBar(
-                primaryText = "删除（${selectedIds.size}）",
-                onPrimaryClick = { if (selectedIds.isNotEmpty()) pendingDelete = posts.filter { it.snsId in selectedIds } },
+                primaryText = "$action（${selectedIds.size}）",
+                onPrimaryClick = {
+                    if (selectedIds.isNotEmpty()) {
+                        pendingAction = BatchMomentsSelection.selectable(posts, forLike).filter { it.snsId in selectedIds }
+                    }
+                },
                 primaryEnabled = selectedIds.isNotEmpty() && taskSnapshot.status != BatchTaskStatus.RUNNING && taskSnapshot.status != BatchTaskStatus.STOPPING,
                 secondaryText = "返回",
                 onSecondaryClick = onBack
@@ -258,18 +276,21 @@ internal fun BatchMomentsPickerPage(
                 SettingsCard {
                     ActionRow(
                         title = if (allVisibleSelected) "取消全选当前筛选结果" else "全选当前筛选结果",
-                        summary = "当前筛选 ${visible.size} 条；已加载历史 ${posts.size} 条"
+                        summary = if (forLike) "当前筛选 ${visible.size} 条，${selectable.size} 条可选；已加载 ${posts.size} 条"
+                            else "当前筛选 ${visible.size} 条；已加载历史 ${posts.size} 条"
                     ) {
-                        selectedIds = BatchMomentsSelection.selectAllCurrentFilter(selectedIds, visible)
+                        selectedIds = BatchMomentsSelection.selectAllCurrentFilter(selectedIds, selectable)
                     }
                 }
             }
             item {
                 SettingsCard {
                     val title = when {
-                        error.isNotEmpty() -> "历史读取未完成"
+                        accessLimited -> "好友朋友圈可见范围受限"
+                        error.isNotEmpty() -> if (forLike) "好友朋友圈读取失败" else "历史读取未完成"
                         stopped && !complete -> "已停止读取"
                         loading -> if (received == 0) "正在读取最新动态" else "正在读取更早内容"
+                        complete && forLike && received == 0 -> "暂无朋友圈动态"
                         complete -> "已读到历史末尾"
                         else -> "历史读取未完成"
                     }
@@ -302,7 +323,7 @@ internal fun BatchMomentsPickerPage(
                 }
             }
             items(visible, key = BatchMomentItem::snsId) { item ->
-                BatchMomentCard(accountIdentity, item, item.snsId in selectedIds, onPreview = { preview = item }) {
+                BatchMomentCard(accountIdentity, item, !forLike, item.snsId in selectedIds, onPreview = { preview = item }) {
                     selectedIds = if (item.snsId in selectedIds) selectedIds - item.snsId else selectedIds + item.snsId
                 }
             }
@@ -341,16 +362,17 @@ private fun MomentDateFilterRow(label: String, value: String, onDate: (String) -
 
 @Composable
 private fun BatchMomentCard(
-    account: String, item: BatchMomentItem, selected: Boolean, onPreview: () -> Unit, onClick: () -> Unit
+    account: String, item: BatchMomentItem, isSelf: Boolean, selected: Boolean, onPreview: () -> Unit, onClick: () -> Unit
 ) {
+    val canSelect = isSelf || item.likeState == SnsLikeState.NOT_LIKED
     SettingsCard {
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            if (item.mediaCount > 0) MomentMediaPreview(account, item, Modifier.size(68.dp), onPreview)
-            Column(modifier = Modifier.weight(1f).clickable(onClick = onClick)) {
+            if (item.mediaCount > 0) MomentMediaPreview(account, item, isSelf, Modifier.size(68.dp), onPreview)
+            Column(modifier = Modifier.weight(1f).clickable(enabled = canSelect, onClick = onClick)) {
                 Text(formatMomentTime(item.createTimeSeconds), color = MiuixTheme.colorScheme.onSurfaceVariantSummary, fontSize = 12.sp)
                 Text(
                     BatchMomentsSelection.summary(item.text).ifBlank { "（${momentTypeLabel(item.contentType)}）" },
@@ -366,18 +388,24 @@ private fun BatchMomentCard(
                     modifier = Modifier.padding(top = 4.dp)
                 )
             }
-            Box(Modifier.clickable(onClick = onClick)) { SelectionMark(selected = selected, multiSelect = true) }
+            if (canSelect) {
+                Box(Modifier.clickable(onClick = onClick)) { SelectionMark(selected = selected, multiSelect = true) }
+            } else Text(
+                if (item.likeState == SnsLikeState.LIKED) "已点赞" else "点赞状态未知",
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                fontSize = 12.sp
+            )
         }
     }
 }
 
 @Composable
-private fun MomentMediaPreview(account: String, item: BatchMomentItem, modifier: Modifier, onPreview: (() -> Unit)?) {
+private fun MomentMediaPreview(account: String, item: BatchMomentItem, isSelf: Boolean, modifier: Modifier, onPreview: (() -> Unit)?) {
     val api = WeChatApis.snsApi()
     val video = item.contentType == BatchMomentContentType.VIDEO
     val cover by produceState<Pair<Any, Bitmap?>?>(null, account, item.snsId) {
         value = withContext(Dispatchers.IO) {
-            val media = runCatching { api?.ownSnsCover(account, item.snsId) }.getOrNull()
+            val media = runCatching { api?.snsHistoryCover(account, item.snsId, item.userName, item.createTimeSeconds, isSelf) }.getOrNull()
             media?.let { it to runCatching { api?.cachedOwnSnsCover(account, it) }.getOrNull() }
         }
     }
@@ -433,15 +461,16 @@ private class MomentCoverView(context: Context, private val video: Boolean) : Im
     }
 }
 
-private fun momentFromPost(post: WeChatSnsPost): BatchMomentItem? {
-    if (!post.isSelf()) return null
+private fun momentFromPost(post: WeChatSnsPost, forLike: Boolean, likeState: SnsLikeState): BatchMomentItem? {
+    if (post.isSelf() == forLike) return null
     return BatchMomentItem(
         snsId = post.getSnsId(),
         userName = post.getUserName(),
         createTimeSeconds = post.getCreateTimeSeconds(),
         contentType = BatchMomentsSelection.contentTypeFromNative(post.getType()),
         text = post.getText(),
-        mediaCount = post.getMediaList().size
+        mediaCount = post.getMediaList().size,
+        likeState = likeState
     )
 }
 

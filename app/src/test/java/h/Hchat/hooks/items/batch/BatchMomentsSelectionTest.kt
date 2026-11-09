@@ -1,5 +1,6 @@
 package h.Hchat.hooks.items.batch
 
+import h.Hchat.hooks.api.sns.SnsLikeState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -77,6 +78,18 @@ class BatchMomentsSelectionTest {
         assertTrue(selected.isEmpty())
         assertEquals("one two", BatchMomentsSelection.summary(" one\n two "))
         assertEquals("abcd…", BatchMomentsSelection.summary("abcdef", 5))
+    }
+
+    @Test
+    fun selectAllForLikesExcludesConfirmedAndUnknownStates() {
+        val unliked = item("7", owner, 500).copy(likeState = SnsLikeState.NOT_LIKED)
+        val liked = item("8", owner, 501).copy(likeState = SnsLikeState.LIKED)
+        val unknown = item("9", owner, 502)
+        val visible = listOf(unliked, liked, unknown)
+        val selected = BatchMomentsSelection.selectAllCurrentFilter(emptySet(), BatchMomentsSelection.selectable(visible, true))
+        assertEquals(setOf("7"), selected)
+        assertEquals(setOf("7", "8", "9"),
+            BatchMomentsSelection.selectAllCurrentFilter(emptySet(), BatchMomentsSelection.selectable(visible, false)))
     }
 
     private fun item(id: String, user: String, time: Long, text: String = "") = BatchMomentItem(

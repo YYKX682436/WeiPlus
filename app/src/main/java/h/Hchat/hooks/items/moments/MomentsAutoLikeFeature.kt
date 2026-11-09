@@ -5,6 +5,7 @@ import h.Hchat.hooks.api.core.WeChatApis
 import h.Hchat.hooks.api.model.DatabaseChange
 import h.Hchat.hooks.api.runtime.WeChatDatabaseListenerApi
 import h.Hchat.hooks.api.sns.SnsContentKind
+import h.Hchat.hooks.api.sns.SnsLikeOutcome
 import h.Hchat.hooks.api.sns.WeChatSnsApi
 import h.Hchat.hooks.api.sns.WeChatSnsPostObserver
 import h.Hchat.hooks.core.BaseFeature
@@ -124,15 +125,16 @@ private class MomentsAutoLikeRuntime(
             log("跳过 ${displayName(post.userName)}：$reason")
             return
         }
-        if (!claim(post.key)) return
+        val account = WeChatApis.account()?.sessionIdentity()?.trim().orEmpty()
+        if (account.isEmpty() || !claim(post.key)) return
         val delaySeconds = nextDelaySeconds()
         log("已捕捉 ${displayName(post.userName)} 的${post.type.label}朋友圈，${delaySeconds}秒后点赞")
-        val future = worker.schedule({ execute(post) }, delaySeconds, TimeUnit.SECONDS)
+        val future = worker.schedule({ execute(post, account) }, delaySeconds, TimeUnit.SECONDS)
         pending[post.key] = future
         if (future.isDone) pending.remove(post.key, future)
     }
 
-    private fun execute(post: MomentsPostRecord) {
+    private fun execute(post: MomentsPostRecord, account: String) {
         try {
             val reason = rejectionReason(post)
             if (reason != null) {
@@ -140,14 +142,23 @@ private class MomentsAutoLikeRuntime(
                 log("取消 ${displayName(post.userName)}：$reason")
                 return
             }
-            if (snsApi?.like(post.nativeInfo, 1) == true) {
+            val api = snsApi ?: return
+            val guard = {
+                !worker.isShutdown && prefs.getBoolean(MomentsAutoLikeSettings.KEY_ENABLE, false) &&
+                    WeChatApis.account()?.sessionIdentity()?.trim() == account
+            }
+            val verified = api.supportsVerifiedLikes()
+            val result = api.likeAutomatically(post.nativeInfo, account, post.snsId, post.userName, guard)
+            val counted = result.outcome == SnsLikeOutcome.SUCCESS ||
+                (!verified && result.outcome == SnsLikeOutcome.UNCONFIRMED)
+            if (counted && guard()) {
                 recordDailyLike(post.userName)
                 rememberSuccessful(post.key)
                 saveSuccessfulRecords()
-                log("点赞成功 ${displayName(post.userName)} · ${post.type.label}")
+                log("${if (verified) "点赞成功" else "已提交点赞"} ${displayName(post.userName)} · ${post.type.label}")
             } else {
                 remember(post.key, System.currentTimeMillis() + RETRY_COOLDOWN_MS)
-                log("点赞失败 ${displayName(post.userName)}，稍后允许重试")
+                log("${displayName(post.userName)}：${result.message}")
             }
         } catch (throwable: Throwable) {
             remember(post.key, System.currentTimeMillis() + RETRY_COOLDOWN_MS)

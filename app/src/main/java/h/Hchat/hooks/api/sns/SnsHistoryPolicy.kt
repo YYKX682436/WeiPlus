@@ -1,16 +1,40 @@
 package h.Hchat.hooks.api.sns
 
-internal data class SnsPageAdvance(val next: Long? = null, val complete: Boolean = false, val failure: String = "")
+internal data class SnsPageAdvance(val next: Long? = null, val complete: Boolean = false, val failure: String = "",
+    val includePage: Boolean = false)
 
 /** One cursor chain per open/reload. A new chain never inherits results or cursors. */
-internal class SnsHistoryCursor {
+internal class SnsHistoryCursor(private val isSelf: Boolean = true) {
     var cursor: Long = 0
         private set
     private val used = hashSetOf(0L)
+    private var recentLimitId = 0L
 
     fun advance(page: NativeSnsPage): SnsPageAdvance {
         val normal = page.errType == 0 && page.errCode == 0 && page.ret == 0
-        if (page.ret == 203) return SnsPageAdvance(failure = "privacy_boundary")
+        if (page.ret == 203 || !isSelf && (page.privacy ||
+                page.ret in restrictedAlbumCodes || page.errType == 4 && page.errCode in restrictedAlbumCodes)
+        ) {
+            // 2004 may carry the last visible objects. r3 runs J and advances D for them
+            // before the privacy callback. An unprocessed or incomplete payload stays hidden.
+            val visibleBoundary = !isSelf && !page.privacy && page.ret == 2004 &&
+                page.errType == 4 && page.errCode == 2004 && page.feeds.isNotEmpty() &&
+                page.count == page.feeds.size && page.lastId == page.feeds.last().id
+            return SnsPageAdvance(failure = "privacy_boundary", includePage = visibleBoundary)
+        }
+        if (!isSelf && (normal || page.ret == 207 && page.errType == 4 && page.errCode == 207) &&
+            java.lang.Long.compareUnsigned(page.recentLimitId, recentLimitId) > 0
+        ) recentLimitId = page.recentLimitId
+        if (!isSelf && page.count == 0 && page.feeds.isEmpty() && page.continuation == 0L) {
+            if (recentLimitId != 0L && (normal || page.ret == 207 && page.errType == 4 && page.errCode == 207)) {
+                return SnsPageAdvance(failure = "privacy_boundary")
+            }
+            // r3's 207 empty branch explicitly clears the normal user-page result and sets D=MaxId.
+            val emptyReply = page.ret == 207 && page.errType == 4 && page.errCode == 207
+            if ((emptyReply || normal && page.downAll) && page.lastId == cursor) {
+                return SnsPageAdvance(complete = true)
+            }
+        }
         if (!normal) return SnsPageAdvance(failure = "response")
         if (page.count != page.feeds.size) return SnsPageAdvance(failure = "count")
         // 3220's normal next-page branch sets s/isDownAll on an empty result
@@ -28,8 +52,15 @@ internal class SnsHistoryCursor {
             (cursor != 0L && java.lang.Long.compareUnsigned(next, cursor) >= 0)) {
             return SnsPageAdvance(failure = "cursor_not_advanced")
         }
+        if (!isSelf && recentLimitId != 0L &&
+            java.lang.Long.compareUnsigned(next, recentLimitId) <= 0
+        ) return SnsPageAdvance(failure = "privacy_boundary", includePage = true)
         cursor = next
         return SnsPageAdvance(next = next)
+    }
+
+    private companion object {
+        val restrictedAlbumCodes = setOf(203, 2001, 2003, 2004, 2005)
     }
 }
 

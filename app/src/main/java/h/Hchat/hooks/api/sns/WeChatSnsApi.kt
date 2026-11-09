@@ -27,20 +27,23 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 
 private const val MAX_SNS_IMAGES = 9
-internal data class OwnSnsHistoryPage(
+internal data class SnsHistoryPage(
     val posts: List<WeChatSnsPost> = emptyList(),
     val complete: Boolean = false,
     val received: Int = 0,
     val pending: Int = 0,
     val unreadable: Int = 0,
     val error: String = "",
-    val accountChanged: Boolean = false
+    val accountChanged: Boolean = false,
+    val likeStates: Map<String, SnsLikeState> = emptyMap(),
+    val accessLimited: Boolean = false
 )
 
-internal class OwnSnsHistorySession(val account: String, val owner: String) {
-    val cursor = SnsHistoryCursor()
+internal class SnsHistorySession(val account: String, val owner: String, val self: String = owner) {
+    val isSelf = owner == self
+    val cursor = SnsHistoryCursor(isSelf)
     val received = HashSet<Long>()
-    val pending = LinkedHashMap<Long, NativeSnsFeed>()
+    val pending = LinkedHashMap<Long, Pair<NativeSnsFeed, SnsObjectEvidence?>>()
     val unreadable = HashSet<Long>()
     var terminal = false
     val token = java.util.UUID.randomUUID().toString().take(8)
@@ -93,7 +96,10 @@ class WeChatSnsApi(
         val context = hostContext ?: return@lazy null
         @Suppress("DEPRECATION")
         val build = runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionCode }.getOrNull()
-        if (build == 3220) SnsOwnTimelineNative(loader) else null
+        if (build == 3220) SnsOwnTimelineNative(loader) { proceed ->
+            val observer = postObserver
+            if (observer == null) proceed() else observer.withoutDispatch(proceed)
+        } else null
     }
     private val contentResolver: SnsForwardContentResolver? by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
         val context = featureContext ?: return@lazy null
@@ -170,24 +176,36 @@ class WeChatSnsApi(
             ?: SnsCachedNativeLookup(false, null)
     }
 
-    internal fun newOwnSnsHistorySession(expectedAccount: String): OwnSnsHistorySession? {
+    internal fun newOwnSnsHistorySession(expectedAccount: String): SnsHistorySession? {
         if (!isExpectedAccount(expectedAccount)) return null
         val owner = accountApi?.selfWxId()?.trim().orEmpty()
-        return owner.takeIf(String::isNotEmpty)?.let { OwnSnsHistorySession(expectedAccount, it) }
+        return owner.takeIf(String::isNotEmpty)?.let { SnsHistorySession(expectedAccount, it) }
     }
 
-    internal fun loadOwnSnsHistoryPage(session: OwnSnsHistorySession, shouldContinue: () -> Boolean): OwnSnsHistoryPage {
-        val native = ownTimelineNative ?: return OwnSnsHistoryPage(error = "当前微信版本未验证朋友圈读取")
+    internal fun newFriendSnsHistorySession(expectedAccount: String, friend: String): SnsHistorySession? {
+        if (!isExpectedAccount(expectedAccount)) return null
+        val self = accountApi?.selfWxId()?.trim().orEmpty()
+        if (self.isEmpty() || !validMomentsFriend(friend, self)) return null
+        return SnsHistorySession(expectedAccount, friend, self)
+    }
+
+    private fun validMomentsFriend(friend: String, self: String): Boolean =
+        friend.isNotBlank() && friend != self && contactApi?.getContactStateResult(friend)?.validFriend == true
+
+    internal fun loadSnsHistoryPage(session: SnsHistorySession, shouldContinue: () -> Boolean): SnsHistoryPage {
+        val native = ownTimelineNative ?: return SnsHistoryPage(error = "当前微信版本未验证朋友圈读取")
         val guard = { shouldContinue() && isCurrent(session) }
-        if (!isCurrent(session)) return OwnSnsHistoryPage(error = "微信账号已变化", accountChanged = true)
-        fun stoppedPage() = OwnSnsHistoryPage(received = session.received.size,
+        if (!isCurrent(session)) return SnsHistoryPage(error = "微信账号已变化", accountChanged = true)
+        fun stoppedPage() = SnsHistoryPage(received = session.received.size,
             pending = session.pending.size, unreadable = session.unreadable.size)
         if (session.terminal || !shouldContinue()) return stoppedPage()
         val cursor = session.cursor.cursor
         val pageNo = ++session.pages
         val start = android.os.SystemClock.elapsedRealtime()
-        val result = native.page(session.owner, cursor, guard)
-        if (result is SnsSceneResult.NotSubmitted && !shouldContinue() && isCurrent(session)) return stoppedPage()
+        val result = native.page(session.owner, cursor, session.isSelf, guard)
+        if (!shouldContinue() && isCurrent(session) && (!session.isSelf || result is SnsSceneResult.NotSubmitted)) {
+            return stoppedPage()
+        }
         val response = (result as? SnsSceneResult.Completed)?.response
         val raw = response?.page
         val step = raw?.let(session.cursor::advance)
@@ -199,25 +217,36 @@ class WeChatSnsApi(
             else -> step.failure
         }
         val posts = ArrayList<WeChatSnsPost>()
-        if (stage.isEmpty() && raw != null) {
+        val likes = LinkedHashMap<String, SnsLikeState>()
+        if ((stage.isEmpty() || step?.includePage == true && stage == "privacy_boundary") && raw != null) {
             for (feed in raw.feeds) {
                 if (!session.received.add(feed.id)) continue
                 if (feed.author != session.owner || feed.time <= 0) {
                     session.unreadable += feed.id
                     continue
                 }
-                val post = mapOwnFeed(session, feed)
-                if (post == null) session.pending[feed.id] = feed else posts += post
+                val evidence = raw.evidence[feed.id]
+                if (!session.isSelf && evidence?.contentPresent != true) {
+                    session.unreadable += feed.id
+                    continue
+                }
+                val post = mapHistoryFeed(session, feed, evidence, likes)
+                if (post == null) session.pending[feed.id] = feed to evidence else posts += post
             }
         }
-        HLog.i("sns_r1 phase=page session=${session.token} request=$pageNo stage=${stage.ifEmpty { "ok" }} " +
+        if (!isCurrent(session)) return SnsHistoryPage(error = "微信账号已变化", accountChanged = true)
+        val diagnostic = if (session.isSelf) "sns_r1" else "sns_3b"
+        HLog.i("$diagnostic phase=page session=${session.token} request=$pageNo stage=${stage.ifEmpty { "ok" }} " +
             "in=${maskSnsId(cursor)} next=${maskSnsId(step?.next)} continue=${maskSnsId(raw?.continuation)} " +
             "first=${maskSnsId(raw?.feeds?.firstOrNull()?.id)} last=${maskSnsId(raw?.feeds?.lastOrNull()?.id)} " +
             "count=${raw?.count} decoded=${raw?.feeds?.size} mapped=${posts.size} pending=${session.pending.size} " +
             "unreadable=${session.unreadable.size} end=${raw?.downAll} complete=${step?.complete == true && stage.isEmpty()} " +
-            "ret=${raw?.ret} err=${response?.errType}/${response?.errCode} ms=${android.os.SystemClock.elapsedRealtime() - start}")
+            "ret=${raw?.ret} err=${response?.errType}/${response?.errCode} " +
+            "liked=${likes.values.count { it == SnsLikeState.LIKED }} " +
+            "notLiked=${likes.values.count { it == SnsLikeState.NOT_LIKED }} " +
+            "unknown=${likes.values.count { it == SnsLikeState.UNKNOWN }} ms=${android.os.SystemClock.elapsedRealtime() - start}")
         session.terminal = stage.isNotEmpty() || step?.complete == true
-        return OwnSnsHistoryPage(posts, step?.complete == true && stage.isEmpty(), session.received.size,
+        return SnsHistoryPage(posts, step?.complete == true && stage.isEmpty(), session.received.size,
             session.pending.size, session.unreadable.size, when (stage) {
                 "" -> ""
                 "account" -> "微信账号已变化"
@@ -225,30 +254,44 @@ class WeChatSnsApi(
                 "queue" -> "微信正在处理请求或未接受本页读取，请重新读取"
                 "cursor_not_advanced", "empty_or_unmatched_cursor" -> "服务器未提供可继续的游标，历史读取未完成"
                 else -> "朋友圈读取未完成（$stage）"
-            }, accountChanged = stage == "account")
+            }, accountChanged = stage == "account", likeStates = likes,
+            accessLimited = !session.isSelf && stage == "privacy_boundary")
     }
 
     /** Recheck delayed storage once, without fetching a new page or changing the server ID set. */
-    internal fun finishOwnSnsMapping(session: OwnSnsHistorySession, shouldContinue: () -> Boolean): OwnSnsHistoryPage {
+    internal fun finishSnsMapping(session: SnsHistorySession, shouldContinue: () -> Boolean): SnsHistoryPage {
         val posts = ArrayList<WeChatSnsPost>()
+        val likes = LinkedHashMap<String, SnsLikeState>()
         val entries = session.pending.values.iterator()
         while (entries.hasNext() && shouldContinue() && isCurrent(session)) {
-            val feed = entries.next()
-            val post = mapOwnFeed(session, feed)
+            val (feed, evidence) = entries.next()
+            val post = mapHistoryFeed(session, feed, evidence, likes)
             if (post != null) posts += post else session.unreadable += feed.id
             entries.remove()
         }
-        if (!isCurrent(session)) return OwnSnsHistoryPage(error = "微信账号已变化", accountChanged = true)
-        HLog.i("sns_r1 phase=mapping session=${session.token} mapped=${posts.size} pending=${session.pending.size} unreadable=${session.unreadable.size}")
-        return OwnSnsHistoryPage(posts, received = session.received.size,
-            pending = session.pending.size, unreadable = session.unreadable.size)
+        if (!isCurrent(session)) return SnsHistoryPage(error = "微信账号已变化", accountChanged = true)
+        val diagnostic = if (session.isSelf) "sns_r1" else "sns_3b"
+        HLog.i("$diagnostic phase=mapping session=${session.token} mapped=${posts.size} pending=${session.pending.size} unreadable=${session.unreadable.size}")
+        return SnsHistoryPage(posts, received = session.received.size, pending = session.pending.size,
+            unreadable = session.unreadable.size, likeStates = likes)
     }
 
-    private fun mapOwnFeed(session: OwnSnsHistorySession, feed: NativeSnsFeed): WeChatSnsPost? {
+    private fun mapHistoryFeed(
+        session: SnsHistorySession, feed: NativeSnsFeed, evidence: SnsObjectEvidence?,
+        likes: MutableMap<String, SnsLikeState>
+    ): WeChatSnsPost? {
         if (feed.author != session.owner) return null
         val id = java.lang.Long.toUnsignedString(feed.id)
         val record = cachedPostStorage?.queryBySnsId(id) ?: return null
-        return postFromRecord(record, session.owner, feed)
+        val post = postFromRecord(record, session.self, feed) ?: return null
+        if (!session.isSelf) {
+            val server = evidence?.likes?.state(session.self) ?: SnsLikeState.UNKNOWN
+            likes[id] = if (server == SnsLikeState.NOT_LIKED && likeAlreadyAttempted(session.account, feed.id)) {
+                SnsLikeState.UNKNOWN
+            } else ownTimelineNative?.likes?.cachedState(feed, record.nativeInfo, session.self, server)
+                ?: SnsLikeState.UNKNOWN
+        }
+        return post
     }
 
     internal fun deleteOwnSnsPost(
@@ -314,8 +357,8 @@ class WeChatSnsApi(
         })
     }
 
-    private fun isCurrent(session: OwnSnsHistorySession): Boolean =
-        isExpectedAccount(session.account) && accountApi?.selfWxId()?.trim() == session.owner
+    private fun isCurrent(session: SnsHistorySession): Boolean =
+        isExpectedAccount(session.account) && accountApi?.selfWxId()?.trim() == session.self
 
     private fun isExpectedAccount(expectedAccount: String): Boolean =
         expectedAccount.isNotBlank() && accountApi?.sessionIdentity()?.trim() == expectedAccount.trim()
@@ -331,13 +374,18 @@ class WeChatSnsApi(
 
     private val ownCoverCache = android.util.LruCache<String, Any>(160)
 
-    internal fun ownSnsCover(expectedAccount: String, id: String): Any? {
-        val session = newOwnSnsHistorySession(expectedAccount) ?: return null
-        val key = expectedAccount + ":" + id
+    internal fun snsHistoryCover(expectedAccount: String, id: String, author: String, serverTime: Long, isSelf: Boolean): Any? {
+        if (!isExpectedAccount(expectedAccount) || isSelf && accountApi?.selfWxId()?.trim() != author) return null
+        val key = "$expectedAccount:$author:$id:$serverTime"
         ownCoverCache.get(key)?.let { return it }
         val record = cachedPostStorage?.queryBySnsId(id) ?: return null
         val owner = record.values.getAsString("userName") ?: record.values.getAsString("field_userName")
-        if (owner != session.owner) return null
+        if (owner != author) return null
+        if (!isSelf) {
+            val feed = NativeSnsFeed(parseSnsId(id) ?: return null, author, serverTime)
+            if (!matchesNativeIdentity(feed, record.nativeInfo)) return null
+        }
+        if (!isExpectedAccount(expectedAccount)) return null
         return contentResolver?.snapshotFromSnsInfo(record.nativeInfo)?.media?.firstOrNull()?.nativeObject
             ?.also { ownCoverCache.put(key, it) }
     }
@@ -542,7 +590,7 @@ class WeChatSnsApi(
             snsId = java.lang.Long.toUnsignedString(signedId),
             localId = localId,
             userName = userName,
-            displayName = confirmedOwner ?: contactApi?.getDisplayName(userName).orEmpty().ifBlank { userName },
+            displayName = confirmedOwner?.takeIf { it == userName } ?: contactApi?.getDisplayName(userName).orEmpty().ifBlank { userName },
             createTimeSeconds = createTime,
             storageType = storageType,
             contentType = snapshot.type,
@@ -624,6 +672,142 @@ class WeChatSnsApi(
         }.onFailure {
             log("朋友圈记录解析失败: ${it.message}")
         }.getOrNull()
+    }
+
+    private val likeClaims = SnsLikeClaims()
+    private val likeAttempts by lazy { hostContext?.getSharedPreferences("hchat_sns_like_single_send", Context.MODE_PRIVATE) }
+
+    private fun parseSnsId(raw: String): Long? =
+        (raw.toLongOrNull() ?: runCatching { java.lang.Long.parseUnsignedLong(raw) }.getOrNull())?.takeIf { it != 0L }
+
+    private fun likeAttemptKey(account: String, id: Long): String =
+        MessageDigest.getInstance("SHA-256").digest("$account:$id".toByteArray())
+            .joinToString("") { "%02x".format(it) }
+
+    private fun likeAlreadyAttempted(account: String, id: Long): Boolean =
+        likeAttempts?.contains(likeAttemptKey(account, id)) != false
+
+    internal fun likeFriendSnsPost(
+        expectedAccount: String, friend: String, rawId: String, time: Long?, shouldContinue: () -> Boolean
+    ): SnsLikeResult {
+        val session = newFriendSnsHistorySession(expectedAccount, friend)
+        val id = parseSnsId(rawId)
+        if (session == null || id == null || time == null || time <= 0) {
+            return SnsLikeResult(SnsLikeOutcome.NOT_SUBMITTED, "当前账号、好友或所选动态无法核实")
+        }
+        return confirmNativeLike(session, id, time, shouldContinue)
+    }
+
+    internal fun likeAutomatically(
+        info: Any, expectedAccount: String, id: Long, author: String, shouldContinue: () -> Boolean
+    ): SnsLikeResult {
+        if (!isExpectedAccount(expectedAccount) || !shouldContinue()) {
+            return SnsLikeResult(SnsLikeOutcome.SKIPPED, "账号已切换或自动点赞已停止")
+        }
+        if (ownTimelineNative == null) {
+            // Retain automatic likes on other builds, where 3B is unavailable.
+            return if (like(info, 1)) SnsLikeResult(SnsLikeOutcome.UNCONFIRMED, "已交给微信提交")
+            else SnsLikeResult(SnsLikeOutcome.NOT_SUBMITTED, "微信未接受请求")
+        }
+        val self = accountApi?.selfWxId()?.trim().orEmpty()
+        if (self.isEmpty() || id == 0L || author.isBlank()) {
+            return SnsLikeResult(SnsLikeOutcome.NOT_SUBMITTED, "动态身份无法核实")
+        }
+        return confirmNativeLike(SnsHistorySession(expectedAccount, author, self), id, null, shouldContinue)
+    }
+
+    internal fun supportsVerifiedLikes(): Boolean = ownTimelineNative != null
+
+    private fun confirmNativeLike(
+        session: SnsHistorySession, id: Long, selectedTime: Long?, shouldContinue: () -> Boolean
+    ): SnsLikeResult {
+        fun result(outcome: SnsLikeOutcome, message: String) = SnsLikeResult(outcome, message)
+        val native = ownTimelineNative ?: return result(SnsLikeOutcome.NOT_SUBMITTED, "当前微信版本未验证朋友圈点赞")
+        val prefs = likeAttempts ?: return result(SnsLikeOutcome.NOT_SUBMITTED, "无法记录点赞请求")
+        val key = likeAttemptKey(session.account, id)
+        val guard = { shouldContinue() && isCurrent(session) }
+        if (!guard() || !likeClaims.tryClaim(session.account, id)) {
+            return result(SnsLikeOutcome.SKIPPED, "任务已停止、账号已变化或此动态已有点赞任务")
+        }
+        try {
+            fun detail(): SnsSceneResponse? =
+                (native.detail(id, guard, forLike = true) as? SnsSceneResult.Completed)?.response
+                    ?.takeIf { guard() && it.errType == 0 && it.errCode == 0 && it.protoRet == 0 &&
+                        it.unavailableReason == 0 && it.detailEvidence?.contentPresent == true }
+            val before = detail()
+            val feed = before?.detail?.takeIf { it.id == id && it.author == session.owner &&
+                it.time > 0 && (selectedTime == null || it.time == selectedTime) }
+                ?: return result(SnsLikeOutcome.NOT_SUBMITTED, "微信单条详情无法确认动态身份或访问权限")
+            val server = before.detailEvidence?.likes?.state(session.self) ?: SnsLikeState.UNKNOWN
+            if (server == SnsLikeState.LIKED) {
+                return result(SnsLikeOutcome.SKIPPED, "微信已确认当前账号点赞过")
+            }
+            if (prefs.contains(key)) return result(SnsLikeOutcome.SKIPPED, "上一次点赞结果未确认，未重复提交")
+            val info = cachedNativeSnsInfo(java.lang.Long.toUnsignedString(id))
+                ?.takeIf { matchesNativeIdentity(feed, it) }
+                ?: return result(SnsLikeOutcome.NOT_SUBMITTED, "朋友圈缓存身份未核实")
+            if (native.likes.cachedState(feed, info, session.self, server) != SnsLikeState.NOT_LIKED) {
+                return result(SnsLikeOutcome.SKIPPED, "点赞状态未知或微信已有待处理操作，未提交")
+            }
+            // Keep the normal album-detail source (1); type 1 is add-like, never toggle/unlike.
+            val beforeEnqueue = {
+                guard() && (selectedTime == null || validMomentsFriend(session.owner, session.self)) &&
+                    cachedNativeSnsInfo(java.lang.Long.toUnsignedString(id))?.let { latest ->
+                        matchesNativeIdentity(feed, latest) &&
+                            native.likes.cachedState(feed, latest, session.self, server) == SnsLikeState.NOT_LIKED
+                    } == true
+            }
+            var reserved = false
+            val reply = native.likes.submit(feed, session.self, info, 1, guard, beforeEnqueue) {
+                !prefs.contains(key) && prefs.edit().putBoolean(key, true).commit().also { reserved = it }
+            }
+            val ack = classifySnsLikeReply(reply)
+            HLog.i("sns_3b phase=like target=${maskSnsId(id)} ack=$ack")
+            when (ack) {
+                SnsLikeAck.NOT_SUBMITTED -> {
+                    if (reserved) prefs.edit().remove(key).commit()
+                    return result(SnsLikeOutcome.NOT_SUBMITTED, "微信未接受点赞请求")
+                }
+                SnsLikeAck.REJECTED -> {
+                    prefs.edit().remove(key).commit()
+                    val response = (reply as SnsSceneResult.Completed).response
+                    return result(SnsLikeOutcome.REJECTED, "微信服务端拒绝点赞（${response.errType}/${response.errCode}）")
+                }
+                SnsLikeAck.ACCEPTED -> Unit
+                SnsLikeAck.UNKNOWN -> return result(SnsLikeOutcome.UNCONFIRMED, "未收到可靠的点赞回调，未重复提交")
+            }
+            val response = (reply as SnsSceneResult.Completed).response
+            val cacheLiked = if (isCurrent(session)) cachedNativeSnsInfo(java.lang.Long.toUnsignedString(id))?.let {
+                matchesNativeIdentity(feed, it) &&
+                    native.likes.cachedState(feed, it, session.self, SnsLikeState.LIKED) == SnsLikeState.LIKED
+            } == true else false
+            val finalLiked = isCurrent(session) && when (likeConfirmation(feed, response, session.self, cacheLiked)) {
+                SnsLikeConfirmation.CONFIRMED -> true
+                SnsLikeConfirmation.CONFLICT -> false
+                SnsLikeConfirmation.REFRESH_DETAIL -> detail()?.let {
+                    it.detail == feed && it.detailEvidence?.likes?.state(session.self) == SnsLikeState.LIKED
+                } == true
+            }
+            if (!finalLiked || !isCurrent(session)) {
+                return result(SnsLikeOutcome.UNCONFIRMED, "收到微信回调，但最终点赞状态未确认")
+            }
+            prefs.edit().remove(key).commit()
+            return result(SnsLikeOutcome.SUCCESS, "微信已确认点赞")
+        } finally {
+            likeClaims.release(session.account, id)
+        }
+    }
+
+    private fun matchesNativeIdentity(feed: NativeSnsFeed, info: Any): Boolean {
+        if (KavaReflector.invokeMethod(info, "isAd") != false ||
+            KavaReflector.invokeMethod(info, "isSourceExist", 32) != false
+        ) return false
+        val id = KavaReflector.readField(info, "field_snsId") as? Long ?: return false
+        val author = KavaReflector.invokeMethod(info, "getUserName") as? String ?: return false
+        val time = KavaReflector.invokeMethod(info, "getCreateTime") as? Int ?: return false
+        return feed.matchesCachedIdentity(NativeSnsFeed(id, author, Integer.toUnsignedLong(time))) {
+            ownTimelineNative?.cachedTimelineIdentity(info)
+        }
     }
 
     fun like(snsInfo: Any?, sourceScene: Int = 0): Boolean {

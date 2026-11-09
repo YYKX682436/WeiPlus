@@ -3,17 +3,21 @@ package h.Hchat.hooks.api.sns
 import h.Hchat.utils.KavaReflector as R
 
 /** Exact 8.0.80/3220 network scenes; keep the native queue, parser and storage callbacks. */
-internal class SnsOwnTimelineNative(private val loader: ClassLoader) {
-    private val observer = SnsNativeSceneObserver(loader)
+internal class SnsOwnTimelineNative(
+    private val loader: ClassLoader,
+    withoutPostDispatch: ((() -> Any?) -> Any?)
+) {
+    private val observer = SnsNativeSceneObserver(loader, withoutPostDispatch)
+    val likes = SnsLikeNative(loader, observer, ::sendOnce)
     private val ints = Integer.TYPE
 
-    fun page(owner: String, cursor: Long, guard: () -> Boolean): SnsSceneResult {
+    fun page(owner: String, cursor: Long, isSelf: Boolean, guard: () -> Boolean): SnsSceneResult {
         val type = R.loadClass(SnsNativeSceneObserver.PAGE, loader) ?: return unavailable("page_class")
         val constructor = R.findConstructor(type, String::class.java, Long::class.javaPrimitiveType!!,
             Boolean::class.javaPrimitiveType!!, ints, ints, ints, ints, ints, ints)
         // c6.run/h6.f normal user page. D=11 uses r3's native continuation ceiling:
         // process this response normally, then let our session consume raw ContinueID itself.
-        val scene = R.newInstance(constructor, owner, cursor, true, 0, -1, 0, 4, 2, 11)
+        val scene = R.newInstance(constructor, owner, cursor, isSelf, 0, -1, 0, if (isSelf) 4 else 8, 2, 11)
             ?: return unavailable("page_constructor")
         val request = R.readField(R.readField(R.readField(scene, "d"), "a"), "a")
         // An explicit fresh read: don't let cached FirstPageMd5/MinId/LastRequestTime
@@ -22,7 +26,7 @@ internal class SnsOwnTimelineNative(private val loader: ClassLoader) {
             !R.writeField(request, "h", 0L) || !R.writeField(request, "i", 0) ||
             (R.readField(request, "f") as? Number)?.toLong() != cursor) return unavailable("page_request")
         var reserved = false
-        val result = observer.request(scene, READ_TIMEOUT_MS) {
+        val result = observer.request(scene, READ_TIMEOUT_MS, quietRead = !isSelf) {
             if (!guard()) return@request false
             reserved = R.invokeStaticMethod(type, "H", owner) == true
             reserved && guard() && sendOnce(scene)
@@ -32,7 +36,7 @@ internal class SnsOwnTimelineNative(private val loader: ClassLoader) {
         return result
     }
 
-    fun detail(id: Long, guard: () -> Boolean): SnsSceneResult {
+    fun detail(id: Long, guard: () -> Boolean, forLike: Boolean = false): SnsSceneResult {
         val type = R.loadClass(SnsNativeSceneObserver.DETAIL, loader) ?: return unavailable("detail_class")
         val outstanding = R.readField(field = R.findField(type, "m"), receiver = null) as? Collection<*>
             ?: return unavailable("detail_guard")
@@ -41,7 +45,7 @@ internal class SnsOwnTimelineNative(private val loader: ClassLoader) {
             Boolean::class.javaPrimitiveType!!, Boolean::class.javaPrimitiveType!!)
         // Both view-count flags are off. The host can still refresh its local cache.
         val scene = R.newInstance(ctor, id, false, false) ?: return unavailable("detail_constructor")
-        return observer.request(scene, READ_TIMEOUT_MS) { guard() && sendOnce(scene) }
+        return observer.request(scene, READ_TIMEOUT_MS, quietRead = forLike) { guard() && sendOnce(scene) }
     }
 
     fun cachedTimelineIdentity(info: Any): NativeSnsFeed? {

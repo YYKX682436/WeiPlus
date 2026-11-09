@@ -1,5 +1,6 @@
 package h.Hchat.hooks.items.batch
 
+import h.Hchat.hooks.api.sns.SnsLikeState
 import java.text.SimpleDateFormat
 import java.text.ParsePosition
 import java.util.Calendar
@@ -20,7 +21,8 @@ internal data class BatchMomentItem(
     val createTimeSeconds: Long,
     val contentType: BatchMomentContentType,
     val text: String,
-    val mediaCount: Int = 0
+    val mediaCount: Int = 0,
+    val likeState: SnsLikeState = SnsLikeState.UNKNOWN
 )
 
 internal data class BatchMomentFilter(
@@ -72,6 +74,9 @@ internal object BatchMomentsSelection {
             .thenByDescending { it.createTimeSeconds }
             .thenBy { it.snsId }
     )
+
+    fun selectable(items: List<BatchMomentItem>, forLike: Boolean): List<BatchMomentItem> =
+        if (forLike) items.filter { it.likeState == SnsLikeState.NOT_LIKED } else items
 
     fun selectAllCurrentFilter(
         selectedIds: Set<String>,

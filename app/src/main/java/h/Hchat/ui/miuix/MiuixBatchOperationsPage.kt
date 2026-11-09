@@ -140,6 +140,22 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
         }
     )
 
+    var momentsFriend by remember { mutableStateOf<ContactOption?>(null) }
+    val momentsFriendPicker = remember {
+        ContactPickerRequest(
+            title = "选择一位好友",
+            mode = ContactPickerMode.FRIENDS,
+            multiSelect = false,
+            existingValue = "",
+            onValue = {},
+            enableGroupLabels = false,
+            strictFriendsOnly = true,
+            singleConfirmText = "查看朋友圈",
+            flatBatchSelection = true,
+            batchCandidateMode = { BatchCandidateMode.ALL_FRIENDS }
+        )
+    }
+
     val pickerRequest = remember(currentFeature) {
         ContactPickerRequest(
             title = currentFeature?.title ?: "选择对象",
@@ -199,6 +215,7 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
         pendingDeleteTargets = null
         pendingDeleteClearHistory = false
         feature = null
+        momentsFriend = null
         phase = BatchPage.HOME
     }
 
@@ -306,7 +323,13 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
         BatchMomentsPickerPage(
             accountIdentity = accountIdentity,
             manager = manager,
-            onBack = { returnHome() },
+            friend = momentsFriend,
+            onBack = {
+                if (currentFeature == BatchOperation.LIKE_FRIEND_MOMENTS) {
+                    momentsFriend = null
+                    phase = BatchPage.PICKER
+                } else returnHome()
+            },
             onSubmitted = { returnHome() }
         )
         return
@@ -315,9 +338,17 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
     if (phase == BatchPage.PICKER) {
         ContactPickerPage(
             context = context,
-            request = pickerRequest,
+            request = if (currentFeature == BatchOperation.LIKE_FRIEND_MOMENTS) momentsFriendPicker else pickerRequest,
             onBack = { returnHome() },
-            onConfirm = { submitSelection(it) }
+            onConfirm = { picked ->
+                if (currentFeature == BatchOperation.LIKE_FRIEND_MOMENTS) {
+                    val friend = picked.singleOrNull()
+                    if (friend != null && !friend.group && !friend.official && accountIdentity.isNotBlank()) {
+                        momentsFriend = friend
+                        phase = BatchPage.MOMENTS_PICKER
+                    }
+                } else submitSelection(picked)
+            }
         )
         return
     }
@@ -584,7 +615,7 @@ private fun candidateMode(
     BatchOperation.DELETE_CHATS -> BatchCandidateMode.HOME_CONVERSATIONS
     BatchOperation.DELETE_FRIENDS -> BatchCandidateMode.ALL_FRIENDS
     BatchOperation.UNFOLLOW_OFFICIAL_ACCOUNTS -> BatchCandidateMode.FOLLOWED_OFFICIAL_ACCOUNTS
-    BatchOperation.DELETE_OWN_MOMENTS -> null
+    BatchOperation.DELETE_OWN_MOMENTS, BatchOperation.LIKE_FRIEND_MOMENTS -> null
     null -> null
 }
 
@@ -603,6 +634,7 @@ private fun operationSummary(operation: BatchOperation): String = when (operatio
     BatchOperation.DELETE_FRIENDS -> "删除全部有效好友，可选同时清空聊天记录；不含自己、公众号和群聊"
     BatchOperation.UNFOLLOW_OFFICIAL_ACCOUNTS -> "显示当前仍关注的公众号和服务号；使用微信原生批量接口取消关注"
     BatchOperation.DELETE_OWN_MOMENTS -> "按时间与内容筛选本人朋友圈；通过微信服务器分页读取并逐条调用原生删除"
+    BatchOperation.LIKE_FRIEND_MOMENTS -> "选择一位好友，筛选并点赞所选的可见动态"
 }
 
 private fun validGroupNickname(value: String): Boolean =
