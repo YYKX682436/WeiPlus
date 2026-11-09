@@ -1,5 +1,6 @@
 package h.Hchat.hooks.items.batch
 
+import h.Hchat.hooks.api.media.FavoriteDeleteTarget
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -21,7 +22,9 @@ internal enum class BatchOperation(val title: String) {
     GROUP_LEAVE("批量退出群聊"),
     DELETE_INVALID_GROUPS("批量删除无效群聊"),
     DELETE_CHATS("批量删除聊天"),
-    DELETE_FRIENDS("批量删除好友")
+    DELETE_FRIENDS("批量删除好友"),
+    UNFOLLOW_OFFICIAL_ACCOUNTS("批量取消关注公众号"),
+    DELETE_FAVORITES("批量清理收藏")
 }
 
 internal enum class BatchFriendAccessChoice(val label: String) {
@@ -86,7 +89,8 @@ internal data class BatchTaskRequest(
     val friendPermissionSelection: BatchFriendPermissionSelection = BatchFriendPermissionSelection(),
     val groupNickname: String = "",
     val deleteFriendClearHistory: Boolean = false,
-    val groupCleanupReasons: Map<String, String> = emptyMap()
+    val groupCleanupReasons: Map<String, String> = emptyMap(),
+    val favoriteDeleteTargets: List<FavoriteDeleteTarget> = emptyList()
 )
 
 internal enum class BatchTaskStatus {
@@ -242,12 +246,23 @@ internal class BatchTaskManager private constructor(
                 cleanupReasons[id] !in setOf("LEFT_OR_REMOVED", "DISBANDED")
             }
         ) return null
+        val favoriteTargets = request.favoriteDeleteTargets
+        if (request.operation == BatchOperation.DELETE_FAVORITES) {
+            if (favoriteTargets.isEmpty() || favoriteTargets.any {
+                    it.localId <= 0L || it.serverId <= 0 || it.type < 0
+                }) return null
+            if (favoriteTargets.map { it.localId }.distinct().size != favoriteTargets.size) return null
+            if (favoriteTargets.map { it.localId.toString() }.toSet() != ids.toSet()) return null
+        } else if (favoriteTargets.isNotEmpty()) {
+            return null
+        }
         return request.copy(
             targetIds = ids,
             expectedAccount = request.expectedAccount.trim(),
             labelId = request.labelId.trim(),
             groupNickname = request.groupNickname.trim(),
-            groupCleanupReasons = cleanupReasons
+            groupCleanupReasons = cleanupReasons,
+            favoriteDeleteTargets = favoriteTargets.toList()
         )
     }
 

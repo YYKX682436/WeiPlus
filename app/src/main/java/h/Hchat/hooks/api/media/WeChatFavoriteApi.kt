@@ -7,7 +7,9 @@ import android.text.TextUtils
 import h.Hchat.dexkit.DexFinder
 import h.Hchat.hooks.api.core.WeChatApis
 import h.Hchat.hooks.api.ui.WeChatCurrentActivityApi
+import h.Hchat.hooks.core.HookRegistry
 import h.Hchat.utils.KavaReflector
+import io.github.libxposed.api.XposedInterface
 import org.luckypray.dexkit.DexKitBridge
 import java.io.File
 import java.lang.reflect.Method
@@ -15,7 +17,10 @@ import java.util.LinkedList
 import java.util.Collections
 import java.util.Locale
 import java.util.LinkedHashMap
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 class WeChatFavoriteApi(
     private val hostContext: Context,
@@ -32,7 +37,26 @@ class WeChatFavoriteApi(
     data class FavoritePage(
         val items: List<WeChatFavoriteItem>,
         val hasMore: Boolean,
-        val changed: Boolean = false
+        val changed: Boolean = false,
+        val error: String? = null
+    )
+
+    enum class FavoriteDeleteStatus { CONFIRMED, REJECTED, SKIPPED, NOT_SUBMITTED, UNCONFIRMED }
+
+    data class FavoriteDeleteItemResult(
+        val localId: Long,
+        val status: FavoriteDeleteStatus,
+        val message: String
+    )
+
+    data class FavoriteDeleteBatchResult(
+        val items: List<FavoriteDeleteItemResult>,
+        val submitted: Boolean,
+        val completed: Boolean,
+        val error: String = "",
+        val serverAcceptedLocalIds: Set<Long> = emptySet(),
+        val localRemovedLocalIds: Set<Long> = emptySet(),
+        val confirmedLocalIds: Set<Long> = emptySet()
     )
 
     private val nativeFavorites = object : LinkedHashMap<Long, Any>(NATIVE_FAVORITE_CACHE_SIZE, 0.75f, true) {
@@ -42,9 +66,11 @@ class WeChatFavoriteApi(
     }
     private val favoriteItems = LinkedHashMap<Long, WeChatFavoriteItem>()
     private val favoriteCacheLock = Any()
+    private val favoriteDeleteLock = Any()
     @Volatile private var favoriteCursor = 0L
     @Volatile private var favoriteHasMore = true
     @Volatile private var favoriteHeadMarker = ""
+    private var favoriteFreshSnapshotBaseline: Set<String>? = null
     private val pendingVoiceSends = ConcurrentHashMap.newKeySet<String>()
 
     fun isAvailable(): Boolean {
@@ -83,7 +109,7 @@ class WeChatFavoriteApi(
     }
 
     fun openCachedList(): FavoritePage {
-        val headItems = listRecentNative(1) ?: return cachedList()
+        val headItems = listRecentNative(1) ?: return cachedList().copy(error = "读取微信收藏状态失败")
         val marker = favoriteMarker(headItems.firstOrNull())
         var changed = false
         synchronized(favoriteCacheLock) {
@@ -92,45 +118,450 @@ class WeChatFavoriteApi(
                 return FavoritePage(favoriteItems.values.toList(), favoriteHasMore)
             }
             changed = hasCachedItems
-            favoriteItems.clear()
-            synchronized(nativeFavorites) { nativeFavorites.clear() }
+            FavoriteCacheInvalidationPolicy.clear(favoriteItems, nativeFavorites)
             favoriteCursor = 0L
             favoriteHasMore = true
             favoriteHeadMarker = marker
+            favoriteFreshSnapshotBaseline = null
         }
         val firstPage = loadNextPage()
         return firstPage.copy(changed = changed)
     }
 
-    fun loadNextPage(): FavoritePage {
+    /** Clears the prior cache and begins a fresh native read for destructive selection. */
+    fun beginFreshRead(): FavoritePage {
         synchronized(favoriteCacheLock) {
-            if (!favoriteHasMore) return FavoritePage(favoriteItems.values.toList(), false)
-            val nativeItems = queryFavoritePage(favoriteCursor) ?: run {
-                favoriteHasMore = false
-                return FavoritePage(favoriteItems.values.toList(), false)
+            dexFinder.resolveFavoriteApi()
+            if (!canListNative()) {
+                favoriteHasMore = true
+                return FavoritePage(favoriteItems.values.toList(), true, error = "收藏列表读取接口不可用")
             }
-            if (nativeItems.isEmpty()) {
-                favoriteHasMore = false
-                return FavoritePage(favoriteItems.values.toList(), false)
-            }
-            val favorites = nativeItems.filterNotNull()
-            val tagNames = favoriteTagNames(favorites)
-            favorites.forEach { nativeItem ->
-                val item = favoriteFromNative(nativeItem, tagNames) ?: return@forEach
-                cacheNativeFavorite(item.localId, nativeItem)
-                favoriteItems[item.localId] = item
-            }
-            favoriteHasMore = nativeItems.size >= FAVORITE_PAGE_SIZE
-            if (favoriteHasMore) {
-                favoriteCursor = nextFavoriteCursor(nativeItems, favoriteCursor)
-                if (favoriteCursor <= 0L) favoriteHasMore = false
-            }
-            if (favoriteHeadMarker.isBlank()) {
-                favoriteHeadMarker = favoriteMarker(favoriteItems.values.firstOrNull())
-            }
-            return FavoritePage(favoriteItems.values.toList(), favoriteHasMore)
+            favoriteFreshSnapshotBaseline = favoriteSnapshot(favoriteItems.values.toList())
+            FavoriteCacheInvalidationPolicy.clear(favoriteItems, nativeFavorites)
+            favoriteCursor = 0L
+            favoriteHasMore = true
+            favoriteHeadMarker = ""
+            return loadNextPageLocked()
         }
     }
+
+    fun loadNextPage(): FavoritePage {
+        synchronized(favoriteCacheLock) {
+            return loadNextPageLocked()
+        }
+    }
+
+    private fun loadNextPageLocked(): FavoritePage {
+        if (!favoriteHasMore) return makeFavoritePage()
+        val previousCursor = favoriteCursor
+        val nativeItems = queryFavoritePage(previousCursor)
+            ?: return makeFavoritePage(error = "读取微信收藏分页失败")
+        if (nativeItems.isEmpty()) {
+            favoriteHasMore = false
+            return makeFavoritePage()
+        }
+        val favorites = nativeItems.filterNotNull()
+        if (favorites.size != nativeItems.size) {
+            return makeFavoritePage(error = "收藏分页中存在无法读取的条目")
+        }
+        val tagNames = favoriteTagNames(favorites)
+        for (nativeItem in favorites) {
+            val item = favoriteFromNative(nativeItem, tagNames)
+                ?: return makeFavoritePage(error = "收藏分页中存在无法识别的条目")
+            val previous = favoriteItems[item.localId]
+            if (previous != null && FavoriteSnapshotPolicy.hasConflictingDuplicate(previous, item)) {
+                return makeFavoritePage(error = "收藏分页中出现冲突重复 ID，无法安全确认完整列表")
+            }
+            cacheNativeFavorite(item.localId, nativeItem)
+            favoriteItems[item.localId] = item
+        }
+        favoriteHasMore = nativeItems.size >= FAVORITE_PAGE_SIZE
+        if (favoriteHasMore) {
+            val nextCursor = nextFavoriteCursor(nativeItems, previousCursor)
+            if (nextCursor <= 0L || nextCursor == previousCursor) {
+                return makeFavoritePage(error = "收藏分页游标没有前进，不能确认全部收藏")
+            }
+            favoriteCursor = nextCursor
+        }
+        if (favoriteHeadMarker.isBlank()) {
+            favoriteHeadMarker = favoriteMarker(favoriteItems.values.firstOrNull())
+        }
+        return makeFavoritePage()
+    }
+
+    private fun makeFavoritePage(error: String? = null): FavoritePage {
+        val complete = error == null && !favoriteHasMore
+        val changed = if (complete && favoriteFreshSnapshotBaseline != null) {
+            val previous = favoriteFreshSnapshotBaseline
+            favoriteFreshSnapshotBaseline = null
+            previous != favoriteSnapshot(favoriteItems.values.toList())
+        } else {
+            false
+        }
+        return FavoritePage(favoriteItems.values.toList(), favoriteHasMore, changed, error)
+    }
+
+    private fun favoriteSnapshot(items: List<WeChatFavoriteItem>): Set<String> =
+        items.mapTo(linkedSetOf(), FavoriteSnapshotPolicy::marker)
+
+    /**
+     * Uses WeChat's own FavoriteMenuHelper delete entry for one native batch (at most 20).
+     * It resolves every current local row again before submission and waits for the native
+     * batch scene's per-server-ID response. Unknown requests are returned as UNCONFIRMED and
+     * are never resubmitted here.
+     */
+    fun submitNativeDeleteBatch(
+        targets: List<FavoriteDeleteTarget>,
+        mayContinue: () -> Boolean,
+        accountCurrent: () -> Boolean = { true }
+    ): FavoriteDeleteBatchResult = synchronized(favoriteDeleteLock) {
+        if (targets.isEmpty()) {
+            return@synchronized FavoriteDeleteBatchResult(emptyList(), false, true)
+        }
+        if (targets.size > FAVORITE_DELETE_BATCH_SIZE) {
+            return@synchronized notSubmitted(targets, "微信单批最多支持 $FAVORITE_DELETE_BATCH_SIZE 项")
+        }
+        if (!FavoriteSnapshotPolicy.hasUniqueDeleteIds(targets)) {
+            return@synchronized FavoriteDeleteBatchResult(
+                targets.map { FavoriteDeleteItemResult(it.localId, FavoriteDeleteStatus.SKIPPED, "收藏 ID 重复，整批未提交") },
+                false,
+                true,
+                "收藏 ID 重复"
+            )
+        }
+
+        dexFinder.resolveFavoriteApi()
+        dexFinder.resolveFavoriteDeleteApi()
+        val nativeItems = ArrayList<Any>(targets.size)
+        val eligibleTargets = ArrayList<FavoriteDeleteTarget>(targets.size)
+        val outcomes = LinkedHashMap<Long, FavoriteDeleteItemResult>()
+        for (target in targets) {
+            if (target.localId <= 0L || target.serverId <= 0 || target.type < 0) {
+                outcomes[target.localId] = FavoriteDeleteItemResult(
+                    target.localId, FavoriteDeleteStatus.SKIPPED, "收藏身份无效，未删除"
+                )
+                continue
+            }
+            val lookup = readFavoriteNativeFresh(target.localId)
+            if (!lookup.readable) {
+                outcomes[target.localId] = FavoriteDeleteItemResult(
+                    target.localId, FavoriteDeleteStatus.NOT_SUBMITTED,
+                    lookup.error.ifBlank { "无法复核当前收藏，未提交" }
+                )
+                continue
+            }
+            val native = lookup.favorite
+            if (native == null) {
+                outcomes[target.localId] = FavoriteDeleteItemResult(
+                    target.localId, FavoriteDeleteStatus.SKIPPED, "收藏已不存在，未提交"
+                )
+                continue
+            }
+            val actualLocalId = firstNumberField(native, "field_localId", "localId")?.toLong()
+            val serverId = firstNumberField(native, "field_id")?.toInt() ?: 0
+            val type = favoriteType(native)
+            val updateTime = favoriteUpdateTimeMillis(native)
+            val special = (KavaReflector.readField(native, "S1") as? Boolean) == true
+            if (special) {
+                outcomes[target.localId] = FavoriteDeleteItemResult(
+                    target.localId, FavoriteDeleteStatus.SKIPPED,
+                    "此收藏走微信特殊删除流程，未通过批量入口操作"
+                )
+                continue
+            }
+            if (!FavoriteSnapshotPolicy.matchesDeleteTarget(
+                    target, actualLocalId, serverId, type, updateTime, special
+                )) {
+                outcomes[target.localId] = FavoriteDeleteItemResult(
+                    target.localId, FavoriteDeleteStatus.SKIPPED,
+                    "收藏内容或 ID 已变化，未提交删除"
+                )
+                continue
+            }
+            nativeItems += native
+            eligibleTargets += target
+        }
+
+        if (eligibleTargets.isEmpty()) {
+            return@synchronized FavoriteDeleteBatchResult(
+                targets.map { outcomes[it.localId] ?: FavoriteDeleteItemResult(
+                    it.localId, FavoriteDeleteStatus.SKIPPED, "未提交"
+                ) }, false, true
+            )
+        }
+        if (!mayContinue()) {
+            eligibleTargets.forEach { target ->
+                outcomes[target.localId] = FavoriteDeleteItemResult(
+                    target.localId, FavoriteDeleteStatus.NOT_SUBMITTED, "任务已停止或账号已切换，未提交"
+                )
+            }
+            return@synchronized FavoriteDeleteBatchResult(
+                targets.map { outcomes[it.localId] ?: FavoriteDeleteItemResult(
+                    it.localId, FavoriteDeleteStatus.SKIPPED, "未提交"
+                ) }, false, true
+            )
+        }
+
+        val deleteMethod = dexFinder.favoriteDeleteItemsMethod
+        val responseMethod = dexFinder.favoriteDeleteSceneCallbackMethod
+        if (deleteMethod == null || responseMethod == null) {
+            eligibleTargets.forEach { target ->
+                outcomes[target.localId] = FavoriteDeleteItemResult(
+                    target.localId, FavoriteDeleteStatus.NOT_SUBMITTED, "微信原生批量收藏删除接口未就绪"
+                )
+            }
+            return@synchronized FavoriteDeleteBatchResult(
+                targets.map { outcomes[it.localId] ?: FavoriteDeleteItemResult(
+                    it.localId, FavoriteDeleteStatus.SKIPPED, "未提交"
+                ) }, false, true, "原生删除接口或响应回调未就绪"
+            )
+        }
+
+        val expectedServerIds = eligibleTargets.map { it.serverId }.toSet()
+        val callback = AtomicReference<FavoriteDeleteCallback?>()
+        val callbackLatch = CountDownLatch(1)
+        val hookHandle = try {
+            HookRegistry.get().hook(responseMethod, XposedInterface.Hooker { chain ->
+                val args = chain.getArgs()
+                val receiver = chain.getThisObject()
+                val sceneIds = favoriteDeleteSceneIds(receiver)
+                val matching = sceneIds.size == expectedServerIds.size && sceneIds.toSet() == expectedServerIds
+                val captured = if (matching && args.size == 6) {
+                    val errorType = (args[1] as? Number)?.toInt() ?: Int.MIN_VALUE
+                    val errorCode = (args[2] as? Number)?.toInt() ?: Int.MIN_VALUE
+                    val response = favoriteDeleteResponseCodes(args[4])
+                    FavoriteDeleteCallback(errorType, errorCode, response.codes, response.duplicateIds)
+                } else {
+                    null
+                }
+                val result = chain.proceed()
+                if (captured != null && callback.compareAndSet(null, captured)) {
+                    callbackLatch.countDown()
+                }
+                result
+            })
+        } catch (failure: Throwable) {
+            null
+        }
+        if (hookHandle == null) {
+            eligibleTargets.forEach { target ->
+                outcomes[target.localId] = FavoriteDeleteItemResult(
+                    target.localId, FavoriteDeleteStatus.NOT_SUBMITTED, "微信删除结果回调无法观测，未提交"
+                )
+            }
+            return@synchronized FavoriteDeleteBatchResult(
+                targets.map { outcomes[it.localId] ?: FavoriteDeleteItemResult(
+                    it.localId, FavoriteDeleteStatus.SKIPPED, "未提交"
+                ) }, false, true, "原生删除结果回调 Hook 失败"
+            )
+        }
+
+        var nativeSubmitted = false
+        var invocationUnknown = false
+        try {
+            if (!mayContinue()) {
+                runCatching { HookRegistry.get().unhook(hookHandle) }
+                eligibleTargets.forEach { target ->
+                    outcomes[target.localId] = FavoriteDeleteItemResult(
+                        target.localId, FavoriteDeleteStatus.NOT_SUBMITTED, "任务已停止或账号已切换，未提交"
+                    )
+                }
+                return@synchronized FavoriteDeleteBatchResult(
+                    targets.map { outcomes[it.localId] ?: FavoriteDeleteItemResult(
+                        it.localId, FavoriteDeleteStatus.SKIPPED, "未提交"
+                    ) }, false, true
+                )
+            }
+            nativeSubmitted = KavaReflector.invokeOrThrow(
+                deleteMethod, null, nativeItems, FAVORITE_DELETE_SOURCE, null
+            ) as? Boolean == true
+            if (!nativeSubmitted) {
+                invalidateFavoriteCache()
+                runCatching { HookRegistry.get().unhook(hookHandle) }
+                eligibleTargets.forEach { target ->
+                    outcomes[target.localId] = FavoriteDeleteItemResult(
+                        target.localId, FavoriteDeleteStatus.NOT_SUBMITTED, "微信原生删除入口未提交"
+                    )
+                }
+                return@synchronized FavoriteDeleteBatchResult(
+                    targets.map { outcomes[it.localId] ?: FavoriteDeleteItemResult(
+                        it.localId, FavoriteDeleteStatus.SKIPPED, "未提交"
+                    ) }, false, true
+                )
+            }
+        } catch (failure: Throwable) {
+            // The native call can have queued work before throwing. Never call it a second time.
+            nativeSubmitted = true
+            invocationUnknown = true
+        }
+
+        val serverAcceptedIds = linkedSetOf<Long>()
+        val localRemovedIds = linkedSetOf<Long>()
+        val confirmedIds = linkedSetOf<Long>()
+        try {
+            invalidateFavoriteCache()
+            val callbackResult = if (!invocationUnknown) {
+                try {
+                    if (callbackLatch.await(FAVORITE_DELETE_RESPONSE_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                        callback.get()
+                    } else null
+                } catch (interrupted: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    null
+                }
+            } else {
+                null
+            }
+            for (target in eligibleTargets) {
+                val itemCode = callbackResult?.serverCodes?.get(target.serverId)
+                val duplicateResponse = callbackResult?.duplicateIds?.contains(target.serverId) == true
+                val accountIsCurrent = runCatching { accountCurrent() }.getOrDefault(false)
+                if (callbackResult != null && callbackResult.errorType == 0 &&
+                    callbackResult.errorCode == 0 && itemCode != null && itemCode >= 0 &&
+                    !duplicateResponse
+                ) {
+                    serverAcceptedIds += target.localId
+                }
+                val shouldReadLocal = callbackResult != null &&
+                    callbackResult.errorType == 0 && callbackResult.errorCode == 0 &&
+                    itemCode != null && itemCode >= 0 && !duplicateResponse && accountIsCurrent
+                val after = if (shouldReadLocal) readFavoriteNativeFresh(target.localId) else null
+                if (after?.readable == true && after.favorite == null) {
+                    localRemovedIds += target.localId
+                }
+                val decision = FavoriteDeleteOutcomePolicy.classify(
+                    submitted = nativeSubmitted,
+                    invocationUnknown = invocationUnknown,
+                    errorType = callbackResult?.errorType,
+                    errorCode = callbackResult?.errorCode,
+                    itemResponseCode = itemCode,
+                    duplicateResponse = duplicateResponse,
+                    accountCurrent = accountIsCurrent,
+                    localStateReadable = after?.readable == true,
+                    localItemStillPresent = after?.favorite != null
+                )
+                outcomes[target.localId] = FavoriteDeleteItemResult(
+                    target.localId, decision.status, decision.message
+                )
+                if (decision.status == FavoriteDeleteStatus.CONFIRMED) {
+                    confirmedIds += target.localId
+                }
+            }
+        } finally {
+            invalidateFavoriteCache()
+            runCatching { HookRegistry.get().unhook(hookHandle) }
+        }
+
+        val allKnown = eligibleTargets.none {
+            outcomes[it.localId]?.status == FavoriteDeleteStatus.UNCONFIRMED
+        }
+        FavoriteDeleteBatchResult(
+            targets.map { outcomes[it.localId] ?: FavoriteDeleteItemResult(
+                it.localId, FavoriteDeleteStatus.SKIPPED, "未提交"
+            ) },
+            nativeSubmitted,
+            allKnown,
+            if (allKnown) "" else "本批结果含未确认项目",
+            serverAcceptedIds,
+            localRemovedIds,
+            confirmedIds
+        )
+    }
+
+    private data class FavoriteDeleteCallback(
+        val errorType: Int,
+        val errorCode: Int,
+        val serverCodes: Map<Int, Int>,
+        val duplicateIds: Set<Int>
+    )
+
+    private data class FavoriteDeleteResponseCodes(
+        val codes: Map<Int, Int>,
+        val duplicateIds: Set<Int>
+    )
+
+    private data class FavoriteNativeLookup(
+        val readable: Boolean,
+        val favorite: Any?,
+        val error: String = ""
+    )
+
+    private fun readFavoriteNativeFresh(localId: Long): FavoriteNativeLookup {
+        if (localId <= 0L) return FavoriteNativeLookup(false, null, "本地收藏 ID 无效")
+        dexFinder.resolveFavoriteApi()
+        val storage = favoriteStorage()
+            ?: return FavoriteNativeLookup(false, null, "微信收藏存储不可用")
+        val getter = dexFinder.favoriteGetMethod
+            ?: return FavoriteNativeLookup(false, null, "微信收藏读取入口不可用")
+        return try {
+            val favorite = KavaReflector.invokeOrThrow(getter, storage, localId)
+            if (favorite == null) {
+                synchronized(nativeFavorites) { nativeFavorites.remove(localId) }
+                FavoriteNativeLookup(true, null)
+            } else {
+                val actualLocalId = firstNumberField(favorite, "field_localId", "localId")?.toLong()
+                if (actualLocalId != localId) {
+                    FavoriteNativeLookup(false, null, "读取到的本地收藏 ID 不匹配")
+                } else {
+                    cacheNativeFavorite(localId, favorite)
+                    FavoriteNativeLookup(true, favorite)
+                }
+            }
+        } catch (failure: Throwable) {
+            FavoriteNativeLookup(false, null, failure.message ?: "读取本地收藏失败")
+        }
+    }
+
+    private fun favoriteDeleteSceneIds(scene: Any?): List<Int> {
+        scene ?: return emptyList()
+        val ids = KavaReflector.readField(scene, "f") as? Iterable<*> ?: return emptyList()
+        return ids.mapNotNull { (it as? Number)?.toInt() }
+    }
+
+    private fun favoriteDeleteResponseCodes(network: Any?): FavoriteDeleteResponseCodes {
+        network ?: return FavoriteDeleteResponseCodes(emptyMap(), emptySet())
+        val responseHolder = KavaReflector.readField(network, "b")
+            ?: return FavoriteDeleteResponseCodes(emptyMap(), emptySet())
+        val responseBase = KavaReflector.readField(responseHolder, "a")
+            ?: return FavoriteDeleteResponseCodes(emptyMap(), emptySet())
+        val responseItems = KavaReflector.readField(responseBase, "e") as? Iterable<*>
+            ?: return FavoriteDeleteResponseCodes(emptyMap(), emptySet())
+        val result = linkedMapOf<Int, Int>()
+        val duplicates = linkedSetOf<Int>()
+        responseItems.forEach { item ->
+            item ?: return@forEach
+            val code = (KavaReflector.readField(item, "d") as? Number)?.toInt() ?: return@forEach
+            val serverId = (KavaReflector.readField(item, "e") as? Number)?.toInt() ?: return@forEach
+            if (result.containsKey(serverId)) duplicates += serverId
+            result[serverId] = code
+        }
+        return FavoriteDeleteResponseCodes(result, duplicates)
+    }
+
+    private fun favoriteUpdateTimeMillis(nativeItem: Any): Long {
+        val raw = firstNumberField(nativeItem, "field_updateTime", "updateTime")?.toLong() ?: return 0L
+        return if (raw in 1 until 10_000_000_000L) raw * 1000L else raw
+    }
+
+    private fun invalidateFavoriteCache() {
+        synchronized(favoriteCacheLock) {
+            FavoriteCacheInvalidationPolicy.clear(favoriteItems, nativeFavorites)
+            favoriteCursor = 0L
+            favoriteHasMore = true
+            favoriteHeadMarker = ""
+            favoriteFreshSnapshotBaseline = null
+        }
+    }
+
+    private fun notSubmitted(
+        targets: List<FavoriteDeleteTarget>,
+        message: String
+    ) = FavoriteDeleteBatchResult(
+        targets.map { FavoriteDeleteItemResult(it.localId, FavoriteDeleteStatus.NOT_SUBMITTED, message) },
+        false,
+        true,
+        message
+    )
 
     private fun queryFavoritePage(cursor: Long): List<*>? {
         dexFinder.resolveFavoriteApi()
@@ -445,7 +876,9 @@ class WeChatFavoriteApi(
             summary = favoriteSourceSummary(nativeItem, typeLabel),
             totalSizeBytes = totalSize,
             updateTimeMillis = updateTime,
-            tags = favoriteTags(nativeItem, tagNames)
+            tags = favoriteTags(nativeItem, tagNames),
+            serverId = firstNumberField(nativeItem, "field_id")?.toInt() ?: 0,
+            supportsNativeDelete = (KavaReflector.readField(nativeItem, "S1") as? Boolean) != true
         )
     }
 
@@ -873,8 +1306,12 @@ class WeChatFavoriteApi(
     }
 
     companion object {
+        const val MAX_DELETE_BATCH_SIZE = 20
         private const val FAVORITE_TYPE_ALL = -1
         private const val FAVORITE_PAGE_SIZE = 20
+        private const val FAVORITE_DELETE_BATCH_SIZE = MAX_DELETE_BATCH_SIZE
+        private const val FAVORITE_DELETE_SOURCE = 26
+        private const val FAVORITE_DELETE_RESPONSE_TIMEOUT_MS = 30_000L
         private const val NATIVE_FAVORITE_CACHE_SIZE = 80
         private const val MAX_FAVORITE_TITLE_LENGTH = 160
         private const val MAX_FAVORITE_TAG_QUERY_SIZE = 500

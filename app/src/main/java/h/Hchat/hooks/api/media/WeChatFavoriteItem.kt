@@ -7,7 +7,11 @@ class WeChatFavoriteItem(
     @JvmField val summary: String,
     @JvmField val totalSizeBytes: Long,
     @JvmField val updateTimeMillis: Long = 0L,
-    @JvmField val tags: List<String> = emptyList()
+    @JvmField val tags: List<String> = emptyList(),
+    /** WeChat's server-side favId (`field_id`), distinct from its local row key. */
+    @JvmField val serverId: Int = 0,
+    /** Some native special entries are excluded from the normal bulk-delete path. */
+    @JvmField val supportsNativeDelete: Boolean = true
 ) {
     fun typeLabel(): String = when (type) {
         1 -> "文字"
@@ -55,4 +59,16 @@ class WeChatFavoriteItem(
         }
         return "$text ${units[index]}"
     }
+}
+
+data class FavoriteDeleteTarget(
+    val localId: Long,
+    val serverId: Int,
+    val type: Int,
+    val updateTimeMillis: Long
+)
+
+internal fun WeChatFavoriteItem.deleteTarget(): FavoriteDeleteTarget? {
+    if (!FavoriteSnapshotPolicy.isSelectableForBatchDelete(this)) return null
+    return FavoriteDeleteTarget(localId, serverId, type, updateTimeMillis)
 }

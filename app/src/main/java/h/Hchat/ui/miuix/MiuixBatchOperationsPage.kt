@@ -21,6 +21,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import h.Hchat.hooks.api.core.WeChatApis
+import h.Hchat.hooks.api.media.deleteTarget
 import h.Hchat.hooks.api.model.ContactLabelBean
 import h.Hchat.hooks.items.batch.BatchOperation
 import h.Hchat.hooks.items.batch.BatchFriendAccessChoice
@@ -145,6 +146,7 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
             title = currentFeature?.title ?: "选择对象",
             mode = when (currentFeature) {
                 BatchOperation.FRIEND_LABEL, BatchOperation.DELETE_FRIENDS -> ContactPickerMode.FRIENDS
+                BatchOperation.UNFOLLOW_OFFICIAL_ACCOUNTS -> ContactPickerMode.FRIENDS
                 BatchOperation.GROUP_LEAVE, BatchOperation.DELETE_INVALID_GROUPS -> ContactPickerMode.GROUPS
                 else -> ContactPickerMode.ALL_CHATS
             },
@@ -158,6 +160,7 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
             multiSelectConfirmPrefix = when (currentFeature) {
                 BatchOperation.HIDE -> "确定不显示"
                 BatchOperation.DELETE_CHATS, BatchOperation.DELETE_FRIENDS -> "删除"
+                BatchOperation.UNFOLLOW_OFFICIAL_ACCOUNTS -> "取消关注"
                 BatchOperation.GROUP_LEAVE -> "退出"
                 BatchOperation.DELETE_INVALID_GROUPS -> "删除"
                 else -> "确定"
@@ -258,6 +261,7 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
         if (currentFeature in setOf(
                 BatchOperation.DELETE_CHATS,
                 BatchOperation.DELETE_FRIENDS,
+                BatchOperation.UNFOLLOW_OFFICIAL_ACCOUNTS,
                 BatchOperation.GROUP_LEAVE,
                 BatchOperation.DELETE_INVALID_GROUPS
             )
@@ -269,6 +273,62 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
         }
     }
 
+    val favoritePickerRequest = remember(accountIdentity, accountReady) {
+        FavoritePickerRequest(
+            title = "批量清理收藏",
+            existingValue = "",
+            onValue = {},
+            multiSelect = true,
+            destructiveDelete = true,
+            onDelete = { picked ->
+                when {
+                    picked.isEmpty() -> {
+                        Toast.makeText(context, "请至少选择一项收藏", Toast.LENGTH_SHORT).show()
+                        false
+                    }
+                    !accountReady || accountIdentity.isBlank() -> {
+                        Toast.makeText(context, "无法确认当前微信账号，任务未启动", Toast.LENGTH_SHORT).show()
+                        false
+                    }
+                    else -> {
+                        val targets = picked.mapNotNull { it.deleteTarget() }
+                        if (targets.size != picked.size) {
+                            Toast.makeText(context, "所选收藏身份不完整，未启动删除", Toast.LENGTH_SHORT).show()
+                            false
+                        } else {
+                            when (manager.submit(
+                                BatchTaskRequest(
+                                    operation = BatchOperation.DELETE_FAVORITES,
+                                    targetIds = targets.map { it.localId.toString() },
+                                    expectedAccount = accountIdentity,
+                                    enabled = true,
+                                    favoriteDeleteTargets = targets
+                                )
+                            )) {
+                                BatchTaskSubmitResult.STARTED -> {
+                                    returnHome()
+                                    true
+                                }
+                                BatchTaskSubmitResult.BUSY -> {
+                                    Toast.makeText(context, "已有批量任务正在执行，请完成后再启动", Toast.LENGTH_SHORT).show()
+                                    false
+                                }
+                                BatchTaskSubmitResult.UNAVAILABLE -> {
+                                    Toast.makeText(context, "后台任务队列不可用，未启动", Toast.LENGTH_SHORT).show()
+                                    false
+                                }
+                                BatchTaskSubmitResult.INVALID -> {
+                                    Toast.makeText(context, "收藏选择或身份无效，未启动", Toast.LENGTH_SHORT).show()
+                                    false
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        )
+    }
+
     BatchDeleteConfirmDialog(
         show = pendingDeleteTargets != null,
         message = when (currentFeature) {
@@ -278,6 +338,7 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
             } else {
                 "将删除所选 ${pendingDeleteTargets?.size ?: 0} 位好友；聊天记录按微信原生删除行为处理，不主动清空。此操作不可恢复。"
             }
+            BatchOperation.UNFOLLOW_OFFICIAL_ACCOUNTS -> "将通过微信原生批量接口取消关注所选 ${pendingDeleteTargets?.size ?: 0} 个公众号。之后如需接收其内容，需要重新关注。本操作不另外删除会话或聊天记录；结果未知的请求不会重试。"
             BatchOperation.GROUP_LEAVE -> "将通过微信原生批量退群流程退出所选 ${pendingDeleteTargets?.size ?: 0} 个群聊。群主群聊不在候选列表中；结果未知的请求不会重试。此操作不可恢复。"
             BatchOperation.DELETE_INVALID_GROUPS -> "将按微信原生方式移除所选 ${pendingDeleteTargets?.size ?: 0} 个已确认失效群聊的残留群资料与会话，不额外清空聊天记录。此操作不可恢复。"
             else -> ""
@@ -295,6 +356,14 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
             if (!confirmed.isNullOrEmpty()) startSelectionTask(confirmed, clearFriendHistory)
         }
     )
+
+    if (phase == BatchPage.FAVORITES) {
+        FavoritePickerPage(
+            request = favoritePickerRequest,
+            onBack = { returnHome() }
+        )
+        return
+    }
 
     if (phase == BatchPage.PICKER) {
         ContactPickerPage(
@@ -336,7 +405,11 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
                             if (operation == BatchOperation.FRIEND_LABEL && labelsLoaded) {
                                 selectedLabelId = labelChoices.firstOrNull()?.labelId.orEmpty()
                             }
-                            phase = BatchPage.PICKER
+                            phase = if (operation == BatchOperation.DELETE_FAVORITES) {
+                                BatchPage.FAVORITES
+                            } else {
+                                BatchPage.PICKER
+                            }
                         }
                         if (index < BatchOperation.entries.lastIndex) InsetDivider()
                     }
@@ -399,6 +472,10 @@ private fun BatchPickerControls(
                 "仅列出确认仍在群内且非群主的群聊；结果未知的群会暂时隐藏，待微信成员状态更新"
             )
             BatchOperation.DELETE_INVALID_GROUPS -> InfoRow("清理范围", "仅列出已解散或成员名单确认不含当前账号的群聊")
+            BatchOperation.UNFOLLOW_OFFICIAL_ACCOUNTS -> InfoRow(
+                "候选范围",
+                "仅列出微信当前确认仍关注且具有公众号资料的账号"
+            )
             BatchOperation.DO_NOT_DISTURB -> {
                 PopupChoiceRow(
                     title = "免打扰",
@@ -559,6 +636,8 @@ private fun candidateMode(
     BatchOperation.DELETE_INVALID_GROUPS -> BatchCandidateMode.INVALID_GROUPS
     BatchOperation.DELETE_CHATS -> BatchCandidateMode.HOME_CONVERSATIONS
     BatchOperation.DELETE_FRIENDS -> BatchCandidateMode.ALL_FRIENDS
+    BatchOperation.UNFOLLOW_OFFICIAL_ACCOUNTS -> BatchCandidateMode.FOLLOWED_OFFICIAL_ACCOUNTS
+    BatchOperation.DELETE_FAVORITES -> null
     null -> null
 }
 
@@ -575,9 +654,11 @@ private fun operationSummary(operation: BatchOperation): String = when (operatio
     BatchOperation.DELETE_INVALID_GROUPS -> "清理已经退出、被移出或解散后仍残留的群聊"
     BatchOperation.DELETE_CHATS -> "删除微信首页当前聊天，并清理对应聊天记录；保留好友与群成员关系"
     BatchOperation.DELETE_FRIENDS -> "删除全部有效好友，可选同时清空聊天记录；不含自己、公众号和群聊"
+    BatchOperation.UNFOLLOW_OFFICIAL_ACCOUNTS -> "显示当前仍关注的公众号；使用微信原生批量接口取消关注"
+    BatchOperation.DELETE_FAVORITES -> "从微信完整收藏列表中选择内容，并通过微信原生批量删除入口清理"
 }
 
 private fun validGroupNickname(value: String): Boolean =
     value.isNotBlank() && value.trim().length <= 16
 
-private enum class BatchPage { HOME, PICKER }
+private enum class BatchPage { HOME, PICKER, FAVORITES }

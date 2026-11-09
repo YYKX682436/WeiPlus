@@ -2059,7 +2059,9 @@ internal fun FavoriteListCard(
     selected: Boolean,
     multiSelect: Boolean,
     onPreview: (String) -> Unit,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    selectable: Boolean = true,
+    unavailableSummary: String = ""
 ) {
     Card(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 3.dp),
@@ -2072,7 +2074,7 @@ internal fun FavoriteListCard(
                 .clip(RoundedCornerShape(12.dp))
                 .background(pressFeedbackColor)
                 .responsiveTap(
-                    onClick = onClick,
+                    onClick = { if (selectable) onClick() },
                     onPressedChange = { pressed = it }
                 )
                 .padding(horizontal = 16.dp, vertical = 14.dp),
@@ -2089,7 +2091,9 @@ internal fun FavoriteListCard(
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    text = item.displaySummary(),
+                    text = listOf(item.displaySummary(), unavailableSummary)
+                        .filter { it.isNotBlank() }
+                        .joinToString(" · "),
                     color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                     fontSize = 12.sp,
                     maxLines = 2,
@@ -2107,7 +2111,7 @@ internal fun FavoriteListCard(
                     )
                 }
             }
-            SelectionMark(selected = selected, multiSelect = multiSelect)
+            SelectionMark(selected = selected, multiSelect = multiSelect && selectable)
         }
     }
 }
@@ -2763,7 +2767,8 @@ internal enum class BatchCandidateMode {
     ALL_GROUPS,
     JOINED_GROUPS,
     INVALID_GROUPS,
-    ALL_FRIENDS_WITH_LABEL
+    ALL_FRIENDS_WITH_LABEL,
+    FOLLOWED_OFFICIAL_ACCOUNTS
 }
 
 internal data class ContactPickerRequest(
@@ -2811,7 +2816,9 @@ internal data class FavoritePickerRequest(
     val existingValue: String,
     val onValue: (String) -> Unit,
     val multiSelect: Boolean = true,
-    val delimiter: String = "|"
+    val delimiter: String = "|",
+    val destructiveDelete: Boolean = false,
+    val onDelete: ((List<WeChatFavoriteItem>) -> Boolean)? = null
 )
 
 internal enum class FavoritePickerFilter(val label: String) {
@@ -4091,6 +4098,18 @@ internal fun loadContacts(
                 BatchCandidateMode.STARRED_FRIENDS,
                 BatchCandidateMode.ALL_FRIENDS_WITH_LABEL
             )
+            val followedOfficialResult = if (
+                batchCandidateMode == BatchCandidateMode.FOLLOWED_OFFICIAL_ACCOUNTS
+            ) {
+                api.getFollowedOfficialAccountsResult()
+            } else {
+                null
+            }
+            if (followedOfficialResult != null && !followedOfficialResult.success) {
+                throw IllegalStateException(
+                    followedOfficialResult.error.ifBlank { "读取已关注公众号失败" }
+                )
+            }
             val needsFriendIds = strictFriendsOnly || strictFriendsAndGroupsOnly ||
                 batchCandidateMode in setOf(
                     BatchCandidateMode.CURRENT_FRIENDS_AND_GROUPS,
@@ -4241,6 +4260,10 @@ internal fun loadContacts(
                             .filter { it.wxId in memberFriends }
                             .mapNotNull { it.toOption(false) }
                             .toList()
+                    }
+                    BatchCandidateMode.FOLLOWED_OFFICIAL_ACCOUNTS -> {
+                        rows += followedOfficialResult?.contacts.orEmpty()
+                            .mapNotNull { it.toOption(group = false, official = true) }
                     }
                     BatchCandidateMode.ALL_FRIENDS_AND_GROUPS -> {
                         rows += friends.asSequence().filter { it.wxId in batchValidFriendIds }

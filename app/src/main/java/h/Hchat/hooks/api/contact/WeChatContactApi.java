@@ -526,6 +526,93 @@ public final class WeChatContactApi {
                 null);
     }
 
+    /**
+     * Reads current followed public accounts using the same relation criteria as
+     * WeChat 8.0.80's brand-contact list. A null target list means all accounts;
+     * an empty list means no candidates. Query errors remain errors, never an empty list.
+     */
+    public ContactListResult getFollowedOfficialAccountsResult() {
+        return getFollowedOfficialAccountsResult(null);
+    }
+
+    public ContactListResult getFollowedOfficialAccountsResult(List<String> targetUsernames) {
+        if (databaseApi == null || !databaseApi.isAvailable()) {
+            return new ContactListResult(false, Collections.emptyList(), "联系人数据库不可用");
+        }
+        List<String> targets = null;
+        if (targetUsernames != null) {
+            targets = new ArrayList<>();
+            for (String username : targetUsernames) {
+                String target = username == null ? "" : username.trim();
+                if (!target.isEmpty() && !targets.contains(target)) targets.add(target);
+            }
+            if (targets.isEmpty()) return new ContactListResult(true, Collections.emptyList(), "");
+        }
+
+        WeChatDatabaseApi.QueryResult selfQuery = databaseApi.queryWithStatus(
+                "SELECT value FROM userinfo WHERE id=? LIMIT 1",
+                new String[]{String.valueOf(SELF_FIELD_WXID)});
+        if (!selfQuery.success || selfQuery.rows.isEmpty()) {
+            return new ContactListResult(false, Collections.emptyList(), "无法确认当前微信账号");
+        }
+        String selfId = str(selfQuery.rows.get(0), "value").trim();
+        if (selfId.isEmpty()) {
+            return new ContactListResult(false, Collections.emptyList(), "当前微信账号标识为空");
+        }
+
+        StringBuilder sql = new StringBuilder("SELECT ")
+                .append(contactFields())
+                .append(", r.verifyFlag AS verifyFlag, b.username AS bizUsername, b.type AS bizType ")
+                .append("FROM rcontact r INNER JOIN bizinfo b ON b.username = r.username ")
+                .append("WHERE (r.type & 1) != 0 ");
+        String[] args = null;
+        if (targets != null) {
+            sql.append("AND r.username IN (");
+            for (int i = 0; i < targets.size(); i++) {
+                if (i > 0) sql.append(',');
+                sql.append('?');
+            }
+            sql.append(") ");
+            args = targets.toArray(new String[0]);
+        }
+        sql.append("ORDER BY r.showHead ASC, ")
+                .append("CASE WHEN length(r.conRemarkPYFull) > 0 THEN upper(r.conRemarkPYFull) ELSE upper(r.quanPin) END ASC, ")
+                .append("CASE WHEN length(r.conRemark) > 0 THEN upper(r.conRemark) ELSE upper(r.quanPin) END ASC, ")
+                .append("upper(r.quanPin) ASC, upper(r.nickname) ASC, upper(r.username) ASC");
+
+        WeChatDatabaseApi.QueryResult query = databaseApi.queryWithStatus(sql.toString(), args);
+        if (!query.success) {
+            return new ContactListResult(false, Collections.emptyList(),
+                    query.error.isBlank() ? "读取已关注公众号失败" : query.error);
+        }
+        List<WeChatContact> result = new ArrayList<>();
+        try {
+            for (Map<String, Object> row : query.rows) {
+                String username = str(row, "username");
+                if (!FollowedOfficialAccountPolicy.isFollowed(
+                        username,
+                        intValue(row, "verifyFlag"),
+                        intValue(row, "type"),
+                        str(row, "bizUsername"),
+                        intValue(row, "bizType"),
+                        selfId)) {
+                    continue;
+                }
+                Boolean nativeHidden = nativeBrandListHides(username);
+                if (nativeHidden == null) {
+                    return new ContactListResult(false, Collections.emptyList(),
+                            "无法读取公众号原生列表的系统账号过滤状态");
+                }
+                if (nativeHidden) continue;
+                result.add(toContact(row));
+            }
+            return new ContactListResult(true, result, "");
+        } catch (Throwable e) {
+            log("解析已关注公众号列表失败: " + e.getMessage());
+            return new ContactListResult(false, Collections.emptyList(), "解析已关注公众号列表失败");
+        }
+    }
+
     public ContactStateResult getContactStateResult(String wxId) {
         if (TextUtils.isEmpty(wxId) || databaseApi == null || !databaseApi.isAvailable()) {
             return new ContactStateResult(false, false, false, 0, "联系人数据库不可用");
@@ -702,10 +789,78 @@ public final class WeChatContactApi {
         }
     }
 
+    /** Reads WeChat's live MMBatchModContactTypeMaxNumForServer setting. */
+    public int getOfficialUnfollowBatchLimit() {
+        return NativeBatchOfficialUnfollowProcess.configuredBatchLimit(dexFinder);
+    }
+
+    /** Uses WeChat's native batchmodcontacttype operation (type=1, operation=2). */
+    public NativeBatchOfficialUnfollowProcess.Result submitUnfollowOfficialAccountsWithResult(
+            List<String> usernames, BatchSubmissionGuard guard) {
+        if (usernames == null || usernames.isEmpty() || dexFinder == null || !isAvailable()) return null;
+        List<String> targets = new ArrayList<>();
+        for (String username : usernames) {
+            String target = username == null ? "" : username.trim();
+            if (!target.isEmpty() && !targets.contains(target)) targets.add(target);
+        }
+        if (targets.isEmpty()) return null;
+        ContactListResult state = getFollowedOfficialAccountsResult(targets);
+        if (!state.success) {
+            log("公众号批量取消关注提交前复核失败: " + state.error);
+            return null;
+        }
+        Set<String> followed = new LinkedHashSet<>();
+        for (WeChatContact contact : state.contacts) followed.add(contact.wxId);
+        if (!followed.containsAll(targets)) {
+            log("公众号批量取消关注提交前发现已失效对象，未提交");
+            return null;
+        }
+        return NativeBatchOfficialUnfollowProcess.execute(
+                dexFinder, targets, guard == null ? null : guard::mayContinue, this::log);
+    }
+
     private void logDeleteDiagnostic(String target, String phase, String detail) {
         log("批量删除好友诊断 phase=" + phase
                 + " targetHash=" + Integer.toHexString(target.hashCode())
                 + " detail=" + detail);
+    }
+
+    /** Applies the two additional conditional system-contact filters used by BrandService. */
+    private Boolean nativeBrandListHides(String username) {
+        if (!"gh_579db1f2cf89".equals(username) && !"gh_b7695f100443".equals(username)) {
+            return false;
+        }
+        if (dexFinder == null || !dexFinder.resolveBatchOfficialUnfollowApi()) return null;
+        ClassLoader loader = dexFinder.batchOfficialUnfollowSceneClass.getClassLoader();
+        try {
+            if ("gh_b7695f100443".equals(username)) {
+                Class<?> feature = KavaReflector.loadClass("y10.f", loader);
+                Method enabled = KavaReflector.findMethodRecursive(feature, "d");
+                if (enabled == null || !Modifier.isStatic(enabled.getModifiers())
+                        || enabled.getReturnType() != boolean.class) return null;
+                return !Boolean.TRUE.equals(KavaReflector.invokeOrThrow(enabled, null));
+            }
+
+            Class<?> serviceKey = KavaReflector.loadClass("pa2.e0", loader);
+            Class<?> serviceLocator = KavaReflector.loadClass("fi5.n0", loader);
+            Class<?> keyClass = KavaReflector.loadClass("pa2.d0", loader);
+            Class<?> configKeyType = KavaReflector.loadClass("pa2.b0", loader);
+            Class<?> configApi = KavaReflector.loadClass("rc2.d", loader);
+            if (serviceKey == null || serviceLocator == null || keyClass == null
+                    || configKeyType == null || configApi == null) return null;
+            Method resolve = KavaReflector.findMethodRecursive(serviceLocator, "c", Class.class);
+            Field keyField = KavaReflector.findFieldRecursive(keyClass, "mD");
+            Method read = KavaReflector.findMethodRecursive(configApi, "Ij", configKeyType, int.class);
+            if (resolve == null || !Modifier.isStatic(resolve.getModifiers())
+                    || keyField == null || !Modifier.isStatic(keyField.getModifiers()) || read == null) return null;
+            Object service = KavaReflector.invokeOrThrow(resolve, null, serviceKey);
+            Object configKey = KavaReflector.readField(keyField, (Object) null);
+            Object value = KavaReflector.invokeOrThrow(read, service, configKey, 1);
+            return value instanceof Number && ((Number) value).intValue() == 1;
+        } catch (Throwable e) {
+            log("读取公众号原生系统过滤状态失败: " + e.getClass().getSimpleName());
+            return null;
+        }
     }
 
     public void logDeleteFriendObservation(String username, String detail) {

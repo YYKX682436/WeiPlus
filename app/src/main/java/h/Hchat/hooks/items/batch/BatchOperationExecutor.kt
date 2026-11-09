@@ -4,6 +4,7 @@ import h.Hchat.hooks.api.contact.WeChatContactApi
 import h.Hchat.hooks.api.contact.WeChatNativeMutationResult
 import h.Hchat.hooks.api.contact.NativeBatchQuitChatroomProcess
 import h.Hchat.hooks.api.core.WeChatApis
+import h.Hchat.hooks.api.media.WeChatFavoriteApi
 import h.Hchat.hooks.api.message.WeChatMessageStoreApi
 import h.Hchat.utils.HLog
 import java.util.LinkedHashMap
@@ -21,6 +22,12 @@ internal object BatchOperationExecutor : BatchTaskProcessor {
         request: BatchTaskRequest,
         stopSignal: BatchTaskRunner.StopSignal
     ): BatchTaskRunner.Report {
+        if (request.operation == BatchOperation.UNFOLLOW_OFFICIAL_ACCOUNTS) {
+            return executeOfficialAccountUnfollowBatch(request, stopSignal)
+        }
+        if (request.operation == BatchOperation.DELETE_FAVORITES) {
+            return executeFavoriteDeleteBatch(request, stopSignal)
+        }
         if (request.operation == BatchOperation.FRIEND_LABEL) {
             return executeLabelBatch(request, stopSignal)
         }
@@ -36,6 +43,205 @@ internal object BatchOperationExecutor : BatchTaskProcessor {
             { id, signal -> executeOne(request, id, signal) },
             null
         )
+    }
+
+    private fun executeOfficialAccountUnfollowBatch(
+        request: BatchTaskRequest,
+        stopSignal: BatchTaskRunner.StopSignal
+    ): BatchTaskRunner.Report {
+        val contacts = WeChatApis.contacts()
+            ?: return failedReport(request.targetIds, "微信联系人 API 不可用")
+        val results = LinkedHashMap<String, BatchTaskRunner.TaskResult>()
+        var stopReason = ""
+        val batchLimit = contacts.officialUnfollowBatchLimit
+        if (batchLimit <= 0) {
+            return failedReport(request.targetIds, "微信原生公众号批量操作上限不可用")
+        }
+
+        for (chunk in request.targetIds.chunked(batchLimit)) {
+            if (stopSignal.isStopped()) {
+                stopReason = "已停止后续操作"
+                break
+            }
+            if (!isAccountCurrent(request.expectedAccount)) {
+                stopReason = "账号已切换或账号状态不可用"
+                break
+            }
+
+            val latest = contacts.getFollowedOfficialAccountsResult(chunk)
+            if (!latest.success) {
+                for (username in chunk) {
+                    results[username] = result(
+                        BatchTaskRunner.Outcome.FAILED,
+                        latest.error.ifBlank { "无法复核公众号关注状态，未提交" }
+                    )
+                }
+                stopReason = "公众号状态读取失败，已停止后续提交"
+                break
+            }
+            val stillFollowed = latest.contacts.mapTo(HashSet()) { it.wxId }
+            val eligible = chunk.filter { username ->
+                if (username in stillFollowed) true else {
+                    results[username] = result(
+                        BatchTaskRunner.Outcome.SKIPPED,
+                        "公众号已不在当前关注列表，未提交"
+                    )
+                    false
+                }
+            }
+            if (eligible.isEmpty()) continue
+            if (stopSignal.isStopped() || !isAccountCurrent(request.expectedAccount)) {
+                stopReason = if (stopSignal.isStopped()) "已停止后续操作" else "账号已切换或账号状态不可用"
+                break
+            }
+
+            val native = contacts.submitUnfollowOfficialAccountsWithResult(
+                eligible,
+                WeChatContactApi.BatchSubmissionGuard {
+                    !stopSignal.isStopped() && isAccountCurrent(request.expectedAccount)
+                }
+            )
+            if (native == null) {
+                val check = contacts.getFollowedOfficialAccountsResult(eligible)
+                if (check.success) {
+                    val active = check.contacts.mapTo(HashSet()) { it.wxId }
+                    for (username in eligible) {
+                        results[username] = if (username !in active) {
+                            result(BatchTaskRunner.Outcome.SKIPPED, "提交前关注关系已解除，未发送请求")
+                        } else {
+                            result(BatchTaskRunner.Outcome.FAILED, "微信原生批量取消关注请求未提交")
+                        }
+                    }
+                    if (eligible.any { it in active }) stopReason = "微信原生取消关注入口不可用，已停止后续提交"
+                } else {
+                    for (username in eligible) {
+                        results[username] = result(
+                            BatchTaskRunner.Outcome.FAILED,
+                            check.error.ifBlank { "无法复核公众号状态，未确认请求是否提交" }
+                        )
+                    }
+                    stopReason = "公众号状态读取失败，已停止后续提交"
+                }
+                if (stopReason.isNotBlank()) break
+                continue
+            }
+
+            val accountCurrent = isAccountCurrent(request.expectedAccount)
+            val finalState = if (native.submitted && native.completed && accountCurrent) {
+                contacts.getFollowedOfficialAccountsResult(eligible)
+            } else null
+            val finalReadSucceeded = finalState?.success == true
+            val stillActive = finalState?.contacts?.mapTo(HashSet()) { it.wxId } ?: emptySet()
+            var stopAfterChunk = !native.submitted || !native.completed || !accountCurrent || !finalReadSucceeded
+            if (!native.submitted) {
+                for (username in eligible) {
+                    results[username] = result(
+                        BatchTaskRunner.Outcome.FAILED,
+                        native.error.ifBlank { "微信网络队列未接受请求" }
+                    )
+                }
+                stopReason = native.error.ifBlank { "微信原生批量请求未提交" }
+            } else {
+                val itemByUsername = native.items.associateBy { it.username }
+                for (username in eligible) {
+                    val item = itemByUsername[username]
+                    val decision = BatchOfficialUnfollowOutcomePolicy.classify(
+                        submitted = native.submitted,
+                        responseObserved = native.completed && native.callbackErrorType == 0 &&
+                            native.callbackErrorCode == 0 && item?.requestObserved == true,
+                        accountCurrent = accountCurrent,
+                        serverResult = item?.serverResult,
+                        nativeLocalResult = item?.nativeLocalResult == true,
+                        nativeCleanupFailed = item?.nativeCleanupFailed == true,
+                        finalStateReadSucceeded = finalReadSucceeded,
+                        stillFollowed = username in stillActive
+                    )
+                    results[username] = result(decision.outcome, decision.message)
+                    if (decision.stopLater) stopAfterChunk = true
+                }
+                if (stopAfterChunk) {
+                    stopReason = when {
+                        !accountCurrent -> "账号已切换，已停止后续提交"
+                        !native.completed -> native.error.ifBlank { "微信原生批量请求结果未知，未重试" }
+                        !finalReadSucceeded -> finalState?.error?.takeIf { it.isNotBlank() }
+                            ?: "公众号状态无法复核，已停止后续提交"
+                        else -> "批量取消关注存在失败或未确认对象，已停止后续提交"
+                    }
+                }
+            }
+            if (stopAfterChunk) break
+        }
+
+        val completeResults = request.targetIds.map { id ->
+            results[id] ?: result(
+                BatchTaskRunner.Outcome.SKIPPED,
+                if (stopReason.isNotBlank()) stopReason else "未提交"
+            )
+        }
+        return BatchTaskRunner.fromResults(request.targetIds, completeResults, stopReason)
+    }
+
+    private fun executeFavoriteDeleteBatch(
+        request: BatchTaskRequest,
+        stopSignal: BatchTaskRunner.StopSignal
+    ): BatchTaskRunner.Report {
+        val favorites = WeChatApis.media()?.favorites()
+            ?: return failedReport(request.targetIds, "微信收藏 API 不可用")
+        val results = LinkedHashMap<String, BatchTaskRunner.TaskResult>()
+        var stopReason = ""
+
+        for (chunk in request.favoriteDeleteTargets.chunked(WeChatFavoriteApi.MAX_DELETE_BATCH_SIZE)) {
+            if (stopSignal.isStopped()) {
+                stopReason = "已停止后续操作"
+                break
+            }
+            if (!isAccountCurrent(request.expectedAccount)) {
+                stopReason = "账号已切换或账号状态不可用"
+                break
+            }
+            val native = favorites.submitNativeDeleteBatch(
+                chunk,
+                mayContinue = { !stopSignal.isStopped() && isAccountCurrent(request.expectedAccount) },
+                accountCurrent = { isAccountCurrent(request.expectedAccount) }
+            )
+            for (item in native.items) {
+                val id = item.localId.toString()
+                val mapped = when (item.status) {
+                    WeChatFavoriteApi.FavoriteDeleteStatus.CONFIRMED ->
+                        result(BatchTaskRunner.Outcome.SUCCESS, item.message)
+                    WeChatFavoriteApi.FavoriteDeleteStatus.REJECTED ->
+                        result(BatchTaskRunner.Outcome.FAILED, item.message)
+                    WeChatFavoriteApi.FavoriteDeleteStatus.SKIPPED ->
+                        result(BatchTaskRunner.Outcome.SKIPPED, item.message)
+                    WeChatFavoriteApi.FavoriteDeleteStatus.NOT_SUBMITTED ->
+                        if (stopSignal.isStopped() || !isAccountCurrent(request.expectedAccount)) {
+                            result(BatchTaskRunner.Outcome.SKIPPED, item.message)
+                        } else {
+                            result(BatchTaskRunner.Outcome.FAILED, item.message)
+                        }
+                    WeChatFavoriteApi.FavoriteDeleteStatus.UNCONFIRMED ->
+                        result(BatchTaskRunner.Outcome.UNCONFIRMED, item.message)
+                }
+                results[id] = mapped
+            }
+            val stopDecision = BatchFavoriteDeleteExecutionPolicy.afterNativeBatch(
+                outcomes = native.items.map { it.status },
+                accountCurrent = isAccountCurrent(request.expectedAccount),
+                stopRequested = stopSignal.isStopped()
+            )
+            if (stopDecision.stopLater) {
+                stopReason = stopDecision.reason
+                break
+            }
+        }
+
+        val completeResults = request.targetIds.map { id ->
+            results[id] ?: result(
+                BatchTaskRunner.Outcome.SKIPPED,
+                if (stopReason.isNotBlank()) stopReason else "未提交"
+            )
+        }
+        return BatchTaskRunner.fromResults(request.targetIds, completeResults, stopReason)
     }
 
     private fun executeGroupLeaveBatch(
@@ -360,6 +566,10 @@ internal object BatchOperationExecutor : BatchTaskProcessor {
             }
             BatchOperation.DELETE_CHATS -> deleteChat(id, request, stopSignal)
             BatchOperation.DELETE_FRIENDS -> deleteFriend(id, request, stopSignal)
+            BatchOperation.UNFOLLOW_OFFICIAL_ACCOUNTS ->
+                result(BatchTaskRunner.Outcome.FAILED, "公众号取消关注必须使用账号隔离的原生流程")
+            BatchOperation.DELETE_FAVORITES ->
+                result(BatchTaskRunner.Outcome.FAILED, "收藏删除必须使用经确认的原生批量流程")
         }
     }
 
