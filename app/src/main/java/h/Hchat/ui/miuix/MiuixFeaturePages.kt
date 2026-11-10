@@ -24,7 +24,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import h.Hchat.hooks.items.autooriginal.AutoOriginalImageSettings
 import h.Hchat.hooks.items.autovieworiginal.AutoViewOriginalSettings
-import h.Hchat.hooks.items.atallnotify.AtAllNotificationBlockSettings
 import h.Hchat.hooks.items.callmedialimit.CallMediaLimitSettings
 import h.Hchat.hooks.items.editmsg.EditMessageSettings
 import h.Hchat.hooks.items.forwardlimit.RemoveForwardLimitSettings
@@ -1300,103 +1299,6 @@ internal fun RemoveForwardLimitMiuixPage(
                     )
                 }
             }
-        }
-    }
-}
-
-@Composable
-internal fun AtAllNotificationBlockMiuixPage(
-    context: Context,
-    provider: FeatureSettingsProvider,
-    onBack: () -> Unit
-) {
-    val sp = remember { HchatStorage.preferences(context, AtAllNotificationBlockSettings.PREFS_NAME) }
-    var enabled by remember {
-        mutableStateOf(sp.getBoolean(AtAllNotificationBlockSettings.KEY_ENABLE, AtAllNotificationBlockSettings.DEFAULT_ENABLE))
-    }
-    var selectedGroups by remember {
-        mutableStateOf(AtAllNotificationBlockSettings.parseGroups(sp.getString(AtAllNotificationBlockSettings.KEY_GROUPS, "")))
-    }
-    var legacyAllGroups by remember { mutableStateOf(enabled && !sp.contains(AtAllNotificationBlockSettings.KEY_GROUPS)) }
-    var route by remember { mutableStateOf<AtAllNotificationBlockRoute>(AtAllNotificationBlockRoute.Main) }
-    val listState = rememberLazyListState()
-    val scrollBehavior = MiuixScrollBehavior()
-
-    SettingsRouteTransition(
-        targetState = route,
-        label = "AtAllNotificationBlockRoute",
-        depthOf = { if (it is AtAllNotificationBlockRoute.Main) 0 else 1 }
-    ) { current ->
-        when (current) {
-            AtAllNotificationBlockRoute.Main -> PageScaffold(
-                title = provider.title(),
-                largeTitle = provider.title(),
-                scrollBehavior = scrollBehavior,
-                bottomBar = { BottomActionBar("返回", onBack) }
-            ) { padding ->
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
-                    state = listState,
-                    contentPadding = PaddingValues(
-                        top = padding.calculateTopPadding() + 8.dp,
-                        bottom = padding.calculateBottomPadding() + 84.dp
-                    )
-                ) {
-                    item { SmallTitle(text = "群聊通知") }
-                    item {
-                        SettingsCard {
-                            SwitchRow(
-                                checked = enabled,
-                                title = "屏蔽艾特所有人",
-                                summary = "仅拦截所选群聊的艾特所有人通知",
-                                onCheckedChange = {
-                                    enabled = it
-                                    val editor = sp.edit().putBoolean(AtAllNotificationBlockSettings.KEY_ENABLE, it)
-                                    if (it && !sp.contains(AtAllNotificationBlockSettings.KEY_GROUPS)) {
-                                        editor.putString(AtAllNotificationBlockSettings.KEY_GROUPS, "")
-                                        legacyAllGroups = false
-                                    }
-                                    editor.apply()
-                                }
-                            )
-                            if (enabled) {
-                                InsetDivider()
-                                ActionRow(
-                                    "选择屏蔽群聊",
-                                    when {
-                                        legacyAllGroups -> "当前屏蔽全部群聊，重新选择后按选择生效"
-                                        selectedGroups.isEmpty() -> "未选择群聊，不会屏蔽通知"
-                                        else -> "已选择 ${selectedGroups.size} 个群聊"
-                                    }
-                                ) {
-                                    route = AtAllNotificationBlockRoute.GroupPicker(
-                                        ContactPickerRequest(
-                                            title = "选择屏蔽群聊",
-                                            mode = ContactPickerMode.GROUPS,
-                                            multiSelect = true,
-                                            existingValue = formatIds(selectedGroups),
-                                            onValue = {}
-                                        )
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            is AtAllNotificationBlockRoute.GroupPicker -> ContactPickerPage(
-                context = context,
-                request = current.request,
-                onBack = { route = AtAllNotificationBlockRoute.Main },
-                onConfirm = { picked ->
-                    selectedGroups = picked.map { it.id }.filter { it.isNotBlank() }.toSet()
-                    legacyAllGroups = false
-                    sp.edit()
-                        .putString(AtAllNotificationBlockSettings.KEY_GROUPS, formatIds(selectedGroups))
-                        .apply()
-                    route = AtAllNotificationBlockRoute.Main
-                }
-            )
         }
     }
 }

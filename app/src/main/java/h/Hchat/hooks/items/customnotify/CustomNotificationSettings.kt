@@ -169,7 +169,6 @@ class CustomNotificationSettings(context: Context?) {
                         muteStart = normalizeTime(obj.optString("muteStart"), DEFAULT_MUTE_START),
                         muteEnd = normalizeTime(obj.optString("muteEnd"), DEFAULT_MUTE_END),
                         ringtone = obj.optString("ringtone"),
-                        blockAtAll = obj.optBoolean("blockAtAll", false),
                         blockAtMe = obj.optBoolean("blockAtMe", false),
                         onlyMembers = normalizeMemberRules(obj.optString("onlyMembers")),
                         blockMembers = normalizeMemberRules(obj.optString("blockMembers"))
@@ -203,7 +202,6 @@ class CustomNotificationSettings(context: Context?) {
                 obj.put("muteStart", normalizeTime(rule.muteStart, DEFAULT_MUTE_START))
                 obj.put("muteEnd", normalizeTime(rule.muteEnd, DEFAULT_MUTE_END))
                 obj.put("ringtone", rule.ringtone)
-                obj.put("blockAtAll", rule.blockAtAll)
                 obj.put("blockAtMe", rule.blockAtMe)
                 obj.put("onlyMembers", normalizeMemberRules(rule.onlyMembers))
                 obj.put("blockMembers", normalizeMemberRules(rule.blockMembers))
@@ -282,7 +280,6 @@ class CustomNotificationSettings(context: Context?) {
                     muteStart = normalizeTime(obj.optString("muteStart"), DEFAULT_MUTE_START),
                     muteEnd = normalizeTime(obj.optString("muteEnd"), DEFAULT_MUTE_END),
                     ringtone = obj.optString("ringtone"),
-                    blockAtAll = if (group) obj.optBoolean("blockAtAll", false) else false,
                     blockAtMe = if (group) obj.optBoolean("blockAtMe", false) else false,
                     onlyMembers = "",
                     blockMembers = ""
@@ -306,7 +303,6 @@ class CustomNotificationSettings(context: Context?) {
             obj.put("muteStart", normalizeTime(rule.muteStart, DEFAULT_MUTE_START))
             obj.put("muteEnd", normalizeTime(rule.muteEnd, DEFAULT_MUTE_END))
             obj.put("ringtone", rule.ringtone)
-            obj.put("blockAtAll", group && !official && rule.blockAtAll)
             obj.put("blockAtMe", group && !official && rule.blockAtMe)
             return obj.toString()
         }
@@ -404,7 +400,6 @@ data class CustomNotificationRule(
     val muteStart: String = CustomNotificationSettings.DEFAULT_MUTE_START,
     val muteEnd: String = CustomNotificationSettings.DEFAULT_MUTE_END,
     val ringtone: String = "",
-    val blockAtAll: Boolean = false,
     val blockAtMe: Boolean = false,
     val onlyMembers: String = "",
     val blockMembers: String = ""

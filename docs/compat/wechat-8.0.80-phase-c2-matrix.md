@@ -1,5 +1,7 @@
 # WeiPlus 微信 8.0.80 87 项兼容验收矩阵（C-2B-1）
 
+> 历史验收快照。#35「屏蔽艾特所有人」后来已从 WeiPlus 移除，以下保留当时的编号和验收结果。
+
 > 本表从当前 `app/src/main/java/h/Hchat/hooks/core/FeatureRegistry.kt` 的 `.register(Class())` 调用动态生成，登记数 **87**，顺序按当前源码，不按历史文档复制。名称优先采用 `Feature.name()`；未覆盖时使用 `featureId()`（该接口默认如此）。非标准 ID 常量项以当前实现的 `featureId()` 返回值为准。
 
 > C-2B-1（2026-10-29）没有真机或真实消息事件验收，矩阵状态计数沿用 C-2A R3：**8 PASS、1 PARTIAL、5 NOT_VERIFIED、1 NOT_ENABLED、72 NOT_TESTED**。#02 继续 NOT_VERIFIED；本轮生产 API 的模拟回归不升级公共 API 或下游自动化功能状态。#18 与 #52 仍待用户在新 APK 上实测页面效果。此前阶段见 [C-2A R1 报告](wechat-8.0.80-phase-c2a-r1.md)、[C-2A R2 报告](wechat-8.0.80-phase-c2a-r2.md)、[C-2A R3 报告](wechat-8.0.80-phase-c2a-r3.md)。

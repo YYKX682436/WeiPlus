@@ -367,7 +367,6 @@ internal fun CustomNotificationBatchEditorPage(
     var muteStart by remember { mutableStateOf(CustomNotificationSettings.DEFAULT_MUTE_START) }
     var muteEnd by remember { mutableStateOf(CustomNotificationSettings.DEFAULT_MUTE_END) }
     var applyAtRules by remember { mutableStateOf(false) }
-    var blockAtAll by remember { mutableStateOf(false) }
     var blockAtMe by remember { mutableStateOf(false) }
     val scrollBehavior = MiuixScrollBehavior()
     PageScaffold(
@@ -405,7 +404,6 @@ internal fun CustomNotificationBatchEditorPage(
                             muteStart = muteStart,
                             muteEnd = muteEnd,
                             applyAtRules = applyAtRules,
-                            blockAtAll = blockAtAll,
                             blockAtMe = blockAtMe
                         )
                     )
@@ -520,8 +518,6 @@ internal fun CustomNotificationBatchEditorPage(
                     SwitchRow(applyAtRules, "应用群聊 @ 规则", "只对群聊规则生效") { applyAtRules = it }
                     if (applyAtRules) {
                         InsetDivider()
-                        SwitchRow(blockAtAll, "屏蔽@所有人", "命中 @所有人 时不弹通知") { blockAtAll = it }
-                        InsetDivider()
                         SwitchRow(blockAtMe, "屏蔽@我", "命中 @我 时不弹通知") { blockAtMe = it }
                     }
                 }
@@ -577,7 +573,6 @@ internal fun CustomNotificationRuleEditorPage(
     var muteStart by remember(initialRule) { mutableStateOf(initialRule.muteStart) }
     var muteEnd by remember(initialRule) { mutableStateOf(initialRule.muteEnd) }
     var ringtone by remember(initialRule) { mutableStateOf(initialRule.ringtone) }
-    var blockAtAll by remember(initialRule) { mutableStateOf(initialRule.blockAtAll) }
     var blockAtMe by remember(initialRule) { mutableStateOf(initialRule.blockAtMe) }
     var onlyMembers by remember(initialRule) { mutableStateOf(initialRule.onlyMembers) }
     var blockMembers by remember(initialRule) { mutableStateOf(initialRule.blockMembers) }
@@ -614,7 +609,6 @@ internal fun CustomNotificationRuleEditorPage(
                             muteStart = CustomNotificationSettings.normalizeTime(muteStart, CustomNotificationSettings.DEFAULT_MUTE_START),
                             muteEnd = CustomNotificationSettings.normalizeTime(muteEnd, CustomNotificationSettings.DEFAULT_MUTE_END),
                             ringtone = ringtone,
-                            blockAtAll = blockAtAll,
                             blockAtMe = blockAtMe,
                             onlyMembers = if (isDefault) "" else CustomNotificationSettings.normalizeMemberRules(onlyMembers),
                             blockMembers = if (isDefault) "" else CustomNotificationSettings.normalizeMemberRules(blockMembers)
@@ -750,8 +744,6 @@ internal fun CustomNotificationRuleEditorPage(
                             }
                             InsetDivider()
                         }
-                        SwitchRow(blockAtAll, "屏蔽@所有人", "命中 @所有人 时不弹通知") { blockAtAll = it }
-                        InsetDivider()
                         SwitchRow(blockAtMe, "屏蔽@我", "命中 @我 时不弹通知") { blockAtMe = it }
                     }
                 }
@@ -804,7 +796,6 @@ private fun customNotificationRuleSummary(context: Context, rule: CustomNotifica
     if (rule.group) {
         if (rule.onlyMembers.isNotBlank()) items += "仅${CustomNotificationSettings.splitMemberRules(rule.onlyMembers).size}成员"
         if (rule.blockMembers.isNotBlank()) items += "屏蔽${CustomNotificationSettings.splitMemberRules(rule.blockMembers).size}成员"
-        if (rule.blockAtAll) items += "屏蔽@所有人"
         if (rule.blockAtMe) items += "屏蔽@我"
     }
     return items.ifEmpty { listOf("点击配置通知规则") }.joinToString(" / ")
@@ -862,7 +853,6 @@ internal data class CustomNotificationBatchUpdate(
     val muteStart: String,
     val muteEnd: String,
     val applyAtRules: Boolean,
-    val blockAtAll: Boolean,
     val blockAtMe: Boolean
 ) {
     fun hasChanges(): Boolean {
@@ -890,7 +880,7 @@ internal data class CustomNotificationBatchUpdate(
             )
         }
         if (applyAtRules && next.group) {
-            next = next.copy(blockAtAll = blockAtAll, blockAtMe = blockAtMe)
+            next = next.copy(blockAtMe = blockAtMe)
         }
         return next
     }

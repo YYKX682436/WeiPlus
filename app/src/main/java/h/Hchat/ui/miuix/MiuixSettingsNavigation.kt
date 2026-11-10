@@ -63,7 +63,6 @@ import h.Hchat.hooks.items.antirecall.AntiRecallFeature
 import h.Hchat.hooks.items.autoreply.AutoReplyFeature
 import h.Hchat.hooks.items.autooriginal.AutoOriginalImageFeature
 import h.Hchat.hooks.items.autovieworiginal.AutoViewOriginalFeature
-import h.Hchat.hooks.items.atallnotify.AtAllNotificationBlockFeature
 import h.Hchat.hooks.items.automessageforward.AutoMessageForwardFeature
 import h.Hchat.hooks.items.callmedialimit.CallMediaLimitFeature
 import h.Hchat.hooks.items.callmedialimit.CallRingtoneBlockFeature
@@ -313,7 +312,6 @@ private fun featureGroups(
             title = "群组",
             providers = practicalProviders.filterByIds(
                 GroupChatLabelFeature.ID,
-                AtAllNotificationBlockFeature.ID,
                 GroupLeaveMonitorFeature.ID,
                 GroupRenameMonitorFeature.ID,
                 RealNameTailFeature.ID,
@@ -871,7 +869,6 @@ private fun featureSubSearchTerms(featureId: String): List<String> {
             "消息显示时间", "消息显示详情", "消息详情", "消息时间", "消息类型", "时间格式", "时间颜色", "显示位置", "点击显详情"
         )
         GroupMemberHistorySettingsProvider.FEATURE_ID -> listOf("历史发言记录", "群成员历史发言", "群成员资料")
-        AtAllNotificationBlockFeature.ID -> listOf("屏蔽艾特所有人", "屏蔽@所有人", "艾特全体", "通知拦截")
         QuoteDeleteClearFeature.ID -> listOf("删除键清引用", "清除引用", "引用消息", "删除引用")
         EmojiSaveFeature.ID -> listOf("保存表情", "表情保存", "动画表情", "长按菜单", "本地文件")
         SwipeQuoteFeature.ID -> listOf("滑动手势", "左滑引用", "右滑复读", "长按复读", "菜单复读", "+1", "复读语音", "语音时长", "滑动距离")
@@ -1034,11 +1031,6 @@ internal sealed class FeatureSubRoute {
 internal sealed class MomentsAutoLikeRoute {
     object Main : MomentsAutoLikeRoute()
     data class ContactPicker(val listMode: Int, val request: ContactPickerRequest) : MomentsAutoLikeRoute()
-}
-
-internal sealed class AtAllNotificationBlockRoute {
-    object Main : AtAllNotificationBlockRoute()
-    data class GroupPicker(val request: ContactPickerRequest) : AtAllNotificationBlockRoute()
 }
 
 internal sealed class MomentsAutoCommentRoute {
@@ -1563,7 +1555,6 @@ internal fun FeatureSettingsPage(
         AutoOriginalImageFeature.ID -> AutoOriginalImageMiuixPage(context, provider, onBack)
         AutoViewOriginalFeature.ID -> AutoViewOriginalMiuixPage(context, provider, onBack)
         RemoveForwardLimitFeature.ID -> RemoveForwardLimitMiuixPage(context, provider, onBack)
-        AtAllNotificationBlockFeature.ID -> AtAllNotificationBlockMiuixPage(context, provider, onBack)
         SettingsFeature.ID -> SettingsEntryMiuixPage(context, provider, onBack)
         FloatingShortcutFeature.ID -> FloatingShortcutMiuixPage(context, provider, onBack)
         MessageDetailsSettingsProvider.FEATURE_ID -> MessageDetailsConfigPage(

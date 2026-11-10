@@ -3,7 +3,6 @@ package h.Hchat.hooks.core
 import h.Hchat.hooks.api.core.WechatApiFeature
 import h.Hchat.hooks.items.audiotransform.AudioTransformFeature
 import h.Hchat.hooks.items.antirecall.AntiRecallFeature
-import h.Hchat.hooks.items.atallnotify.AtAllNotificationBlockFeature
 import h.Hchat.hooks.items.automessageforward.AutoMessageForwardFeature
 import h.Hchat.hooks.items.autoreply.AutoReplyFeature
 import h.Hchat.hooks.items.autooriginal.AutoOriginalImageFeature
@@ -133,7 +132,6 @@ object FeatureRegistry {
             .register(AutoOriginalImageFeature())
             .register(AutoViewOriginalFeature())
             .register(RemoveForwardLimitFeature())
-            .register(AtAllNotificationBlockFeature())
             .register(CallMediaLimitFeature())
             .register(CallRingtoneBlockFeature())
             .register(CustomNotificationFeature())

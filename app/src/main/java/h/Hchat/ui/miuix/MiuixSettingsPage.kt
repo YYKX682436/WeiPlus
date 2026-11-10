@@ -62,7 +62,6 @@ import h.Hchat.hooks.items.antirecall.AntiRecallSettings
 import h.Hchat.hooks.items.autoreply.AutoReplySettings
 import h.Hchat.hooks.items.autooriginal.AutoOriginalImageSettings
 import h.Hchat.hooks.items.autovieworiginal.AutoViewOriginalSettings
-import h.Hchat.hooks.items.atallnotify.AtAllNotificationBlockSettings
 import h.Hchat.hooks.items.callmedialimit.CallMediaLimitSettings
 import h.Hchat.hooks.items.chattime.ChatTimeStyleSettings
 import h.Hchat.hooks.items.conversationgroup.ConversationGroupStore
@@ -2158,7 +2157,6 @@ private object HchatConfigBackup {
         InputHintSettings.PREFS_NAME,
         AutoOriginalImageSettings.PREFS_NAME,
         AutoViewOriginalSettings.PREFS_NAME,
-        AtAllNotificationBlockSettings.PREFS_NAME,
         KeywordNotificationSettings.PREFS_NAME,
         TextSpeechSettings.PREFS_NAME,
         TextVoiceSettings.PREFS_NAME,

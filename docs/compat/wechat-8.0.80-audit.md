@@ -131,7 +131,7 @@ DexSQL 实际打开并分析 8.0.80 正式 APK 与 8.0.76 修改版样本：
 | 32 | 自动勾选原图 | AutoOriginalImageFeature | 未验 |
 | 33 | 自动查看原图 | AutoViewOriginalFeature | 未验 |
 | 34 | 移除转发限制 | RemoveForwardLimitFeature | UIC 候选可能存在；最低版本门槛冗余；未验 |
-| 35 | 屏蔽艾特所有人 | AtAllNotificationBlockFeature | 未验 |
+| 35 | 屏蔽艾特所有人 | AtAllNotificationBlockFeature | 当时未验；该功能已移除 |
 | 36 | 移除通话媒体限制 | CallMediaLimitFeature | 未验 |
 | 37 | 屏蔽通话铃声 | CallRingtoneBlockFeature | 未验 |
 | 38 | 自定义通知 | CustomNotificationFeature | 未验 |

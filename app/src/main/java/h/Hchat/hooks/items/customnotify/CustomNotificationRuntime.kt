@@ -33,8 +33,6 @@ import h.Hchat.hooks.api.model.WeChatMessage
 import h.Hchat.hooks.api.model.WeChatMessageTypes
 import h.Hchat.hooks.core.FeatureContext
 import h.Hchat.hooks.core.HookRegistry
-import h.Hchat.hooks.items.atallnotify.AtAllNotificationBlockRuntime
-import h.Hchat.hooks.items.atallnotify.AtAllNotificationBlockSettings
 import h.Hchat.hooks.items.customfriendavatar.CustomFriendAvatarSettings
 import h.Hchat.hooks.items.customfriendavatar.CustomFriendAvatarStore
 import h.Hchat.hooks.items.notification.NotificationNameResolver
@@ -125,7 +123,7 @@ object CustomNotificationRuntime {
     private val nativeNotifyAt = ConcurrentHashMap<String, Long>()
     private val nativeHandledMessages = ConcurrentHashMap<NativeMessageKey, Long>()
     private val notificationDedupAt = ConcurrentHashMap<NotificationDedupKey, Long>()
-    private val nativeMentions = ConcurrentHashMap<NativeMessageKey, NativeMentionRecord>()
+    private val nativeAtMeMessages = ConcurrentHashMap<NativeMessageKey, Long>()
     private val nativeInstanceFields = ConcurrentHashMap<Class<*>, List<Field>>()
     private val nativeMessageClasses = ConcurrentHashMap<Class<*>, Boolean>()
     private val nativeNotificationBuildStack = ThreadLocal<ArrayDeque<Boolean>>()
@@ -170,7 +168,6 @@ object CustomNotificationRuntime {
 
     fun handleMessage(context: Context, message: WeChatMessageObserveApi.ObservedMessage) {
         if (!observedMessageDemand) return
-        if (AtAllNotificationBlockRuntime.shouldSuppress(context, message)) return
         val settings = CustomNotificationSettings(context)
         if (!settings.isEnabled()) return
         if (message.outgoing || message.isSend()) return
@@ -247,15 +244,6 @@ object CustomNotificationRuntime {
                     val msgSvrId = notification.extras?.getLong(EXTRA_NATIVE_MSG_SVR_ID, 0L) ?: 0L
                     if (hchatNotification) return@before
                     if (talker.isBlank()) return@before
-                    if (AtAllNotificationBlockRuntime.shouldSuppress(
-                        hostContext,
-                        talker,
-                        msgSvrId
-                        )
-                    ) {
-                        run { intercepted = true; value = null }
-                        return@before
-                    }
                     val settings = CustomNotificationSettings(hostContext)
                     if (!settings.isEnabled()) return@before
                     val rule = settings.effectiveRule(talker) ?: return@before
@@ -461,10 +449,8 @@ object CustomNotificationRuntime {
     }
 
     private fun recordNativeMention(context: Context, args: Array<Any?>) {
-        val blockAtAllEnabled = AtAllNotificationBlockSettings.isEnabled(context)
         val settings = CustomNotificationSettings(context)
-        val customNotificationEnabled = settings.isEnabled()
-        if (!blockAtAllEnabled && !customNotificationEnabled) return
+        if (!settings.isEnabled()) return
         val nativeMessage = findNativeMessage(args) ?: return
         val talker = args.asSequence()
             .filterIsInstance<String>()
@@ -472,12 +458,8 @@ object CustomNotificationRuntime {
             .firstOrNull(::isGroupTalker)
             ?: readFirstStringField(nativeMessage, "field_talker", "talker")
         if (!isGroupTalker(talker)) return
-        val selectedForGlobalBlock = blockAtAllEnabled && AtAllNotificationBlockSettings.blocksGroup(context, talker)
-        val customRule = if (customNotificationEnabled) settings.effectiveRule(talker) else null
-        val needsCustomMention = customRule?.let {
-            it.enabled && it.group && (it.blockAtAll || it.blockAtMe)
-        } == true
-        if (!selectedForGlobalBlock && !needsCustomMention) return
+        val rule = settings.effectiveRule(talker) ?: return
+        if (!rule.enabled || !rule.group || !rule.blockAtMe) return
         val nativeStrings = instanceFields(nativeMessage.javaClass)
             .asSequence()
             .filter { it.type == String::class.java }
@@ -488,33 +470,26 @@ object CustomNotificationRuntime {
                 it.contains("atuserlist", ignoreCase = true)
         }.orEmpty()
         val nativeContent = readFirstRawStringField(nativeMessage, "field_content", "content")
-        val nativeTextValues = (args.asSequence().filterIsInstance<String>() + nativeStrings.asSequence()).toList()
-        val announcementAll = nativeTextValues.any {
-            it.contains("announcement@all", ignoreCase = true)
-        }
-        val explicitNotifyAll = nativeTextValues
-            .any { it.contains("notify@all", ignoreCase = true) }
-        val expandedNotifyAll = AtAllNotificationBlockRuntime.isExpandedNotifyAll(
-            nativeContent,
+        // WeChat can put the broadcast marker outside msgSource. Keep it distinct from @me.
+        if ((args.asSequence().filterIsInstance<String>() + nativeStrings.asSequence()).any {
+                it.contains("announcement@all", ignoreCase = true) ||
+                    it.contains("notify@all", ignoreCase = true)
+            }
+        ) return
+        if (!WeChatMessage.isAtMeMessage(
             nativeSource,
+            nativeContent,
             WeChatApis.account()?.selfWxId().orEmpty()
-        )
-        val mentionType = when {
-            announcementAll -> WeChatMessage.AtMentionType.ANNOUNCEMENT_ALL
-            explicitNotifyAll || expandedNotifyAll -> WeChatMessage.AtMentionType.AT_ALL
-            else -> WeChatMessage.classifyAtMention(
-                nativeSource,
-                nativeContent,
-                WeChatApis.account()?.selfWxId().orEmpty()
-            )
-        }
+        )) return
         val msgSvrId = args.asSequence()
             .filterIsInstance<Long>()
             .firstOrNull { it > 0L }
             ?: readFirstLongField(nativeMessage, "field_msgSvrId", "msgSvrId")
-        if (needsCustomMention) recordNativeMention(talker, msgSvrId, mentionType)
-        if (selectedForGlobalBlock && mentionType == WeChatMessage.AtMentionType.AT_ALL) {
-            AtAllNotificationBlockRuntime.recordNative(context, talker, msgSvrId)
+        if (msgSvrId <= 0L) return
+        val now = System.currentTimeMillis()
+        nativeAtMeMessages[NativeMessageKey(talker, msgSvrId)] = now
+        if (nativeAtMeMessages.size >= NATIVE_MENTION_CLEANUP_THRESHOLD) {
+            nativeAtMeMessages.entries.removeIf { now - it.value > NATIVE_MENTION_TTL_MS }
         }
     }
 
@@ -768,24 +743,17 @@ object CustomNotificationRuntime {
         val settings = CustomNotificationSettings(context)
         val customNotificationEnabled = settings.isEnabled()
         val customAvatarEnabled = CustomFriendAvatarSettings.notificationsEnabled(context)
-        val blockAtAllEnabled = AtAllNotificationBlockSettings.isEnabled(context)
-        if (!customNotificationEnabled && !customAvatarEnabled && !blockAtAllEnabled) return
+        if (!customNotificationEnabled && !customAvatarEnabled) return
         val talker = readFirstStringField(item, "h", "userName", "username", "talker", "talkerUserName")
         val notification = readFirstNotification(item, "f", "notification", "mNotification")
-        val needsMessageIdentity = customNotificationEnabled || blockAtAllEnabled
-        val msgSvrId = if (needsMessageIdentity) readFirstLongField(item, "i", "msgId") else 0L
         if (talker.isBlank() || notification == null) return
         if (notification.extras == null) notification.extras = Bundle()
-        if (customNotificationEnabled || customAvatarEnabled || blockAtAllEnabled) {
-            notification.extras.putString(EXTRA_TALKER, talker)
-        }
-        if (needsMessageIdentity) {
-            if (msgSvrId > 0L) notification.extras.putLong(EXTRA_NATIVE_MSG_SVR_ID, msgSvrId)
-        }
+        notification.extras.putString(EXTRA_TALKER, talker)
         if (!customNotificationEnabled) return
+        val msgSvrId = readFirstLongField(item, "i", "msgId")
+        if (msgSvrId > 0L) notification.extras.putLong(EXTRA_NATIVE_MSG_SVR_ID, msgSvrId)
         val rule = settings.effectiveRule(talker) ?: return
         if (!rule.enabled) return
-        notification.extras.putString(EXTRA_TALKER, talker)
         val unreadCount = readFirstIntField(item, "m", "j")
         if (unreadCount > 0) notification.extras.putInt(EXTRA_UNREAD_COUNT, unreadCount)
     }
@@ -844,7 +812,6 @@ object CustomNotificationRuntime {
         message: WeChatMessageObserveApi.ObservedMessage
     ): Boolean {
         if (!rule.group) return false
-        val talker = message.talker.ifBlank { message.getTalker() }
         val senderId = message.sender.ifBlank { message.getSendTalker() }
         val senderName = if (senderId.isNotBlank()) {
             WeChatApis.contact().contacts()?.getGroupMemberDisplayName(rule.talker, senderId).orEmpty()
@@ -858,22 +825,8 @@ object CustomNotificationRuntime {
         if (rule.blockMembers.isNotBlank() &&
             CustomNotificationSettings.memberRuleMatches(rule.blockMembers, senderId, senderName, pureContent)
         ) return true
-        if (rule.blockAtAll && AtAllNotificationBlockRuntime.isAtAllMessage(message, talker)) return true
         if (rule.blockAtMe && message.isAtMe) return true
         return false
-    }
-
-    private fun recordNativeMention(
-        talker: String,
-        msgSvrId: Long,
-        mentionType: WeChatMessage.AtMentionType
-    ) {
-        if (msgSvrId <= 0L || mentionType == WeChatMessage.AtMentionType.NONE ||
-            mentionType == WeChatMessage.AtMentionType.OTHERS
-        ) return
-        val now = System.currentTimeMillis()
-        nativeMentions[NativeMessageKey(talker, msgSvrId)] = NativeMentionRecord(mentionType, now)
-        if (nativeMentions.size >= NATIVE_MENTION_CLEANUP_THRESHOLD) cleanupNativeMentions(now)
     }
 
     private fun shouldSuppressNativeByRule(
@@ -881,23 +834,14 @@ object CustomNotificationRuntime {
         talker: String,
         msgSvrId: Long
     ): Boolean {
-        if (!rule.group || msgSvrId <= 0L) return false
+        if (!rule.group || !rule.blockAtMe || msgSvrId <= 0L) return false
         val key = NativeMessageKey(talker, msgSvrId)
-        val record = nativeMentions[key] ?: return false
-        val now = System.currentTimeMillis()
-        if (now - record.createdAt > NATIVE_MENTION_TTL_MS) {
-            nativeMentions.remove(key, record)
+        val recordedAt = nativeAtMeMessages[key] ?: return false
+        if (System.currentTimeMillis() - recordedAt > NATIVE_MENTION_TTL_MS) {
+            nativeAtMeMessages.remove(key, recordedAt)
             return false
         }
-        return when (record.type) {
-            WeChatMessage.AtMentionType.AT_ALL -> rule.blockAtAll
-            WeChatMessage.AtMentionType.AT_ME -> rule.blockAtMe
-            else -> false
-        }
-    }
-
-    private fun cleanupNativeMentions(now: Long) {
-        nativeMentions.entries.removeIf { now - it.value.createdAt > NATIVE_MENTION_TTL_MS }
+        return true
     }
 
     private fun buildPayload(
@@ -1830,8 +1774,4 @@ object CustomNotificationRuntime {
         val messageId: Long
     )
 
-    private data class NativeMentionRecord(
-        val type: WeChatMessage.AtMentionType,
-        val createdAt: Long
-    )
 }
