@@ -66,7 +66,12 @@ internal class WorkVideoClient {
     }
 
     /** Caller owns [target]; a failed or incomplete download never leaves it behind. */
-    fun download(mediaUrl: String, platform: WorkLinkMatcher.Platform, target: File): Boolean {
+    fun download(
+        mediaUrl: String, platform: WorkLinkMatcher.Platform, target: File,
+        limit: Long = MAX_VIDEO_BYTES
+    ): Boolean {
+        val byteLimit = minOf(limit, MAX_VIDEO_BYTES)
+        if (byteLimit < 12) return false
         val part = File(target.absolutePath + ".part")
         if (target.exists() || part.exists()) return false
         var completed = false
@@ -82,7 +87,7 @@ internal class WorkVideoClient {
                     }
                     if (!response.isSuccessful) return false
                     val body = response.body ?: return false
-                    if (body.contentLength() > MAX_VIDEO_BYTES) return false
+                    if (body.contentLength() > byteLimit) return false
                     val buffer = ByteArray(16 * 1024)
                     var size = 0L
                     val signature = ByteArrayOutputStream(12)
@@ -93,7 +98,7 @@ internal class WorkVideoClient {
                                 val read = source.read(buffer)
                                 if (read < 0) break
                                 size += read
-                                if (size > MAX_VIDEO_BYTES) throw IOException("video too large")
+                                if (size > byteLimit) throw IOException("video too large")
                                 if (signature.size() < 12) signature.write(buffer, 0, minOf(read, 12 - signature.size()))
                                 out.write(buffer, 0, read)
                             }

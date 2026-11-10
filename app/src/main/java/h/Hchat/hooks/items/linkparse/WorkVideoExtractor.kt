@@ -39,7 +39,7 @@ internal object WorkVideoExtractor {
         streams.mapNotNull { it.obj()?.str("masterUrl")?.let(::secureXhsMedia) }.distinct().take(MAX_CANDIDATES)
     } ?: emptyList()
 
-    private fun secureXhsMedia(raw: String): String? {
+    internal fun secureXhsMedia(raw: String): String? {
         val uri = runCatching { URI(raw) }.getOrNull() ?: return null
         val host = uri.host?.lowercase(Locale.ROOT) ?: return null
         if (uri.userInfo != null || (host != "xhscdn.com" && !host.endsWith(".xhscdn.com"))) return null

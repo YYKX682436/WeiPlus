@@ -4,11 +4,18 @@ import java.net.URI
 import java.util.Locale
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 
-internal data class WorkImageSource(val candidates: List<String>)
+internal data class WorkLiveSource(val candidates: List<String>, val coverTimeMs: Long)
+
+internal data class WorkImageSource(
+    val candidates: List<String>,
+    val live: WorkLiveSource? = null,
+    val expectsAnimation: Boolean = false
+)
 
 /** Extracts ordered image candidates only from gallery shapes verified on public work pages. */
 internal object WorkImageExtractor {
@@ -37,7 +44,16 @@ internal object WorkImageExtractor {
                 .take(MAX_CANDIDATES_PER_IMAGE)
                 .toList()
             if (safeCandidates.isEmpty()) return@safely null
-            WorkImageSource(safeCandidates)
+            val video = image.obj("video")?.takeIf { it.isNotEmpty() }
+            val live = if (video != null) {
+                val urls = listOf("play_addr", "play_addr_h264", "play_addr_h265").asSequence()
+                    .flatMap { video.obj(it)?.array("url_list").orEmpty().asSequence() }
+                    .mapNotNull { it.prim()?.contentOrNull }
+                    .filter { WorkVideoExtractor.allowedMedia(it, WorkLinkMatcher.Platform.DOUYIN) }
+                    .distinct().take(MAX_CANDIDATES_PER_IMAGE).toList()
+                WorkLiveSource(urls, coverTime(image, video, "cover_timestamp_ms"))
+            } else null
+            WorkImageSource(safeCandidates, live, image.hasAnimationHint())
         }
     }
 
@@ -53,11 +69,41 @@ internal object WorkImageExtractor {
             val fileId = image.str("fileId") ?: return@safely null
             if (fileId.length > MAX_FILE_ID_CHARS || fileId.contains("..") ||
                 !fileId.matches(Regex("[A-Za-z0-9/_-]+"))) return@safely null
-            val url = "https://sns-img-qc.xhscdn.com/${fileId.trimStart('/')}?imageView2/2/w/1920/format/jpg"
-            if (!allowedXhsImage(url)) return@safely null
-            WorkImageSource(listOf(url))
+            val original = "https://sns-img-qc.xhscdn.com/${fileId.trimStart('/')}"
+            val liveFlag = image.str("livePhoto") in setOf("true", "1")
+            val stream = image.obj("stream")
+            val live = if (liveFlag || stream?.values?.any { it is JsonArray && it.isNotEmpty() } == true) {
+                val candidates = listOf("h264", "h265").asSequence()
+                    .flatMap { stream?.array(it).orEmpty().asSequence() }
+                    .mapNotNull { it.obj() }
+                    .flatMap { row ->
+                        sequenceOf(row.str("masterUrl")) +
+                            row.array("backupUrls").orEmpty().asSequence().map { it.prim()?.contentOrNull }
+                    }
+                    .filterNotNull().mapNotNull(WorkVideoExtractor::secureXhsMedia)
+                    .distinct().take(MAX_CANDIDATES_PER_IMAGE).toList()
+                WorkLiveSource(candidates, coverTime(image, image.obj("livePhoto"), "coverTimeStampMs"))
+            } else null
+            val animated = image.hasAnimationHint()
+            val supplied = sequenceOf(image.str("url"), image.str("urlDefault"), image.str("urlPre")) +
+                image.array("infoList").orEmpty().asSequence().map { it.obj()?.str("url") }
+            val candidates = (sequenceOf(original) + supplied.filterNotNull().mapNotNull(WorkVideoExtractor::secureXhsMedia))
+                .filter(::allowedXhsImage).distinct().take(MAX_CANDIDATES_PER_IMAGE - 1).toList()
+            val staticFallback = if (animated) emptyList() else listOf("$original?imageView2/2/w/1920/format/jpg")
+            WorkImageSource((candidates + staticFallback).distinct(), live, animated)
         }
     }
+
+    private fun coverTime(image: JsonObject, media: JsonObject?, field: String): Long {
+        val declared = image[field] ?: media?.get(field) ?: return 0
+        if (declared == JsonNull) return 0
+        // Only fields explicitly carrying milliseconds are accepted. An invalid supplied value fails validation.
+        return declared.prim()?.contentOrNull?.toLongOrNull() ?: -1
+    }
+
+    private fun JsonObject.hasAnimationHint(): Boolean =
+        sequenceOf(str("format"), str("mimeType"), str("mime_type"))
+            .any { it.equals("gif", true) || it.equals("image/gif", true) }
 
     fun allowedDouyinImage(raw: String): Boolean = allowedImage(raw, "douyinpic.com")
 

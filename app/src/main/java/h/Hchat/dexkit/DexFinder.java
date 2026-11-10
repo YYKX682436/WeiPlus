@@ -1466,11 +1466,11 @@ public class DexFinder {
         try {
             if (isSendImageAsyncAppInfoApiReady()) return;
             resolveSendImageAsyncParamClasses();
-            if (sendImageAppInfoClass == null) {
-                sendImageAppInfoClass = findSendImageAppInfoClass();
-            }
             if (!isSendImageAsyncSubmitMethod(sendImageAsyncSubmitMethod)) {
                 sendImageAsyncSubmitMethod = findSendImageAsyncSubmitMethod();
+            }
+            if (sendImageAppInfoClass == null) {
+                sendImageAppInfoClass = findSendImageAppInfoClass();
             }
             logDetail("图片新版appid链路: params=" + className(sendImageAsyncParamsClass)
                     + " cross=" + className(sendImageCrossParamsClass)

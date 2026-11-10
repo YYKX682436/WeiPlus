@@ -1,9 +1,15 @@
 package h.Hchat.hooks.items.linkparse
 
+import android.graphics.BitmapFactory
+import android.media.MediaExtractor
+import android.media.MediaFormat
 import android.media.MediaMetadataRetriever
 import android.os.SystemClock
 import h.Hchat.hooks.api.core.WeChatApis
+import h.Hchat.hooks.api.media.WeChatChatImageSender
 import h.Hchat.hooks.api.media.WeChatModernVideoSender
+import h.Hchat.hooks.api.media.WeChatImageApi
+import h.Hchat.hooks.api.media.WeChatEmojiApi
 import h.Hchat.hooks.api.message.WeChatMessageChangeApi
 import h.Hchat.hooks.core.FeatureContext
 import h.Hchat.hooks.core.DexInstallScheduler
@@ -16,13 +22,16 @@ import h.Hchat.preferences.HchatStorage
 import java.io.File
 import java.security.MessageDigest
 import java.util.Locale
+import java.util.UUID
 import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedDeque
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.Executors
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicLong
 
 internal class LinkParseRuntime(private val context: FeatureContext) {
@@ -33,6 +42,11 @@ internal class LinkParseRuntime(private val context: FeatureContext) {
     private val imageClient = WorkImageClient()
     private val pending = HashSet<String>()
     private val pendingUploads = ConcurrentHashMap<String, ConcurrentLinkedDeque<PendingUpload>>()
+    private val galleryUploads = ConcurrentHashMap<String, GalleryPhotoReceipt>()
+    @Volatile private var gifReceipt: GifReceipt? = null
+    private val hookGeneration = HookRegistry.get().installationGeneration()
+    private var chatImageSender: WeChatChatImageSender? = null
+    @Volatile private var lastGifMessage: Pair<String, Long>? = null
     private val nextTaskId = AtomicLong(0)
     private val executor = ThreadPoolExecutor(1, 1, 0, TimeUnit.SECONDS, ArrayBlockingQueue(3), { r ->
         Thread(r, "HchatLinkParse").apply { isDaemon = true }
@@ -61,11 +75,21 @@ internal class LinkParseRuntime(private val context: FeatureContext) {
         val file: File
     )
 
+    private data class GalleryMedia(val cover: DownloadedWorkImage, val live: WeChatChatImageSender.Live?) {
+        val files = listOfNotNull(cover.file, live?.path?.let(::File))
+        val isGif get() = cover.format == WorkImageFormat.GIF
+    }
+
+    private data class GifReceipt(
+        val talker: String, val digest: String, val startedAt: Long,
+        val messageId: CompletableFuture<Long> = CompletableFuture()
+    )
+
     fun install(track: (Any) -> Unit) {
         cleaner.scheduleWithFixedDelay({
             runCatching {
-                cleanup(File(host.cacheDir, CACHE_DIR))
                 cleanupPendingUploads()
+                cleanup(File(host.cacheDir, CACHE_DIR))
             }
         }, 0, 30, TimeUnit.MINUTES)
         DexInstallScheduler.schedule("link_parse_message_write", "链接解析消息写入", DexInstallScheduler.Stage.WARMUP) { installMessageWriteHook() }
@@ -74,7 +98,7 @@ internal class LinkParseRuntime(private val context: FeatureContext) {
             runCatching { changes.install() }.onFailure { HLog.i("[Hchat:LinkParse] 数据库监听安装失败") }
             if (!changes.isInstalled) HLog.i("[Hchat:LinkParse] 数据库监听未就绪")
             val subscription = changes.subscribe({
-                (it.isInsert() || it.isUpdate()) && (settings.enabled() || pendingUploads.isNotEmpty())
+                (it.isInsert() || it.isUpdate()) && (settings.enabled() || pendingUploads.isNotEmpty() || gifReceipt != null)
             }, ::onChange)
             if (subscription == null) HLog.i("[Hchat:LinkParse] 数据库订阅失败") else {
                 track(subscription)
@@ -90,9 +114,12 @@ internal class LinkParseRuntime(private val context: FeatureContext) {
         cleaner.shutdownNow()
         synchronized(pending) { pending.clear() }
         pendingUploads.clear()
+        galleryUploads.clear()
+        gifReceipt = null
     }
 
     private fun onChange(change: WeChatMessageChangeApi.MessageChange) {
+        observeGifInsert(change)
         observeUploadCompletion(change)
         val values = change.databaseChange?.values
         val status = if (values?.containsKey("status") == true) runCatching { values.getAsInteger("status") }.getOrNull() else null
@@ -101,7 +128,7 @@ internal class LinkParseRuntime(private val context: FeatureContext) {
             return
         }
         if (!LinkParseEntryPolicy.acceptDatabase(change.isInsert, change.isUpdate, message.isOutgoing(), message.status, status)) return
-        handleMessage(message)
+        handleMessage(message, "db_${change.operation()}")
     }
 
     private fun installMessageWriteHook(): Boolean {
@@ -120,20 +147,21 @@ internal class LinkParseRuntime(private val context: FeatureContext) {
         HookRegistry.get().hookOnce("link_parse:message_write", candidates.single(), XposedInterface.Hooker { chain ->
             LinkParseWriteGate.intercept(chain, { !stopped && settings.enabled() }, { id ->
                 WeChatApis.message().store()?.getMessageById(id)
-            }, ::handleMessage, { HLog.i("[Hchat:LinkParse] 消息写入观察失败") })
+            }, { handleMessage(it, "send_write") }, { HLog.i("[Hchat:LinkParse] 消息写入观察失败") })
         })
         HLog.i("[Hchat:LinkParse] 消息写入观察已安装")
         return true
     }
 
-    private fun handleMessage(message: WeChatMessage) {
+    private fun handleMessage(message: WeChatMessage, entry: String) {
         val timestamp = LinkParseMessageGate.eligibleTime(message, System.currentTimeMillis()) ?: return
         val group = message.isGroupChat()
         val outgoing = message.isOutgoing()
-        val self = if (group && !outgoing && settings.groupAtMeOnly()) {
-            WeChatApis.contact().account()?.selfWxId().orEmpty()
+        val needsAt = group && !outgoing && settings.groupAtMeOnly()
+        val self = if (needsAt) {
+            message.selfWxId.ifBlank { WeChatApis.account()?.selfWxId().orEmpty() }
         } else ""
-        val atMe = self.isNotEmpty() && message.isAtMe(self)
+        val atMe = message.isDirectlyAtMe(self)
         val content = message.bodyContent()
         HLog.i("[Hchat:LinkParse] 收到数据库文本")
         val match = WorkLinkMatcher.find(content) ?: run {
@@ -144,9 +172,20 @@ internal class LinkParseRuntime(private val context: FeatureContext) {
             return
         }
         if (!settings.allows(match.platform, message.talker, group, outgoing, atMe)) {
-            HLog.i("[Hchat:LinkParse] 设置拒绝触发")
+            val listed = message.talker in settings.allowedTalkers()
+            val reason = when {
+                !settings.enabled() || !settings.enabled(match.platform) -> "disabled"
+                !listed -> "whitelist"
+                self.isBlank() -> "no_self"
+                else -> "not_direct_at"
+            }
+            HLog.i("[Hchat:LinkParse] trigger_rejected reason=$reason entry=$entry type=${message.type} " +
+                "isSend=${message.isSend} self_present=${self.isNotBlank()} " +
+                "source=${message.msgSourceOrigin} source_chars=${message.msgSource.length} listed=$listed direct_at=$atMe")
             return
         }
+        if (needsAt) HLog.i("[Hchat:LinkParse] trigger_allowed entry=$entry " +
+            "source=${message.msgSourceOrigin} source_chars=${message.msgSource.length} direct_at=$atMe")
         val key = key(message.talker, message.msgId)
         submit(
             message.talker,
@@ -216,7 +255,7 @@ internal class LinkParseRuntime(private val context: FeatureContext) {
         }
         when (resolved) {
             is WorkResolution.Video -> processVideo(talker, match, group, outgoing, atMe, enqueuedAt, queueWaitMs, resolveMs, resolved.candidates, dir)
-            is WorkResolution.Gallery -> processGallery(talker, match, group, outgoing, atMe, enqueuedAt, queueWaitMs, resolveMs, resolved.images, dir)
+            is WorkResolution.Gallery -> processGallery(talker, match, group, outgoing, atMe, queueWaitMs, resolveMs, resolved.images, dir)
         }
     }
 
@@ -288,74 +327,222 @@ internal class LinkParseRuntime(private val context: FeatureContext) {
         group: Boolean,
         outgoing: Boolean,
         atMe: Boolean,
-        enqueuedAt: Long,
         queueWaitMs: Long,
         resolveMs: Long,
         sources: List<WorkImageSource>,
         dir: File
     ) {
-        if (!LinkParseGallerySupport.isVerified(match.platform)) {
-            HLog.i("[Hchat:LinkParse] 图集发送未验收 platform=${match.platform}")
+        if (!LinkParseGallerySupport.isVerified(match.platform) ||
+            sources.isEmpty() || sources.size > WorkImageExtractor.MAX_IMAGES) return
+        val media = WeChatApis.media() ?: return
+        val imageApi = media.images()
+        val version = WeChatApis.version()?.versionCode() ?: 0L
+        val native = if (version == 3220L) nativeGallerySender(imageApi, version) ?: run {
+            HLog.i("[Hchat:LinkParse] gallery_async_unavailable")
             return
-        }
-        if (sources.isEmpty() || sources.size > WorkImageExtractor.MAX_IMAGES) return
-        val images = ArrayList<DownloadedWorkImage>(sources.size)
-        var totalBytes = 0L
-        var submittedCount = 0
+        } else null
+        val items = ArrayList<GalleryMedia>(sources.size)
+        val retained = HashSet<File>()
+        fun allowed() = !stopped && settings.allows(match.platform, talker, group, outgoing, atMe)
         try {
+            var totalBytes = 0L
             val downloadStart = SystemClock.elapsedRealtime()
+            val gifLimits = native?.gifLimits()
             for ((index, source) in sources.withIndex()) {
-                if (stopped || !settings.allows(match.platform, talker, group, outgoing, atMe)) return
+                if (!allowed()) return
                 val base = File(dir, "image_${System.currentTimeMillis()}_${System.nanoTime()}_$index")
-                val downloaded = imageClient.download(source, match.platform, base) ?: run {
-                    HLog.i("[Hchat:LinkParse] 图集下载失败 platform=${match.platform} index=${index + 1}")
+                val remaining = MAX_GALLERY_BYTES - totalBytes
+                val cover = imageClient.download(source, match.platform, base, remaining) { reason ->
+                    HLog.i("[Hchat:LinkParse] gallery_download_failed platform=${match.platform} index=${index + 1} reason=$reason")
+                } ?: return
+                // Own the cover before probing/downloading the paired video so failures clean up both.
+                items += GalleryMedia(cover, null)
+                val size = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeFile(cover.file.absolutePath, size)
+                if (size.outWidth <= 0 || size.outHeight <= 0) {
+                    HLog.i("[Hchat:LinkParse] gallery_invalid_image index=${index + 1}")
                     return
                 }
-                totalBytes += downloaded.bytes
-                if (totalBytes > MAX_GALLERY_BYTES) {
-                    downloaded.file.delete()
-                    HLog.i("[Hchat:LinkParse] 图集超出字节上限 platform=${match.platform}")
+                if (cover.format == WorkImageFormat.GIF &&
+                    (gifLimits == null || cover.bytes > gifLimits.bytes ||
+                        maxOf(size.outWidth, size.outHeight) > gifLimits.edge)) {
+                    HLog.i("[Hchat:LinkParse] gallery_gif_unavailable_or_over_limit index=${index + 1}")
                     return
                 }
-                images += downloaded
+                val sourceLive = source.live
+                if (sourceLive != null) {
+                    val live = if (native != null) downloadLive(
+                        sourceLive, match.platform, File(base.absolutePath + ".mp4"), remaining - cover.bytes
+                    ) else null
+                    if (live == null) {
+                        HLog.i("[Hchat:LinkParse] gallery_live_invalid_or_unavailable index=${index + 1}")
+                        return
+                    }
+                    items[index] = GalleryMedia(cover, live)
+                }
+                totalBytes += items[index].files.sumOf(File::length)
             }
             val downloadMs = (SystemClock.elapsedRealtime() - downloadStart).coerceAtLeast(0L)
-            val rate = if (downloadMs > 0) totalBytes.toDouble() / 1024.0 / (downloadMs / 1000.0) else 0.0
-            HLog.i(
-                "[Hchat:LinkParse] timing media=gallery platform=${match.platform} queue_ms=$queueWaitMs " +
-                    "resolve_ms=$resolveMs download_ms=$downloadMs images=${images.size} bytes=$totalBytes " +
-                    "avg_kib_s=${String.format(Locale.US, "%.1f", rate)}"
-            )
-            if (stopped || !settings.allows(match.platform, talker, group, outgoing, atMe)) return
-            val imageApi = WeChatApis.media()?.images() ?: run { HLog.i("[Hchat:LinkParse] 图片发送接口不可用"); return }
-            if (!imageApi.canSendSilently()) { HLog.i("[Hchat:LinkParse] 图片发送接口未就绪"); return }
+            HLog.i("[Hchat:LinkParse] timing media=gallery platform=${match.platform} queue_ms=$queueWaitMs " +
+                "resolve_ms=$resolveMs download_ms=$downloadMs images=${items.size} bytes=$totalBytes")
+            if (!allowed()) return
+            if (native == null) {
+                // Preserve plain image sending on other host builds; the additional fields are 3220-specific.
+                if (imageApi.canSendSilently()) for (item in items) {
+                    if (!allowed() || !imageApi.sendOriginal(talker, item.cover.file.absolutePath)) return
+                    retained += item.cover.file
+                }
+                return
+            }
 
-            for ((index, image) in images.withIndex()) {
-                if (stopped || !settings.allows(match.platform, talker, group, outgoing, atMe)) return
-                val digestStart = SystemClock.elapsedRealtime()
-                val fileMd5 = md5File(image.file)
-                val digestMs = (SystemClock.elapsedRealtime() - digestStart).coerceAtLeast(0L)
-                val taskId = nextTaskId.incrementAndGet()
-                val tracked = fileMd5?.let { registerUpload(talker, UploadKind.IMAGE, it, taskId, enqueuedAt, image.file) }
-                val submitStart = SystemClock.elapsedRealtime()
-                val accepted = imageApi.sendOriginal(talker, image.file.absolutePath)
-                val submitMs = (SystemClock.elapsedRealtime() - submitStart).coerceAtLeast(0L)
-                HLog.i(
-                    "[Hchat:LinkParse] timing send_submit media=image platform=${match.platform} " +
-                        "index=${index + 1}/${images.size} format=${image.format} bytes=${image.bytes} " +
-                        "submit_ms=$submitMs digest_ms=$digestMs accepted=$accepted task=$taskId"
-                )
-                if (!accepted) {
-                    tracked?.let(::removeUpload)
-                    HLog.i("[Hchat:LinkParse] 图片发送失败 platform=${match.platform} index=${index + 1}")
+            val hasGif = items.any { it.isGif }
+            val emoji = media.emojis()
+            if (hasGif && (!emoji.canSendLocalPathSilently() || WeChatApis.message().changes()?.isInstalled != true)) {
+                HLog.i("[Hchat:LinkParse] gallery_gif_receipt_unavailable")
+                return
+            }
+            val self = WeChatApis.account()?.selfWxId().orEmpty()
+            val batchId = UUID.randomUUID().toString()
+            val segments = LinkParseGalleryPlan.segments(items.map { it.cover.format }, native.canGroup(talker))
+            // Construct and validate every native request before submitting the first member.
+            val submissions = items.mapIndexed { index, item ->
+                if (item.isGif) null else native.prepare(talker, self, item.cover.file.absolutePath,
+                    batchId, index, item.live, segments.first { index in it.indices }.group)
+            }
+            val gifDigests = items.map { if (it.isGif) md5File(it.cover.file) ?: return else null }
+            for ((segmentIndex, segment) in segments.withIndex()) {
+                if (!allowed()) return
+                val first = segment.indices.first
+                if (items[first].isGif) {
+                    if (!sendGif(emoji, talker, items[first].cover.file, checkNotNull(gifDigests[first]))) return
+                    continue
+                }
+                val receipts = ArrayList<GalleryPhotoReceipt>()
+                for (index in segment.indices) {
+                    val item = items[index]
+                    val submission = checkNotNull(submissions[index])
+                    val receipt = GalleryPhotoReceipt(talker, item.files, SystemClock.elapsedRealtime(), index + 1)
+                    check(galleryUploads.putIfAbsent(submission.sendId, receipt) == null)
+                    // Once entering the native call, even an exception can be ambiguous. Do not retry.
+                    retained.addAll(item.files)
+                    val accepted = runCatching { submission.invoke.call() != null }.getOrDefault(false)
+                    HLog.i("[Hchat:LinkParse] gallery_submit index=${index + 1}/${items.size} " +
+                        "media=${if (item.live == null) "image" else "live"} group_count=${segment.group?.count ?: 0} accepted=$accepted")
+                    if (!accepted) return
+                    receipts += receipt
+                }
+                if (segmentIndex != segments.lastIndex && !awaitPhotos(receipts)) {
+                    HLog.i("[Hchat:LinkParse] gallery_order_stop image_receipt_missing_or_failed")
                     return
                 }
-                submittedCount++
-                if (index < images.lastIndex) Thread.sleep(300)
             }
         } finally {
-            // Accepted images remain available to WeChat's asynchronous sender; unsent files are removed now.
-            images.drop(submittedCount).forEach { image -> if (image.file.exists()) image.file.delete() }
+            items.flatMap { it.files }.filterNot { it in retained }.forEach(File::delete)
+            cleanupGalleryUploads()
+        }
+    }
+
+    private fun nativeGallerySender(imageApi: WeChatImageApi, version: Long): WeChatChatImageSender? {
+        chatImageSender?.let { return it }
+        val sender = WeChatChatImageSender.locate(imageApi, context.dexFinder(), version) ?: return null
+        return runCatching {
+            HookRegistry.get().withInstallationGeneration(hookGeneration, { !stopped }) {
+                sender.observe(LinkParseFeature.ID, { id, talker -> galleryUploads[id]?.talker == talker },
+                    ::onNativeImageEvent)
+            }
+            sender.also { chatImageSender = it }
+        }.getOrNull()
+    }
+
+    private fun onNativeImageEvent(id: String, localId: Long, result: String?) {
+        val receipt = galleryUploads[id] ?: return
+        receipt.onEvent(localId, result)
+        // Only update state on WeChat's thread; file I/O and diagnostics stay on our cleaner.
+        if (result != null) runCatching { cleaner.execute { cleanupGalleryUploads() } }
+    }
+
+    private fun downloadLive(
+        source: WorkLiveSource, platform: WorkLinkMatcher.Platform, target: File, remaining: Long
+    ): WeChatChatImageSender.Live? {
+        if (source.coverTimeMs < 0) return null
+        for (candidate in source.candidates) {
+            if (stopped) return null
+            if (!client.download(candidate, platform, target, remaining)) continue
+            val duration = videoTrackDurationMs(target)
+            if (duration != null && source.coverTimeMs < duration) {
+                return WeChatChatImageSender.Live(target.absolutePath, duration, source.coverTimeMs)
+            }
+            target.delete()
+        }
+        return null
+    }
+
+    private fun videoTrackDurationMs(file: File): Int? = runCatching {
+        val extractor = MediaExtractor()
+        try {
+            extractor.setDataSource(file.absolutePath)
+            val track = (0 until extractor.trackCount).asSequence().map(extractor::getTrackFormat).firstOrNull {
+                it.getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true &&
+                    it.containsKey(MediaFormat.KEY_WIDTH) && it.containsKey(MediaFormat.KEY_HEIGHT) &&
+                    it.getInteger(MediaFormat.KEY_WIDTH) > 0 && it.getInteger(MediaFormat.KEY_HEIGHT) > 0
+            } ?: return@runCatching null
+            val durationMs = if (track.containsKey(MediaFormat.KEY_DURATION)) track.getLong(MediaFormat.KEY_DURATION) / 1000
+                else readVideoMetadata(file).durationMs
+            durationMs.takeIf { it in 1..Int.MAX_VALUE.toLong() }?.toInt()
+        } finally {
+            extractor.release()
+        }
+    }.getOrNull()
+
+    private fun awaitPhotos(receipts: List<GalleryPhotoReceipt>): Boolean {
+        val deadline = SystemClock.elapsedRealtime() + RECEIPT_TIMEOUT_MS
+        return try {
+            receipts.all { receipt ->
+                receipt.localMessage.get((deadline - SystemClock.elapsedRealtime()).coerceAtLeast(0L), TimeUnit.MILLISECONDS) &&
+                    (receipt.finish == null || receipt.finish == "Success")
+            } && receipts.all { it.finish == null || it.finish == "Success" }
+        } catch (_: TimeoutException) {
+            false
+        }
+    }
+
+    private fun sendGif(emoji: WeChatEmojiApi, talker: String, file: File, digest: String): Boolean {
+        val receipt = GifReceipt(talker, digest, System.currentTimeMillis())
+        gifReceipt = receipt
+        return try {
+            val accepted = emoji.sendLocalPath(talker, file.absolutePath, true)
+            val localId = if (accepted || receipt.messageId.isDone) {
+                try {
+                    receipt.messageId.get(RECEIPT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                } catch (_: TimeoutException) { null }
+            } else null
+            if (localId != null) lastGifMessage = talker to localId
+            HLog.i("[Hchat:LinkParse] gallery_gif_submit accepted=$accepted local_message=${localId != null}")
+            localId != null
+        } finally {
+            gifReceipt = null
+        }
+    }
+
+    private fun observeGifInsert(change: WeChatMessageChangeApi.MessageChange) {
+        val receipt = gifReceipt ?: return
+        if (!change.isInsert) return
+        val message = change.message ?: return
+        if (!message.isOutgoing() || !message.isEmoji() || message.status == 5 || message.msgId <= 0 ||
+            message.talker != receipt.talker || message.createTime < receipt.startedAt - 2_000L ||
+            lastGifMessage == (message.talker to message.msgId)) return
+        if (message.getEmojiMd5().equals(receipt.digest, ignoreCase = true)) {
+            receipt.messageId.complete(message.msgId)
+        }
+    }
+
+    private fun cleanupGalleryUploads() {
+        val now = SystemClock.elapsedRealtime()
+        for ((id, receipt) in galleryUploads) {
+            if (!receipt.canRelease(now, CACHE_TTL) || !galleryUploads.remove(id, receipt)) continue
+            receipt.files.forEach(File::delete)
+            HLog.i("[Hchat:LinkParse] gallery_image_finish index=${receipt.position} result=${receipt.finish ?: "unobserved_expired"} " +
+                "after_submit_ms=${(now - receipt.submittedAt).coerceAtLeast(0L)}")
         }
     }
 
@@ -443,6 +630,7 @@ internal class LinkParseRuntime(private val context: FeatureContext) {
     }
 
     private fun cleanupPendingUploads() {
+        cleanupGalleryUploads()
         val now = SystemClock.elapsedRealtime()
         for ((key, queue) in pendingUploads.entries) {
             queue.removeIf { now - it.createdAt > CACHE_TTL }
@@ -452,8 +640,9 @@ internal class LinkParseRuntime(private val context: FeatureContext) {
 
     private fun cleanup(dir: File) {
         val cutoff = System.currentTimeMillis() - CACHE_TTL
+        val retained = galleryUploads.values.flatMapTo(HashSet()) { it.files }
         dir.listFiles()?.forEach { file ->
-            if (file.isFile && (file.name.startsWith("video_") || file.name.startsWith("image_")) &&
+            if (file !in retained && file.isFile && (file.name.startsWith("video_") || file.name.startsWith("image_")) &&
                 file.lastModified() in 1 until cutoff) file.delete()
         }
     }
@@ -486,6 +675,7 @@ internal class LinkParseRuntime(private val context: FeatureContext) {
         private const val CACHE_TTL = 6 * 60 * 60 * 1000L
         private const val MAX_CACHE_BYTES = 256L * 1024 * 1024
         private const val MAX_VIDEO_BYTES = 50L * 1024 * 1024
+        private const val RECEIPT_TIMEOUT_MS = 45_000L
         private const val MAX_GALLERY_BYTES = 40L * 1024 * 1024
     }
 }

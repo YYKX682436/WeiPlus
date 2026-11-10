@@ -24,6 +24,7 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import io.github.libxposed.api.XposedInterface;
@@ -618,16 +619,37 @@ public final class WeChatImageApi {
     }
 
     private boolean canSendAsyncAppInfo() {
-        return dexFinder != null
+        return canSendAsync()
+                && dexFinder.sendImageAppInfoClass != null;
+    }
+
+    boolean canSendAsync() {
+        return hostContext != null && dexFinder != null
                 && dexFinder.sendImageAsyncParamsClass != null
                 && dexFinder.sendImageCrossParamsClass != null
-                && dexFinder.sendImageAppInfoClass != null
                 && dexFinder.sendImageAsyncSubmitMethod != null;
+    }
+
+    Object newAsyncCrossParams() {
+        return newInstance(dexFinder.sendImageCrossParamsClass);
+    }
+
+    Object newAsyncParams(String talker, String path, int compressType, String from, Object crossParams) {
+        return KavaReflector.newInstance(findAsyncParamsCtor(), path, compressType, from, talker, crossParams);
+    }
+
+    Callable<Object> prepareAsyncSubmit(Object params) {
+        Method submit = dexFinder.sendImageAsyncSubmitMethod;
+        if (submit == null || params == null) return null;
+        boolean isStatic = KavaReflector.isStatic(submit);
+        Object service = isStatic ? null : WeChatInternalServices.getService(dexFinder, submit.getDeclaringClass());
+        if (!isStatic && service == null) return null;
+        return () -> KavaReflector.invokeOrThrow(submit, service, params);
     }
 
     private boolean sendAsyncAppInfo(String talker, String imagePath, String appId) {
         try {
-            Object crossParams = newInstance(dexFinder.sendImageCrossParamsClass);
+            Object crossParams = newAsyncCrossParams();
             if (crossParams == null) {
                 log("新版图片appid链路失败: crossParams创建失败");
                 return false;
@@ -645,8 +667,7 @@ public final class WeChatImageApi {
                 log("新版图片appid链路失败: appinfo字段写入失败");
                 return false;
             }
-            Constructor<?> ctor = findAsyncParamsCtor();
-            Object params = KavaReflector.newInstance(ctor, imagePath, 0, currentSelfWxId(), talker, crossParams);
+            Object params = newAsyncParams(talker, imagePath, 0, currentSelfWxId(), crossParams);
             if (params == null) {
                 log("新版图片appid链路失败: params创建失败");
                 return false;
@@ -655,13 +676,12 @@ public final class WeChatImageApi {
                 log("新版图片appid链路失败: 外部来源字段写入失败");
                 return false;
             }
-            Method submit = dexFinder.sendImageAsyncSubmitMethod;
-            Object service = WeChatInternalServices.getService(dexFinder, submit.getDeclaringClass());
-            if (!KavaReflector.isStatic(submit) && service == null) {
-                log("新版图片appid链路失败: 服务不可用 " + submit.getDeclaringClass().getName());
+            Callable<Object> submission = prepareAsyncSubmit(params);
+            if (submission == null) {
+                log("新版图片appid链路失败: 服务不可用");
                 return false;
             }
-            KavaReflector.invokeOrThrow(submit, KavaReflector.isStatic(submit) ? null : service, params);
+            submission.call();
             return true;
         } catch (Throwable e) {
             log("新版图片appid链路异常: " + e.getMessage());

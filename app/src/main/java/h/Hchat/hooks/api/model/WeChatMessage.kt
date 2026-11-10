@@ -1,6 +1,8 @@
 package h.Hchat.hooks.api.model
 
-class WeChatMessage(
+import h.Hchat.utils.XmlValueReader
+
+class WeChatMessage @JvmOverloads constructor(
     @JvmField val msgId: Long,
     @JvmField val msgSvrId: Long,
     @JvmField val type: Int,
@@ -14,7 +16,8 @@ class WeChatMessage(
     translatedContent: String?,
     @JvmField val flag: Int,
     msgSource: String?,
-    selfWxId: String?
+    selfWxId: String?,
+    val msgSourceOrigin: String = "model"
 ) {
     @JvmField val talker: String = talker.orEmpty()
     @JvmField val content: String = content.orEmpty()
@@ -106,6 +109,19 @@ class WeChatMessage(
 
     fun isAtMe(): Boolean = isAtMe(selfWxId)
 
+    /** Link parsing must only trust this message's stored source, never its displayed body. */
+    fun isDirectlyAtMe(selfWxId: String?): Boolean {
+        if (selfWxId.isNullOrBlank() || msgSource.isBlank()) return false
+        val source = if (msgSource.trimStart().startsWith("&lt;")) unescapeXml(msgSource) else msgSource
+        val users = XmlValueReader.getTagValue(source, "atuserlist").split(',').map(String::trim)
+        return selfWxId in users && classifyAtMention(source, bodyContent(), selfWxId) == AtMentionType.AT_ME
+    }
+
+    fun withMsgSource(source: String, origin: String): WeChatMessage = WeChatMessage(
+        msgId, msgSvrId, type, status, isSend, createTime, talker, content, imagePath, reserved,
+        translatedContent, flag, source, selfWxId, origin
+    )
+
     fun isOutgoing(): Boolean = isSend == 1
 
     fun isIncoming(): Boolean = isSend == 0
@@ -161,6 +177,17 @@ class WeChatMessage(
     fun isVideo(): Boolean = WeChatMessageTypes.isVideo(type)
 
     fun isEmoji(): Boolean = WeChatMessageTypes.isEmoji(type)
+
+    fun getEmojiMd5(): String {
+        if (!isEmoji()) return ""
+        if (EMOJI_MD5.matches(imagePath)) return imagePath
+        // On 3220 the emoji sender can omit imgPath. EmojiContent still stores the MD5 as field 4.
+        val fields = content.split(':', limit = 6)
+        if (fields.size >= 5 && fields[1].toLongOrNull() != null && fields[2] in setOf("0", "1") &&
+            EMOJI_MD5.matches(fields[3])) return fields[3]
+        return EMOJI_NODE.find(bodyContent())?.value?.let { xmlAttr(it, "md5") }
+            ?.takeIf(EMOJI_MD5::matches).orEmpty()
+    }
 
     fun isLocation(): Boolean = WeChatMessageTypes.isLocation(type)
 
@@ -389,11 +416,14 @@ class WeChatMessage(
         private const val WECHAT_AT_SEPARATOR = '\u2005'
         private const val MAX_WECHAT_AT_LENGTH = 40
         private val AT_ALL_LABELS = setOf("所有人", "all", "everyone", "全員", "모두")
+        private val EMOJI_MD5 = Regex("[a-fA-F0-9]{32}")
+        private val EMOJI_NODE = Regex("<emoji\\b[^>]{0,8192}>", RegexOption.IGNORE_CASE)
 
         @JvmStatic
         fun parseAtUserList(msgSource: String?): List<String> {
             val source = msgSource.orEmpty()
             val atUsers = firstNotBlank(
+                XmlValueReader.getTagValue(source, "atuserlist"),
                 xmlTag(source, "atuserlist"),
                 msgSourceValue(source, ".msgsource.atuserlist"),
                 msgSourceValue(source, "atuserlist")

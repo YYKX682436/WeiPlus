@@ -1,5 +1,7 @@
 package h.Hchat.hooks.api.media;
 
+import android.graphics.BitmapFactory;
+
 import android.content.Context;
 import android.net.Uri;
 import android.os.Bundle;
@@ -96,6 +98,14 @@ public final class WeChatEmojiApi {
     public boolean sendLocalPath(String talker, String path) {
         if (TextUtils.isEmpty(path)) return false;
         return send(talker, path);
+    }
+
+    /** Sends via a single native route for callers that correlate a database receipt. */
+    public boolean sendLocalPath(String talker, String path, boolean singleAttempt) {
+        if (!singleAttempt) return sendLocalPath(talker, path);
+        if (TextUtils.isEmpty(talker) || TextUtils.isEmpty(path)) return false;
+        File source = new File(path);
+        return source.isFile() && sendLocalFile(talker, source, true);
     }
 
     /** Resolves an emoji message path or md5 to the original local emoji file. */
@@ -196,6 +206,10 @@ public final class WeChatEmojiApi {
     }
 
     private boolean sendLocalFile(String talker, File source) {
+        return sendLocalFile(talker, source, false);
+    }
+
+    private boolean sendLocalFile(String talker, File source, boolean singleAttempt) {
         if (!canSendLocalPathSilently()) {
             log("发表情失败: 本地路径API未就绪");
             return false;
@@ -209,6 +223,11 @@ public final class WeChatEmojiApi {
             Object emojiInfo = getEmojiInfo(md5);
             if (emojiInfo == null) emojiInfo = prepareLocalEmojiInfo(source, md5);
             if (emojiInfo == null) return false;
+            if (singleAttempt) {
+                // The manager chooses WeChat's current emoji queue; never retry on an ambiguous return.
+                return dexFinder.emojiManagerSendMethod != null
+                        ? sendByManager(talker, md5) : sendEmojiInfo(talker, emojiInfo);
+            }
             if (sendByManager(talker, md5)) return true;
             return sendEmojiInfo(talker, emojiInfo);
         } catch (Throwable e) {
@@ -218,6 +237,10 @@ public final class WeChatEmojiApi {
     }
 
     private Object prepareLocalEmojiInfo(File source, String md5) throws Exception {
+        BitmapFactory.Options dimensions = new BitmapFactory.Options();
+        dimensions.inJustDecodeBounds = true;
+        BitmapFactory.decodeFile(source.getAbsolutePath(), dimensions);
+        if (dimensions.outWidth <= 0 || dimensions.outHeight <= 0) return null;
         String basePath = normalizedEmojiBasePath();
         if (TextUtils.isEmpty(basePath)) {
             log("发表情失败: 获取微信表情目录失败");
@@ -235,11 +258,15 @@ public final class WeChatEmojiApi {
         int type = isGif(source.getAbsolutePath()) ? EMOJI_TYPE_GIF : EMOJI_TYPE_STATIC;
         int size = safeFileSize(source);
         Object localEmojiInfo = createEmojiInfo(md5, MESSAGE_EMOJI_CATALOG, type, size);
-        prepareLocalEmojiInfo(localEmojiInfo, md5, type, size);
+        prepareLocalEmojiInfo(localEmojiInfo, md5, type, size, dimensions);
         updateEmojiInfo(localEmojiInfo);
         Object transientEmojiInfo = newTransientEmojiInfo(
                 basePath, md5, TRANSIENT_SEND_EMOJI_CATALOG, type, size);
         Object result = transientEmojiInfo != null ? transientEmojiInfo : localEmojiInfo;
+        if (transientEmojiInfo != null) {
+            setField(transientEmojiInfo, "field_width", dimensions.outWidth);
+            setField(transientEmojiInfo, "field_height", dimensions.outHeight);
+        }
         if (result == null) log("发表情失败: 创建临时EmojiInfo失败 " + md5);
         return result;
     }
@@ -251,7 +278,7 @@ public final class WeChatEmojiApi {
             log("发表情失败: 无法创建发送器 " + method.getDeclaringClass().getName());
             return false;
         }
-        KavaReflector.invoke(method, target, buildSendArgs(method, talker, emojiInfo));
+        KavaReflector.invokeOrThrow(method, target, buildSendArgs(method, talker, emojiInfo));
         return true;
     }
 
@@ -371,7 +398,8 @@ public final class WeChatEmojiApi {
         }
     }
 
-    private void prepareLocalEmojiInfo(Object emojiInfo, String md5, int type, int size) {
+    private void prepareLocalEmojiInfo(Object emojiInfo, String md5, int type, int size,
+                                       BitmapFactory.Options dimensions) {
         if (emojiInfo == null) return;
         try {
             setField(emojiInfo, "field_md5", md5);
@@ -382,8 +410,8 @@ public final class WeChatEmojiApi {
             setField(emojiInfo, "field_state", 0);
             setField(emojiInfo, "field_needupload", 1);
             setField(emojiInfo, "field_groupId", "");
-            setField(emojiInfo, "field_width", 320);
-            setField(emojiInfo, "field_height", 320);
+            setField(emojiInfo, "field_width", dimensions.outWidth);
+            setField(emojiInfo, "field_height", dimensions.outHeight);
             setField(emojiInfo, "field_temp", 1);
         } catch (Throwable e) {
             log("准备本地表情信息失败: " + e.getMessage());

@@ -270,9 +270,12 @@ public final class WeChatMessageChangeApi {
         long msgId = resolveMsgId(change);
         if (change.isDelete()) return null;
         boolean complete = change.isInsert() && hasCoreFields(change.values);
+        WeChatLvBufferMsgSource.Resolved source = WeChatLvBufferMsgSource.resolve(
+                str(change.values, "msgSource"), change.values != null ? change.values.get("lvbuffer") : null);
         if (!complete && msgId > 0 && messageStoreApi != null) {
             WeChatMessage stored = messageStoreApi.getMessageById(change.table, msgId);
-            if (stored != null) return stored;
+            if (stored != null) return source.getXml().isEmpty()
+                    ? stored : stored.withMsgSource(source.getXml(), "change_" + source.getOrigin());
         }
         if (!complete) return null;
         return new WeChatMessage(
@@ -288,17 +291,9 @@ public final class WeChatMessageChangeApi {
                 str(change.values, "reserved"),
                 str(change.values, "transContent"),
                 intValue(change.values, "flag"),
-                resolveMsgSource(change.values),
-                selfWxId());
-    }
-
-    private static String resolveMsgSource(ContentValues values) {
-        String msgSource = str(values, "msgSource");
-        if (!TextUtils.isEmpty(msgSource)) return msgSource;
-        Object raw = values != null ? values.get("lvbuffer") : null;
-        return raw instanceof byte[]
-                ? WeChatLvBufferMsgSource.extractXml((byte[]) raw)
-                : "";
+                source.getXml(),
+                selfWxId(),
+                "change_" + source.getOrigin());
     }
 
     private static boolean hasCoreFields(ContentValues values) {

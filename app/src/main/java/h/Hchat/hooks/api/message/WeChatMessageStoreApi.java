@@ -58,7 +58,7 @@ public final class WeChatMessageStoreApi {
 
     private static final String MESSAGE_COLUMNS =
             "msgId, msgSvrId, type, status, isSend, createTime, talker, content, "
-                    + "imgPath, reserved, transContent, flag";
+                    + "imgPath, reserved, transContent, flag, lvbuffer";
 
     private final WeChatDatabaseApi databaseApi;
     private final WeChatAccountApi accountApi;
@@ -820,6 +820,8 @@ public final class WeChatMessageStoreApi {
     }
 
     private WeChatMessage toMessage(Map<String, Object> row) {
+        WeChatLvBufferMsgSource.Resolved source =
+                WeChatLvBufferMsgSource.resolve(str(row, "msgSource"), row.get("lvbuffer"));
         return new WeChatMessage(
                 longValue(row, "msgId"),
                 longValue(row, "msgSvrId"),
@@ -833,8 +835,9 @@ public final class WeChatMessageStoreApi {
                 str(row, "reserved"),
                 str(row, "transContent"),
                 intValue(row, "flag"),
-                str(row, "msgSource"),
-                selfWxId());
+                source.getXml(),
+                selfWxId(),
+                source.getOrigin());
     }
 
     private String selfWxId() {
