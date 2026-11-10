@@ -75,6 +75,7 @@ import h.Hchat.hooks.items.custombottombar.FloatingBottomBarSettings
 import h.Hchat.hooks.items.customnotify.CustomNotificationFeature
 import h.Hchat.hooks.items.customfriendavatar.CustomFriendAvatarFeature
 import h.Hchat.hooks.items.editmsg.EditMessageFeature
+import h.Hchat.hooks.items.emojilimit.EmojiCollectionLimitFeature
 import h.Hchat.hooks.items.emojisave.EmojiSaveFeature
 import h.Hchat.hooks.items.fakelocation.FakeLocationFeature
 import h.Hchat.hooks.items.fakescancamera.FakeScanCameraFeature
@@ -277,6 +278,7 @@ private fun featureGroups(
                 QuoteDeleteClearFeature.ID,
                 SwipeQuoteFeature.ID,
                 EmojiSaveFeature.ID,
+                EmojiCollectionLimitFeature.ID,
                 CallMediaLimitFeature.ID,
                 CallRingtoneBlockFeature.ID,
                 EditMessageFeature.ID
@@ -1601,6 +1603,7 @@ internal fun FeatureSettingsPage(
         BackgroundRunAssistFeature.ID -> BackgroundRunAssistMiuixPage(context, provider, onBack)
         QuoteDeleteClearFeature.ID -> QuoteDeleteClearMiuixPage(context, provider, onBack)
         EmojiSaveFeature.ID -> EmojiSaveMiuixPage(context, provider, onBack)
+        EmojiCollectionLimitFeature.ID -> EmojiCollectionLimitMiuixPage(context, provider, onBack)
         SwipeQuoteFeature.ID -> SwipeQuoteMiuixPage(context, provider, onBack)
         AudioTransformFeature.ID -> AudioTransformSettingsPage(context, provider, onBack)
         TextVoiceFeature.ID -> TextVoiceMiuixPage(context, provider, onBack)

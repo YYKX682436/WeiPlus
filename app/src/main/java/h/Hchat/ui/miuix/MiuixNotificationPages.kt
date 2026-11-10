@@ -49,6 +49,7 @@ import h.Hchat.hooks.items.customfriendavatar.CustomFriendAvatarPicker
 import h.Hchat.hooks.items.customfriendavatar.CustomFriendAvatarSettings
 import h.Hchat.hooks.items.customfriendavatar.CustomFriendAvatarStore
 import h.Hchat.hooks.items.customnotify.CustomNotificationSettings
+import h.Hchat.hooks.items.emojilimit.EmojiCollectionLimitFeature
 import h.Hchat.hooks.items.emojisave.EmojiSaveSettings
 import h.Hchat.hooks.items.fakelocation.FakeLocationSettings
 import h.Hchat.hooks.items.fakevoiceduration.FakeVoiceDurationSettings
@@ -80,6 +81,7 @@ import h.Hchat.hooks.items.textspeech.TextSpeechEngineCatalog
 import h.Hchat.hooks.items.textspeech.TextSpeechSettings
 import h.Hchat.hooks.items.textspeech.TextSpeechVoiceCatalog
 import h.Hchat.hooks.items.voicepreview.VoicePreviewSettings
+import h.Hchat.preferences.ConfigStore
 import h.Hchat.preferences.HchatStorage
 import h.Hchat.ui.FeatureSettingsProvider
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
@@ -2609,6 +2611,43 @@ internal fun EmojiSaveMiuixPage(
                         "保存表情",
                         "长按聊天表情后显示保存入口",
                         EmojiSaveSettings.DEFAULT_ENABLE
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun EmojiCollectionLimitMiuixPage(
+    context: Context,
+    provider: FeatureSettingsProvider,
+    onBack: () -> Unit
+) {
+    val sp = remember(context) { ConfigStore(context).getFeaturePrefs(EmojiCollectionLimitFeature.ID) }
+    val scrollBehavior = MiuixScrollBehavior()
+
+    PageScaffold(
+        title = provider.title(),
+        largeTitle = provider.title(),
+        scrollBehavior = scrollBehavior,
+        bottomBar = { BottomActionBar("返回", onBack) }
+    ) { padding ->
+        LazyColumn(
+            modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
+            contentPadding = PaddingValues(
+                top = padding.calculateTopPadding() + 8.dp,
+                bottom = padding.calculateBottomPadding() + 84.dp
+            )
+        ) {
+            item {
+                SettingsCard {
+                    SwitchRow(
+                        sp,
+                        EmojiCollectionLimitFeature.KEY_ENABLED,
+                        provider.title(),
+                        "将本机收藏上限提高到 5000。仅支持微信 8.0.80（3220），云同步仍受微信限制。",
+                        EmojiCollectionLimitFeature.DEFAULT_ENABLED
                     )
                 }
             }
