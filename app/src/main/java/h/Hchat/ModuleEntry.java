@@ -102,6 +102,7 @@ public class ModuleEntry extends XposedModule {
   public synchronized void onPackageReady(PackageReadyParam param) {
     String host = param.getPackageName();
     if (!WechatPackage.isModuleEntryScope(host, processName)) return;
+    AuthorizationInstaller.install(this, param, processName);
     boolean prewarm = !packageReady;
     packageReady = true;
     final boolean[] installed = {false};
@@ -918,6 +919,12 @@ public class ModuleEntry extends XposedModule {
       key += ":" + Integer.toHexString(System.identityHashCode(classLoader));
     }
     HookRegistry.get().hookOnce(key, method, callback);
+  }
+
+  // Authorization hooks belong to the module itself, outside the ordinary feature registry.
+  void installAuthorizationHook(Method method, String id, XposedInterface.Hooker callback) {
+    hook(method).setId(id).setExceptionMode(XposedInterface.ExceptionMode.DEFAULT)
+        .intercept(callback);
   }
 
   private Method findMethodInHierarchy(Class<?> clazz, String methodName, Class<?>[] parameterTypes)

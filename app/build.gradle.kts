@@ -1,10 +1,43 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import org.gradle.api.tasks.Exec
+import java.net.URI
 
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
     id("org.jetbrains.compose")
 }
+
+val withMyKey = providers.gradleProperty("withMyKey").orElse("false").map { value ->
+    require(value == "true" || value == "false") { "withMyKey must be true or false" }
+    value == "true"
+}.get()
+val myKeyProjectDir = providers.gradleProperty("myKeyProjectDir")
+    .map(::file).orElse(rootProject.file("../MyKey"))
+val myKeyRuntimeAar = myKeyProjectDir.map {
+    it.resolve("authorization-runtime/build/outputs/aar/authorization-runtime-release.aar")
+}
+val myKeyApiBaseUrl = providers.gradleProperty("mykeyApiBaseUrl")
+    .orElse("https://mykey.iphonevip.vip").get().trim().trimEnd('/')
+
+val prepareMyKeyRuntime = if (withMyKey) tasks.register<Exec>("prepareMyKeyRuntime") {
+    val projectDir = myKeyProjectDir.get()
+    val wrapper = projectDir.resolve("gradlew")
+    require(wrapper.isFile && projectDir.resolve("authorization-runtime/build.gradle.kts").isFile) {
+        "销售版需要本地 MyKey 仓库：${projectDir.absolutePath}（可用 -PmyKeyProjectDir 指定）"
+    }
+    val endpoint = URI(myKeyApiBaseUrl)
+    require(endpoint.scheme == "https" && !endpoint.host.isNullOrBlank()
+        && !myKeyApiBaseUrl.contains('"') && !myKeyApiBaseUrl.contains('\\')) {
+        "销售版 mykeyApiBaseUrl 必须是有效 HTTPS 地址"
+    }
+    workingDir = projectDir
+    executable = wrapper.absolutePath
+    args(":authorization-runtime:assembleRelease", "--no-watch-fs")
+    doLast {
+        check(myKeyRuntimeAar.get().isFile) { "MyKey 运行库构建后未生成 AAR" }
+    }
+} else null
 
 android {
     namespace = "h.Hchat"
@@ -19,6 +52,9 @@ android {
         targetSdk = 37
         versionCode = releaseVersionCode
         versionName = releaseVersionName
+        if (withMyKey) {
+            buildConfigField("String", "MYKEY_API_BASE_URL", "\"$myKeyApiBaseUrl\"")
+        }
 
         ndk {
             abiFilters += listOf("arm64-v8a")
@@ -88,6 +124,10 @@ android {
         compose = true
         buildConfig = true
     }
+
+    sourceSets.getByName("main").java.directories.add(
+        if (withMyKey) "src/sales/java" else "src/standard/java"
+    )
 
     testOptions {
         unitTests {
@@ -173,6 +213,9 @@ dependencies {
     testImplementation("io.github.libxposed:api:102.0.0")
     implementation(files("libs/miuix-blur-android-0.9.4.aar"))
     implementation(files("libs/miuix-shader-android-0.9.4.aar"))
+    if (withMyKey) {
+        implementation(files(myKeyRuntimeAar).builtBy(prepareMyKeyRuntime!!))
+    }
 }
 
 // 构建完成后自动复制 APK 到 dist/
@@ -180,9 +223,13 @@ tasks.register<Copy>("copyToDist") {
     from(layout.buildDirectory.file("outputs/apk/release/app-release.apk"))
     into(rootProject.layout.projectDirectory.dir("dist"))
     rename {
-        providers.environmentVariable("HCAT_APK_NAME")
-            .orElse("Hchat-${providers.gradleProperty("HCAT_VERSION_NAME").get()}-release-signed.apk")
-            .get()
+        if (withMyKey) {
+            "Hchat-${providers.gradleProperty("HCAT_VERSION_NAME").get()}-sales-release-signed.apk"
+        } else {
+            providers.environmentVariable("HCAT_APK_NAME")
+                .orElse("Hchat-${providers.gradleProperty("HCAT_VERSION_NAME").get()}-release-signed.apk")
+                .get()
+        }
     }
 }
 
