@@ -1023,6 +1023,14 @@ internal fun InputHintMiuixPage(
     var enabled by remember {
         mutableStateOf(sp.getBoolean(InputHintSettings.KEY_ENABLE, InputHintSettings.DEFAULT_ENABLE))
     }
+    var restoreLegacyInput by remember {
+        mutableStateOf(
+            sp.getBoolean(
+                InputHintSettings.KEY_RESTORE_LEGACY_INPUT,
+                InputHintSettings.DEFAULT_RESTORE_LEGACY_INPUT
+            )
+        )
+    }
     var statisticsEnabled by remember {
         mutableStateOf(
             sp.getBoolean(
@@ -1061,6 +1069,7 @@ internal fun InputHintMiuixPage(
                     sp.edit()
                         .putBoolean(InputHintSettings.KEY_ENABLE, enabled)
                         .putBoolean(InputHintSettings.KEY_STATISTICS_ENABLE, statisticsEnabled)
+                        .putBoolean(InputHintSettings.KEY_RESTORE_LEGACY_INPUT, restoreLegacyInput)
                         .putString(InputHintSettings.KEY_TEMPLATE, template)
                         .apply()
                     Toast.makeText(context, "设置已保存", Toast.LENGTH_SHORT).show()
@@ -1069,6 +1078,7 @@ internal fun InputHintMiuixPage(
                 onSecondaryClick = {
                     enabled = InputHintSettings.DEFAULT_ENABLE
                     statisticsEnabled = InputHintSettings.DEFAULT_STATISTICS_ENABLE
+                    restoreLegacyInput = InputHintSettings.DEFAULT_RESTORE_LEGACY_INPUT
                     template = InputHintSettings.DEFAULT_TEMPLATE
                 },
                 middleText = "取消",
@@ -1093,6 +1103,14 @@ internal fun InputHintMiuixPage(
                         summary = "自定义聊天输入框没有文字时显示的内容"
                     ) {
                         enabled = it
+                    }
+                    InsetDivider()
+                    SwitchRow(
+                        checked = restoreLegacyInput,
+                        title = "恢复旧版输入框",
+                        summary = "关闭输入栏长按语音输入，恢复旧版样式；重启微信后生效"
+                    ) {
+                        restoreLegacyInput = it
                     }
                     if (enabled) {
                         InsetDivider()

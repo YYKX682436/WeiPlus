@@ -23,6 +23,7 @@ object InputHintSettings {
     const val KEY_ENABLE = "input_hint_enable"
     const val KEY_TEMPLATE = "input_hint_template"
     const val KEY_STATISTICS_ENABLE = "input_hint_statistics_enable"
+    const val KEY_RESTORE_LEGACY_INPUT = "input_hint_restore_legacy_input"
     const val KEY_STATISTICS_DAY = "input_hint_statistics_day"
     const val KEY_TOTAL_MESSAGES = "input_hint_total_messages"
     const val KEY_TEXT_MESSAGES = "input_hint_text_messages"
@@ -34,6 +35,7 @@ object InputHintSettings {
 
     const val DEFAULT_ENABLE = false
     const val DEFAULT_STATISTICS_ENABLE = true
+    const val DEFAULT_RESTORE_LEGACY_INPUT = false
 
     const val VAR_TOTAL_MESSAGES = "\${totalMsg}"
     const val VAR_TEXT_MESSAGES = "\${textMsg}"

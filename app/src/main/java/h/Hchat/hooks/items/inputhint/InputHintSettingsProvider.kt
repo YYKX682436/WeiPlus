@@ -6,6 +6,6 @@ import h.Hchat.ui.SimpleFeatureSettingsProvider
 class InputHintSettingsProvider : SimpleFeatureSettingsProvider(
     InputHintFeature.ID,
     "输入框提示",
-    "自定义聊天输入框没有文字时显示的提示内容",
+    "自定义聊天输入框提示内容，并可恢复旧版输入框",
     FeatureSettingsProvider.CATEGORY_PRACTICAL
 )
