@@ -128,7 +128,7 @@ internal class LinkParseRuntime(private val context: FeatureContext) {
             return
         }
         if (!LinkParseEntryPolicy.acceptDatabase(change.isInsert, change.isUpdate, message.isOutgoing(), message.status, status)) return
-        handleMessage(message, "db_${change.operation()}")
+        handleMessage(message)
     }
 
     private fun installMessageWriteHook(): Boolean {
@@ -147,21 +147,15 @@ internal class LinkParseRuntime(private val context: FeatureContext) {
         HookRegistry.get().hookOnce("link_parse:message_write", candidates.single(), XposedInterface.Hooker { chain ->
             LinkParseWriteGate.intercept(chain, { !stopped && settings.enabled() }, { id ->
                 WeChatApis.message().store()?.getMessageById(id)
-            }, { handleMessage(it, "send_write") }, { HLog.i("[Hchat:LinkParse] 消息写入观察失败") })
+            }, ::handleMessage, { HLog.i("[Hchat:LinkParse] 消息写入观察失败") })
         })
         HLog.i("[Hchat:LinkParse] 消息写入观察已安装")
         return true
     }
 
-    private fun handleMessage(message: WeChatMessage, entry: String) {
+    private fun handleMessage(message: WeChatMessage) {
         val timestamp = LinkParseMessageGate.eligibleTime(message, System.currentTimeMillis()) ?: return
-        val group = message.isGroupChat()
         val outgoing = message.isOutgoing()
-        val needsAt = group && !outgoing && settings.groupAtMeOnly()
-        val self = if (needsAt) {
-            message.selfWxId.ifBlank { WeChatApis.account()?.selfWxId().orEmpty() }
-        } else ""
-        val atMe = message.isDirectlyAtMe(self)
         val content = message.bodyContent()
         HLog.i("[Hchat:LinkParse] 收到数据库文本")
         val match = WorkLinkMatcher.find(content) ?: run {
@@ -171,28 +165,12 @@ internal class LinkParseRuntime(private val context: FeatureContext) {
             )
             return
         }
-        if (!settings.allows(match.platform, message.talker, group, outgoing, atMe)) {
-            val listed = message.talker in settings.allowedTalkers()
-            val reason = when {
-                !settings.enabled() || !settings.enabled(match.platform) -> "disabled"
-                !listed -> "whitelist"
-                self.isBlank() -> "no_self"
-                else -> "not_direct_at"
-            }
-            HLog.i("[Hchat:LinkParse] trigger_rejected reason=$reason entry=$entry type=${message.type} " +
-                "isSend=${message.isSend} self_present=${self.isNotBlank()} " +
-                "source=${message.msgSourceOrigin} source_chars=${message.msgSource.length} listed=$listed direct_at=$atMe")
-            return
-        }
-        if (needsAt) HLog.i("[Hchat:LinkParse] trigger_allowed entry=$entry " +
-            "source=${message.msgSourceOrigin} source_chars=${message.msgSource.length} direct_at=$atMe")
+        if (!settings.allows(match.platform, message.talker, outgoing)) return
         val key = key(message.talker, message.msgId)
         submit(
             message.talker,
             match,
-            group,
             outgoing,
-            atMe,
             key,
             timestamp + LinkParseMessageGate.MAX_AGE + LinkParseMessageGate.FUTURE_TOLERANCE,
             SystemClock.elapsedRealtime()
@@ -202,9 +180,7 @@ internal class LinkParseRuntime(private val context: FeatureContext) {
     private fun submit(
         talker: String,
         match: WorkLinkMatcher.Match,
-        group: Boolean,
         outgoing: Boolean,
-        atMe: Boolean,
         key: String?,
         expiry: Long,
         enqueuedAt: Long
@@ -217,7 +193,7 @@ internal class LinkParseRuntime(private val context: FeatureContext) {
                 try {
                     if (!stopped && (key == null || claims.claim(key, expiry, System.currentTimeMillis()))) {
                         val queueWaitMs = (SystemClock.elapsedRealtime() - enqueuedAt).coerceAtLeast(0L)
-                        process(talker, match, group, outgoing, atMe, enqueuedAt, queueWaitMs)
+                        process(talker, match, outgoing, enqueuedAt, queueWaitMs)
                     }
                 } catch (_: Throwable) {
                     HLog.i("[Hchat:LinkParse] 处理异常")
@@ -234,13 +210,11 @@ internal class LinkParseRuntime(private val context: FeatureContext) {
     private fun process(
         talker: String,
         match: WorkLinkMatcher.Match,
-        group: Boolean,
         outgoing: Boolean,
-        atMe: Boolean,
         enqueuedAt: Long,
         queueWaitMs: Long
     ) {
-        if (stopped || !settings.allows(match.platform, talker, group, outgoing, atMe)) return
+        if (stopped || !settings.allows(match.platform, talker, outgoing)) return
         val dir = File(host.cacheDir, CACHE_DIR)
         if ((!dir.isDirectory && !dir.mkdirs()) || !dir.canWrite()) return
         cleanup(dir)
@@ -254,17 +228,15 @@ internal class LinkParseRuntime(private val context: FeatureContext) {
             return
         }
         when (resolved) {
-            is WorkResolution.Video -> processVideo(talker, match, group, outgoing, atMe, enqueuedAt, queueWaitMs, resolveMs, resolved.candidates, dir)
-            is WorkResolution.Gallery -> processGallery(talker, match, group, outgoing, atMe, queueWaitMs, resolveMs, resolved.images, dir)
+            is WorkResolution.Video -> processVideo(talker, match, outgoing, enqueuedAt, queueWaitMs, resolveMs, resolved.candidates, dir)
+            is WorkResolution.Gallery -> processGallery(talker, match, outgoing, queueWaitMs, resolveMs, resolved.images, dir)
         }
     }
 
     private fun processVideo(
         talker: String,
         match: WorkLinkMatcher.Match,
-        group: Boolean,
         outgoing: Boolean,
-        atMe: Boolean,
         enqueuedAt: Long,
         queueWaitMs: Long,
         resolveMs: Long,
@@ -284,7 +256,7 @@ internal class LinkParseRuntime(private val context: FeatureContext) {
                 HLog.i("[Hchat:LinkParse] 下载失败 platform=${match.platform} queue_ms=$queueWaitMs resolve_ms=$resolveMs download_ms=$downloadMs")
                 return
             }
-            if (stopped || !settings.allows(match.platform, talker, group, outgoing, atMe)) return
+            if (stopped || !settings.allows(match.platform, talker, outgoing)) return
 
             val bytes = target.length()
             val metadata = readVideoMetadata(target)
@@ -324,9 +296,7 @@ internal class LinkParseRuntime(private val context: FeatureContext) {
     private fun processGallery(
         talker: String,
         match: WorkLinkMatcher.Match,
-        group: Boolean,
         outgoing: Boolean,
-        atMe: Boolean,
         queueWaitMs: Long,
         resolveMs: Long,
         sources: List<WorkImageSource>,
@@ -343,7 +313,7 @@ internal class LinkParseRuntime(private val context: FeatureContext) {
         } else null
         val items = ArrayList<GalleryMedia>(sources.size)
         val retained = HashSet<File>()
-        fun allowed() = !stopped && settings.allows(match.platform, talker, group, outgoing, atMe)
+        fun allowed() = !stopped && settings.allows(match.platform, talker, outgoing)
         try {
             var totalBytes = 0L
             val downloadStart = SystemClock.elapsedRealtime()

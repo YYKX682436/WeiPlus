@@ -32,19 +32,9 @@ internal class LinkParseSettings(context: Context) {
         prefs.edit().putString(KEY_ALLOWED_TALKERS, array.toString()).commit()
     }
 
-    fun groupAtMeOnly() = prefs.getBoolean(KEY_GROUP_AT_ME_ONLY, false)
-
-    fun allows(
-        platform: WorkLinkMatcher.Platform,
-        talker: String,
-        group: Boolean,
-        outgoing: Boolean,
-        atMe: Boolean
-    ): Boolean {
+    fun allows(platform: WorkLinkMatcher.Platform, talker: String, outgoing: Boolean): Boolean {
         if (!enabled() || !enabled(platform)) return false
-        if (outgoing) return true
-        if (talker.isBlank() || talker !in allowedTalkers()) return false
-        return !group || !groupAtMeOnly() || atMe
+        return outgoing || (talker.isNotBlank() && talker in allowedTalkers())
     }
 
     companion object {
@@ -53,6 +43,5 @@ internal class LinkParseSettings(context: Context) {
         const val KEY_DOUYIN = "douyin"
         const val KEY_XHS = "xiaohongshu"
         const val KEY_ALLOWED_TALKERS = "allowed_talkers"
-        const val KEY_GROUP_AT_ME_ONLY = "group_at_me_only"
     }
 }

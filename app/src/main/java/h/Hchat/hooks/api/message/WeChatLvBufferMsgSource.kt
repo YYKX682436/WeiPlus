@@ -6,14 +6,9 @@ import java.nio.charset.StandardCharsets
 
 /** Bounded, read-only extraction of the legacy message source XML from WeChat lvbuffer. */
 object WeChatLvBufferMsgSource {
-    data class Resolved(val xml: String, val origin: String)
-
     @JvmStatic
-    fun resolve(column: String?, lvbuffer: Any?): Resolved {
-        if (!column.isNullOrBlank()) return Resolved(column, "column")
-        val xml = extractXml(lvbuffer as? ByteArray)
-        return Resolved(xml, if (xml.isNotEmpty()) "lvbuffer" else "none")
-    }
+    fun resolve(column: String?, lvbuffer: Any?): String =
+        if (!column.isNullOrBlank()) column else extractXml(lvbuffer as? ByteArray)
 
     private const val MAX_BUFFER_BYTES = 64 * 1024
     private const val MAX_SCAN_BYTES = 16 * 1024

@@ -820,7 +820,7 @@ public final class WeChatMessageStoreApi {
     }
 
     private WeChatMessage toMessage(Map<String, Object> row) {
-        WeChatLvBufferMsgSource.Resolved source =
+        String source =
                 WeChatLvBufferMsgSource.resolve(str(row, "msgSource"), row.get("lvbuffer"));
         return new WeChatMessage(
                 longValue(row, "msgId"),
@@ -835,9 +835,8 @@ public final class WeChatMessageStoreApi {
                 str(row, "reserved"),
                 str(row, "transContent"),
                 intValue(row, "flag"),
-                source.getXml(),
-                selfWxId(),
-                source.getOrigin());
+                source,
+                selfWxId());
     }
 
     private String selfWxId() {

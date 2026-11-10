@@ -114,14 +114,6 @@ private fun LinkParseMainPage(
                         if (allowedTalkers.isEmpty()) "未选择" else "已选 ${allowedTalkers.size} 个聊天",
                         onPickTalkers
                     )
-                    InsetDivider()
-                    SwitchRow(
-                        prefs,
-                        LinkParseSettings.KEY_GROUP_AT_ME_ONLY,
-                        "群聊仅 @我触发",
-                        "仅限制允许聊天中的其他群成员；不影响你自己和私聊",
-                        false
-                    )
                 }
             }
         }

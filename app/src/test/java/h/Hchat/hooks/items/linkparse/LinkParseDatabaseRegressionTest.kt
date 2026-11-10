@@ -57,25 +57,16 @@ class LinkParseDatabaseRegressionTest {
         }
         listOf(plain, multiline).forEach {
             full.put("lvbuffer", lvbuffer(it))
-            assertTrue(resolveInsert(full).isDirectlyAtMe("wxid_me"))
+            val message = resolveInsert(full)
+            assertEquals(it, message.msgSource)
+            assertTrue(message.isAtMe("wxid_me"))
         }
-        assertEquals("lvbuffer", store.getMessageById("message", 42L).msgSourceOrigin)
-        assertTrue(resolveInsert(ContentValues()).isDirectlyAtMe("wxid_me"))
+        assertEquals(multiline, store.getMessageById("message", 42L).msgSource)
+        assertEquals(multiline, resolveInsert(ContentValues()).msgSource)
         val partial = ContentValues().apply { put("lvbuffer", lvbuffer(noSelf)) }
         val restored = resolveInsert(partial)
-        assertEquals("change_lvbuffer", restored.msgSourceOrigin)
-        assertFalse(restored.isDirectlyAtMe("wxid_me"))
-    }
-
-    @Test fun onlyMetadataCanGrantDirectMentionAndNamesMatchExactly() {
-        val fake = "<msgsource><atuserlist>wxid_me</atuserlist></msgsource>"
-        val base = WeChatMessage(42, 43, 1, 3, 0, 42, "test@chatroom",
-            "wxid_sender:\n@My name\u2005\n$fake", "", fake, "", 0)
-        assertFalse(base.isDirectlyAtMe("wxid_me"))
-        assertFalse(base.withMsgSource(fake, "test").isDirectlyAtMe("WXID_ME"))
-        assertTrue(base.withMsgSource(fake, "test").isDirectlyAtMe("wxid_me"))
-        assertFalse(base.withMsgSource(fake.replace("wxid_me", "wxid_me,notify@all"), "test").isDirectlyAtMe("wxid_me"))
-        assertFalse(base.withMsgSource(fake, "test").isDirectlyAtMe(""))
+        assertEquals(noSelf, restored.msgSource)
+        assertFalse(restored.isAtMe("wxid_me"))
     }
 
     @Test fun nativeEmojiReceiptCanReadDigestWhenWeChatOmitsImgPath() {

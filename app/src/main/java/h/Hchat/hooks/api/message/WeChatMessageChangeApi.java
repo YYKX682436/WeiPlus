@@ -270,12 +270,11 @@ public final class WeChatMessageChangeApi {
         long msgId = resolveMsgId(change);
         if (change.isDelete()) return null;
         boolean complete = change.isInsert() && hasCoreFields(change.values);
-        WeChatLvBufferMsgSource.Resolved source = WeChatLvBufferMsgSource.resolve(
+        String source = WeChatLvBufferMsgSource.resolve(
                 str(change.values, "msgSource"), change.values != null ? change.values.get("lvbuffer") : null);
         if (!complete && msgId > 0 && messageStoreApi != null) {
             WeChatMessage stored = messageStoreApi.getMessageById(change.table, msgId);
-            if (stored != null) return source.getXml().isEmpty()
-                    ? stored : stored.withMsgSource(source.getXml(), "change_" + source.getOrigin());
+            if (stored != null) return source.isEmpty() ? stored : stored.withMsgSource(source);
         }
         if (!complete) return null;
         return new WeChatMessage(
@@ -291,9 +290,8 @@ public final class WeChatMessageChangeApi {
                 str(change.values, "reserved"),
                 str(change.values, "transContent"),
                 intValue(change.values, "flag"),
-                source.getXml(),
-                selfWxId(),
-                "change_" + source.getOrigin());
+                source,
+                selfWxId());
     }
 
     private static boolean hasCoreFields(ContentValues values) {

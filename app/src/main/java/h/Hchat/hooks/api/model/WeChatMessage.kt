@@ -2,7 +2,7 @@ package h.Hchat.hooks.api.model
 
 import h.Hchat.utils.XmlValueReader
 
-class WeChatMessage @JvmOverloads constructor(
+class WeChatMessage(
     @JvmField val msgId: Long,
     @JvmField val msgSvrId: Long,
     @JvmField val type: Int,
@@ -16,8 +16,7 @@ class WeChatMessage @JvmOverloads constructor(
     translatedContent: String?,
     @JvmField val flag: Int,
     msgSource: String?,
-    selfWxId: String?,
-    val msgSourceOrigin: String = "model"
+    selfWxId: String?
 ) {
     @JvmField val talker: String = talker.orEmpty()
     @JvmField val content: String = content.orEmpty()
@@ -109,17 +108,9 @@ class WeChatMessage @JvmOverloads constructor(
 
     fun isAtMe(): Boolean = isAtMe(selfWxId)
 
-    /** Link parsing must only trust this message's stored source, never its displayed body. */
-    fun isDirectlyAtMe(selfWxId: String?): Boolean {
-        if (selfWxId.isNullOrBlank() || msgSource.isBlank()) return false
-        val source = if (msgSource.trimStart().startsWith("&lt;")) unescapeXml(msgSource) else msgSource
-        val users = XmlValueReader.getTagValue(source, "atuserlist").split(',').map(String::trim)
-        return selfWxId in users && classifyAtMention(source, bodyContent(), selfWxId) == AtMentionType.AT_ME
-    }
-
-    fun withMsgSource(source: String, origin: String): WeChatMessage = WeChatMessage(
+    fun withMsgSource(source: String): WeChatMessage = WeChatMessage(
         msgId, msgSvrId, type, status, isSend, createTime, talker, content, imagePath, reserved,
-        translatedContent, flag, source, selfWxId, origin
+        translatedContent, flag, source, selfWxId
     )
 
     fun isOutgoing(): Boolean = isSend == 1

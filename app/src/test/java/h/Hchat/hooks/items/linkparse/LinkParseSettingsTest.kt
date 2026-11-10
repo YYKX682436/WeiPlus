@@ -11,27 +11,28 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
 class LinkParseSettingsTest {
-    @Test fun ownMessagesBypassWhitelistAndGroupMentionOnlyAppliesToWhitelistedOthers() {
+    @Test fun ownMessagesBypassWhitelistAndOtherMessagesUseTheSameRuleInGroupsAndPrivateChats() {
         val context = RuntimeEnvironment.getApplication()
         val prefs = HchatStorage.preferences(context, LinkParseSettings.PREFS_NAME)
         prefs.edit().clear().commit()
         val settings = LinkParseSettings(context)
         val dy = WorkLinkMatcher.Platform.DOUYIN
-        val friend = "friend-id"
-        val group = "group-id@chatroom"
-        assertFalse(settings.allows(dy, friend, false, false, false))
+        val allowedChats = listOf("friend-id", "group-id@chatroom")
+        val otherChats = listOf("other-friend", "other-group@chatroom")
+        assertFalse(settings.allows(dy, otherChats.first(), outgoing = true))
         prefs.edit().putBoolean(LinkParseSettings.KEY_ENABLE, true).putBoolean(LinkParseSettings.KEY_DOUYIN, true).commit()
-        assertTrue(settings.allows(dy, "any-chat", true, true, false))
-        assertFalse(settings.allows(dy, friend, false, false, false))
-        settings.saveAllowedTalkers(setOf(friend, group))
-        assertTrue(settings.allows(dy, friend, false, false, false))
-        assertTrue(settings.allows(dy, group, true, false, false))
-        prefs.edit().putBoolean(LinkParseSettings.KEY_GROUP_AT_ME_ONLY, true).commit()
-        assertFalse(settings.allows(dy, group, true, false, false))
-        assertTrue(settings.allows(dy, group, true, false, true))
-        assertTrue(settings.allows(dy, friend, false, false, false))
-        assertTrue(settings.allows(dy, group, true, true, false))
-        assertFalse(settings.allows(WorkLinkMatcher.Platform.XIAOHONGSHU, friend, false, false, false))
+        assertFalse(settings.allows(dy, allowedChats.first(), outgoing = false))
+        settings.saveAllowedTalkers(allowedChats.toSet())
+        for (chat in allowedChats) {
+            assertTrue(settings.allows(dy, chat, outgoing = false))
+            assertFalse(settings.allows(WorkLinkMatcher.Platform.XIAOHONGSHU, chat, outgoing = false))
+        }
+        for (chat in otherChats) {
+            assertFalse(settings.allows(dy, chat, outgoing = false))
+            assertTrue(settings.allows(dy, chat, outgoing = true))
+            assertFalse(settings.allows(WorkLinkMatcher.Platform.XIAOHONGSHU, chat, outgoing = true))
+        }
+        assertFalse(settings.allows(dy, "", outgoing = false))
         prefs.edit().clear().commit()
     }
 }
