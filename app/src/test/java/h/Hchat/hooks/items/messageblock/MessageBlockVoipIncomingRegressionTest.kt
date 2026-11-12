@@ -36,6 +36,41 @@ class MessageBlockVoipIncomingRegressionTest {
     }
 
     @Test
+    fun ilinkCallbacksMapOnlyVoiceVideoAndLeaveMultiTalkUnknown() {
+        assertEquals(1000052, MessageBlockVoipCallDecision.messageTypeForIlinkRoomType(1))
+        assertEquals(1000053, MessageBlockVoipCallDecision.messageTypeForIlinkRoomType(2))
+        assertEquals(0, MessageBlockVoipCallDecision.messageTypeForIlinkRoomType(0))
+        assertEquals(0, MessageBlockVoipCallDecision.messageTypeForIlinkRoomType(3))
+        assertEquals(0, MessageBlockVoipCallDecision.messageTypeForIlinkRoomType(4))
+
+        assertEquals(1000052, MessageBlockVoipCallDecision.messageTypeForIlinkRecordType(0))
+        assertEquals(1000053, MessageBlockVoipCallDecision.messageTypeForIlinkRecordType(1))
+        assertEquals(1000052, MessageBlockVoipCallDecision.messageTypeForIlinkRecordType(2))
+        assertEquals(0, MessageBlockVoipCallDecision.messageTypeForIlinkRecordType(3))
+    }
+
+    @Test
+    fun allBlockedIncomingVoiceVideoCallResultsAreSuppressedButOutgoingAndGroupPass() {
+        listOf(0, 1, 2).forEach { roomType ->
+            assertTrue(MessageBlockVoipCallDecision.isIncomingPrivateVoipRecord(false, roomType))
+            assertFalse(MessageBlockVoipCallDecision.isIncomingPrivateVoipRecord(true, roomType))
+        }
+        assertFalse(MessageBlockVoipCallDecision.isIncomingPrivateVoipRecord(false, 3))
+        assertFalse(MessageBlockVoipCallDecision.isIncomingPrivateVoipRecord(false, 4))
+    }
+
+    @Test
+    fun onlyIncomingVoipRowsAreEligibleForGenericNotificationSuppression() {
+        assertTrue(MessageBlockVoipCallDecision.isIncomingVoipMessageNotification(50, 50, 0))
+        assertTrue(MessageBlockVoipCallDecision.isIncomingVoipMessageNotification(50, 50, 2))
+        assertTrue(MessageBlockVoipCallDecision.isIncomingVoipMessageNotification(1000053, 1000053, 0))
+        assertFalse(MessageBlockVoipCallDecision.isIncomingVoipMessageNotification(50, 50, 1))
+        assertFalse(MessageBlockVoipCallDecision.isIncomingVoipMessageNotification(1000053, 1000053, 2))
+        assertFalse(MessageBlockVoipCallDecision.isIncomingVoipMessageNotification(50, 1, 0))
+        assertFalse(MessageBlockVoipCallDecision.isIncomingVoipMessageNotification(50, 1000052, 0))
+    }
+
+    @Test
     fun disabledFeatureAndTextOnlyRuleDoNotMatchCalls() {
         savePrivateRule(setOf(MessageBlockSettings.TYPE_VOIP))
         val disabled = evaluate(1000052)
@@ -78,11 +113,117 @@ class MessageBlockVoipIncomingRegressionTest {
     }
 
     @Test
-    fun outgoingCallsUnknownRoomTypesAndFailedRejectsPassThrough() {
-        assertFalse(shouldReject(incoming = false, roomType = 1, matched = true, rejectAvailable = true))
-        assertFalse(shouldReject(incoming = true, roomType = 2, matched = true, rejectAvailable = true))
-        assertFalse(shouldReject(incoming = true, roomType = 1, matched = true, rejectAvailable = false))
-        assertFalse(shouldReject(incoming = true, roomType = 1, matched = true, rejectAvailable = true, generationActive = false))
+    fun matchedInvitesAreStatelesslyIgnoredWhileOutgoingCallsPassThrough() {
+        repeat(2) {
+            assertTrue(shouldIgnore(incoming = true, roomType = 1, matched = true))
+        }
+        assertFalse(shouldIgnore(incoming = false, roomType = 1, matched = true))
+        assertFalse(shouldIgnore(incoming = true, roomType = 2, matched = true))
+    }
+
+    @Test
+    fun ilinkPathRequiresExactIncomingInviteAndBothPossibleVoipTypesToMatch() {
+        assertTrue(MessageBlockVoipCallDecision.isIlinkInviteShape("ilinkvoip", true, true))
+        assertFalse(MessageBlockVoipCallDecision.isIlinkInviteShape("other", true, true))
+        assertFalse(MessageBlockVoipCallDecision.isIlinkInviteShape("ilinkvoip", false, true))
+        assertFalse(MessageBlockVoipCallDecision.isIlinkInviteShape("ilinkvoip", true, false))
+
+        repeat(2) {
+            assertTrue(
+                MessageBlockVoipCallDecision.shouldIgnoreMessageType(
+                    true, true, true, true, true, 1000052, true
+                )
+            )
+            assertTrue(
+                MessageBlockVoipCallDecision.shouldIgnoreMessageType(
+                    true, true, true, true, true, 1000053, true
+                )
+            )
+        }
+        assertFalse(
+            MessageBlockVoipCallDecision.shouldIgnoreMessageType(
+                true, true, true, true, true, 1000052, false
+            )
+        )
+        assertFalse(
+            MessageBlockVoipCallDecision.shouldIgnoreMessageType(
+                true, true, true, true, false, 1000052, true
+            )
+        )
+        assertFalse(
+            MessageBlockVoipCallDecision.shouldIgnoreMessageType(
+                true, true, true, true, true, 50, true
+            )
+        )
+        assertTrue(
+            MessageBlockVoipCallDecision.shouldIgnoreUnknownVoipVariant(
+                true, true, true, true, true, true, true
+            )
+        )
+        assertFalse(
+            MessageBlockVoipCallDecision.shouldIgnoreUnknownVoipVariant(
+                true, true, true, true, true, true, false
+            )
+        )
+        assertFalse(
+            MessageBlockVoipCallDecision.shouldIgnoreUnknownVoipVariant(
+                true, true, false, true, true, true, true
+            )
+        )
+    }
+
+    @Test
+    fun receiverIdentityFallbackIsOnlyAllowedWhenAccountApiIsUnavailable() {
+        assertTrue(
+            MessageBlockVoipCallDecision.isReceiverIdentityTrusted(
+                true,
+                true,
+                true,
+                false
+            )
+        )
+        assertTrue(
+            MessageBlockVoipCallDecision.isReceiverIdentityTrusted(
+                true,
+                false,
+                false,
+                true
+            )
+        )
+        assertFalse(
+            MessageBlockVoipCallDecision.isReceiverIdentityTrusted(
+                true,
+                false,
+                false,
+                false
+            )
+        )
+        assertFalse(
+            MessageBlockVoipCallDecision.isReceiverIdentityTrusted(
+                true,
+                true,
+                false,
+                true
+            )
+        )
+        assertFalse(
+            MessageBlockVoipCallDecision.isReceiverIdentityTrusted(
+                false,
+                false,
+                false,
+                true
+            )
+        )
+    }
+
+    @Test
+    fun nonmatchesParserFailuresAndUntrustedInputsFailOpen() {
+        assertFalse(shouldIgnore(incoming = true, roomType = 1, matched = false))
+        assertFalse(shouldIgnore(incoming = true, roomType = 1, matched = true, generationActive = false))
+        assertFalse(shouldIgnore(incoming = true, roomType = 1, matched = true, settingsEnabled = false))
+        // A parser failure leaves the invite unparsed and the Hooker proceeds with WeChat's chain.
+        assertFalse(shouldIgnore(incoming = true, roomType = 1, matched = true, inviteParsed = false))
+        assertFalse(shouldIgnore(incoming = true, roomType = 1, matched = true, privateCaller = false))
     }
 
     @Test
@@ -93,6 +234,20 @@ class MessageBlockVoipIncomingRegressionTest {
         assertFalse(feature.evaluateIncomingVoip(context, "group@chatroom", 1000052, self).privateCaller)
         assertFalse(feature.evaluateIncomingVoip(context, caller, 1000052, "").privateCaller)
         assertFalse(feature.evaluateIncomingVoip(context, caller, 1000052, caller).privateCaller)
+    }
+
+    @Test
+    fun verifiedIncomingVoipMessageCanReuseRulesWithoutSelfIdButStillRejectGroup() {
+        enable()
+        savePrivateRule(setOf(MessageBlockSettings.TYPE_VOIP))
+
+        val verified = feature.evaluateIncomingVoip(context, caller, 1000052, "", true)
+        assertTrue(verified.privateCaller)
+        assertTrue(verified.ruleMatched)
+        assertFalse(
+            feature.evaluateIncomingVoip(context, "group@chatroom", 1000052, "", true).privateCaller
+        )
+        assertFalse(feature.evaluateIncomingVoip(context, caller, 1000052, "", false).privateCaller)
     }
 
     private fun enable() {
@@ -114,19 +269,21 @@ class MessageBlockVoipIncomingRegressionTest {
     private fun evaluate(type: Int): MessageBlockIncomingVoipEvaluation =
         feature.evaluateIncomingVoip(context, caller, type, self)
 
-    private fun shouldReject(
+    private fun shouldIgnore(
         incoming: Boolean,
         roomType: Int,
         matched: Boolean,
-        rejectAvailable: Boolean,
-        generationActive: Boolean = true
-    ) = MessageBlockVoipCallDecision.shouldReject(
+        generationActive: Boolean = true,
+        settingsEnabled: Boolean = true,
+        inviteParsed: Boolean = true,
+        privateCaller: Boolean = true
+    ) = MessageBlockVoipCallDecision.shouldIgnore(
         generationActive,
-        true,
+        settingsEnabled,
         incoming,
-        true,
+        inviteParsed,
+        privateCaller,
         roomType,
-        matched,
-        rejectAvailable
+        matched
     )
 }

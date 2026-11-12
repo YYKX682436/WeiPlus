@@ -32,6 +32,8 @@ import h.Hchat.hooks.items.miniprogrambaselib.FakeMiniProgramBaseLibFeature;
 import h.Hchat.hooks.items.miniprogramsplashad.SkipGlobalMiniProgramSplashAdsFeature;
 import h.Hchat.hooks.items.miniprogramvideoad.SkipMiniProgramVideoAdsFeature;
 import h.Hchat.hooks.items.batch.BatchTaskManager;
+import h.Hchat.hooks.items.messageblock.MessageBlockFeature;
+import h.Hchat.hooks.items.messageblock.MessageBlockVoipIncomingCallHooker;
 import h.Hchat.hooks.items.tablet.WeChatTabletFeature;
 import h.Hchat.loader.utils.NativeLibraryLoader;
 import h.Hchat.loader.utils.SilkLibrary;
@@ -79,6 +81,8 @@ public class ModuleEntry extends XposedModule {
 
   private FeatureManager featureManager;
   private FeatureContext featureContext;
+  @SuppressWarnings("FieldCanBeLocal")
+  private volatile MessageBlockVoipIncomingCallHooker voipPushHooker;
 
   @Override
   public void onModuleLoaded(ModuleLoadedParam param) {
@@ -334,6 +338,7 @@ public class ModuleEntry extends XposedModule {
     hostIdentityInvalidated = true;
     runtimeIdentity.invalidate();
     BatchTaskManager.shutdownProcessManagerForHostInvalidation();
+    voipPushHooker = null;
     HLog.e(TAG + " host_identity=invalidated reason=" + reason);
     DexInstallScheduler.INSTANCE.cancelAll();
     HookRegistry.get().unhookAll();
@@ -360,6 +365,9 @@ public class ModuleEntry extends XposedModule {
       if (isAppBrandProcess(lpparam)) {
         installAppBrandProcessHook(lpparam);
       }
+      if (isVoipPushProcess(lpparam)) {
+        if (!installVoipPushApplicationOnCreateHook(lpparam)) return false;
+      }
       return true;
     }
 
@@ -379,6 +387,77 @@ public class ModuleEntry extends XposedModule {
     installCustomBottomBarEarlyHook(lpparam);
 
     return applicationEntryInstalled;
+  }
+
+  private boolean installVoipPushApplicationOnCreateHook(PackageReadyParam lpparam) {
+    try {
+      hookEntryOnce(
+          "message-block-voip-push-application-on-create",
+          lpparam,
+          Application.class,
+          null,
+          null,
+          "onCreate",
+          new Class<?>[0],
+          chain -> {
+            Object result = chain.proceed();
+            Application app = (Application) chain.getThisObject();
+            if (!lpparam.getPackageName().equals(app.getPackageName())) return result;
+            scheduleVoipPushIncomingHook(app, lpparam, "application_on_create");
+            return result;
+          });
+      HLog.i(TAG + " VoIP push 进程 Application 入口 Hook=installed");
+      return true;
+    } catch (Throwable failure) {
+      HLog.e(TAG + " VoIP push 进程 Application 入口 Hook 安装失败", failure);
+      return false;
+    }
+  }
+
+  private void scheduleVoipPushIncomingHook(
+      Context hostContext, PackageReadyParam param, String source) {
+    if (hostIdentityInvalidated || hostContext == null || param == null) return;
+    String taskKey = "message_block.voip_push:" + processName;
+    DexInstallScheduler.scheduleTask(
+        taskKey,
+        "VoIP push 进程 InviteNotify Hook 安装",
+        DexInstallScheduler.Stage.EARLY,
+        Integer.MIN_VALUE + 20,
+        () -> {
+          if (hostIdentityInvalidated) return true;
+          ClassLoader loader = resolveHostClassLoader(hostContext, param);
+          if (!verifyRuntimeIdentity(hostContext, loader, param, "voip_push_" + source)) {
+            return hostIdentityInvalidated;
+          }
+          try {
+            new NativeLibraryLoader().loadDexKit(hostContext, getClass().getClassLoader());
+            String apkPath = resolveCurrentHostApkPath(hostContext, param);
+            DexKitBridge bridge = createDexKitBridge(loader, apkPath);
+            MessageBlockVoipIncomingCallHooker hooker =
+                MessageBlockVoipIncomingCallHooker.forHostProcess(
+                    hostContext, loader, bridge, true);
+            HookRegistry registry = HookRegistry.get();
+            long generation = registry.installationGeneration();
+            boolean installed = registry.withInstallationGeneration(
+                generation,
+                () -> registry.isInstallationGenerationActive(generation),
+                () -> registry.withFeature(MessageBlockFeature.ID, hooker::install));
+            if (installed) {
+              voipPushHooker = hooker;
+              HLog.i("[Hchat:" + MessageBlockFeature.ID + "] push 进程 InviteNotify Hook=installed");
+            }
+            return installed;
+          } catch (Throwable failure) {
+            HLog.e("[Hchat:" + MessageBlockFeature.ID + "] push 进程 InviteNotify Hook 安装失败，继续微信原流程", failure);
+            return false;
+          }
+        });
+  }
+
+  private boolean isVoipPushProcess(PackageReadyParam lpparam) {
+    String packageName = lpparam != null ? lpparam.getPackageName() : null;
+    return packageName != null && processName != null &&
+        processName.equals(packageName + ":push");
   }
 
   private boolean installApplicationOnCreateHook(PackageReadyParam lpparam) {

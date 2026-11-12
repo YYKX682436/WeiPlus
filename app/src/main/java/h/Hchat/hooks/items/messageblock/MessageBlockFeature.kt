@@ -32,8 +32,8 @@ class MessageBlockFeature : BaseFeature() {
         DexInstallScheduler.schedule(ID, name(), stage = DexInstallScheduler.Stage.WARMUP) {
             installBlockHook(context)
         }
-        val incomingHooker = MessageBlockVoipIncomingCallHooker(context) { caller, type, selfWxId ->
-            evaluateIncomingVoip(context.hostContext(), caller, type, selfWxId)
+        val incomingHooker = MessageBlockVoipIncomingCallHooker(context) { caller, type, selfWxId, verifiedIncoming ->
+            evaluateIncomingVoip(context.hostContext(), caller, type, selfWxId, verifiedIncoming)
         }
         voipIncomingHooker = incomingHooker
         DexInstallScheduler.schedule(VOIP_HOOK_KEY, name(), stage = DexInstallScheduler.Stage.WARMUP) {
@@ -172,7 +172,8 @@ class MessageBlockFeature : BaseFeature() {
         context: Context,
         caller: String,
         messageType: Int,
-        selfWxId: String
+        selfWxId: String,
+        allowMissingSelfIdentity: Boolean = false
     ): MessageBlockIncomingVoipEvaluation {
         val settings = MessageBlockSettings(context)
         val enabled = settings.isEnabled()
@@ -193,9 +194,13 @@ class MessageBlockFeature : BaseFeature() {
             "",
             cleanSelf
         )
+        val callerIdentityTrusted = if (cleanSelf.isNotBlank()) {
+            cleanCaller != cleanSelf
+        } else {
+            allowMissingSelfIdentity
+        }
         val privateCaller = cleanCaller.isNotBlank() &&
-            cleanSelf.isNotBlank() &&
-            cleanCaller != cleanSelf &&
+            callerIdentityTrusted &&
             message.isPrivateChat() &&
             message.isVoip()
         if (!privateCaller) {
