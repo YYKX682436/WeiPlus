@@ -66,16 +66,15 @@ internal fun MultiRecallMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar("返回", onBack)
-        }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "聊天消息") }
@@ -267,14 +266,15 @@ private fun SelectedMessagesMainPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = { BottomActionBar("返回", onBack) }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "多选消息") }
@@ -305,10 +305,10 @@ private fun SelectedMessagesMainPage(
                         officialIntervalMinutes
                     ) { value ->
                         officialIntervalMinutes = value
-                        value.toIntOrNull()?.let { parsed ->
+                        value.toIntOrNull()?.takeIf { it in 0..SelectedMessagesSettings.MAX_OFFICIAL_INTERVAL_MINUTES }?.let { parsed ->
                             sp.edit().putInt(
                                 SelectedMessagesSettings.KEY_OFFICIAL_INTERVAL_MINUTES,
-                                parsed.coerceIn(0, SelectedMessagesSettings.MAX_OFFICIAL_INTERVAL_MINUTES)
+                                parsed
                             ).apply()
                         }
                     }
@@ -319,10 +319,10 @@ private fun SelectedMessagesMainPage(
                         sendIntervalSeconds
                     ) { value ->
                         sendIntervalSeconds = value
-                        value.toIntOrNull()?.let { parsed ->
+                        value.toIntOrNull()?.takeIf { it in 0..SelectedMessagesSettings.MAX_SEND_INTERVAL_SECONDS }?.let { parsed ->
                             sp.edit().putInt(
                                 SelectedMessagesSettings.KEY_SEND_INTERVAL_SECONDS,
-                                parsed.coerceIn(0, SelectedMessagesSettings.MAX_SEND_INTERVAL_SECONDS)
+                                parsed
                             ).apply()
                         }
                     }
@@ -356,17 +356,21 @@ private fun SelectedMessagesCustomEditorPage(
     val scrollBehavior = MiuixScrollBehavior()
     val official = channel == SelectedMessagesRuntimeCoordinator.CHANNEL_OFFICIAL
     val items = scheduledTaskEditableItems(draft)
+    var intervalText by remember(draft.id) { mutableStateOf(draft.intervalSeconds.toString()) }
+    var mediaIntervalText by remember(draft.id) { mutableStateOf(draft.mediaIntervalSeconds.toString()) }
+    val intervalValid = intervalText.toIntOrNull()?.let { it in 0..3600 } == true
+    val mediaIntervalValid = mediaIntervalText.toIntOrNull()?.let { it in 0..3600 } == true
     PageScaffold(
         title = "自定义群发",
         largeTitle = "自定义群发",
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar(
-                primaryText = "开始群发",
-                onPrimaryClick = onSend,
-                secondaryText = "返回",
-                onSecondaryClick = onBack
-            )
+        onBack = onBack,
+        showBackIcon = false,
+        topBarActions = {
+            TopBarTextAction("开始群发", enabled = official || (intervalValid && (items.size <= 1 || mediaIntervalValid)), onClick = onSend)
+            if (items.none { it.type == ScheduledTaskSettings.TYPE_SELECTED_MESSAGE }) {
+                TopBarTextAction("新增内容") { onDraftChange(appendScheduledTaskContentItem(draft)) }
+            }
         }
     ) { padding ->
         LazyColumn(
@@ -374,7 +378,7 @@ private fun SelectedMessagesCustomEditorPage(
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "发送目标") }
@@ -419,25 +423,21 @@ private fun SelectedMessagesCustomEditorPage(
                     SettingsCard {
                         NumberInputRow(
                             "聊天间隔",
-                            "单位秒，多个聊天之间的等待时间",
-                            draft.intervalSeconds.toString()
+                            if (intervalValid) "单位秒，多个聊天之间的等待时间" else "请输入 0–3600",
+                            intervalText
                         ) {
-                            onDraftChange(
-                                draft.copy(intervalSeconds = it.toIntOrNull()?.coerceIn(0, 3600) ?: 0)
-                            )
+                            intervalText = it
+                            it.toIntOrNull()?.takeIf { value -> value in 0..3600 }?.let { value -> onDraftChange(draft.copy(intervalSeconds = value)) }
                         }
                         if (items.size > 1) {
                             InsetDivider()
                             NumberInputRow(
                                 scheduledTaskItemIntervalTitle(),
-                                "单位秒，同一聊天连续发送的等待时间",
-                                draft.mediaIntervalSeconds.toString()
+                                if (mediaIntervalValid) "单位秒，同一聊天连续发送的等待时间" else "请输入 0–3600",
+                                mediaIntervalText
                             ) {
-                                onDraftChange(
-                                    draft.copy(
-                                        mediaIntervalSeconds = it.toIntOrNull()?.coerceIn(0, 3600) ?: 0
-                                    )
-                                )
+                                mediaIntervalText = it
+                                it.toIntOrNull()?.takeIf { value -> value in 0..3600 }?.let { value -> onDraftChange(draft.copy(mediaIntervalSeconds = value)) }
                             }
                         }
                     }
@@ -569,14 +569,15 @@ internal fun MessageForwardMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = { BottomActionBar("返回", onBack) }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "聊天消息") }
@@ -617,16 +618,15 @@ internal fun CallMediaLimitMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar("返回", onBack)
-        }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "音视频通话") }
@@ -659,14 +659,15 @@ internal fun CallRingtoneBlockMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = { BottomActionBar("返回", onBack) }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "通话铃声") }
@@ -707,16 +708,15 @@ internal fun StatusTextLimitMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar("返回", onBack)
-        }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "个人状态") }
@@ -749,16 +749,15 @@ internal fun EditMessageMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar("返回", onBack)
-        }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "聊天记录") }
@@ -790,14 +789,15 @@ internal fun QuickContactEditMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = { BottomActionBar("返回", onBack) }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "会话列表") }
@@ -823,14 +823,15 @@ internal fun QuickGroupChatLabelMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = { BottomActionBar("返回", onBack) }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "会话列表") }
@@ -856,14 +857,15 @@ internal fun QuickMomentsMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = { BottomActionBar("返回", onBack) }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "会话列表") }
@@ -889,14 +891,15 @@ internal fun QuickTerminateMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = { BottomActionBar("返回", onBack) }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "加号菜单") }
@@ -923,16 +926,15 @@ internal fun TypingReportBlockMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar("返回", onBack)
-        }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "输入状态") }
@@ -979,41 +981,17 @@ internal fun MessageAffixMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar(
-                primaryText = "保存",
-                onPrimaryClick = {
-                    when {
-                        enabled && MessageAffixSettings.originalTextVariableCount(textFormat) != 1 -> {
-                            Toast.makeText(
-                                context,
-                                "文本格式必须且只能包含一个原消息变量",
-                                Toast.LENGTH_SHORT
-                            ).show()
-                        }
-                        enabled && !MessageAffixSettings.isValidTimeFormat(timeFormat) -> {
-                            Toast.makeText(context, "时间格式无效", Toast.LENGTH_SHORT).show()
-                        }
-                        else -> {
-                            textFormat = MessageAffixSettings.normalizeTextFormat(textFormat)
-                            timeFormat = MessageAffixSettings.normalizeTimeFormat(timeFormat)
-                            sp.edit()
-                                .putBoolean(MessageAffixSettings.KEY_ENABLE, enabled)
-                                .putString(MessageAffixSettings.KEY_TEXT_FORMAT, textFormat)
-                                .putString(MessageAffixSettings.KEY_TIME_FORMAT, timeFormat)
-                                .apply()
-                            Toast.makeText(context, "设置已保存", Toast.LENGTH_SHORT).show()
-                        }
-                    }
-                },
-                secondaryText = "重置",
-                onSecondaryClick = {
-                    textFormat = MessageAffixSettings.DEFAULT_TEXT_FORMAT
-                    timeFormat = MessageAffixSettings.DEFAULT_TIME_FORMAT
-                },
-                middleText = "取消",
-                onMiddleClick = onBack
-            )
+        onBack = onBack,
+        showBackIcon = false,
+        topBarActions = {
+            TopBarTextAction("重置") {
+                textFormat = MessageAffixSettings.DEFAULT_TEXT_FORMAT
+                timeFormat = MessageAffixSettings.DEFAULT_TIME_FORMAT
+                sp.edit()
+                    .putString(MessageAffixSettings.KEY_TEXT_FORMAT, textFormat)
+                    .putString(MessageAffixSettings.KEY_TIME_FORMAT, timeFormat)
+                    .apply()
+            }
         }
     ) { padding ->
         LazyColumn(
@@ -1021,7 +999,7 @@ internal fun MessageAffixMiuixPage(
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "聊天消息") }
@@ -1033,23 +1011,36 @@ internal fun MessageAffixMiuixPage(
                         summary = "将聊天发送的文字按自定义格式处理"
                     ) {
                         enabled = it
+                        sp.edit().putBoolean(MessageAffixSettings.KEY_ENABLE, it).apply()
                     }
-                    if (enabled) {
                         InsetDivider()
                         VariableInputRow(
                             title = "文本格式",
-                            summary = "点击下方中文变量插入到光标位置",
+                            summary = if (textFormat.isNotBlank() && MessageAffixSettings.originalTextVariableCount(textFormat) != 1)
+                                "必须且只能包含一个原消息变量；保留上次保存的值" else "点击下方中文变量插入到光标位置",
                             value = textFormat,
                             variables = messageAffixTemplateVariables,
-                            minLines = 2
+                            minLines = 2,
+                            onEditingFinished = {
+                                if (it.isBlank()) sp.edit().putString(MessageAffixSettings.KEY_TEXT_FORMAT, MessageAffixSettings.DEFAULT_TEXT_FORMAT).apply()
+                            }
                         ) {
                             textFormat = it
+                            if (MessageAffixSettings.originalTextVariableCount(it) == 1) {
+                                sp.edit().putString(MessageAffixSettings.KEY_TEXT_FORMAT, it).apply()
+                            }
                         }
                         InsetDivider()
-                        InputRow("时间格式", "例如 HH:mm:ss 或 yyyy-MM-dd HH:mm:ss", timeFormat) {
+                        InputRow("时间格式", if (timeFormat.isNotBlank() && !MessageAffixSettings.isValidTimeFormat(timeFormat))
+                            "时间格式无效；保留上次保存的值" else "例如 HH:mm:ss 或 yyyy-MM-dd HH:mm:ss", timeFormat,
+                            onEditingFinished = {
+                                if (it.isBlank()) sp.edit().putString(MessageAffixSettings.KEY_TIME_FORMAT, MessageAffixSettings.DEFAULT_TIME_FORMAT).apply()
+                            }) {
                             timeFormat = it
+                            if (it.isNotBlank() && MessageAffixSettings.isValidTimeFormat(it)) {
+                                sp.edit().putString(MessageAffixSettings.KEY_TIME_FORMAT, MessageAffixSettings.normalizeTimeFormat(it)).apply()
+                            }
                         }
-                    }
                 }
             }
         }
@@ -1104,29 +1095,21 @@ internal fun InputHintMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar(
-                primaryText = "保存",
-                onPrimaryClick = {
-                    template = InputHintSettings.normalizeTemplate(template)
-                    sp.edit()
-                        .putBoolean(InputHintSettings.KEY_ENABLE, enabled)
-                        .putBoolean(InputHintSettings.KEY_STATISTICS_ENABLE, statisticsEnabled)
-                        .putBoolean(InputHintSettings.KEY_RESTORE_LEGACY_INPUT, restoreLegacyInput)
-                        .putString(InputHintSettings.KEY_TEMPLATE, template)
-                        .apply()
-                    Toast.makeText(context, "设置已保存", Toast.LENGTH_SHORT).show()
-                },
-                secondaryText = "重置",
-                onSecondaryClick = {
-                    enabled = InputHintSettings.DEFAULT_ENABLE
-                    statisticsEnabled = InputHintSettings.DEFAULT_STATISTICS_ENABLE
-                    restoreLegacyInput = InputHintSettings.DEFAULT_RESTORE_LEGACY_INPUT
-                    template = InputHintSettings.DEFAULT_TEMPLATE
-                },
-                middleText = "取消",
-                onMiddleClick = onBack
-            )
+        onBack = onBack,
+        showBackIcon = false,
+        topBarActions = {
+            TopBarTextAction("重置") {
+                enabled = InputHintSettings.DEFAULT_ENABLE
+                statisticsEnabled = InputHintSettings.DEFAULT_STATISTICS_ENABLE
+                restoreLegacyInput = InputHintSettings.DEFAULT_RESTORE_LEGACY_INPUT
+                template = InputHintSettings.DEFAULT_TEMPLATE
+                sp.edit()
+                    .putBoolean(InputHintSettings.KEY_ENABLE, enabled)
+                    .putBoolean(InputHintSettings.KEY_STATISTICS_ENABLE, statisticsEnabled)
+                    .putBoolean(InputHintSettings.KEY_RESTORE_LEGACY_INPUT, restoreLegacyInput)
+                    .putString(InputHintSettings.KEY_TEMPLATE, template)
+                    .apply()
+            }
         }
     ) { padding ->
         LazyColumn(
@@ -1134,7 +1117,7 @@ internal fun InputHintMiuixPage(
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "聊天输入框") }
@@ -1146,6 +1129,7 @@ internal fun InputHintMiuixPage(
                         summary = "自定义聊天输入框没有文字时显示的内容"
                     ) {
                         enabled = it
+                        sp.edit().putBoolean(InputHintSettings.KEY_ENABLE, it).apply()
                     }
                     InsetDivider()
                     SwitchRow(
@@ -1154,8 +1138,8 @@ internal fun InputHintMiuixPage(
                         summary = "关闭输入栏长按语音输入，恢复旧版样式；重启微信后生效"
                     ) {
                         restoreLegacyInput = it
+                        sp.edit().putBoolean(InputHintSettings.KEY_RESTORE_LEGACY_INPUT, it).apply()
                     }
-                    if (enabled) {
                         InsetDivider()
                         SwitchRow(
                             checked = statisticsEnabled,
@@ -1163,6 +1147,7 @@ internal fun InputHintMiuixPage(
                             summary = "统计今天自己实际发送的消息"
                         ) {
                             statisticsEnabled = it
+                            sp.edit().putBoolean(InputHintSettings.KEY_STATISTICS_ENABLE, it).apply()
                         }
                         InsetDivider()
                         VariableInputRow(
@@ -1174,13 +1159,16 @@ internal fun InputHintMiuixPage(
                             },
                             value = template,
                             variables = if (statisticsEnabled) inputHintTemplateVariables else emptyList(),
-                            minLines = 2
+                            minLines = 2,
+                            onEditingFinished = {
+                                if (it.isBlank()) sp.edit().putString(InputHintSettings.KEY_TEMPLATE, InputHintSettings.DEFAULT_TEMPLATE).apply()
+                            }
                         ) {
                             template = it
+                            if (it.isNotBlank()) sp.edit().putString(InputHintSettings.KEY_TEMPLATE, it).apply()
                         }
                         InsetDivider()
                         InfoRow("当前提示", preview)
-                    }
                 }
             }
         }
@@ -1201,14 +1189,15 @@ internal fun PatBlockMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = { BottomActionBar("返回", onBack) }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "聊天头像") }
@@ -1241,14 +1230,15 @@ internal fun AutoOriginalImageMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = { BottomActionBar("返回", onBack) }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "聊天图片") }
@@ -1281,14 +1271,15 @@ internal fun AutoViewOriginalMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = { BottomActionBar("返回", onBack) }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "聊天媒体") }
@@ -1320,14 +1311,15 @@ internal fun RemoveForwardLimitMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = { BottomActionBar("返回", onBack) }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "消息转发") }
@@ -1354,16 +1346,15 @@ internal fun DisableHotUpdateMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar("返回", onBack)
-        }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "热更新") }

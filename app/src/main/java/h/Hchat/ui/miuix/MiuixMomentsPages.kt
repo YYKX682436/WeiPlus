@@ -64,7 +64,6 @@ import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
 import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-import top.yukonga.miuix.kmp.window.WindowDialog
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -111,8 +110,8 @@ internal fun MomentsAutoLikeMiuixPage(
                 context = context,
                 request = current.request,
                 onBack = { route = MomentsAutoLikeRoute.Main },
-                onConfirm = { picked ->
-                    val ids = picked.map { it.id }.filter { it.isNotBlank() }.toSet()
+                onSelectionChange = { selected ->
+                    val ids = selected.filter { it.isNotBlank() }.toSet()
                     if (current.listMode == MomentsAutoLikeSettings.LIST_BLACKLIST) {
                         blacklist = ids
                         sp.edit().putString(MomentsAutoLikeSettings.KEY_BLACKLIST, formatIds(ids)).apply()
@@ -120,7 +119,6 @@ internal fun MomentsAutoLikeMiuixPage(
                         whitelist = ids
                         sp.edit().putString(MomentsAutoLikeSettings.KEY_WHITELIST, formatIds(ids)).apply()
                     }
-                    route = MomentsAutoLikeRoute.Main
                 }
             )
         }
@@ -201,18 +199,30 @@ private fun MomentsAutoLikeMainPage(
     val listState = rememberLazyListState()
     val scrollBehavior = MiuixScrollBehavior()
 
+    fun saveRandomRange() {
+        val min = randomMin.toIntOrNull()?.takeIf { it >= 0 } ?: return
+        val max = randomMax.toIntOrNull()?.takeIf { it >= min } ?: return
+        sp.edit().putInt(MomentsAutoLikeSettings.KEY_RANDOM_MIN_SECONDS, min).putInt(MomentsAutoLikeSettings.KEY_RANDOM_MAX_SECONDS, max).apply()
+    }
     PageScaffold(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = { BottomActionBar("返回", onBack) }
+        onBack = onBack,
+        showBackIcon = false,
+        topBarActions = {
+            if (logEnabled || logs.isNotBlank()) TopBarTextAction("清空日志") {
+                sp.edit().remove(MomentsAutoLikeSettings.KEY_LOGS).apply()
+                logs = ""
+            }
+        }
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "自动点赞") }
@@ -228,216 +238,197 @@ private fun MomentsAutoLikeMainPage(
                             )
                             .apply()
                     }
-                    if (enabled) {
-                        InsetDivider()
-                        SwitchRow(likeSelf, "点赞自己的朋友圈", "自己的朋友圈不受好友名单限制") {
-                            likeSelf = it
-                            sp.edit().putBoolean(MomentsAutoLikeSettings.KEY_LIKE_SELF, it).apply()
+                    InsetDivider()
+                    SwitchRow(likeSelf, "点赞自己的朋友圈", "自己的朋友圈不受好友名单限制") {
+                        likeSelf = it
+                        sp.edit().putBoolean(MomentsAutoLikeSettings.KEY_LIKE_SELF, it).apply()
+                    }
+                }
+            }
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "好友范围") }
+            item {
+                SettingsCard {
+                    PopupOptionRow(
+                        title = "名单模式",
+                        summary = if (listMode == MomentsAutoLikeSettings.LIST_BLACKLIST) "除黑名单外均可点赞" else "只点赞白名单好友",
+                        options = optionItems(
+                            "白名单" to MomentsAutoLikeSettings.LIST_WHITELIST,
+                            "黑名单" to MomentsAutoLikeSettings.LIST_BLACKLIST
+                        ),
+                        currentValue = listMode,
+                        onValueChanged = {
+                            listMode = it
+                            sp.edit().putInt(MomentsAutoLikeSettings.KEY_LIST_MODE, it).apply()
+                        }
+                    )
+                    InsetDivider()
+                    ActionRow(if (listMode == MomentsAutoLikeSettings.LIST_BLACKLIST) "黑名单" else "白名单", listSummary) {
+                        onPickTargets(listMode)
+                    }
+                    InsetDivider()
+                    NumberInputRow("同一人每天点赞数量", "每天最多点赞同一人的朋友圈条数，0 表示不限制", dailyLikeLimit) {
+                        dailyLikeLimit = it
+                        it.toIntOrNull()?.takeIf { value -> value >= 0 }?.let { value ->
+                            sp.edit()
+                                .putInt(MomentsAutoLikeSettings.KEY_DAILY_LIKE_LIMIT, value)
+                                .apply()
                         }
                     }
                 }
             }
-            if (enabled) {
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "好友范围") }
-                item {
-                    SettingsCard {
-                        PopupOptionRow(
-                            title = "名单模式",
-                            summary = if (listMode == MomentsAutoLikeSettings.LIST_BLACKLIST) "除黑名单外均可点赞" else "只点赞白名单好友",
-                            options = optionItems(
-                                "白名单" to MomentsAutoLikeSettings.LIST_WHITELIST,
-                                "黑名单" to MomentsAutoLikeSettings.LIST_BLACKLIST
-                            ),
-                            currentValue = listMode,
-                            onValueChanged = {
-                                listMode = it
-                                sp.edit().putInt(MomentsAutoLikeSettings.KEY_LIST_MODE, it).apply()
-                            }
-                        )
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "执行时间") }
+            item {
+                SettingsCard {
+                    PopupOptionRow(
+                        title = "点赞延迟",
+                        summary = if (delayMode == MomentsAutoLikeSettings.DELAY_RANDOM) "在范围内随机等待" else "每条等待固定时间",
+                        options = optionItems(
+                            "固定延迟" to MomentsAutoLikeSettings.DELAY_FIXED,
+                            "随机延迟" to MomentsAutoLikeSettings.DELAY_RANDOM
+                        ),
+                        currentValue = delayMode,
+                        onValueChanged = {
+                            delayMode = it
+                            sp.edit().putInt(MomentsAutoLikeSettings.KEY_DELAY_MODE, it).apply()
+                        }
+                    )
+                    if (delayMode == MomentsAutoLikeSettings.DELAY_FIXED) {
                         InsetDivider()
-                        ActionRow(if (listMode == MomentsAutoLikeSettings.LIST_BLACKLIST) "黑名单" else "白名单", listSummary) {
-                            onPickTargets(listMode)
+                        NumberInputRow("等待时间", "单位秒，最少 0 秒", fixedDelay) {
+                            fixedDelay = it
+                            it.toIntOrNull()?.takeIf { value -> value >= 0 }?.let { value ->
+                                sp.edit().putInt(MomentsAutoLikeSettings.KEY_FIXED_DELAY_SECONDS, value).apply()
+                            }
+                        }
+                    } else {
+                        InsetDivider()
+                        NumberInputRow("最短等待", "单位秒，最少 0 秒", randomMin) {
+                            randomMin = it
+                            saveRandomRange()
                         }
                         InsetDivider()
-                        NumberInputRow("同一人每天点赞数量", "每天最多点赞同一人的朋友圈条数，0 表示不限制", dailyLikeLimit) {
-                            dailyLikeLimit = it
-                            it.toIntOrNull()?.let { value ->
-                                sp.edit()
-                                    .putInt(MomentsAutoLikeSettings.KEY_DAILY_LIKE_LIMIT, value.coerceAtLeast(0))
-                                    .apply()
-                            }
+                        NumberInputRow("最长等待", "单位秒，不能小于最短等待", randomMax) {
+                            randomMax = it
+                            saveRandomRange()
+                        }
+                        if (randomMin.toIntOrNull()?.let { min -> min >= 0 && randomMax.toIntOrNull()?.let { it >= min } == true } != true) {
+                            InsetDivider(); InfoRow("延迟范围", "请输入有效范围，保留上次有效配置")
+                        }
+                    }
+                    InsetDivider()
+                    SwitchRow(timeWindow, "限制运行时段", "支持跨零点时段") {
+                        timeWindow = it
+                        sp.edit().putBoolean(MomentsAutoLikeSettings.KEY_TIME_WINDOW_ENABLE, it).apply()
+                    }
+                    InsetDivider()
+                    TimeOfDayPickerRow("开始时间", startTime) {
+                        startTime = it
+                        sp.edit().putString(MomentsAutoLikeSettings.KEY_START_TIME, startTime).putString(MomentsAutoLikeSettings.KEY_END_TIME, endTime).apply()
+                    }
+                    InsetDivider()
+                    TimeOfDayPickerRow("结束时间", endTime) {
+                        endTime = it
+                        sp.edit().putString(MomentsAutoLikeSettings.KEY_START_TIME, startTime).putString(MomentsAutoLikeSettings.KEY_END_TIME, endTime).apply()
+                    }
+
+                    InsetDivider()
+                    NumberInputRow("发布时间限制", "仅点赞发布后指定小时内的朋友圈，最少 1 小时", maxAge) {
+                        maxAge = it
+                        it.toIntOrNull()?.takeIf { it >= 1 }?.let { value ->
+                            sp.edit().putInt(MomentsAutoLikeSettings.KEY_MAX_AGE_HOURS, value).apply()
                         }
                     }
                 }
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "执行时间") }
-                item {
-                    SettingsCard {
-                        PopupOptionRow(
-                            title = "点赞延迟",
-                            summary = if (delayMode == MomentsAutoLikeSettings.DELAY_RANDOM) "在范围内随机等待" else "每条等待固定时间",
-                            options = optionItems(
-                                "固定延迟" to MomentsAutoLikeSettings.DELAY_FIXED,
-                                "随机延迟" to MomentsAutoLikeSettings.DELAY_RANDOM
-                            ),
-                            currentValue = delayMode,
-                            onValueChanged = {
-                                delayMode = it
-                                sp.edit().putInt(MomentsAutoLikeSettings.KEY_DELAY_MODE, it).apply()
-                            }
-                        )
-                        if (delayMode == MomentsAutoLikeSettings.DELAY_FIXED) {
-                            InsetDivider()
-                            NumberInputRow("等待时间", "单位秒，最少 0 秒", fixedDelay) {
-                                fixedDelay = it
-                                it.toIntOrNull()?.let { value ->
-                                    sp.edit().putInt(MomentsAutoLikeSettings.KEY_FIXED_DELAY_SECONDS, value.coerceAtLeast(0)).apply()
-                                }
-                            }
-                        } else {
-                            InsetDivider()
-                            NumberInputRow("最短等待", "单位秒，最少 0 秒", randomMin) {
-                                randomMin = it
-                                it.toIntOrNull()?.let { value ->
-                                    sp.edit().putInt(MomentsAutoLikeSettings.KEY_RANDOM_MIN_SECONDS, value.coerceAtLeast(0)).apply()
-                                }
-                            }
-                            InsetDivider()
-                            NumberInputRow("最长等待", "单位秒，不能小于最短等待", randomMax) {
-                                randomMax = it
-                                it.toIntOrNull()?.let { value ->
-                                    sp.edit().putInt(MomentsAutoLikeSettings.KEY_RANDOM_MAX_SECONDS, value.coerceAtLeast(0)).apply()
-                                }
-                            }
-                        }
-                        InsetDivider()
-                        SwitchRow(timeWindow, "限制运行时段", "支持跨零点时段") {
-                            timeWindow = it
-                            sp.edit().putBoolean(MomentsAutoLikeSettings.KEY_TIME_WINDOW_ENABLE, it).apply()
-                        }
-                        if (timeWindow) {
-                            InsetDivider()
-                            TimeOfDayPickerRow("开始时间", startTime) {
-                                startTime = it
-                                sp.edit().putString(MomentsAutoLikeSettings.KEY_START_TIME, it).apply()
-                            }
-                            InsetDivider()
-                            TimeOfDayPickerRow("结束时间", endTime) {
-                                endTime = it
-                                sp.edit().putString(MomentsAutoLikeSettings.KEY_END_TIME, it).apply()
-                            }
-                        }
-                        InsetDivider()
-                        NumberInputRow("发布时间限制", "仅点赞发布后指定小时内的朋友圈，最少 1 小时", maxAge) {
-                            maxAge = it
-                            it.toIntOrNull()?.let { value ->
-                                sp.edit().putInt(MomentsAutoLikeSettings.KEY_MAX_AGE_HOURS, value.coerceAtLeast(1)).apply()
-                            }
-                        }
+            }
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "内容过滤") }
+            item {
+                SettingsCard {
+                    SwitchRow(allowText, "文字朋友圈", "允许自动点赞") {
+                        allowText = it; sp.edit().putBoolean(MomentsAutoLikeSettings.KEY_ALLOW_TEXT, it).apply()
+                    }
+                    InsetDivider()
+                    SwitchRow(allowImage, "图片/图文朋友圈", "允许自动点赞") {
+                        allowImage = it; sp.edit().putBoolean(MomentsAutoLikeSettings.KEY_ALLOW_IMAGE, it).apply()
+                    }
+                    InsetDivider()
+                    SwitchRow(allowVideo, "视频/视文朋友圈", "允许自动点赞") {
+                        allowVideo = it; sp.edit().putBoolean(MomentsAutoLikeSettings.KEY_ALLOW_VIDEO, it).apply()
+                    }
+                    InsetDivider()
+                    SwitchRow(allowLink, "网页/链接朋友圈", "允许自动点赞") {
+                        allowLink = it; sp.edit().putBoolean(MomentsAutoLikeSettings.KEY_ALLOW_LINK, it).apply()
+                    }
+                    InsetDivider()
+                    SwitchRow(allowMusic, "音乐朋友圈", "允许自动点赞") {
+                        allowMusic = it; sp.edit().putBoolean(MomentsAutoLikeSettings.KEY_ALLOW_MUSIC, it).apply()
+                    }
+                    InsetDivider()
+                    SwitchRow(allowOther, "其他卡片朋友圈", "允许自动点赞") {
+                        allowOther = it; sp.edit().putBoolean(MomentsAutoLikeSettings.KEY_ALLOW_OTHER, it).apply()
+                    }
+                    InsetDivider()
+                    SwitchRow(allowUnknown, "未知类型朋友圈", "允许自动点赞，默认关闭") {
+                        allowUnknown = it; sp.edit().putBoolean(MomentsAutoLikeSettings.KEY_ALLOW_UNKNOWN, it).apply()
+                    }
+                    InsetDivider()
+                    SwitchRow(keywordText, "文字朋友圈关键词", "开启后按关键词排除") {
+                        keywordText = it; sp.edit().putBoolean(MomentsAutoLikeSettings.KEY_KEYWORD_TEXT, it).apply()
+                    }
+                    InsetDivider()
+                    InputRow("文字排除关键词", "多个关键词用逗号或换行分隔", keywordsText, minLines = 2) {
+                        keywordsText = it
+                        sp.edit().putString(MomentsAutoLikeSettings.KEY_KEYWORDS_TEXT, it).apply()
+                    }
+                    InsetDivider()
+                    SwitchRow(keywordImage, "图文朋友圈关键词", "开启后按关键词排除") {
+                        keywordImage = it; sp.edit().putBoolean(MomentsAutoLikeSettings.KEY_KEYWORD_IMAGE, it).apply()
+                    }
+                    InsetDivider()
+                    InputRow("图文排除关键词", "多个关键词用逗号或换行分隔", keywordsImageText, minLines = 2) {
+                        keywordsImageText = it
+                        sp.edit().putString(MomentsAutoLikeSettings.KEY_KEYWORDS_IMAGE_TEXT, it).apply()
+                    }
+                    InsetDivider()
+                    SwitchRow(keywordVideo, "视文朋友圈关键词", "开启后按关键词排除") {
+                        keywordVideo = it; sp.edit().putBoolean(MomentsAutoLikeSettings.KEY_KEYWORD_VIDEO, it).apply()
+                    }
+                    InsetDivider()
+                    InputRow("视文排除关键词", "多个关键词用逗号或换行分隔", keywordsVideoText, minLines = 2) {
+                        keywordsVideoText = it
+                        sp.edit().putString(MomentsAutoLikeSettings.KEY_KEYWORDS_VIDEO_TEXT, it).apply()
+                    }
+                    InsetDivider()
+                    SwitchRow(keywordCard, "链接/卡片朋友圈关键词", "开启后按关键词排除") {
+                        keywordCard = it; sp.edit().putBoolean(MomentsAutoLikeSettings.KEY_KEYWORD_CARD, it).apply()
+                    }
+                    InsetDivider()
+                    InputRow("链接/卡片排除关键词", "多个关键词用逗号或换行分隔", keywordsCardText, minLines = 2) {
+                        keywordsCardText = it
+                        sp.edit().putString(MomentsAutoLikeSettings.KEY_KEYWORDS_CARD_TEXT, it).apply()
                     }
                 }
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "内容过滤") }
-                item {
-                    SettingsCard {
-                        SwitchRow(allowText, "文字朋友圈", "允许自动点赞") {
-                            allowText = it; sp.edit().putBoolean(MomentsAutoLikeSettings.KEY_ALLOW_TEXT, it).apply()
-                        }
-                        InsetDivider()
-                        SwitchRow(allowImage, "图片/图文朋友圈", "允许自动点赞") {
-                            allowImage = it; sp.edit().putBoolean(MomentsAutoLikeSettings.KEY_ALLOW_IMAGE, it).apply()
-                        }
-                        InsetDivider()
-                        SwitchRow(allowVideo, "视频/视文朋友圈", "允许自动点赞") {
-                            allowVideo = it; sp.edit().putBoolean(MomentsAutoLikeSettings.KEY_ALLOW_VIDEO, it).apply()
-                        }
-                        InsetDivider()
-                        SwitchRow(allowLink, "网页/链接朋友圈", "允许自动点赞") {
-                            allowLink = it; sp.edit().putBoolean(MomentsAutoLikeSettings.KEY_ALLOW_LINK, it).apply()
-                        }
-                        InsetDivider()
-                        SwitchRow(allowMusic, "音乐朋友圈", "允许自动点赞") {
-                            allowMusic = it; sp.edit().putBoolean(MomentsAutoLikeSettings.KEY_ALLOW_MUSIC, it).apply()
-                        }
-                        InsetDivider()
-                        SwitchRow(allowOther, "其他卡片朋友圈", "允许自动点赞") {
-                            allowOther = it; sp.edit().putBoolean(MomentsAutoLikeSettings.KEY_ALLOW_OTHER, it).apply()
-                        }
-                        InsetDivider()
-                        SwitchRow(allowUnknown, "未知类型朋友圈", "允许自动点赞，默认关闭") {
-                            allowUnknown = it; sp.edit().putBoolean(MomentsAutoLikeSettings.KEY_ALLOW_UNKNOWN, it).apply()
-                        }
-                        InsetDivider()
-                        SwitchRow(keywordText, "文字朋友圈关键词", "开启后按关键词排除") {
-                            keywordText = it; sp.edit().putBoolean(MomentsAutoLikeSettings.KEY_KEYWORD_TEXT, it).apply()
-                        }
-                        if (keywordText) {
-                            InsetDivider()
-                            InputRow("文字排除关键词", "多个关键词用逗号或换行分隔", keywordsText, minLines = 2) {
-                                keywordsText = it
-                                sp.edit().putString(MomentsAutoLikeSettings.KEY_KEYWORDS_TEXT, it).apply()
-                            }
-                        }
-                        InsetDivider()
-                        SwitchRow(keywordImage, "图文朋友圈关键词", "开启后按关键词排除") {
-                            keywordImage = it; sp.edit().putBoolean(MomentsAutoLikeSettings.KEY_KEYWORD_IMAGE, it).apply()
-                        }
-                        if (keywordImage) {
-                            InsetDivider()
-                            InputRow("图文排除关键词", "多个关键词用逗号或换行分隔", keywordsImageText, minLines = 2) {
-                                keywordsImageText = it
-                                sp.edit().putString(MomentsAutoLikeSettings.KEY_KEYWORDS_IMAGE_TEXT, it).apply()
-                            }
-                        }
-                        InsetDivider()
-                        SwitchRow(keywordVideo, "视文朋友圈关键词", "开启后按关键词排除") {
-                            keywordVideo = it; sp.edit().putBoolean(MomentsAutoLikeSettings.KEY_KEYWORD_VIDEO, it).apply()
-                        }
-                        if (keywordVideo) {
-                            InsetDivider()
-                            InputRow("视文排除关键词", "多个关键词用逗号或换行分隔", keywordsVideoText, minLines = 2) {
-                                keywordsVideoText = it
-                                sp.edit().putString(MomentsAutoLikeSettings.KEY_KEYWORDS_VIDEO_TEXT, it).apply()
-                            }
-                        }
-                        InsetDivider()
-                        SwitchRow(keywordCard, "链接/卡片朋友圈关键词", "开启后按关键词排除") {
-                            keywordCard = it; sp.edit().putBoolean(MomentsAutoLikeSettings.KEY_KEYWORD_CARD, it).apply()
-                        }
-                        if (keywordCard) {
-                            InsetDivider()
-                            InputRow("链接/卡片排除关键词", "多个关键词用逗号或换行分隔", keywordsCardText, minLines = 2) {
-                                keywordsCardText = it
-                                sp.edit().putString(MomentsAutoLikeSettings.KEY_KEYWORDS_CARD_TEXT, it).apply()
-                            }
-                        }
+            }
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "运行记录") }
+            item {
+                SettingsCard {
+                    SwitchRow(logEnabled, "记录运行日志", "只保留最近 200 条") {
+                        logEnabled = it
+                        sp.edit().putBoolean(MomentsAutoLikeSettings.KEY_LOG_ENABLE, it).apply()
                     }
-                }
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "运行记录") }
-                item {
-                    SettingsCard {
-                        SwitchRow(logEnabled, "记录运行日志", "只保留最近 200 条") {
-                            logEnabled = it
-                            sp.edit().putBoolean(MomentsAutoLikeSettings.KEY_LOG_ENABLE, it).apply()
+                    if (logEnabled) {
+                        InsetDivider()
+                        ActionRow("刷新日志", if (logs.isBlank()) "暂无记录" else "${logs.lineSequence().count()} 条记录") {
+                            logs = sp.getString(MomentsAutoLikeSettings.KEY_LOGS, "").orEmpty()
                         }
-                        if (logEnabled) {
+                        if (logs.isNotBlank()) {
                             InsetDivider()
-                            ActionRow("刷新日志", if (logs.isBlank()) "暂无记录" else "${logs.lineSequence().count()} 条记录") {
-                                logs = sp.getString(MomentsAutoLikeSettings.KEY_LOGS, "").orEmpty()
-                            }
-                            if (logs.isNotBlank()) {
-                                InsetDivider()
-                                Text(
-                                    text = logs.take(5000),
-                                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                                    fontSize = 12.sp,
-                                    fontFamily = FontFamily.Monospace,
-                                    modifier = Modifier.fillMaxWidth().padding(16.dp)
-                                )
-                                InsetDivider()
-                                ActionRow("清空日志", "删除当前自动点赞运行记录") {
-                                    sp.edit().remove(MomentsAutoLikeSettings.KEY_LOGS).apply()
-                                    logs = ""
-                                }
-                            }
+                            Text(
+                                text = logs.take(5000),
+                                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                                fontSize = 12.sp,
+                                fontFamily = FontFamily.Monospace,
+                                modifier = Modifier.fillMaxWidth().padding(16.dp)
+                            )
                         }
                     }
                 }
@@ -489,8 +480,8 @@ internal object MomentsAutoCommentPage {
                 context = context,
                 request = current.request,
                 onBack = { route = MomentsAutoCommentRoute.Main },
-                onConfirm = { picked ->
-                    val ids = picked.map { it.id }.filter { it.isNotBlank() }.toSet()
+                onSelectionChange = { selected ->
+                    val ids = selected.filter { it.isNotBlank() }.toSet()
                     if (current.listMode == MomentsAutoCommentSettings.LIST_BLACKLIST) {
                         blacklist = ids
                         sp.edit().putString(MomentsAutoCommentSettings.KEY_BLACKLIST, formatIds(ids)).apply()
@@ -498,7 +489,6 @@ internal object MomentsAutoCommentPage {
                         whitelist = ids
                         sp.edit().putString(MomentsAutoCommentSettings.KEY_WHITELIST, formatIds(ids)).apply()
                     }
-                    route = MomentsAutoCommentRoute.Main
                 }
             )
         }
@@ -600,18 +590,30 @@ internal object MomentsAutoCommentPage {
     val listState = rememberLazyListState()
     val scrollBehavior = MiuixScrollBehavior()
 
+    fun saveRandomRange() {
+        val min = randomMin.toIntOrNull()?.takeIf { it >= 0 } ?: return
+        val max = randomMax.toIntOrNull()?.takeIf { it >= min } ?: return
+        sp.edit().putInt(MomentsAutoCommentSettings.KEY_RANDOM_MIN_SECONDS, min).putInt(MomentsAutoCommentSettings.KEY_RANDOM_MAX_SECONDS, max).apply()
+    }
     PageScaffold(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = { BottomActionBar("返回", onBack) }
+        onBack = onBack,
+        showBackIcon = false,
+        topBarActions = {
+            if (logEnabled || logs.isNotBlank()) TopBarTextAction("清空日志") {
+                sp.edit().remove(MomentsAutoCommentSettings.KEY_LOGS).apply()
+                logs = ""
+            }
+        }
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "自动评论") }
@@ -627,247 +629,228 @@ internal object MomentsAutoCommentPage {
                             )
                             .apply()
                     }
-                    if (enabled) {
+                    InsetDivider()
+                    VariableInputRow(
+                        title = "评论内容",
+                        summary = if (commentContent.isBlank()) "需要填写" else "点击下方中文变量插入到光标位置",
+                        value = commentContent,
+                        variables = momentsAutoCommentTemplateVariables,
+                        minLines = 3
+                    ) {
+                        commentContent = it
+                        sp.edit().putString(MomentsAutoCommentSettings.KEY_COMMENT_CONTENT, it).apply()
+                    }
+                    if (commentContent.contains(MomentsAutoCommentSettings.VAR_TIME)) {
                         InsetDivider()
-                        VariableInputRow(
-                            title = "评论内容",
-                            summary = if (commentContent.isBlank()) "需要填写" else "点击下方中文变量插入到光标位置",
-                            value = commentContent,
-                            variables = momentsAutoCommentTemplateVariables,
-                            minLines = 3
+                        InputRow(
+                            title = "时间变量格式",
+                            summary = if (MomentsAutoCommentSettings.isValidTimeFormat(timeFormat)) {
+                                "例如 HH:mm:ss 或 yyyy-MM-dd HH:mm:ss"
+                            } else {
+                                "格式无效，当前输入不会保存"
+                            },
+                            value = timeFormat
                         ) {
-                            commentContent = it
-                            sp.edit().putString(MomentsAutoCommentSettings.KEY_COMMENT_CONTENT, it).apply()
-                        }
-                        if (commentContent.contains(MomentsAutoCommentSettings.VAR_TIME)) {
-                            InsetDivider()
-                            InputRow(
-                                title = "时间变量格式",
-                                summary = if (MomentsAutoCommentSettings.isValidTimeFormat(timeFormat)) {
-                                    "例如 HH:mm:ss 或 yyyy-MM-dd HH:mm:ss"
-                                } else {
-                                    "格式无效，当前输入不会保存"
-                                },
-                                value = timeFormat
-                            ) {
-                                timeFormat = it
-                                if (MomentsAutoCommentSettings.isValidTimeFormat(it)) {
-                                    sp.edit().putString(
-                                        MomentsAutoCommentSettings.KEY_TIME_FORMAT,
-                                        MomentsAutoCommentSettings.normalizeTimeFormat(it)
-                                    ).apply()
-                                }
+                            timeFormat = it
+                            if (MomentsAutoCommentSettings.isValidTimeFormat(it)) {
+                                sp.edit().putString(
+                                    MomentsAutoCommentSettings.KEY_TIME_FORMAT,
+                                    MomentsAutoCommentSettings.normalizeTimeFormat(it)
+                                ).apply()
                             }
                         }
-                        InsetDivider()
-                        SwitchRow(commentSelf, "评论自己的朋友圈", "自己的朋友圈不受好友名单限制") {
-                            commentSelf = it
-                            sp.edit().putBoolean(MomentsAutoCommentSettings.KEY_COMMENT_SELF, it).apply()
+                    }
+                    InsetDivider()
+                    SwitchRow(commentSelf, "评论自己的朋友圈", "自己的朋友圈不受好友名单限制") {
+                        commentSelf = it
+                        sp.edit().putBoolean(MomentsAutoCommentSettings.KEY_COMMENT_SELF, it).apply()
+                    }
+                }
+            }
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "好友范围") }
+            item {
+                SettingsCard {
+                    PopupOptionRow(
+                        title = "名单模式",
+                        summary = if (listMode == MomentsAutoCommentSettings.LIST_BLACKLIST) "除黑名单外均可评论" else "只评论白名单好友",
+                        options = optionItems(
+                            "白名单" to MomentsAutoCommentSettings.LIST_WHITELIST,
+                            "黑名单" to MomentsAutoCommentSettings.LIST_BLACKLIST
+                        ),
+                        currentValue = listMode,
+                        onValueChanged = {
+                            listMode = it
+                            sp.edit().putInt(MomentsAutoCommentSettings.KEY_LIST_MODE, it).apply()
+                        }
+                    )
+                    InsetDivider()
+                    ActionRow(if (listMode == MomentsAutoCommentSettings.LIST_BLACKLIST) "黑名单" else "白名单", listSummary) {
+                        onPickTargets(listMode)
+                    }
+                    InsetDivider()
+                    NumberInputRow("同一人每天评论数量", "每天最多评论同一人的朋友圈条数，0 表示不限制", dailyCommentLimit) {
+                        dailyCommentLimit = it
+                        it.toIntOrNull()?.takeIf { value -> value >= 0 }?.let { value ->
+                            sp.edit()
+                                .putInt(MomentsAutoCommentSettings.KEY_DAILY_COMMENT_LIMIT, value)
+                                .apply()
                         }
                     }
                 }
             }
-            if (enabled) {
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "好友范围") }
-                item {
-                    SettingsCard {
-                        PopupOptionRow(
-                            title = "名单模式",
-                            summary = if (listMode == MomentsAutoCommentSettings.LIST_BLACKLIST) "除黑名单外均可评论" else "只评论白名单好友",
-                            options = optionItems(
-                                "白名单" to MomentsAutoCommentSettings.LIST_WHITELIST,
-                                "黑名单" to MomentsAutoCommentSettings.LIST_BLACKLIST
-                            ),
-                            currentValue = listMode,
-                            onValueChanged = {
-                                listMode = it
-                                sp.edit().putInt(MomentsAutoCommentSettings.KEY_LIST_MODE, it).apply()
-                            }
-                        )
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "执行时间") }
+            item {
+                SettingsCard {
+                    PopupOptionRow(
+                        title = "评论延迟",
+                        summary = if (delayMode == MomentsAutoCommentSettings.DELAY_RANDOM) "在范围内随机等待" else "每条等待固定时间",
+                        options = optionItems(
+                            "固定延迟" to MomentsAutoCommentSettings.DELAY_FIXED,
+                            "随机延迟" to MomentsAutoCommentSettings.DELAY_RANDOM
+                        ),
+                        currentValue = delayMode,
+                        onValueChanged = {
+                            delayMode = it
+                            sp.edit().putInt(MomentsAutoCommentSettings.KEY_DELAY_MODE, it).apply()
+                        }
+                    )
+                    if (delayMode == MomentsAutoCommentSettings.DELAY_FIXED) {
                         InsetDivider()
-                        ActionRow(if (listMode == MomentsAutoCommentSettings.LIST_BLACKLIST) "黑名单" else "白名单", listSummary) {
-                            onPickTargets(listMode)
+                        NumberInputRow("等待时间", "单位秒，最少 0 秒", fixedDelay) {
+                            fixedDelay = it
+                            it.toIntOrNull()?.takeIf { value -> value >= 0 }?.let { value ->
+                                sp.edit().putInt(MomentsAutoCommentSettings.KEY_FIXED_DELAY_SECONDS, value).apply()
+                            }
+                        }
+                    } else {
+                        InsetDivider()
+                        NumberInputRow("最短等待", "单位秒，最少 0 秒", randomMin) {
+                            randomMin = it
+                            saveRandomRange()
                         }
                         InsetDivider()
-                        NumberInputRow("同一人每天评论数量", "每天最多评论同一人的朋友圈条数，0 表示不限制", dailyCommentLimit) {
-                            dailyCommentLimit = it
-                            it.toIntOrNull()?.let { value ->
-                                sp.edit()
-                                    .putInt(MomentsAutoCommentSettings.KEY_DAILY_COMMENT_LIMIT, value.coerceAtLeast(0))
-                                    .apply()
-                            }
+                        NumberInputRow("最长等待", "单位秒，不能小于最短等待", randomMax) {
+                            randomMax = it
+                            saveRandomRange()
+                        }
+                        if (randomMin.toIntOrNull()?.let { min -> min >= 0 && randomMax.toIntOrNull()?.let { it >= min } == true } != true) {
+                            InsetDivider(); InfoRow("延迟范围", "请输入有效范围，保留上次有效配置")
+                        }
+                    }
+                    InsetDivider()
+                    SwitchRow(timeWindow, "限制运行时段", "支持跨零点时段") {
+                        timeWindow = it
+                        sp.edit().putBoolean(MomentsAutoCommentSettings.KEY_TIME_WINDOW_ENABLE, it).apply()
+                    }
+                    InsetDivider()
+                    TimeOfDayPickerRow("开始时间", startTime) {
+                        startTime = it
+                        sp.edit().putString(MomentsAutoCommentSettings.KEY_START_TIME, startTime).putString(MomentsAutoCommentSettings.KEY_END_TIME, endTime).apply()
+                    }
+                    InsetDivider()
+                    TimeOfDayPickerRow("结束时间", endTime) {
+                        endTime = it
+                        sp.edit().putString(MomentsAutoCommentSettings.KEY_START_TIME, startTime).putString(MomentsAutoCommentSettings.KEY_END_TIME, endTime).apply()
+                    }
+
+                    InsetDivider()
+                    NumberInputRow("发布时间限制", "仅评论发布后指定小时内的朋友圈，最少 1 小时", maxAge) {
+                        maxAge = it
+                        it.toIntOrNull()?.takeIf { it >= 1 }?.let { value ->
+                            sp.edit().putInt(MomentsAutoCommentSettings.KEY_MAX_AGE_HOURS, value).apply()
                         }
                     }
                 }
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "执行时间") }
-                item {
-                    SettingsCard {
-                        PopupOptionRow(
-                            title = "评论延迟",
-                            summary = if (delayMode == MomentsAutoCommentSettings.DELAY_RANDOM) "在范围内随机等待" else "每条等待固定时间",
-                            options = optionItems(
-                                "固定延迟" to MomentsAutoCommentSettings.DELAY_FIXED,
-                                "随机延迟" to MomentsAutoCommentSettings.DELAY_RANDOM
-                            ),
-                            currentValue = delayMode,
-                            onValueChanged = {
-                                delayMode = it
-                                sp.edit().putInt(MomentsAutoCommentSettings.KEY_DELAY_MODE, it).apply()
-                            }
-                        )
-                        if (delayMode == MomentsAutoCommentSettings.DELAY_FIXED) {
-                            InsetDivider()
-                            NumberInputRow("等待时间", "单位秒，最少 0 秒", fixedDelay) {
-                                fixedDelay = it
-                                it.toIntOrNull()?.let { value ->
-                                    sp.edit().putInt(MomentsAutoCommentSettings.KEY_FIXED_DELAY_SECONDS, value.coerceAtLeast(0)).apply()
-                                }
-                            }
-                        } else {
-                            InsetDivider()
-                            NumberInputRow("最短等待", "单位秒，最少 0 秒", randomMin) {
-                                randomMin = it
-                                it.toIntOrNull()?.let { value ->
-                                    sp.edit().putInt(MomentsAutoCommentSettings.KEY_RANDOM_MIN_SECONDS, value.coerceAtLeast(0)).apply()
-                                }
-                            }
-                            InsetDivider()
-                            NumberInputRow("最长等待", "单位秒，不能小于最短等待", randomMax) {
-                                randomMax = it
-                                it.toIntOrNull()?.let { value ->
-                                    sp.edit().putInt(MomentsAutoCommentSettings.KEY_RANDOM_MAX_SECONDS, value.coerceAtLeast(0)).apply()
-                                }
-                            }
-                        }
-                        InsetDivider()
-                        SwitchRow(timeWindow, "限制运行时段", "支持跨零点时段") {
-                            timeWindow = it
-                            sp.edit().putBoolean(MomentsAutoCommentSettings.KEY_TIME_WINDOW_ENABLE, it).apply()
-                        }
-                        if (timeWindow) {
-                            InsetDivider()
-                            TimeOfDayPickerRow("开始时间", startTime) {
-                                startTime = it
-                                sp.edit().putString(MomentsAutoCommentSettings.KEY_START_TIME, it).apply()
-                            }
-                            InsetDivider()
-                            TimeOfDayPickerRow("结束时间", endTime) {
-                                endTime = it
-                                sp.edit().putString(MomentsAutoCommentSettings.KEY_END_TIME, it).apply()
-                            }
-                        }
-                        InsetDivider()
-                        NumberInputRow("发布时间限制", "仅评论发布后指定小时内的朋友圈，最少 1 小时", maxAge) {
-                            maxAge = it
-                            it.toIntOrNull()?.let { value ->
-                                sp.edit().putInt(MomentsAutoCommentSettings.KEY_MAX_AGE_HOURS, value.coerceAtLeast(1)).apply()
-                            }
-                        }
+            }
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "内容过滤") }
+            item {
+                SettingsCard {
+                    SwitchRow(allowText, "文字朋友圈", "允许自动评论") {
+                        allowText = it; sp.edit().putBoolean(MomentsAutoCommentSettings.KEY_ALLOW_TEXT, it).apply()
+                    }
+                    InsetDivider()
+                    SwitchRow(allowImage, "图片/图文朋友圈", "允许自动评论") {
+                        allowImage = it; sp.edit().putBoolean(MomentsAutoCommentSettings.KEY_ALLOW_IMAGE, it).apply()
+                    }
+                    InsetDivider()
+                    SwitchRow(allowVideo, "视频/视文朋友圈", "允许自动评论") {
+                        allowVideo = it; sp.edit().putBoolean(MomentsAutoCommentSettings.KEY_ALLOW_VIDEO, it).apply()
+                    }
+                    InsetDivider()
+                    SwitchRow(allowLink, "网页/链接朋友圈", "允许自动评论") {
+                        allowLink = it; sp.edit().putBoolean(MomentsAutoCommentSettings.KEY_ALLOW_LINK, it).apply()
+                    }
+                    InsetDivider()
+                    SwitchRow(allowMusic, "音乐朋友圈", "允许自动评论") {
+                        allowMusic = it; sp.edit().putBoolean(MomentsAutoCommentSettings.KEY_ALLOW_MUSIC, it).apply()
+                    }
+                    InsetDivider()
+                    SwitchRow(allowOther, "其他卡片朋友圈", "允许自动评论") {
+                        allowOther = it; sp.edit().putBoolean(MomentsAutoCommentSettings.KEY_ALLOW_OTHER, it).apply()
+                    }
+                    InsetDivider()
+                    SwitchRow(allowUnknown, "未知类型朋友圈", "允许自动评论，默认关闭") {
+                        allowUnknown = it; sp.edit().putBoolean(MomentsAutoCommentSettings.KEY_ALLOW_UNKNOWN, it).apply()
+                    }
+                    InsetDivider()
+                    SwitchRow(keywordText, "文字朋友圈关键词", "开启后按关键词排除") {
+                        keywordText = it; sp.edit().putBoolean(MomentsAutoCommentSettings.KEY_KEYWORD_TEXT, it).apply()
+                    }
+                    InsetDivider()
+                    InputRow("文字排除关键词", "多个关键词用逗号或换行分隔", keywordsText, minLines = 2) {
+                        keywordsText = it
+                        sp.edit().putString(MomentsAutoCommentSettings.KEY_KEYWORDS_TEXT, it).apply()
+                    }
+                    InsetDivider()
+                    SwitchRow(keywordImage, "图文朋友圈关键词", "开启后按关键词排除") {
+                        keywordImage = it; sp.edit().putBoolean(MomentsAutoCommentSettings.KEY_KEYWORD_IMAGE, it).apply()
+                    }
+                    InsetDivider()
+                    InputRow("图文排除关键词", "多个关键词用逗号或换行分隔", keywordsImageText, minLines = 2) {
+                        keywordsImageText = it
+                        sp.edit().putString(MomentsAutoCommentSettings.KEY_KEYWORDS_IMAGE_TEXT, it).apply()
+                    }
+                    InsetDivider()
+                    SwitchRow(keywordVideo, "视文朋友圈关键词", "开启后按关键词排除") {
+                        keywordVideo = it; sp.edit().putBoolean(MomentsAutoCommentSettings.KEY_KEYWORD_VIDEO, it).apply()
+                    }
+                    InsetDivider()
+                    InputRow("视文排除关键词", "多个关键词用逗号或换行分隔", keywordsVideoText, minLines = 2) {
+                        keywordsVideoText = it
+                        sp.edit().putString(MomentsAutoCommentSettings.KEY_KEYWORDS_VIDEO_TEXT, it).apply()
+                    }
+                    InsetDivider()
+                    SwitchRow(keywordCard, "链接/卡片朋友圈关键词", "开启后按关键词排除") {
+                        keywordCard = it; sp.edit().putBoolean(MomentsAutoCommentSettings.KEY_KEYWORD_CARD, it).apply()
+                    }
+                    InsetDivider()
+                    InputRow("链接/卡片排除关键词", "多个关键词用逗号或换行分隔", keywordsCardText, minLines = 2) {
+                        keywordsCardText = it
+                        sp.edit().putString(MomentsAutoCommentSettings.KEY_KEYWORDS_CARD_TEXT, it).apply()
                     }
                 }
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "内容过滤") }
-                item {
-                    SettingsCard {
-                        SwitchRow(allowText, "文字朋友圈", "允许自动评论") {
-                            allowText = it; sp.edit().putBoolean(MomentsAutoCommentSettings.KEY_ALLOW_TEXT, it).apply()
-                        }
-                        InsetDivider()
-                        SwitchRow(allowImage, "图片/图文朋友圈", "允许自动评论") {
-                            allowImage = it; sp.edit().putBoolean(MomentsAutoCommentSettings.KEY_ALLOW_IMAGE, it).apply()
-                        }
-                        InsetDivider()
-                        SwitchRow(allowVideo, "视频/视文朋友圈", "允许自动评论") {
-                            allowVideo = it; sp.edit().putBoolean(MomentsAutoCommentSettings.KEY_ALLOW_VIDEO, it).apply()
-                        }
-                        InsetDivider()
-                        SwitchRow(allowLink, "网页/链接朋友圈", "允许自动评论") {
-                            allowLink = it; sp.edit().putBoolean(MomentsAutoCommentSettings.KEY_ALLOW_LINK, it).apply()
-                        }
-                        InsetDivider()
-                        SwitchRow(allowMusic, "音乐朋友圈", "允许自动评论") {
-                            allowMusic = it; sp.edit().putBoolean(MomentsAutoCommentSettings.KEY_ALLOW_MUSIC, it).apply()
-                        }
-                        InsetDivider()
-                        SwitchRow(allowOther, "其他卡片朋友圈", "允许自动评论") {
-                            allowOther = it; sp.edit().putBoolean(MomentsAutoCommentSettings.KEY_ALLOW_OTHER, it).apply()
-                        }
-                        InsetDivider()
-                        SwitchRow(allowUnknown, "未知类型朋友圈", "允许自动评论，默认关闭") {
-                            allowUnknown = it; sp.edit().putBoolean(MomentsAutoCommentSettings.KEY_ALLOW_UNKNOWN, it).apply()
-                        }
-                        InsetDivider()
-                        SwitchRow(keywordText, "文字朋友圈关键词", "开启后按关键词排除") {
-                            keywordText = it; sp.edit().putBoolean(MomentsAutoCommentSettings.KEY_KEYWORD_TEXT, it).apply()
-                        }
-                        if (keywordText) {
-                            InsetDivider()
-                            InputRow("文字排除关键词", "多个关键词用逗号或换行分隔", keywordsText, minLines = 2) {
-                                keywordsText = it
-                                sp.edit().putString(MomentsAutoCommentSettings.KEY_KEYWORDS_TEXT, it).apply()
-                            }
-                        }
-                        InsetDivider()
-                        SwitchRow(keywordImage, "图文朋友圈关键词", "开启后按关键词排除") {
-                            keywordImage = it; sp.edit().putBoolean(MomentsAutoCommentSettings.KEY_KEYWORD_IMAGE, it).apply()
-                        }
-                        if (keywordImage) {
-                            InsetDivider()
-                            InputRow("图文排除关键词", "多个关键词用逗号或换行分隔", keywordsImageText, minLines = 2) {
-                                keywordsImageText = it
-                                sp.edit().putString(MomentsAutoCommentSettings.KEY_KEYWORDS_IMAGE_TEXT, it).apply()
-                            }
-                        }
-                        InsetDivider()
-                        SwitchRow(keywordVideo, "视文朋友圈关键词", "开启后按关键词排除") {
-                            keywordVideo = it; sp.edit().putBoolean(MomentsAutoCommentSettings.KEY_KEYWORD_VIDEO, it).apply()
-                        }
-                        if (keywordVideo) {
-                            InsetDivider()
-                            InputRow("视文排除关键词", "多个关键词用逗号或换行分隔", keywordsVideoText, minLines = 2) {
-                                keywordsVideoText = it
-                                sp.edit().putString(MomentsAutoCommentSettings.KEY_KEYWORDS_VIDEO_TEXT, it).apply()
-                            }
-                        }
-                        InsetDivider()
-                        SwitchRow(keywordCard, "链接/卡片朋友圈关键词", "开启后按关键词排除") {
-                            keywordCard = it; sp.edit().putBoolean(MomentsAutoCommentSettings.KEY_KEYWORD_CARD, it).apply()
-                        }
-                        if (keywordCard) {
-                            InsetDivider()
-                            InputRow("链接/卡片排除关键词", "多个关键词用逗号或换行分隔", keywordsCardText, minLines = 2) {
-                                keywordsCardText = it
-                                sp.edit().putString(MomentsAutoCommentSettings.KEY_KEYWORDS_CARD_TEXT, it).apply()
-                            }
-                        }
+            }
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "运行记录") }
+            item {
+                SettingsCard {
+                    SwitchRow(logEnabled, "记录运行日志", "只保留最近 200 条") {
+                        logEnabled = it
+                        sp.edit().putBoolean(MomentsAutoCommentSettings.KEY_LOG_ENABLE, it).apply()
                     }
-                }
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "运行记录") }
-                item {
-                    SettingsCard {
-                        SwitchRow(logEnabled, "记录运行日志", "只保留最近 200 条") {
-                            logEnabled = it
-                            sp.edit().putBoolean(MomentsAutoCommentSettings.KEY_LOG_ENABLE, it).apply()
+                    if (logEnabled) {
+                        InsetDivider()
+                        ActionRow("刷新日志", if (logs.isBlank()) "暂无记录" else "${logs.lineSequence().count()} 条记录") {
+                            logs = sp.getString(MomentsAutoCommentSettings.KEY_LOGS, "").orEmpty()
                         }
-                        if (logEnabled) {
+                        if (logs.isNotBlank()) {
                             InsetDivider()
-                            ActionRow("刷新日志", if (logs.isBlank()) "暂无记录" else "${logs.lineSequence().count()} 条记录") {
-                                logs = sp.getString(MomentsAutoCommentSettings.KEY_LOGS, "").orEmpty()
-                            }
-                            if (logs.isNotBlank()) {
-                                InsetDivider()
-                                Text(
-                                    text = logs.take(5000),
-                                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                                    fontSize = 12.sp,
-                                    fontFamily = FontFamily.Monospace,
-                                    modifier = Modifier.fillMaxWidth().padding(16.dp)
-                                )
-                                InsetDivider()
-                                ActionRow("清空日志", "删除当前自动评论运行记录") {
-                                    sp.edit().remove(MomentsAutoCommentSettings.KEY_LOGS).apply()
-                                    logs = ""
-                                }
-                            }
+                            Text(
+                                text = logs.take(5000),
+                                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                                fontSize = 12.sp,
+                                fontFamily = FontFamily.Monospace,
+                                modifier = Modifier.fillMaxWidth().padding(16.dp)
+                            )
                         }
                     }
                 }
@@ -938,10 +921,9 @@ internal fun MomentsAutoForwardMiuixPage(
                 context = context,
                 request = current.request,
                 onBack = { route = MomentsAutoForwardRoute.Main },
-                onConfirm = { picked ->
-                    targets = picked.map { it.id }.filter { it.isNotBlank() }.toSet()
+                onSelectionChange = { selected ->
+                    targets = selected.filter { it.isNotBlank() }.toSet()
                     sp.edit().putString(MomentsAutoForwardSettings.KEY_TARGETS, formatIds(targets)).apply()
-                    route = MomentsAutoForwardRoute.Main
                 }
             )
             MomentsAutoForwardRoute.ReplacementRules -> KeywordReplacementRulesPage(
@@ -956,8 +938,6 @@ internal fun MomentsAutoForwardMiuixPage(
                             MomentsAutoForwardSettings.encodeKeywordReplacements(updated)
                         )
                         .apply()
-                    Toast.makeText(context, "替换规则已保存", Toast.LENGTH_SHORT).show()
-                    route = MomentsAutoForwardRoute.Main
                 }
             )
         }
@@ -1157,18 +1137,30 @@ private fun MomentsAutoForwardMainPage(
     }
     val scrollBehavior = MiuixScrollBehavior()
 
+    fun saveRandomRange() {
+        val min = randomMin.toIntOrNull()?.takeIf { it >= 0 } ?: return
+        val max = randomMax.toIntOrNull()?.takeIf { it >= min } ?: return
+        sp.edit().putInt(MomentsAutoForwardSettings.KEY_RANDOM_MIN_SECONDS, min).putInt(MomentsAutoForwardSettings.KEY_RANDOM_MAX_SECONDS, max).apply()
+    }
     PageScaffold(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = { BottomActionBar("返回", onBack) }
+        onBack = onBack,
+        showBackIcon = false,
+        topBarActions = {
+            if (logEnabled || logs.isNotBlank()) TopBarTextAction("清空日志") {
+                sp.edit().remove(MomentsAutoForwardSettings.KEY_LOGS).apply()
+                logs = ""
+            }
+        }
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "自动转发") }
@@ -1186,244 +1178,223 @@ private fun MomentsAutoForwardMainPage(
                     }
                 }
             }
-            if (enabled) {
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "转发好友") }
-                item {
-                    SettingsCard {
-                        ActionRow("转发好友", targetSummary, onPickTargets)
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "转发好友") }
+            item {
+                SettingsCard {
+                    ActionRow("转发好友", targetSummary, onPickTargets)
+                }
+            }
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "内容类型") }
+            item {
+                SettingsCard {
+                    SwitchRow(allowText, "文字", "允许自动转发") {
+                        allowText = it
+                        sp.edit().putBoolean(MomentsAutoForwardSettings.KEY_ALLOW_TEXT, it).apply()
+                    }
+                    InsetDivider()
+                    SwitchRow(allowImage, "图片/图文", "允许自动转发") {
+                        allowImage = it
+                        sp.edit().putBoolean(MomentsAutoForwardSettings.KEY_ALLOW_IMAGE, it).apply()
+                    }
+                    InsetDivider()
+                    SwitchRow(allowVideo, "视频/视文", "允许自动转发") {
+                        allowVideo = it
+                        sp.edit().putBoolean(MomentsAutoForwardSettings.KEY_ALLOW_VIDEO, it).apply()
+                    }
+                    InsetDivider()
+                    SwitchRow(allowLivePhoto, "实况照片", "允许自动转发") {
+                        allowLivePhoto = it
+                        sp.edit().putBoolean(MomentsAutoForwardSettings.KEY_ALLOW_LIVE_PHOTO, it).apply()
+                    }
+                    InsetDivider()
+                    SwitchRow(allowLink, "网页/链接", "按正文和链接转为文字朋友圈") {
+                        allowLink = it
+                        sp.edit().putBoolean(MomentsAutoForwardSettings.KEY_ALLOW_LINK, it).apply()
+                    }
+                    InsetDivider()
+                    SwitchRow(allowMusic, "音乐", "按正文和链接转为文字朋友圈") {
+                        allowMusic = it
+                        sp.edit().putBoolean(MomentsAutoForwardSettings.KEY_ALLOW_MUSIC, it).apply()
+                    }
+                    InsetDivider()
+                    SwitchRow(allowOther, "其他卡片", "按可解析内容转为文字朋友圈") {
+                        allowOther = it
+                        sp.edit().putBoolean(MomentsAutoForwardSettings.KEY_ALLOW_OTHER, it).apply()
+                    }
+                    InsetDivider()
+                    SwitchRow(allowUnknown, "未知类型", "按可解析内容转发，默认关闭") {
+                        allowUnknown = it
+                        sp.edit().putBoolean(MomentsAutoForwardSettings.KEY_ALLOW_UNKNOWN, it).apply()
                     }
                 }
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "内容类型") }
-                item {
-                    SettingsCard {
-                        SwitchRow(allowText, "文字", "允许自动转发") {
-                            allowText = it
-                            sp.edit().putBoolean(MomentsAutoForwardSettings.KEY_ALLOW_TEXT, it).apply()
-                        }
-                        InsetDivider()
-                        SwitchRow(allowImage, "图片/图文", "允许自动转发") {
-                            allowImage = it
-                            sp.edit().putBoolean(MomentsAutoForwardSettings.KEY_ALLOW_IMAGE, it).apply()
-                        }
-                        InsetDivider()
-                        SwitchRow(allowVideo, "视频/视文", "允许自动转发") {
-                            allowVideo = it
-                            sp.edit().putBoolean(MomentsAutoForwardSettings.KEY_ALLOW_VIDEO, it).apply()
-                        }
-                        InsetDivider()
-                        SwitchRow(allowLivePhoto, "实况照片", "允许自动转发") {
-                            allowLivePhoto = it
-                            sp.edit().putBoolean(MomentsAutoForwardSettings.KEY_ALLOW_LIVE_PHOTO, it).apply()
-                        }
-                        InsetDivider()
-                        SwitchRow(allowLink, "网页/链接", "按正文和链接转为文字朋友圈") {
-                            allowLink = it
-                            sp.edit().putBoolean(MomentsAutoForwardSettings.KEY_ALLOW_LINK, it).apply()
-                        }
-                        InsetDivider()
-                        SwitchRow(allowMusic, "音乐", "按正文和链接转为文字朋友圈") {
-                            allowMusic = it
-                            sp.edit().putBoolean(MomentsAutoForwardSettings.KEY_ALLOW_MUSIC, it).apply()
-                        }
-                        InsetDivider()
-                        SwitchRow(allowOther, "其他卡片", "按可解析内容转为文字朋友圈") {
-                            allowOther = it
-                            sp.edit().putBoolean(MomentsAutoForwardSettings.KEY_ALLOW_OTHER, it).apply()
-                        }
-                        InsetDivider()
-                        SwitchRow(allowUnknown, "未知类型", "按可解析内容转发，默认关闭") {
-                            allowUnknown = it
-                            sp.edit().putBoolean(MomentsAutoForwardSettings.KEY_ALLOW_UNKNOWN, it).apply()
-                        }
-                    }
-                }
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "执行方式") }
-                item {
-                    SettingsCard {
-                        PopupOptionRow(
-                            title = "转发延迟",
-                            summary = if (delayMode == MomentsAutoForwardSettings.DELAY_RANDOM) {
-                                "在范围内随机等待"
-                            } else {
-                                "每条等待固定时间"
-                            },
-                            options = optionItems(
-                                "固定延迟" to MomentsAutoForwardSettings.DELAY_FIXED,
-                                "随机延迟" to MomentsAutoForwardSettings.DELAY_RANDOM
-                            ),
-                            currentValue = delayMode,
-                            onValueChanged = {
-                                delayMode = it
-                                sp.edit().putInt(MomentsAutoForwardSettings.KEY_DELAY_MODE, it).apply()
-                            }
-                        )
-                        if (delayMode == MomentsAutoForwardSettings.DELAY_FIXED) {
-                            InsetDivider()
-                            NumberInputRow("等待时间", "单位秒，最少 0 秒", fixedDelay) {
-                                fixedDelay = it
-                                it.toIntOrNull()?.let { value ->
-                                    sp.edit()
-                                        .putInt(
-                                            MomentsAutoForwardSettings.KEY_FIXED_DELAY_SECONDS,
-                                            value.coerceAtLeast(0)
-                                        )
-                                        .apply()
-                                }
-                            }
+            }
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "执行方式") }
+            item {
+                SettingsCard {
+                    PopupOptionRow(
+                        title = "转发延迟",
+                        summary = if (delayMode == MomentsAutoForwardSettings.DELAY_RANDOM) {
+                            "在范围内随机等待"
                         } else {
-                            InsetDivider()
-                            NumberInputRow("最短等待", "单位秒，最少 0 秒", randomMin) {
-                                randomMin = it
-                                it.toIntOrNull()?.let { value ->
-                                    sp.edit()
-                                        .putInt(
-                                            MomentsAutoForwardSettings.KEY_RANDOM_MIN_SECONDS,
-                                            value.coerceAtLeast(0)
-                                        )
-                                        .apply()
-                                }
-                            }
-                            InsetDivider()
-                            NumberInputRow("最长等待", "单位秒，不能小于最短等待", randomMax) {
-                                randomMax = it
-                                it.toIntOrNull()?.let { value ->
-                                    sp.edit()
-                                        .putInt(
-                                            MomentsAutoForwardSettings.KEY_RANDOM_MAX_SECONDS,
-                                            value.coerceAtLeast(0)
-                                        )
-                                        .apply()
-                                }
-                            }
+                            "每条等待固定时间"
+                        },
+                        options = optionItems(
+                            "固定延迟" to MomentsAutoForwardSettings.DELAY_FIXED,
+                            "随机延迟" to MomentsAutoForwardSettings.DELAY_RANDOM
+                        ),
+                        currentValue = delayMode,
+                        onValueChanged = {
+                            delayMode = it
+                            sp.edit().putInt(MomentsAutoForwardSettings.KEY_DELAY_MODE, it).apply()
                         }
+                    )
+                    if (delayMode == MomentsAutoForwardSettings.DELAY_FIXED) {
                         InsetDivider()
-                        NumberInputRow("每日转发上限", "每天最多转发的朋友圈数量，0 表示不限制", dailyLimit) {
-                            dailyLimit = it
-                            it.toIntOrNull()?.let { value ->
+                        NumberInputRow("等待时间", "单位秒，最少 0 秒", fixedDelay) {
+                            fixedDelay = it
+                            it.toIntOrNull()?.takeIf { value -> value >= 0 }?.let { value ->
                                 sp.edit()
-                                    .putInt(MomentsAutoForwardSettings.KEY_DAILY_LIMIT, value.coerceAtLeast(0))
+                                    .putInt(
+                                        MomentsAutoForwardSettings.KEY_FIXED_DELAY_SECONDS,
+                                        value
+                                    )
                                     .apply()
                             }
                         }
+                    } else {
+                        InsetDivider()
+                        NumberInputRow("最短等待", "单位秒，最少 0 秒", randomMin) {
+                            randomMin = it
+                            saveRandomRange()
+                        }
+                        InsetDivider()
+                        NumberInputRow("最长等待", "单位秒，不能小于最短等待", randomMax) {
+                            randomMax = it
+                            saveRandomRange()
+                        }
+                        if (randomMin.toIntOrNull()?.let { min -> min >= 0 && randomMax.toIntOrNull()?.let { it >= min } == true } != true) {
+                            InsetDivider(); InfoRow("延迟范围", "请输入有效范围，保留上次有效配置")
+                        }
+                    }
+                    InsetDivider()
+                    NumberInputRow("每日转发上限", "每天最多转发的朋友圈数量，0 表示不限制", dailyLimit) {
+                        dailyLimit = it
+                        it.toIntOrNull()?.takeIf { value -> value >= 0 }?.let { value ->
+                            sp.edit()
+                                .putInt(MomentsAutoForwardSettings.KEY_DAILY_LIMIT, value)
+                                .apply()
+                        }
                     }
                 }
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "内容处理") }
-                item {
-                    SettingsCard {
-                        SwitchRow(
-                            includeKeywordsEnabled,
-                            "包含关键词筛选",
-                            "开启后，正文需命中任意关键词才转发"
-                        ) {
-                            includeKeywordsEnabled = it
-                            sp.edit()
-                                .putBoolean(MomentsAutoForwardSettings.KEY_INCLUDE_KEYWORDS_ENABLE, it)
-                                .apply()
-                        }
-                        if (includeKeywordsEnabled) {
-                            InsetDivider()
-                            InputRow(
-                                "包含关键词",
-                                "多个关键词用逗号或换行分隔",
-                                includeKeywords,
-                                minLines = 2
-                            ) {
-                                includeKeywords = it
-                                sp.edit().putString(MomentsAutoForwardSettings.KEY_INCLUDE_KEYWORDS, it).apply()
-                            }
-                        }
+            }
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "内容处理") }
+            item {
+                SettingsCard {
+                    SwitchRow(
+                        includeKeywordsEnabled,
+                        "包含关键词筛选",
+                        "开启后，正文需命中任意关键词才转发"
+                    ) {
+                        includeKeywordsEnabled = it
+                        sp.edit()
+                            .putBoolean(MomentsAutoForwardSettings.KEY_INCLUDE_KEYWORDS_ENABLE, it)
+                            .apply()
+                    }
+                    InsetDivider()
+                    InputRow(
+                        "包含关键词",
+                        "多个关键词用逗号或换行分隔",
+                        includeKeywords,
+                        minLines = 2
+                    ) {
+                        includeKeywords = it
+                        sp.edit().putString(MomentsAutoForwardSettings.KEY_INCLUDE_KEYWORDS, it).apply()
+                    }
+
+                    InsetDivider()
+                    SwitchRow(
+                        excludeKeywordsEnabled,
+                        "排除关键词筛选",
+                        "开启后，正文命中任意关键词时不转发，优先于包含规则"
+                    ) {
+                        excludeKeywordsEnabled = it
+                        sp.edit()
+                            .putBoolean(MomentsAutoForwardSettings.KEY_EXCLUDE_KEYWORDS_ENABLE, it)
+                            .apply()
+                    }
+                    InsetDivider()
+                    InputRow(
+                        "排除关键词",
+                        "多个关键词用逗号或换行分隔",
+                        excludeKeywords,
+                        minLines = 2
+                    ) {
+                        excludeKeywords = it
+                        sp.edit().putString(MomentsAutoForwardSettings.KEY_EXCLUDE_KEYWORDS, it).apply()
+                    }
+
+                    InsetDivider()
+                    SwitchRow(
+                        replaceKeywordsEnabled,
+                        "替换关键词",
+                        "转发前按多条规则替换朋友圈原文"
+                    ) {
+                        replaceKeywordsEnabled = it
+                        sp.edit()
+                            .putBoolean(MomentsAutoForwardSettings.KEY_REPLACE_KEYWORDS_ENABLE, it)
+                            .apply()
+                    }
+                    InsetDivider()
+                    ActionRow(
+                        "替换规则",
+                        if (replacementRuleCount == 0) {
+                            "暂无规则"
+                        } else {
+                            "已设置 $replacementRuleCount 条规则"
+                        },
+                        onOpenReplacementRules
+                    )
+
+                    InsetDivider()
+                    VariableInputRow(
+                        "文案模板",
+                        "支持下方变量",
+                        contentTemplate,
+                        templateVariables,
+                        minLines = 3
+                    ) {
+                        contentTemplate = it
+                        sp.edit().putString(MomentsAutoForwardSettings.KEY_CONTENT_TEMPLATE, it).apply()
+                    }
+                }
+            }
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "运行记录") }
+            item {
+                SettingsCard {
+                    SwitchRow(logEnabled, "记录运行日志", "记录自动转发执行情况") {
+                        logEnabled = it
+                        sp.edit().putBoolean(MomentsAutoForwardSettings.KEY_LOG_ENABLE, it).apply()
+                    }
+                    if (logEnabled) {
                         InsetDivider()
-                        SwitchRow(
-                            excludeKeywordsEnabled,
-                            "排除关键词筛选",
-                            "开启后，正文命中任意关键词时不转发，优先于包含规则"
+                        ActionRow(
+                            "刷新日志",
+                            if (logs.isBlank()) "暂无记录" else "${logs.lineSequence().count()} 条记录"
                         ) {
-                            excludeKeywordsEnabled = it
-                            sp.edit()
-                                .putBoolean(MomentsAutoForwardSettings.KEY_EXCLUDE_KEYWORDS_ENABLE, it)
-                                .apply()
+                            logs = sp.getString(
+                                MomentsAutoForwardSettings.KEY_LOGS,
+                                MomentsAutoForwardSettings.DEFAULT_LOGS
+                            ).orEmpty()
                         }
-                        if (excludeKeywordsEnabled) {
+                        if (logs.isNotBlank()) {
                             InsetDivider()
-                            InputRow(
-                                "排除关键词",
-                                "多个关键词用逗号或换行分隔",
-                                excludeKeywords,
-                                minLines = 2
-                            ) {
-                                excludeKeywords = it
-                                sp.edit().putString(MomentsAutoForwardSettings.KEY_EXCLUDE_KEYWORDS, it).apply()
-                            }
-                        }
-                        InsetDivider()
-                        SwitchRow(
-                            replaceKeywordsEnabled,
-                            "替换关键词",
-                            "转发前按多条规则替换朋友圈原文"
-                        ) {
-                            replaceKeywordsEnabled = it
-                            sp.edit()
-                                .putBoolean(MomentsAutoForwardSettings.KEY_REPLACE_KEYWORDS_ENABLE, it)
-                                .apply()
-                        }
-                        if (replaceKeywordsEnabled) {
-                            InsetDivider()
-                            ActionRow(
-                                "替换规则",
-                                if (replacementRuleCount == 0) {
-                                    "暂无规则"
-                                } else {
-                                    "已设置 $replacementRuleCount 条规则"
-                                },
-                                onOpenReplacementRules
+                            Text(
+                                text = logs.take(5000),
+                                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                                fontSize = 12.sp,
+                                fontFamily = FontFamily.Monospace,
+                                modifier = Modifier.fillMaxWidth().padding(16.dp)
                             )
-                        }
-                        InsetDivider()
-                        VariableInputRow(
-                            "文案模板",
-                            "支持下方变量",
-                            contentTemplate,
-                            templateVariables,
-                            minLines = 3
-                        ) {
-                            contentTemplate = it
-                            sp.edit().putString(MomentsAutoForwardSettings.KEY_CONTENT_TEMPLATE, it).apply()
-                        }
-                    }
-                }
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "运行记录") }
-                item {
-                    SettingsCard {
-                        SwitchRow(logEnabled, "记录运行日志", "记录自动转发执行情况") {
-                            logEnabled = it
-                            sp.edit().putBoolean(MomentsAutoForwardSettings.KEY_LOG_ENABLE, it).apply()
-                        }
-                        if (logEnabled) {
-                            InsetDivider()
-                            ActionRow(
-                                "刷新日志",
-                                if (logs.isBlank()) "暂无记录" else "${logs.lineSequence().count()} 条记录"
-                            ) {
-                                logs = sp.getString(
-                                    MomentsAutoForwardSettings.KEY_LOGS,
-                                    MomentsAutoForwardSettings.DEFAULT_LOGS
-                                ).orEmpty()
-                            }
-                            if (logs.isNotBlank()) {
-                                InsetDivider()
-                                Text(
-                                    text = logs.take(5000),
-                                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                                    fontSize = 12.sp,
-                                    fontFamily = FontFamily.Monospace,
-                                    modifier = Modifier.fillMaxWidth().padding(16.dp)
-                                )
-                                InsetDivider()
-                                ActionRow("清空日志", "删除当前自动转发运行记录") {
-                                    sp.edit().remove(MomentsAutoForwardSettings.KEY_LOGS).apply()
-                                    logs = ""
-                                }
-                            }
                         }
                     }
                 }
@@ -1439,45 +1410,58 @@ internal fun KeywordReplacementRulesPage(
     onBack: () -> Unit,
     onSave: (List<KeywordReplacementRule>) -> Unit
 ) {
-    var rules by remember(initialRules) { mutableStateOf(initialRules) }
+    var rules by remember { mutableStateOf(initialRules) }
+    var savedRules by remember { mutableStateOf(initialRules) }
+    var newRule by remember { mutableStateOf<KeywordReplacementRule?>(null) }
     val listState = rememberLazyListState()
     val scrollBehavior = MiuixScrollBehavior()
 
     fun updateRule(index: Int, update: (KeywordReplacementRule) -> KeywordReplacementRule) {
         if (index !in rules.indices) return
         rules = rules.toMutableList().also { next -> next[index] = update(next[index]) }
-    }
-
-    fun save() {
-        val normalized = rules.map { it.copy(keyword = it.keyword.trim()) }
-        if (normalized.any { it.keyword.isEmpty() }) {
-            Toast.makeText(context, "原关键词不能为空", Toast.LENGTH_SHORT).show()
-            return
+        val changed = rules[index].copy(keyword = rules[index].keyword.trim())
+        val duplicate = savedRules.withIndex().any { (otherIndex, other) ->
+            otherIndex != index && other.keyword.equals(changed.keyword, ignoreCase = true)
         }
-        val duplicate = normalized.groupingBy { it.keyword.lowercase(Locale.ROOT) }
-            .eachCount()
-            .entries
-            .firstOrNull { it.value > 1 }
-            ?.key
-        if (duplicate != null) {
-            Toast.makeText(context, "存在重复的原关键词", Toast.LENGTH_SHORT).show()
-            return
+        if (changed.keyword.isNotEmpty() && !duplicate) {
+            savedRules = savedRules.toMutableList().also { it[index] = changed }
+            onSave(savedRules)
         }
-        onSave(normalized)
     }
 
     PageScaffold(
         title = "替换规则",
         largeTitle = "替换规则",
         scrollBehavior = scrollBehavior,
-        bottomBar = { BottomActionBar("保存", ::save, "返回", onBack) }
+        onBack = onBack,
+        showBackIcon = false,
+        topBarActions = {
+            TopBarTextAction(if (newRule == null) "新增" else "完成") {
+                val pending = newRule
+                if (pending == null) {
+                    newRule = KeywordReplacementRule("", "")
+                } else {
+                    val normalized = pending.copy(keyword = pending.keyword.trim())
+                    when {
+                        normalized.keyword.isEmpty() -> Toast.makeText(context, "原关键词不能为空", Toast.LENGTH_SHORT).show()
+                        savedRules.any { it.keyword.equals(normalized.keyword, ignoreCase = true) } -> Toast.makeText(context, "存在重复的原关键词", Toast.LENGTH_SHORT).show()
+                        else -> {
+                            rules = rules + normalized
+                            savedRules = savedRules + normalized
+                            onSave(savedRules)
+                            newRule = null
+                        }
+                    }
+                }
+            }
+        }
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "关键词替换") }
@@ -1493,7 +1477,7 @@ internal fun KeywordReplacementRulesPage(
                         SettingsCard {
                             InputRow(
                                 "原关键词",
-                                "匹配时不区分大小写",
+                                if (rule.keyword.isBlank()) "原关键词不能为空，保留上次有效配置" else if (savedRules.withIndex().any { (otherIndex, other) -> otherIndex != index && other.keyword.equals(rule.keyword.trim(), ignoreCase = true) }) "原关键词重复，保留上次有效配置" else "匹配时不区分大小写",
                                 rule.keyword
                             ) { value ->
                                 updateRule(index) { it.copy(keyword = value) }
@@ -1509,16 +1493,22 @@ internal fun KeywordReplacementRulesPage(
                             InsetDivider()
                             ActionRow("删除本条", "移除第 ${index + 1} 条替换规则") {
                                 rules = rules.toMutableList().also { it.removeAt(index) }
+                                savedRules = savedRules.toMutableList().also { it.removeAt(index) }
+                                onSave(savedRules)
                             }
                         }
                     }
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
-            item {
-                SettingsCard {
-                    ActionRow("新增规则", "添加一条关键词替换规则") {
-                        rules = rules + KeywordReplacementRule("", "")
+            newRule?.let { pending ->
+                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "新规则") }
+                item {
+                    SettingsCard {
+                        InputRow("原关键词", "匹配时不区分大小写", pending.keyword) { newRule = pending.copy(keyword = it) }
+                        InsetDivider()
+                        InputRow("替换内容", "留空表示删除原关键词", pending.replacement) { newRule = pending.copy(replacement = it) }
+                        InsetDivider()
+                        ActionRow("放弃新增", "移除尚未完成的草稿") { newRule = null }
                     }
                 }
             }
@@ -1555,14 +1545,15 @@ internal fun MomentsAutoRefreshMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = { BottomActionBar("返回", onBack) }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "后台刷新") }
@@ -1572,45 +1563,40 @@ internal fun MomentsAutoRefreshMiuixPage(
                         enabled = it
                         sp.edit().putBoolean(MomentsAutoRefreshSettings.KEY_ENABLE, it).apply()
                     }
-                    if (enabled) {
-                        InsetDivider()
-                        NumberInputRow("刷新间隔", "单位秒，最少 0 秒", interval) {
-                            interval = it
-                            it.toIntOrNull()?.let { value ->
-                                sp.edit().putInt(MomentsAutoRefreshSettings.KEY_INTERVAL_SECONDS, value.coerceAtLeast(0)).apply()
-                            }
-                        }
-                        InsetDivider()
-                        SwitchRow(timeWindow, "限制刷新时段", "支持跨零点时段") {
-                            timeWindow = it
-                            sp.edit().putBoolean(MomentsAutoRefreshSettings.KEY_TIME_WINDOW_ENABLE, it).apply()
-                        }
-                        if (timeWindow) {
-                            InsetDivider()
-                            TimeOfDayPickerRow("开始时间", startTime) {
-                                startTime = it
-                                sp.edit().putString(MomentsAutoRefreshSettings.KEY_START_TIME, it).apply()
-                            }
-                            InsetDivider()
-                            TimeOfDayPickerRow("结束时间", endTime) {
-                                endTime = it
-                                sp.edit().putString(MomentsAutoRefreshSettings.KEY_END_TIME, it).apply()
-                            }
+                    InsetDivider()
+                    NumberInputRow("刷新间隔", "单位秒，最少 0 秒", interval) {
+                        interval = it
+                        it.toIntOrNull()?.takeIf { value -> value >= 0 }?.let { value ->
+                            sp.edit().putInt(MomentsAutoRefreshSettings.KEY_INTERVAL_SECONDS, value).apply()
                         }
                     }
+                    InsetDivider()
+                    SwitchRow(timeWindow, "限制刷新时段", "支持跨零点时段") {
+                        timeWindow = it
+                        sp.edit().putBoolean(MomentsAutoRefreshSettings.KEY_TIME_WINDOW_ENABLE, it).apply()
+                    }
+                    InsetDivider()
+                    TimeOfDayPickerRow("开始时间", startTime) {
+                        startTime = it
+                        sp.edit().putString(MomentsAutoRefreshSettings.KEY_START_TIME, startTime).putString(MomentsAutoRefreshSettings.KEY_END_TIME, endTime).apply()
+                    }
+                    InsetDivider()
+                    TimeOfDayPickerRow("结束时间", endTime) {
+                        endTime = it
+                        sp.edit().putString(MomentsAutoRefreshSettings.KEY_START_TIME, startTime).putString(MomentsAutoRefreshSettings.KEY_END_TIME, endTime).apply()
+                    }
+
                 }
             }
-            if (enabled) {
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "状态") }
-                item {
-                    SettingsCard {
-                        ActionRow(
-                            "刷新状态",
-                            if (lastTime <= 0L) "尚未执行" else SimpleDateFormat("MM-dd HH:mm:ss", Locale.CHINA).format(Date(lastTime)) + " · " + lastResult
-                        ) {
-                            lastTime = sp.getLong(MomentsAutoRefreshSettings.KEY_LAST_TIME, 0L)
-                            lastResult = sp.getString(MomentsAutoRefreshSettings.KEY_LAST_RESULT, "").orEmpty()
-                        }
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "状态") }
+            item {
+                SettingsCard {
+                    ActionRow(
+                        "刷新状态",
+                        if (lastTime <= 0L) "尚未执行" else SimpleDateFormat("MM-dd HH:mm:ss", Locale.CHINA).format(Date(lastTime)) + " · " + lastResult
+                    ) {
+                        lastTime = sp.getLong(MomentsAutoRefreshSettings.KEY_LAST_TIME, 0L)
+                        lastResult = sp.getString(MomentsAutoRefreshSettings.KEY_LAST_RESULT, "").orEmpty()
                     }
                 }
             }
@@ -1666,12 +1652,11 @@ internal fun MomentsContactFilterMiuixPage(
                 context = context,
                 request = current.request,
                 onBack = { route = MomentsContactFilterRoute.Main },
-                onConfirm = { picked ->
-                    targets = picked.map { it.id }.filter { it.isNotBlank() }.toSet()
+                onSelectionChange = { selected ->
+                    targets = selected.filter { it.isNotBlank() }.toSet()
                     sp.edit()
                         .putString(MomentsContactFilterSettings.KEY_TARGETS, formatIds(targets))
                         .apply()
-                    route = MomentsContactFilterRoute.Main
                 }
             )
         }
@@ -1714,14 +1699,15 @@ private fun MomentsContactFilterMainPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = { BottomActionBar("返回", onBack) }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "朋友圈") }
@@ -1735,32 +1721,30 @@ private fun MomentsContactFilterMainPage(
                         enabled = it
                         sp.edit().putBoolean(MomentsContactFilterSettings.KEY_ENABLE, it).apply()
                     }
-                    if (enabled) {
-                        InsetDivider()
-                        PopupOptionRow(
-                            title = "过滤模式",
-                            summary = if (mode == MomentsContactFilterSettings.MODE_INCLUDE_ONLY) {
-                                "只看所选好友的朋友圈"
-                            } else {
-                                "过滤所选好友的朋友圈"
-                            },
-                            options = optionItems(
-                                "过滤所选好友" to MomentsContactFilterSettings.MODE_EXCLUDE,
-                                "只看所选好友" to MomentsContactFilterSettings.MODE_INCLUDE_ONLY
-                            ),
-                            currentValue = mode,
-                            onValueChanged = {
-                                mode = it
-                                sp.edit().putInt(MomentsContactFilterSettings.KEY_MODE, it).apply()
-                            }
-                        )
-                        InsetDivider()
-                        ActionRow(
-                            title = "过滤对象",
-                            summary = targetSummary
-                        ) {
-                            onPickTargets()
+                    InsetDivider()
+                    PopupOptionRow(
+                        title = "过滤模式",
+                        summary = if (mode == MomentsContactFilterSettings.MODE_INCLUDE_ONLY) {
+                            "只看所选好友的朋友圈"
+                        } else {
+                            "过滤所选好友的朋友圈"
+                        },
+                        options = optionItems(
+                            "过滤所选好友" to MomentsContactFilterSettings.MODE_EXCLUDE,
+                            "只看所选好友" to MomentsContactFilterSettings.MODE_INCLUDE_ONLY
+                        ),
+                        currentValue = mode,
+                        onValueChanged = {
+                            mode = it
+                            sp.edit().putInt(MomentsContactFilterSettings.KEY_MODE, it).apply()
                         }
+                    )
+                    InsetDivider()
+                    ActionRow(
+                        title = "过滤对象",
+                        summary = targetSummary
+                    ) {
+                        onPickTargets()
                     }
                 }
             }
@@ -1798,14 +1782,15 @@ internal fun MomentsKeywordBlockMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = { BottomActionBar("返回", onBack) }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "朋友圈") }
@@ -1819,17 +1804,15 @@ internal fun MomentsKeywordBlockMiuixPage(
                         enabled = it
                         sp.edit().putBoolean(MomentsKeywordBlockSettings.KEY_ENABLE, it).apply()
                     }
-                    if (enabled) {
-                        InsetDivider()
-                        InputRow(
-                            title = "屏蔽关键词",
-                            summary = "多个关键词用逗号或换行分隔",
-                            value = keywords,
-                            minLines = 3
-                        ) {
-                            keywords = it
-                            sp.edit().putString(MomentsKeywordBlockSettings.KEY_KEYWORDS, it).apply()
-                        }
+                    InsetDivider()
+                    InputRow(
+                        title = "屏蔽关键词",
+                        summary = "多个关键词用逗号或换行分隔",
+                        value = keywords,
+                        minLines = 3
+                    ) {
+                        keywords = it
+                        sp.edit().putString(MomentsKeywordBlockSettings.KEY_KEYWORDS, it).apply()
                     }
                 }
             }
@@ -1883,47 +1866,15 @@ internal fun MomentsBottomDetailMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar(
-                primaryText = "保存设置",
-                onPrimaryClick = {
-                    val timeFormatValid = MomentsBottomDetailSettings.isValidTimeFormat(timeFormat)
-                    if (enabled && !timeFormatValid) {
-                        Toast.makeText(context, "时间格式无效", Toast.LENGTH_SHORT).show()
-                    } else {
-                        val normalizedText = MomentsBottomDetailSettings.normalizeTextFormat(textFormat)
-                        val normalizedTime = if (timeFormatValid) {
-                            MomentsBottomDetailSettings.normalizeTimeFormat(timeFormat)
-                        } else {
-                            MomentsBottomDetailSettings.normalizeTimeFormat(
-                                sp.getString(
-                                    MomentsBottomDetailSettings.KEY_TIME_FORMAT,
-                                    MomentsBottomDetailSettings.DEFAULT_TIME_FORMAT
-                                )
-                            )
-                        }
-                        textFormat = normalizedText
-                        timeFormat = normalizedTime
-                        sp.edit()
-                            .putBoolean(MomentsBottomDetailSettings.KEY_ENABLE, enabled)
-                            .putString(MomentsBottomDetailSettings.KEY_TEXT_FORMAT, normalizedText)
-                            .putString(MomentsBottomDetailSettings.KEY_TIME_FORMAT, normalizedTime)
-                            .putBoolean(MomentsBottomDetailSettings.KEY_HIDE_GROUP_ICON, hideGroupIcon)
-                            .apply()
-                        Toast.makeText(context, "设置已保存", Toast.LENGTH_SHORT).show()
-                    }
-                },
-                secondaryText = "返回",
-                onSecondaryClick = onBack
-            )
-        }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "朋友圈底部详情") }
@@ -1935,34 +1886,42 @@ internal fun MomentsBottomDetailMiuixPage(
                         summary = "在朋友圈底部显示自定义时间和详情"
                     ) {
                         enabled = it
+                        sp.edit().putBoolean(MomentsBottomDetailSettings.KEY_ENABLE, it).apply()
                     }
                 }
             }
-            if (enabled) {
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "格式") }
-                item {
-                    SettingsCard {
-                        VariableInputRow(
-                            title = "文本格式",
-                            summary = "留空使用默认格式",
-                            value = textFormat,
-                            variables = momentsBottomDetailTemplateVariables,
-                            onValueChange = { textFormat = it }
-                        )
-                        InsetDivider()
-                        InputRow(
-                            "时间格式",
-                            "使用日期格式，例如 yyyy-MM-dd HH:mm:ss",
-                            timeFormat
-                        ) { timeFormat = it }
-                        InsetDivider()
-                        SwitchRow(
-                            checked = hideGroupIcon,
-                            title = "隐藏可见范围",
-                            summary = "隐藏朋友圈底部的可见范围图标"
-                        ) {
-                            hideGroupIcon = it
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "格式") }
+            item {
+                SettingsCard {
+                    VariableInputRow(
+                        title = "文本格式",
+                        summary = "留空使用默认格式",
+                        value = textFormat,
+                        variables = momentsBottomDetailTemplateVariables,
+                        onEditingFinished = { if (it.isBlank()) sp.edit().putString(MomentsBottomDetailSettings.KEY_TEXT_FORMAT, MomentsBottomDetailSettings.DEFAULT_TEXT_FORMAT).apply() },
+                        onValueChange = {
+                            textFormat = it
+                            if (it.isNotBlank()) sp.edit().putString(MomentsBottomDetailSettings.KEY_TEXT_FORMAT, MomentsBottomDetailSettings.normalizeTextFormat(it)).apply()
                         }
+                    )
+                    InsetDivider()
+                    InputRow(
+                        "时间格式",
+                        if (timeFormat.isNotBlank() && !MomentsBottomDetailSettings.isValidTimeFormat(timeFormat)) "时间格式无效；保留上次保存的值" else "使用日期格式，例如 yyyy-MM-dd HH:mm:ss",
+                        timeFormat,
+                        onEditingFinished = { if (it.isBlank()) sp.edit().putString(MomentsBottomDetailSettings.KEY_TIME_FORMAT, MomentsBottomDetailSettings.DEFAULT_TIME_FORMAT).apply() }
+                    ) {
+                        timeFormat = it
+                        if (it.isNotBlank() && MomentsBottomDetailSettings.isValidTimeFormat(it)) sp.edit().putString(MomentsBottomDetailSettings.KEY_TIME_FORMAT, MomentsBottomDetailSettings.normalizeTimeFormat(it)).apply()
+                    }
+                    InsetDivider()
+                    SwitchRow(
+                        checked = hideGroupIcon,
+                        title = "隐藏可见范围",
+                        summary = "隐藏朋友圈底部的可见范围图标"
+                    ) {
+                        hideGroupIcon = it
+                        sp.edit().putBoolean(MomentsBottomDetailSettings.KEY_HIDE_GROUP_ICON, it).apply()
                     }
                 }
             }
@@ -2009,10 +1968,9 @@ internal fun MomentsPostNotificationMiuixPage(
                 context = context,
                 request = current.request,
                 onBack = { route = MomentsPostNotificationRoute.Main },
-                onConfirm = { picked ->
-                    targets = picked.map { it.id }.filter { it.isNotBlank() }.toSet()
+                onSelectionChange = { selected ->
+                    targets = selected.filter { it.isNotBlank() }.toSet()
                     sp.edit().putString(MomentsPostNotificationSettings.KEY_TARGETS, formatIds(targets)).apply()
-                    route = MomentsPostNotificationRoute.Main
                 }
             )
         }
@@ -2049,14 +2007,15 @@ private fun MomentsPostNotificationMainPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = { BottomActionBar("返回", onBack) }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "发布提醒") }
@@ -2072,44 +2031,36 @@ private fun MomentsPostNotificationMainPage(
                             )
                             .apply()
                     }
-                    if (enabled) {
-                        InsetDivider()
-                        ActionRow("提醒好友", if (targetCount == 0) "未选择好友" else "已选择 $targetCount 位好友", onPickTargets)
-                        InsetDivider()
-                        SwitchRow(systemNotification, "系统通知", "显示在系统通知栏") {
-                            systemNotification = it
-                            sp.edit().putBoolean(MomentsPostNotificationSettings.KEY_SYSTEM_NOTIFICATION, it).apply()
-                        }
-                        InsetDivider()
-                        SwitchRow(toast, "Toast提醒", "在微信界面短暂显示提醒") {
-                            toast = it
-                            sp.edit().putBoolean(MomentsPostNotificationSettings.KEY_TOAST, it).apply()
-                        }
+                    InsetDivider()
+                    ActionRow("提醒好友", if (targetCount == 0) "未选择好友" else "已选择 $targetCount 位好友", onPickTargets)
+                    InsetDivider()
+                    SwitchRow(systemNotification, "系统通知", "显示在系统通知栏") {
+                        systemNotification = it
+                        sp.edit().putBoolean(MomentsPostNotificationSettings.KEY_SYSTEM_NOTIFICATION, it).apply()
+                    }
+                    InsetDivider()
+                    SwitchRow(toast, "Toast提醒", "在微信界面短暂显示提醒") {
+                        toast = it
+                        sp.edit().putBoolean(MomentsPostNotificationSettings.KEY_TOAST, it).apply()
                     }
                 }
             }
-            if (enabled && (systemNotification || toast)) {
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "提醒模板") }
-                item {
-                    SettingsCard {
-                        if (systemNotification) {
-                            VariableInputRow("通知标题", "留空使用默认标题", titleTemplate, momentsPostNotificationTemplateVariables) {
-                                titleTemplate = it
-                                sp.edit().putString(MomentsPostNotificationSettings.KEY_TITLE_TEMPLATE, it).apply()
-                            }
-                            InsetDivider()
-                            VariableInputRow("通知内容", "留空使用发布者、类型和完整正文", bodyTemplate, momentsPostNotificationTemplateVariables, minLines = 2) {
-                                bodyTemplate = it
-                                sp.edit().putString(MomentsPostNotificationSettings.KEY_BODY_TEMPLATE, it).apply()
-                            }
-                        }
-                        if (toast) {
-                            if (systemNotification) InsetDivider()
-                            VariableInputRow("Toast内容", "留空使用默认提醒", toastTemplate, momentsPostNotificationTemplateVariables, minLines = 2) {
-                                toastTemplate = it
-                                sp.edit().putString(MomentsPostNotificationSettings.KEY_TOAST_TEMPLATE, it).apply()
-                            }
-                        }
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "提醒模板") }
+            item {
+                SettingsCard {
+                    VariableInputRow("通知标题", "留空使用默认标题", titleTemplate, momentsPostNotificationTemplateVariables) {
+                        titleTemplate = it
+                        sp.edit().putString(MomentsPostNotificationSettings.KEY_TITLE_TEMPLATE, it).apply()
+                    }
+                    InsetDivider()
+                    VariableInputRow("通知内容", "留空使用发布者、类型和完整正文", bodyTemplate, momentsPostNotificationTemplateVariables, minLines = 2) {
+                        bodyTemplate = it
+                        sp.edit().putString(MomentsPostNotificationSettings.KEY_BODY_TEMPLATE, it).apply()
+                    }
+                    InsetDivider()
+                    VariableInputRow("Toast内容", "留空使用默认提醒", toastTemplate, momentsPostNotificationTemplateVariables, minLines = 2) {
+                        toastTemplate = it
+                        sp.edit().putString(MomentsPostNotificationSettings.KEY_TOAST_TEMPLATE, it).apply()
                     }
                 }
             }
@@ -2131,16 +2082,15 @@ internal fun OriginalMomentsUploadMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar("返回", onBack)
-        }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "朋友圈") }
@@ -2199,16 +2149,15 @@ internal fun MomentsUploadTailMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar("返回", onBack)
-        }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "朋友圈") }
@@ -2222,27 +2171,25 @@ internal fun MomentsUploadTailMiuixPage(
                         enabled = it
                         sp.edit().putBoolean(MomentsUploadTailSettings.KEY_ENABLE, it).apply()
                     }
-                    if (enabled) {
-                        InsetDivider()
-                        ActionRow(
-                            "选择内置尾巴",
-                            MomentsUploadTailPresets.matchingPreset(sdkId, sdkAppName)?.name ?: "自定义"
-                        ) {
-                            presetQuery = ""
-                            showPresetPicker = true
-                        }
-                        InsetDivider()
-                        InputRow("SDK ID", "输入第三方 SDK 标识", sdkId) {
-                            sdkId = it
-                            sp.edit().putString(MomentsUploadTailSettings.KEY_SDK_ID, it).apply()
-                        }
-                        InsetDivider()
-                        InputRow("SDK 名称", "输入显示的 SDK 名称", sdkAppName) {
-                            sdkAppName = it
-                            sp.edit()
-                                .putString(MomentsUploadTailSettings.KEY_SDK_APP_NAME, it)
-                                .apply()
-                        }
+                    InsetDivider()
+                    ActionRow(
+                        "选择内置尾巴",
+                        MomentsUploadTailPresets.matchingPreset(sdkId, sdkAppName)?.name ?: "自定义"
+                    ) {
+                        presetQuery = ""
+                        showPresetPicker = true
+                    }
+                    InsetDivider()
+                    InputRow("SDK ID", "输入第三方 SDK 标识", sdkId) {
+                        sdkId = it
+                        sp.edit().putString(MomentsUploadTailSettings.KEY_SDK_ID, it).apply()
+                    }
+                    InsetDivider()
+                    InputRow("SDK 名称", "输入显示的 SDK 名称", sdkAppName) {
+                        sdkAppName = it
+                        sp.edit()
+                            .putString(MomentsUploadTailSettings.KEY_SDK_APP_NAME, it)
+                            .apply()
                     }
                 }
             }
@@ -2254,7 +2201,7 @@ internal fun MomentsUploadTailMiuixPage(
             if (query.isEmpty()) MomentsUploadTailPresets.options
             else MomentsUploadTailPresets.options.filter { it.name.lowercase(Locale.ROOT).contains(query) }
         }
-        WindowDialog(
+        SettingsWindowDialog(
             show = true,
             title = "选择内置尾巴",
             onDismissRequest = { showPresetPicker = false },
@@ -2329,16 +2276,15 @@ internal fun SnsAntiRecallMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar("返回", onBack)
-        }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "朋友圈") }
@@ -2360,9 +2306,10 @@ internal fun SnsAntiRecallMiuixPage(
                         momentMarkEnabled = checked
                         sp.edit().putBoolean(SnsAntiRecallSettings.KEY_CUSTOM_MARK_ENABLE, checked).apply()
                     }
-                    if (momentMarkEnabled) {
-                        InsetDivider()
-                        InputRow("朋友圈提示文案", "默认 [已删除]", momentMarkText) { momentMarkText = it }
+                    InsetDivider()
+                    InputRow("朋友圈提示文案", "默认 [已删除]", momentMarkText, onEditingFinished = { if (it.isBlank()) sp.edit().putString(SnsAntiRecallSettings.KEY_CUSTOM_MARK_TEXT, SnsAntiRecallSettings.DEFAULT_CUSTOM_MARK_TEXT).apply() }) {
+                        momentMarkText = it
+                        if (it.isNotBlank()) sp.edit().putString(SnsAntiRecallSettings.KEY_CUSTOM_MARK_TEXT, it).apply()
                     }
                     InsetDivider()
                     SwitchRow(
@@ -2381,9 +2328,10 @@ internal fun SnsAntiRecallMiuixPage(
                         commentMarkEnabled = checked
                         sp.edit().putBoolean(SnsAntiRecallSettings.KEY_COMMENT_CUSTOM_MARK_ENABLE, checked).apply()
                     }
-                    if (commentMarkEnabled) {
-                        InsetDivider()
-                        InputRow("评论提示文案", "默认 [已删除]", commentMarkText) { commentMarkText = it }
+                    InsetDivider()
+                    InputRow("评论提示文案", "默认 [已删除]", commentMarkText, onEditingFinished = { if (it.isBlank()) sp.edit().putString(SnsAntiRecallSettings.KEY_COMMENT_CUSTOM_MARK_TEXT, SnsAntiRecallSettings.DEFAULT_COMMENT_CUSTOM_MARK_TEXT).apply() }) {
+                        commentMarkText = it
+                        if (it.isNotBlank()) sp.edit().putString(SnsAntiRecallSettings.KEY_COMMENT_CUSTOM_MARK_TEXT, it).apply()
                     }
                     InsetDivider()
                     SwitchRow(
@@ -2398,20 +2346,6 @@ internal fun SnsAntiRecallMiuixPage(
         }
     }
 
-    DisposableEffect(Unit) {
-        onDispose {
-            sp.edit()
-                .putString(
-                    SnsAntiRecallSettings.KEY_CUSTOM_MARK_TEXT,
-                    momentMarkText.ifBlank { SnsAntiRecallSettings.DEFAULT_CUSTOM_MARK_TEXT }
-                )
-                .putString(
-                    SnsAntiRecallSettings.KEY_COMMENT_CUSTOM_MARK_TEXT,
-                    commentMarkText.ifBlank { SnsAntiRecallSettings.DEFAULT_COMMENT_CUSTOM_MARK_TEXT }
-                )
-                .apply()
-        }
-    }
 }
 
 @Composable
@@ -2544,14 +2478,15 @@ internal fun MomentsFakeInteractionMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = { BottomActionBar("返回", onBack) }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = provider.title()) }
@@ -2568,7 +2503,7 @@ internal fun MomentsFakeInteractionMiuixPage(
                     }
                 }
             }
-            if (enabled && isLike) {
+            if (isLike) {
                 item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "生成方式") }
                 item {
                     SettingsCard {
@@ -2604,21 +2539,18 @@ internal fun MomentsFakeInteractionMiuixPage(
                                 it
                             ).commit()
                         }
-                        if (autoSelect) {
-                            InsetDivider()
-                            NumberInputRow(
-                                title = "自动勾选数量",
-                                summary = "最少 1 人，不设上限",
-                                value = autoSelectCount
-                            ) { next ->
-                                val count = next.toIntOrNull()?.coerceAtLeast(1)
-                                autoSelectCount = count?.toString().orEmpty()
-                                count?.let {
-                                    sp.edit().putInt(
-                                        MomentsFakeInteractionSettings.KEY_FAKE_LIKE_AUTO_SELECT_COUNT,
-                                        it
-                                    ).apply()
-                                }
+                        InsetDivider()
+                        NumberInputRow(
+                            title = "自动勾选数量",
+                            summary = if (autoSelectCount.toIntOrNull()?.let { it >= 1 } != true) "请输入不少于 1 的整数；保留上次有效配置" else "最少 1 人，不设上限",
+                            value = autoSelectCount
+                        ) { next ->
+                            autoSelectCount = next
+                            next.toIntOrNull()?.takeIf { it >= 1 }?.let {
+                                sp.edit().putInt(
+                                    MomentsFakeInteractionSettings.KEY_FAKE_LIKE_AUTO_SELECT_COUNT,
+                                    it
+                                ).apply()
                             }
                         }
                         InsetDivider()
@@ -2642,7 +2574,7 @@ internal fun MomentsFakeInteractionMiuixPage(
                     }
                 }
             }
-            if (enabled && !isLike && !isForward) {
+            if (!isLike && !isForward) {
                 item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "评论人范围") }
                 item {
                     SettingsCard {
@@ -2709,39 +2641,35 @@ internal fun MomentsFakeInteractionMiuixPage(
                     }
                 }
             }
-            if (enabled) {
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "长按菜单") }
-                item {
-                    SettingsCard {
-                        SwitchRow(
-                            checked = hideMenu,
-                            title = "隐藏长按菜单",
-                            summary = when {
-                                isLike -> "隐藏伪集赞入口，已伪造的点赞仍然显示"
-                                isForward -> "隐藏伪转发入口，已保存的本地朋友圈仍然显示"
-                                else -> "隐藏伪评论入口，已伪造的评论仍然显示"
-                            }
-                        ) {
-                            hideMenu = it
-                            sp.edit().putBoolean(hideMenuKey, it).commit()
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "长按菜单") }
+            item {
+                SettingsCard {
+                    SwitchRow(
+                        checked = hideMenu,
+                        title = "隐藏长按菜单",
+                        summary = when {
+                            isLike -> "隐藏伪集赞入口，已伪造的点赞仍然显示"
+                            isForward -> "隐藏伪转发入口，已保存的本地朋友圈仍然显示"
+                            else -> "隐藏伪评论入口，已伪造的评论仍然显示"
                         }
-                        if (!hideMenu) {
-                            InsetDivider()
-                            InputRow(
-                                title = when {
-                                    isLike -> "伪集赞自定义文本"
-                                    isForward -> "伪转发自定义文本"
-                                    else -> "伪评论自定义文本"
-                                },
-                                summary = "完整替换朋友圈长按菜单文字",
-                                value = menuText,
-                                onValueChange = { next ->
-                                    menuText = next
-                                    sp.edit().putString(menuTextKey, next).apply()
-                                }
-                            )
-                        }
+                    ) {
+                        hideMenu = it
+                        sp.edit().putBoolean(hideMenuKey, it).commit()
                     }
+                    InsetDivider()
+                    InputRow(
+                        title = when {
+                            isLike -> "伪集赞自定义文本"
+                            isForward -> "伪转发自定义文本"
+                            else -> "伪评论自定义文本"
+                        },
+                        summary = "完整替换朋友圈长按菜单文字",
+                        value = menuText,
+                        onValueChange = { next ->
+                            menuText = next
+                            sp.edit().putString(menuTextKey, next).apply()
+                        }
+                    )
                 }
             }
             if (isForward) {
@@ -2912,12 +2840,13 @@ private fun showMomentsFakeLikeExclusionPicker(
                     activity = activity,
                     contacts = contacts,
                     title = "设置排除名单",
-                    confirmText = "保存",
+                    confirmText = "完成",
                     showGroupFilter = false,
                     initialSelectedIds = selectedIds,
                     allowEmpty = true,
                     showClearSelectionAction = true,
-                    onConfirm = { selected ->
+                    onConfirm = {},
+                    onSelectionChange = { selected ->
                         onConfirm(hiddenSelectedIds + selected.mapTo(linkedSetOf()) { it.id })
                     },
                     onDismiss = {}
@@ -2955,13 +2884,14 @@ private fun showFakeCommentContentEditor(
     VoiceForwardMiuixDialog.showTextInput(
         activity = activity,
         title = if (initialValue.isBlank()) "添加新评论" else "修改评论内容",
-        summary = "保存后可用于随机评论",
+        summary = if (initialValue.isBlank()) "完成后可用于随机评论" else "修改会自动保存",
         initialValue = initialValue,
         placeholder = "请输入评论内容",
         maxLength = 1000,
         singleLine = false,
-        onConfirm = onSaved,
-        onDismiss = {}
+        onConfirm = if (initialValue.isBlank()) onSaved else { _ -> },
+        onDismiss = {},
+        onValidChange = if (initialValue.isBlank()) null else onSaved
     )
 }
 
@@ -3047,16 +2977,15 @@ internal fun RemoveMomentsAdsMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar("返回", onBack)
-        }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "朋友圈") }
@@ -3089,14 +3018,15 @@ internal fun FinderMediaDownloadMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = { BottomActionBar("返回", onBack) }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "视频号") }
@@ -3132,14 +3062,15 @@ internal fun HchatExtraToggleMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = { BottomActionBar("返回", onBack) }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "功能开关") }
@@ -3292,49 +3223,34 @@ internal fun MessageDetailsConfigPage(
         textSize = HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_TEXT_SIZE.toString()
         clickShow = HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_CLICK_SHOW
         formatContent = HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_FORMAT_CONTENT
-    }
-
-    fun saveValues() {
-        val savedLightBg = cleanMessageDetailsColor(lightBg, HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_LIGHT_BG)
-        val savedLightText = cleanMessageDetailsColor(lightText, HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_LIGHT_TEXT)
-        val savedDarkBg = cleanMessageDetailsColor(darkBg, HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_DARK_BG)
-        val savedDarkText = cleanMessageDetailsColor(darkText, HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_DARK_TEXT)
-        val savedPosition = position.takeIf { it in messageDetailsPositionValues() }
-            ?: HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_POSITION
-        val savedAvatarGap = (avatarGap.toIntOrNull() ?: HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_AVATAR_GAP)
-            .coerceIn(0, 64)
         sp.edit()
             .putBoolean(HchatExtraSettings.KEY_MESSAGE_DETAILS, enabled)
-            .putString(HchatExtraSettings.KEY_MESSAGE_DETAILS_LIGHT_BG, savedLightBg)
-            .putString(HchatExtraSettings.KEY_MESSAGE_DETAILS_LIGHT_TEXT, savedLightText)
-            .putString(HchatExtraSettings.KEY_MESSAGE_DETAILS_DARK_BG, savedDarkBg)
-            .putString(HchatExtraSettings.KEY_MESSAGE_DETAILS_DARK_TEXT, savedDarkText)
-            .putString(HchatExtraSettings.KEY_MESSAGE_DETAILS_FORMAT, format.ifBlank { HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_FORMAT })
-            .putString(HchatExtraSettings.KEY_MESSAGE_DETAILS_TIME_FORMAT, timeFormat.ifBlank { HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_TIME_FORMAT })
-            .putString(HchatExtraSettings.KEY_MESSAGE_DETAILS_POSITION, savedPosition)
-            .putInt(HchatExtraSettings.KEY_MESSAGE_DETAILS_AVATAR_GAP, savedAvatarGap)
-            .putInt(
-                HchatExtraSettings.KEY_MESSAGE_DETAILS_LEFT_MARGIN,
-                leftMargin.toIntOrNull() ?: HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_LEFT_MARGIN
-            )
-            .putInt(
-                HchatExtraSettings.KEY_MESSAGE_DETAILS_RIGHT_MARGIN,
-                rightMargin.toIntOrNull() ?: HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_RIGHT_MARGIN
-            )
-            .putInt(
-                HchatExtraSettings.KEY_MESSAGE_DETAILS_TEXT_SIZE,
-                textSize.toIntOrNull() ?: HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_TEXT_SIZE
-            )
+            .putString(HchatExtraSettings.KEY_MESSAGE_DETAILS_LIGHT_BG, lightBg)
+            .putString(HchatExtraSettings.KEY_MESSAGE_DETAILS_LIGHT_TEXT, lightText)
+            .putString(HchatExtraSettings.KEY_MESSAGE_DETAILS_DARK_BG, darkBg)
+            .putString(HchatExtraSettings.KEY_MESSAGE_DETAILS_DARK_TEXT, darkText)
+            .putString(HchatExtraSettings.KEY_MESSAGE_DETAILS_FORMAT, format)
+            .putString(HchatExtraSettings.KEY_MESSAGE_DETAILS_TIME_FORMAT, timeFormat)
+            .putString(HchatExtraSettings.KEY_MESSAGE_DETAILS_POSITION, position)
+            .putInt(HchatExtraSettings.KEY_MESSAGE_DETAILS_AVATAR_GAP, HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_AVATAR_GAP)
+            .putInt(HchatExtraSettings.KEY_MESSAGE_DETAILS_LEFT_MARGIN, HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_LEFT_MARGIN)
+            .putInt(HchatExtraSettings.KEY_MESSAGE_DETAILS_RIGHT_MARGIN, HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_RIGHT_MARGIN)
+            .putInt(HchatExtraSettings.KEY_MESSAGE_DETAILS_TEXT_SIZE, HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_TEXT_SIZE)
             .putBoolean(HchatExtraSettings.KEY_MESSAGE_DETAILS_CLICK_SHOW, clickShow)
             .putBoolean(HchatExtraSettings.KEY_MESSAGE_DETAILS_FORMAT_CONTENT, formatContent)
             .apply()
-        lightBg = savedLightBg
-        lightText = savedLightText
-        darkBg = savedDarkBg
-        darkText = savedDarkText
-        position = savedPosition
-        avatarGap = savedAvatarGap.toString()
-        Toast.makeText(context, "设置已保存", Toast.LENGTH_SHORT).show()
+    }
+
+    fun saveColor(key: String, value: String, fallback: String, finished: Boolean = false) {
+        val color = MemberTitleStore.cleanColor(value)
+        if (color.isNotEmpty()) sp.edit().putString(key, color).apply()
+        else if (finished && value.isBlank()) sp.edit().putString(key, fallback).apply()
+    }
+
+    fun saveNumber(key: String, value: String, fallback: Int, max: Int? = null, finished: Boolean = false) {
+        val number = value.toIntOrNull()
+        if (number != null && number >= 0 && (max == null || number <= max)) sp.edit().putInt(key, number).apply()
+        else if (finished && value.isBlank()) sp.edit().putInt(key, fallback).apply()
     }
 
     val listState = rememberLazyListState()
@@ -3343,21 +3259,16 @@ internal fun MessageDetailsConfigPage(
         title = "消息显示时间",
         largeTitle = "消息显示时间",
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar(
-                primaryText = "保存设置",
-                onPrimaryClick = { saveValues() },
-                secondaryText = "返回",
-                onSecondaryClick = onBack
-            )
-        }
+        onBack = onBack,
+        showBackIcon = false,
+        topBarActions = { TopBarTextAction("恢复默认", onClick = ::resetValues) }
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "基础") }
@@ -3367,21 +3278,21 @@ internal fun MessageDetailsConfigPage(
                         checked = enabled,
                         title = "消息显示时间",
                         summary = "开启后按所选位置显示自定义消息时间",
-                        onCheckedChange = { enabled = it }
+                        onCheckedChange = { enabled = it; sp.edit().putBoolean(HchatExtraSettings.KEY_MESSAGE_DETAILS, it).apply() }
                     )
                     InsetDivider()
                     SwitchRow(
                         checked = clickShow,
                         title = "点击显详情",
                         summary = "点击详情文字后打开消息内容详情",
-                        onCheckedChange = { clickShow = it }
+                        onCheckedChange = { clickShow = it; sp.edit().putBoolean(HchatExtraSettings.KEY_MESSAGE_DETAILS_CLICK_SHOW, it).apply() }
                     )
                     InsetDivider()
                     SwitchRow(
                         checked = formatContent,
                         title = "内容格式化",
                         summary = "打开详情时格式化 XML 内容",
-                        onCheckedChange = { formatContent = it }
+                        onCheckedChange = { formatContent = it; sp.edit().putBoolean(HchatExtraSettings.KEY_MESSAGE_DETAILS_FORMAT_CONTENT, it).apply() }
                     )
                 }
             }
@@ -3393,32 +3304,40 @@ internal fun MessageDetailsConfigPage(
                         "浅色模式消息时间背景",
                         lightBg,
                         allowGradient = false,
-                        onReset = { lightBg = HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_LIGHT_BG }
-                    ) { lightBg = it.take(9) }
+                        onReset = { lightBg = HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_LIGHT_BG; saveColor(HchatExtraSettings.KEY_MESSAGE_DETAILS_LIGHT_BG, lightBg, HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_LIGHT_BG) },
+                        error = if (lightBg.isNotBlank() && MemberTitleStore.cleanColor(lightBg).isEmpty()) "请输入完整颜色" else null,
+                        onEditingFinished = { saveColor(HchatExtraSettings.KEY_MESSAGE_DETAILS_LIGHT_BG, it, HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_LIGHT_BG, true) }
+                    ) { lightBg = it; saveColor(HchatExtraSettings.KEY_MESSAGE_DETAILS_LIGHT_BG, it, HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_LIGHT_BG) }
                     InsetDivider()
                     ColorPickerRow(
                         "浅色文字",
                         "浅色模式消息时间文字",
                         lightText,
                         allowGradient = false,
-                        onReset = { lightText = HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_LIGHT_TEXT }
-                    ) { lightText = it.take(9) }
+                        onReset = { lightText = HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_LIGHT_TEXT; saveColor(HchatExtraSettings.KEY_MESSAGE_DETAILS_LIGHT_TEXT, lightText, HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_LIGHT_TEXT) },
+                        error = if (lightText.isNotBlank() && MemberTitleStore.cleanColor(lightText).isEmpty()) "请输入完整颜色" else null,
+                        onEditingFinished = { saveColor(HchatExtraSettings.KEY_MESSAGE_DETAILS_LIGHT_TEXT, it, HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_LIGHT_TEXT, true) }
+                    ) { lightText = it; saveColor(HchatExtraSettings.KEY_MESSAGE_DETAILS_LIGHT_TEXT, it, HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_LIGHT_TEXT) }
                     InsetDivider()
                     ColorPickerRow(
                         "深色背景",
                         "深色模式消息时间背景",
                         darkBg,
                         allowGradient = false,
-                        onReset = { darkBg = HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_DARK_BG }
-                    ) { darkBg = it.take(9) }
+                        onReset = { darkBg = HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_DARK_BG; saveColor(HchatExtraSettings.KEY_MESSAGE_DETAILS_DARK_BG, darkBg, HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_DARK_BG) },
+                        error = if (darkBg.isNotBlank() && MemberTitleStore.cleanColor(darkBg).isEmpty()) "请输入完整颜色" else null,
+                        onEditingFinished = { saveColor(HchatExtraSettings.KEY_MESSAGE_DETAILS_DARK_BG, it, HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_DARK_BG, true) }
+                    ) { darkBg = it; saveColor(HchatExtraSettings.KEY_MESSAGE_DETAILS_DARK_BG, it, HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_DARK_BG) }
                     InsetDivider()
                     ColorPickerRow(
                         "深色文字",
                         "深色模式消息时间文字",
                         darkText,
                         allowGradient = false,
-                        onReset = { darkText = HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_DARK_TEXT }
-                    ) { darkText = it.take(9) }
+                        onReset = { darkText = HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_DARK_TEXT; saveColor(HchatExtraSettings.KEY_MESSAGE_DETAILS_DARK_TEXT, darkText, HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_DARK_TEXT) },
+                        error = if (darkText.isNotBlank() && MemberTitleStore.cleanColor(darkText).isEmpty()) "请输入完整颜色" else null,
+                        onEditingFinished = { saveColor(HchatExtraSettings.KEY_MESSAGE_DETAILS_DARK_TEXT, it, HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_DARK_TEXT, true) }
+                    ) { darkText = it; saveColor(HchatExtraSettings.KEY_MESSAGE_DETAILS_DARK_TEXT, it, HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_DARK_TEXT) }
                 }
             }
             item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "文本") }
@@ -3429,7 +3348,8 @@ internal fun MessageDetailsConfigPage(
                         summary = "显示在消息旁的内容模板",
                         value = format,
                         variables = messageDetailsVariables(),
-                        onValueChange = { format = it }
+                        onEditingFinished = { if (it.isBlank()) sp.edit().putString(HchatExtraSettings.KEY_MESSAGE_DETAILS_FORMAT, HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_FORMAT).apply() },
+                        onValueChange = { format = it; if (it.isNotBlank()) sp.edit().putString(HchatExtraSettings.KEY_MESSAGE_DETAILS_FORMAT, it).apply() }
                     )
                     InsetDivider()
                     PopupChoiceRow(
@@ -3437,10 +3357,12 @@ internal fun MessageDetailsConfigPage(
                         summary = messageDetailsTimeFormatChoices(timeFormat).first { it.value == timeFormat }.label,
                         options = messageDetailsTimeFormatChoices(timeFormat),
                         currentValue = timeFormat,
-                        onValueChanged = { timeFormat = it }
+                        onValueChanged = { timeFormat = it; sp.edit().putString(HchatExtraSettings.KEY_MESSAGE_DETAILS_TIME_FORMAT, it).apply() }
                     )
                     InsetDivider()
-                    InputRow("自定义时间格式", "yyyy 年、MM 月、dd 日；例如 yyyy-MM-dd HH:mm:ss", timeFormat, onValueChange = { timeFormat = it })
+                    InputRow("自定义时间格式", if (timeFormat.isNotBlank() && runCatching { SimpleDateFormat(timeFormat, Locale.CHINA) }.isFailure) "时间格式无效，保留原设置" else "yyyy 年、MM 月、dd 日；例如 yyyy-MM-dd HH:mm:ss", timeFormat,
+                        onEditingFinished = { if (it.isBlank()) sp.edit().putString(HchatExtraSettings.KEY_MESSAGE_DETAILS_TIME_FORMAT, HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_TIME_FORMAT).apply() },
+                        onValueChange = { timeFormat = it; if (it.isNotBlank() && runCatching { SimpleDateFormat(it, Locale.CHINA) }.isSuccess) sp.edit().putString(HchatExtraSettings.KEY_MESSAGE_DETAILS_TIME_FORMAT, it).apply() })
                 }
             }
             item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "布局") }
@@ -3451,36 +3373,23 @@ internal fun MessageDetailsConfigPage(
                         summary = messageDetailsPositionLabel(position),
                         options = messageDetailsPositionChoices(),
                         currentValue = position,
-                        onValueChanged = { position = it }
+                        onValueChanged = { position = it; sp.edit().putString(HchatExtraSettings.KEY_MESSAGE_DETAILS_POSITION, it).apply() }
                     )
                     InsetDivider()
                     if (position == HchatExtraSettings.POSITION_MESSAGE_BOTTOM) {
-                        NumberInputRow("左边距", "单位 dp，对方消息使用", leftMargin, onValueChange = { leftMargin = it })
+                        NumberInputRow("左边距", "单位 dp，对方消息使用", leftMargin, onEditingFinished = { saveNumber(HchatExtraSettings.KEY_MESSAGE_DETAILS_LEFT_MARGIN, it, HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_LEFT_MARGIN, finished = true) }, onValueChange = { leftMargin = it; saveNumber(HchatExtraSettings.KEY_MESSAGE_DETAILS_LEFT_MARGIN, it, HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_LEFT_MARGIN) })
                         InsetDivider()
-                        NumberInputRow("右边距", "单位 dp，自己消息使用", rightMargin, onValueChange = { rightMargin = it })
+                        NumberInputRow("右边距", "单位 dp，自己消息使用", rightMargin, onEditingFinished = { saveNumber(HchatExtraSettings.KEY_MESSAGE_DETAILS_RIGHT_MARGIN, it, HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_RIGHT_MARGIN, finished = true) }, onValueChange = { rightMargin = it; saveNumber(HchatExtraSettings.KEY_MESSAGE_DETAILS_RIGHT_MARGIN, it, HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_RIGHT_MARGIN) })
                         InsetDivider()
                     } else {
-                        NumberInputRow("与头像间距", "单位 dp，可设置 0-64", avatarGap, onValueChange = { avatarGap = it })
+                        NumberInputRow("与头像间距", if (avatarGap.isNotEmpty() && avatarGap.toIntOrNull()?.let { it in 0..64 } != true) "请输入 0–64，保留原设置" else "单位 dp，可设置 0-64", avatarGap, onEditingFinished = { saveNumber(HchatExtraSettings.KEY_MESSAGE_DETAILS_AVATAR_GAP, it, HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_AVATAR_GAP, 64, true) }, onValueChange = { avatarGap = it; saveNumber(HchatExtraSettings.KEY_MESSAGE_DETAILS_AVATAR_GAP, it, HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_AVATAR_GAP, 64) })
                         InsetDivider()
                     }
-                    NumberInputRow("字体大小", "单位 sp", textSize, onValueChange = { textSize = it })
-                }
-            }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
-            item {
-                SettingsCard {
-                    ActionRow("恢复默认", "重置本页全部消息显示时间设置") {
-                        resetValues()
-                        Toast.makeText(context, "已恢复默认，保存后生效", Toast.LENGTH_SHORT).show()
-                    }
+                    NumberInputRow("字体大小", "单位 sp", textSize, onEditingFinished = { saveNumber(HchatExtraSettings.KEY_MESSAGE_DETAILS_TEXT_SIZE, it, HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_TEXT_SIZE, finished = true) }, onValueChange = { textSize = it; saveNumber(HchatExtraSettings.KEY_MESSAGE_DETAILS_TEXT_SIZE, it, HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_TEXT_SIZE) })
                 }
             }
         }
     }
-}
-
-private fun cleanMessageDetailsColor(value: String, fallback: String): String {
-    return MemberTitleStore.cleanColor(value).ifEmpty { fallback }
 }
 
 private fun messageDetailsTimeFormatChoices(current: String): List<PopupChoice<String>> {
@@ -3547,16 +3456,15 @@ internal fun ProfileIdMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar("返回", onBack)
-        }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "资料页") }
@@ -3596,27 +3504,17 @@ internal fun HideChatMenuMiuixPage(
     val listState = rememberLazyListState()
     val scrollBehavior = MiuixScrollBehavior()
 
-    fun save() {
-        val normalized = HideChatMenuSettings.parseTitles(titles).joinToString(",")
-        titles = normalized
-        sp.edit()
-            .putBoolean(HideChatMenuSettings.KEY_ENABLE, enabled)
-            .putString(HideChatMenuSettings.KEY_TITLES, normalized)
-            .apply()
-        Toast.makeText(context, "设置已保存", Toast.LENGTH_SHORT).show()
-    }
-
     PageScaffold(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar(
-                primaryText = "保存设置",
-                onPrimaryClick = { save() },
-                secondaryText = "返回",
-                onSecondaryClick = onBack
-            )
+        onBack = onBack,
+        showBackIcon = false,
+        topBarActions = {
+            TopBarTextAction("恢复默认") {
+                titles = HideChatMenuSettings.DEFAULT_TITLES
+                sp.edit().putString(HideChatMenuSettings.KEY_TITLES, titles).apply()
+            }
         }
     ) { padding ->
         LazyColumn(
@@ -3624,7 +3522,7 @@ internal fun HideChatMenuMiuixPage(
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "聊天菜单") }
@@ -3634,27 +3532,20 @@ internal fun HideChatMenuMiuixPage(
                         checked = enabled,
                         title = "隐藏长按菜单",
                         summary = "隐藏聊天消息长按菜单中的指定项目",
-                        onCheckedChange = { enabled = it }
+                        onCheckedChange = { enabled = it; sp.edit().putBoolean(HideChatMenuSettings.KEY_ENABLE, it).apply() }
                     )
-                    if (enabled) {
-                        InsetDivider()
-                        InputRow(
-                            "隐藏菜单项",
-                            "输入菜单显示名称，多个项目用逗号、分号或换行分隔",
-                            titles,
-                            minLines = 2,
-                            onValueChange = { titles = it }
-                        )
-                    }
-                }
-            }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
-            item {
-                SettingsCard {
-                    ActionRow("恢复默认", "恢复初始菜单名称示例") {
-                        titles = HideChatMenuSettings.DEFAULT_TITLES
-                        Toast.makeText(context, "已恢复默认，保存后生效", Toast.LENGTH_SHORT).show()
-                    }
+                    InsetDivider()
+                    InputRow(
+                        "隐藏菜单项",
+                        "输入菜单显示名称，多个项目用逗号、分号或换行分隔",
+                        titles,
+                        minLines = 2,
+                        onEditingFinished = { if (it.isBlank()) sp.edit().putString(HideChatMenuSettings.KEY_TITLES, "").apply() },
+                        onValueChange = {
+                            titles = it
+                            if (it.isNotBlank()) sp.edit().putString(HideChatMenuSettings.KEY_TITLES, HideChatMenuSettings.parseTitles(it).joinToString(",")).apply()
+                        }
+                    )
                 }
             }
         }
@@ -3694,16 +3585,15 @@ internal fun SettingsEntryMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar("返回", onBack)
-        }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "入口") }
@@ -3730,16 +3620,15 @@ internal fun QuickMarkReadMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar("返回", onBack)
-        }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "快捷已读") }
@@ -3797,14 +3686,15 @@ internal fun BackgroundRunAssistMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = { BottomActionBar("返回", onBack) }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "后台运行辅助") }
@@ -3812,7 +3702,7 @@ internal fun BackgroundRunAssistMiuixPage(
                 SettingsCard {
                     SwitchRow(
                         checked = enabled,
-                        title = "启用后台运行辅助",
+                        title = "后台运行辅助",
                         summary = "仅应用下方明确选择的辅助选项，不承诺阻止系统结束微信",
                         onCheckedChange = {
                             enabled = it

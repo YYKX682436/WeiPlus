@@ -67,6 +67,10 @@ object ScheduledTaskRuntimeCoordinator {
         runtime?.reload()
     }
 
+    fun refreshTask(taskId: String) {
+        runtime?.refreshTask(taskId)
+    }
+
     fun executeNow(taskId: String): Boolean {
         return runtime?.executeNow(taskId) == true
     }
@@ -89,6 +93,18 @@ class ScheduledTaskRuntime(
     fun shutdown() {
         started = false
         cancelAll()
+    }
+
+    /** Refresh one future schedule without replaying overdue tasks. */
+    @Synchronized
+    fun refreshTask(taskId: String) {
+        cancel(taskId)
+        if (!started || !settings.isEnabled()) return
+        val task = settings.findTask(taskId) ?: return
+        val now = System.currentTimeMillis()
+        if (isFutureEditedTask(task, now)) {
+            schedule(task, task.planTime - now)
+        }
     }
 
     @Synchronized
@@ -639,3 +655,6 @@ class ScheduledTaskRuntime(
         private const val ON_TIME_GRACE_MS = 60L * 1000L
     }
 }
+
+internal fun isFutureEditedTask(task: ScheduledTaskItem, now: Long): Boolean =
+    task.status != ScheduledTaskSettings.STATUS_RUNNING && task.planTime > now

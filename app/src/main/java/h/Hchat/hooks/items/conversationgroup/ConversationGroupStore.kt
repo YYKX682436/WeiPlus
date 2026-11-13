@@ -636,6 +636,14 @@ object ConversationGroupStore {
     }
 
     @JvmStatic
+    fun updateGroup(context: Context, id: String, transform: (ConversationGroup) -> ConversationGroup): Boolean = synchronized(lock) {
+        val account = accountKey()
+        if (account.isBlank()) return@synchronized false
+        val latest = loadLocked(context, account, persistRepairs = true).firstOrNull { it.id == id } ?: return@synchronized false
+        updateGroup(context, transform(latest).copy(id = latest.id))
+    }
+
+    @JvmStatic
     fun updateGroup(context: Context, group: ConversationGroup): Boolean = synchronized(lock) {
         val account = accountKey()
         if (account.isBlank()) return@synchronized false

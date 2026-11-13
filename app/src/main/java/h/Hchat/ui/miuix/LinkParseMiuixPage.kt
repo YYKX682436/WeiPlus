@@ -59,11 +59,9 @@ internal fun LinkParseMiuixPage(context: Context, provider: FeatureSettingsProvi
                 context = context,
                 request = currentRoute.request,
                 onBack = { route = LinkParseRoute.Main },
-                onConfirm = { picked ->
-                    allowedTalkers = picked.map { it.id }.filter { it.isNotBlank() }.toSet()
+                onSelectionChange = { selected ->
+                    allowedTalkers = selected.filter { it.isNotBlank() }.toSet()
                     settings.saveAllowedTalkers(allowedTalkers)
-                    Toast.makeText(context, "链接解析范围已保存", Toast.LENGTH_SHORT).show()
-                    route = LinkParseRoute.Main
                 }
             )
         }
@@ -84,14 +82,15 @@ private fun LinkParseMainPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scroll,
-        bottomBar = { BottomActionBar("返回", onBack) }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scroll.nestedScrollConnection),
             state = rememberLazyListState(),
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "链接解析") }
@@ -100,7 +99,7 @@ private fun LinkParseMainPage(
                     SwitchRow(
                         prefs,
                         LinkParseSettings.KEY_ENABLE,
-                        "启用链接解析",
+                        "链接解析",
                         "解析你发送的公开作品链接；他人仅限允许的聊天",
                         false
                     )

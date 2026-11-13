@@ -17,7 +17,6 @@ import h.Hchat.hooks.api.sns.SnsLikeState
 import h.Hchat.utils.HLog
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
-import top.yukonga.miuix.kmp.window.WindowDialog
 import java.util.concurrent.atomic.AtomicBoolean
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -208,7 +207,7 @@ internal fun BatchMomentsPickerPage(
     )
 
     preview?.let { item ->
-        WindowDialog(
+        SettingsWindowDialog(
             show = true,
             title = if (item.contentType == BatchMomentContentType.VIDEO) "视频封面" else "图片预览",
             onDismissRequest = { preview = null }
@@ -223,25 +222,22 @@ internal fun BatchMomentsPickerPage(
         largeTitle = friend?.label ?: operation.pickerTitle,
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        bottomBar = {
-            BottomActionBar(
-                primaryText = "$action（${selectedIds.size}）",
-                onPrimaryClick = {
-                    if (selectedIds.isNotEmpty()) {
-                        pendingAction = BatchMomentsSelection.selectable(posts, forLike).filter { it.snsId in selectedIds }
-                    }
-                },
-                primaryEnabled = selectedIds.isNotEmpty() && taskSnapshot.status != BatchTaskStatus.RUNNING && taskSnapshot.status != BatchTaskStatus.STOPPING,
-                secondaryText = "返回",
-                onSecondaryClick = onBack
-            )
+        topBarActions = {
+            TopBarTextAction(
+                "$action（${selectedIds.size}）",
+                enabled = selectedIds.isNotEmpty() && taskSnapshot.status != BatchTaskStatus.RUNNING && taskSnapshot.status != BatchTaskStatus.STOPPING
+            ) {
+                if (selectedIds.isNotEmpty()) {
+                    pendingAction = BatchMomentsSelection.selectable(posts, forLike).filter { it.snsId in selectedIds }
+                }
+            }
         }
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 76.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             ),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {

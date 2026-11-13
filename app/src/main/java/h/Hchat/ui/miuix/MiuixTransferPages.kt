@@ -18,6 +18,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.navigationevent.compose.rememberNavigationEventState
+import androidx.navigationevent.compose.NavigationBackHandler
+import androidx.navigationevent.NavigationEventInfo
 import androidx.compose.ui.unit.sp
 import h.Hchat.hooks.items.customnotify.CustomNotificationRuntime
 import h.Hchat.hooks.items.groupnicknamecolor.GroupNicknameColorSettings
@@ -56,16 +59,15 @@ internal fun WeChatTabletMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar("返回", onBack)
-        }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "平板模式") }
@@ -148,6 +150,7 @@ internal fun AutoTransferMiuixPage(
         receiveAccount = TransferReceiveAccountStore.DEFAULT_KEY
     }
     var picker by remember { mutableStateOf<ContactPickerRequest?>(null) }
+    var pickerIsOrdinary by remember { mutableStateOf(false) }
     var templateEditor by remember { mutableStateOf<TransferTemplateEditorRequest?>(null) }
     var bindingEditor by remember { mutableStateOf<TransferBindingEditorRequest?>(null) }
     var showTemplates by remember { mutableStateOf(false) }
@@ -168,6 +171,37 @@ internal fun AutoTransferMiuixPage(
             .putString(TransferRuleConfig.KEY_BINDINGS, TransferRuleConfig.encodeBindings(nextBindings))
             .putString(TransferRuleConfig.KEY_DEFAULT_TEMPLATE_ID, nextDefault)
             .commit()
+    }
+
+    fun persistDelay() {
+        val editor = sp.edit()
+        when (delayMode) {
+            TransferRuleConfig.DELAY_CUSTOM -> {
+                val delay = delayMs.toLongOrNull()?.takeIf { it in 0L..600000L } ?: return
+                editor.putLong(AutoTransferSettings.KEY_DELAY_MS, delay)
+            }
+            TransferRuleConfig.DELAY_RANDOM -> {
+                val min = randomMinMs.toLongOrNull()?.takeIf { it in 0L..600000L } ?: return
+                val max = randomMaxMs.toLongOrNull()?.takeIf { it in min..600000L } ?: return
+                editor.putLong(AutoTransferSettings.KEY_DELAY_RANDOM_MIN, min)
+                    .putLong(AutoTransferSettings.KEY_DELAY_RANDOM_MAX, max)
+            }
+            else -> editor.putLong(AutoTransferSettings.KEY_DELAY_MS, 0L)
+        }
+        editor.putInt(AutoTransferSettings.KEY_DELAY_MODE, delayMode).apply()
+    }
+
+    fun persistQuietTimes() {
+        val start = parseRedPacketSecond(quietStart, -1)
+        val end = parseRedPacketSecond(quietEnd, -1)
+        if (start >= 0 && end >= 0) sp.edit()
+            .putInt(AutoTransferSettings.KEY_QUIET_START_SECOND, start)
+            .putInt(AutoTransferSettings.KEY_QUIET_END_SECOND, end)
+            .apply()
+    }
+
+    fun persistText(key: String, value: String, finished: Boolean = false) {
+        if (value.isNotBlank() || finished) sp.edit().putString(key, value).apply()
     }
 
     val route: AutoTransferRoute = when {
@@ -196,7 +230,8 @@ internal fun AutoTransferMiuixPage(
                     onConfirm = { selected ->
                         request.onValue(formatIds(selected.map { it.id }))
                         picker = null
-                    }
+                    },
+                    onSelectionChange = if (pickerIsOrdinary) { selected -> request.onValue(formatIds(selected)) } else null
                 )
             }
             is AutoTransferRoute.TemplateEditor -> TransferTemplateEditorPage(
@@ -209,9 +244,8 @@ internal fun AutoTransferMiuixPage(
                         templates.toMutableList().also { it[request.index] = updated }
                     } else templates + updated
                     templates = next
-                    if (defaultTemplateId.isBlank()) defaultTemplateId = updated.id
-                    persistRules(nextTemplates = next, nextDefault = defaultTemplateId)
-                    templateEditor = null
+                    persistRules(nextTemplates = next)
+                    if (!request.canDelete) templateEditor = null
                 },
                 onDelete = {
                     val request = currentRoute.request
@@ -231,15 +265,15 @@ internal fun AutoTransferMiuixPage(
                 templates = templates,
                 onBack = { bindingEditor = null },
                 onSave = { updated ->
-                    val base = bindings.toMutableList()
-                    if (currentRoute.request.index in base.indices) base.removeAt(currentRoute.request.index)
-                    bindings = upsertTransferBindings(base, listOf(updated))
+                    val index = bindings.indexOfFirst { it.targetId == updated.targetId }
+                    bindings = if (index >= 0) bindings.toMutableList().also { it[index] = updated } else bindings + updated
                     persistRules(nextBindings = bindings)
-                    bindingEditor = null
+                    if (!currentRoute.request.canDelete) bindingEditor = null
                 },
                 onDelete = {
-                    if (currentRoute.request.index in bindings.indices) {
-                        bindings = bindings.toMutableList().also { it.removeAt(currentRoute.request.index) }
+                    val index = bindings.indexOfFirst { it.targetId == currentRoute.request.binding.targetId }
+                    if (index >= 0) {
+                        bindings = bindings.toMutableList().also { it.removeAt(index) }
                         persistRules(nextBindings = bindings)
                     }
                     bindingEditor = null
@@ -263,6 +297,7 @@ internal fun AutoTransferMiuixPage(
                     Toast.makeText(context, "已删除 ${targets.size} 个适用聊天", Toast.LENGTH_SHORT).show()
                 },
                 onAdd = {
+                    pickerIsOrdinary = false
                     picker = ContactPickerRequest(
                         title = "选择适用聊天",
                         mode = ContactPickerMode.BOTH,
@@ -291,6 +326,7 @@ internal fun AutoTransferMiuixPage(
                 bindings = bindings,
                 onBack = { showBatchApply = false },
                 onPickChats = { templateId ->
+                    pickerIsOrdinary = false
                     picker = ContactPickerRequest(
                         title = "批量套用收款模板",
                         mode = ContactPickerMode.BOTH,
@@ -317,77 +353,33 @@ internal fun AutoTransferMiuixPage(
                 templateVariables = transferTemplateVariables,
                 onBack = { showReplySteps = false },
                 onSave = {
-                    if (currentRoute.target == TransferReplyTarget.GROUP) groupReplySteps = it else replySteps = it
-                    showReplySteps = false
+                    if (currentRoute.target == TransferReplyTarget.GROUP) {
+                        groupReplySteps = it
+                        sp.edit().putString(AutoTransferSettings.KEY_REPLY_GROUP_ITEMS, RedPacketRuleConfig.encodeReplySteps(it)).apply()
+                    } else {
+                        replySteps = it
+                        if (!sp.contains(AutoTransferSettings.KEY_REPLY_GROUP_ITEMS)) groupReplySteps = it
+                        sp.edit()
+                            .putString(AutoTransferSettings.KEY_REPLY_ITEMS, RedPacketRuleConfig.encodeReplySteps(it))
+                            .putBoolean(AutoTransferSettings.KEY_REPLY_ENABLE, it.isNotEmpty())
+                            .putString(AutoTransferSettings.KEY_REPLY_TEXT, it.firstOrNull()?.content.orEmpty())
+                            .apply()
+                    }
                 }
             )
             AutoTransferRoute.Main -> PageScaffold(
                 title = provider.title(),
                 largeTitle = provider.title(),
                 scrollBehavior = scrollBehavior,
-                bottomBar = {
-                    BottomActionBar(
-                        primaryText = "保存设置",
-                        onPrimaryClick = save@{
-                            if (!PaymentTemplateTimeFormatter.isValidPattern(timeFormat)) {
-                                Toast.makeText(context, "时间格式无效", Toast.LENGTH_SHORT).show()
-                                return@save
-                            }
-                            val normalizedTimeFormat = PaymentTemplateTimeFormatter.normalizePattern(timeFormat)
-                            val minDelay = randomMinMs.toLongOrNull()?.coerceIn(0L, 600000L) ?: 0L
-                            val maxDelay = randomMaxMs.toLongOrNull()?.coerceIn(minDelay, 600000L) ?: minDelay
-                            val cleanSteps = cleanRedPacketReplySteps(replySteps)
-                            val cleanGroupSteps = cleanRedPacketReplySteps(groupReplySteps)
-                            sp.edit()
-                                .putString(AutoTransferSettings.KEY_WHITELIST, whitelist)
-                                .putString(AutoTransferSettings.KEY_BLACKLIST, blacklist)
-                                .putInt(AutoTransferSettings.KEY_MODE, listMode)
-                                .putLong(AutoTransferSettings.KEY_DELAY_MS, delayMs.toLongOrNull()?.coerceIn(0L, 600000L) ?: 0L)
-                                .putInt(AutoTransferSettings.KEY_DELAY_MODE, delayMode)
-                                .putLong(AutoTransferSettings.KEY_DELAY_RANDOM_MIN, minDelay)
-                                .putLong(AutoTransferSettings.KEY_DELAY_RANDOM_MAX, maxDelay)
-                                .putString(AutoTransferSettings.KEY_AMOUNT_VALUE, amountValue)
-                                .putBoolean(AutoTransferSettings.KEY_AMOUNT_ENABLE, amountEnabled)
-                                .putInt(AutoTransferSettings.KEY_AMOUNT_COND, amountCondition)
-                                .putInt(AutoTransferSettings.KEY_AMOUNT_ACTION, amountAction)
-                                .putInt(AutoTransferSettings.KEY_KEYWORD_MODE, keywordMode)
-                                .putString(AutoTransferSettings.KEY_KEYWORDS, if (keywordMode == 0) "" else keywords)
-                                .putString(AutoTransferSettings.KEY_RECEIVE_ACCOUNT, receiveAccount)
-                                .putBoolean(AutoTransferSettings.KEY_QUIET_ENABLE, quietEnabled)
-                                .putInt(AutoTransferSettings.KEY_QUIET_START_SECOND, parseRedPacketSecond(quietStart, 0))
-                                .putInt(AutoTransferSettings.KEY_QUIET_END_SECOND, parseRedPacketSecond(quietEnd, 0))
-                                .putString(AutoTransferSettings.KEY_REPLY_ITEMS, RedPacketRuleConfig.encodeReplySteps(cleanSteps))
-                                .putString(AutoTransferSettings.KEY_REPLY_GROUP_ITEMS, RedPacketRuleConfig.encodeReplySteps(cleanGroupSteps))
-                                .putBoolean(AutoTransferSettings.KEY_REPLY_ENABLE, cleanSteps.isNotEmpty())
-                                .putString(AutoTransferSettings.KEY_REPLY_TEXT, cleanSteps.firstOrNull()?.content.orEmpty())
-                                .putBoolean(AutoTransferSettings.KEY_NOTIFY_SYSTEM_ENABLE, notifySystemEnabled)
-                                .putBoolean(AutoTransferSettings.KEY_NOTIFY_TOAST_ENABLE, notifyToastEnabled)
-                                .putBoolean(AutoTransferSettings.KEY_NOTIFY_SOUND_ENABLE, notifySoundEnabled)
-                                .putInt(AutoTransferSettings.KEY_NOTIFY_SOUND_MODE, notifySoundMode)
-                                .putBoolean(AutoTransferSettings.KEY_NOTIFY_VIBRATE_ENABLE, notifyVibrateEnabled)
-                                .putString(AutoTransferSettings.KEY_NOTIFY_SOUND_URI, notifySoundUri)
-                                .putString(AutoTransferSettings.KEY_NOTIFY_TEXT, notifyText)
-                                .putString(AutoTransferSettings.KEY_NOTIFY_TOAST_TEXT, notifyToastText)
-                                .putBoolean(AutoTransferSettings.KEY_ANNOUNCE_ENABLE, announceEnabled)
-                                .putString(AutoTransferSettings.KEY_ANNOUNCE_TEXT, announceText)
-                                .putString(AutoTransferSettings.KEY_TIME_FORMAT, normalizedTimeFormat)
-                                .apply()
-                            replySteps = cleanSteps
-                            groupReplySteps = cleanGroupSteps
-                            timeFormat = normalizedTimeFormat
-                            Toast.makeText(context, "设置已保存", Toast.LENGTH_SHORT).show()
-                        },
-                        secondaryText = "返回",
-                        onSecondaryClick = onBack
-                    )
-                }
+                onBack = onBack,
+                showBackIcon = false
             ) { padding ->
                 LazyColumn(
                     modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
                     state = listState,
                     contentPadding = PaddingValues(
                         top = padding.calculateTopPadding() + 8.dp,
-                        bottom = padding.calculateBottomPadding() + 84.dp
+                        bottom = padding.calculateBottomPadding() + 16.dp
                     )
                 ) {
                     item { SmallTitle(text = "规则") }
@@ -416,16 +408,19 @@ internal fun AutoTransferMiuixPage(
                     item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "全局收款") }
                     item {
                         SettingsCard {
-                            PopupChoiceRow("收款位置", "使用微信当前账号提供的收款账户", receiveAccountOptions, receiveAccount, onValueChanged = { receiveAccount = it })
+                            PopupChoiceRow("收款位置", "使用微信当前账号提供的收款账户", receiveAccountOptions, receiveAccount, onValueChanged = { receiveAccount = it; sp.edit().putString(AutoTransferSettings.KEY_RECEIVE_ACCOUNT, it).apply() })
                             InsetDivider()
                             SwitchRow(sp, AutoTransferSettings.KEY_REFUND_REJECTED, "拒收时退回", "规则不通过时原路退回", false)
                             InsetDivider()
-                            PopupOptionRow("收款延迟", transferDelayModeLabel(delayMode), redPacketDelayModeOptions(true), delayMode, onValueChanged = { delayMode = it })
+                            PopupOptionRow("收款延迟", transferDelayModeLabel(delayMode), redPacketDelayModeOptions(true), delayMode, onValueChanged = { delayMode = it; persistDelay() })
                             if (delayMode == TransferRuleConfig.DELAY_CUSTOM) {
-                                InsetDivider(); NumberInputRow("自定义延迟", "单位 ms", delayMs) { delayMs = it }
+                                InsetDivider(); NumberInputRow("自定义延迟", if (delayMs.toLongOrNull()?.let { it in 0L..600000L } != true) "请输入 0–600000，保留上次有效配置" else "单位 ms", delayMs) { delayMs = it; persistDelay() }
                             } else if (delayMode == TransferRuleConfig.DELAY_RANDOM) {
-                                InsetDivider(); NumberInputRow("最小延迟", "单位 ms", randomMinMs) { randomMinMs = it }
-                                InsetDivider(); NumberInputRow("最大延迟", "单位 ms", randomMaxMs) { randomMaxMs = it }
+                                InsetDivider(); NumberInputRow("最小延迟", "单位 ms", randomMinMs) { randomMinMs = it; persistDelay() }
+                                InsetDivider(); NumberInputRow("最大延迟", "单位 ms", randomMaxMs) { randomMaxMs = it; persistDelay() }
+                                if (randomMinMs.toLongOrNull()?.let { min -> min in 0L..600000L && randomMaxMs.toLongOrNull()?.let { it in min..600000L } == true } != true) {
+                                    InsetDivider(); InfoRow("延迟范围", "请输入有效范围，保留上次有效配置")
+                                }
                             }
                         }
                     }
@@ -436,29 +431,28 @@ internal fun AutoTransferMiuixPage(
                             if (listMode == 1 || listMode == 2) {
                                 InsetDivider()
                                 ActionRow(if (listMode == 1) "白名单" else "黑名单", autoReplySelectedIdSummary(if (listMode == 1) whitelist else blacklist)) {
+                                    val isWhitelist = listMode == 1
+                                    pickerIsOrdinary = true
                                     picker = ContactPickerRequest(if (listMode == 1) "选择白名单" else "选择黑名单", ContactPickerMode.BOTH, true, if (listMode == 1) whitelist else blacklist, {
-                                        if (listMode == 1) whitelist = it else blacklist = it
+                                        if (isWhitelist) whitelist = it else blacklist = it
+                                        sp.edit().putString(if (isWhitelist) AutoTransferSettings.KEY_WHITELIST else AutoTransferSettings.KEY_BLACKLIST, it).apply()
                                     }, true)
                                 }
                             }
                             InsetDivider()
-                            SwitchRow(amountEnabled, "启用金额规则", "按转账金额决定接收或拒收") { amountEnabled = it; sp.edit().putBoolean(AutoTransferSettings.KEY_AMOUNT_ENABLE, it).apply() }
-                            if (amountEnabled) {
-                                InsetDivider(); PopupOptionRow("金额条件", transferAmountConditionLabel(amountCondition), optionItems("大于" to 0, "小于" to 1, "等于" to 2), amountCondition, onValueChanged = { amountCondition = it; sp.edit().putInt(AutoTransferSettings.KEY_AMOUNT_COND, it).apply() })
-                                InsetDivider(); InputRow("金额数值", "单位元，例如 10.5", amountValue) { amountValue = it.filter { ch -> ch.isDigit() || ch == '.' } }
-                                InsetDivider(); PopupOptionRow("命中后动作", transferAmountActionLabel(amountAction), optionItems("拒收/忽略" to 0, "仅接收满足条件" to 1), amountAction, onValueChanged = { amountAction = it; sp.edit().putInt(AutoTransferSettings.KEY_AMOUNT_ACTION, it).apply() })
-                            }
+                            SwitchRow(amountEnabled, "金额规则", "按转账金额决定接收或拒收") { amountEnabled = it; sp.edit().putBoolean(AutoTransferSettings.KEY_AMOUNT_ENABLE, it).apply() }
+                            InsetDivider(); PopupOptionRow("金额条件", transferAmountConditionLabel(amountCondition), optionItems("大于" to 0, "小于" to 1, "等于" to 2), amountCondition, onValueChanged = { amountCondition = it; sp.edit().putInt(AutoTransferSettings.KEY_AMOUNT_COND, it).apply() })
+                            InsetDivider(); InputRow("金额数值", if (amountValue.isNotBlank() && !isCompleteTransferAmount(amountValue)) "请输入有效金额，保留上次有效配置" else "单位元，例如 10.5", amountValue, onEditingFinished = { if (it.isBlank()) sp.edit().putString(AutoTransferSettings.KEY_AMOUNT_VALUE, "").apply() }) { amountValue = it; if (isCompleteTransferAmount(it)) sp.edit().putString(AutoTransferSettings.KEY_AMOUNT_VALUE, it).apply() }
+                            InsetDivider(); PopupOptionRow("命中后动作", transferAmountActionLabel(amountAction), optionItems("拒收/忽略" to 0, "仅接收满足条件" to 1), amountAction, onValueChanged = { amountAction = it; sp.edit().putInt(AutoTransferSettings.KEY_AMOUNT_ACTION, it).apply() })
                             InsetDivider()
                             PopupOptionRow("关键词规则", transferKeywordModeLabel(keywordMode), optionItems("不启用" to 0, "必须包含关键词" to 1, "包含则拒收" to 2), keywordMode, onValueChanged = { keywordMode = it; sp.edit().putInt(AutoTransferSettings.KEY_KEYWORD_MODE, it).apply() })
                             if (keywordMode != 0) {
-                                InsetDivider(); InputRow("关键词", "多个关键词用 |、逗号或换行分隔", keywords, minLines = 2) { keywords = it }
+                                InsetDivider(); InputRow("关键词", "多个关键词用 |、逗号或换行分隔", keywords, minLines = 2, onEditingFinished = { persistText(AutoTransferSettings.KEY_KEYWORDS, it, true) }) { keywords = it; persistText(AutoTransferSettings.KEY_KEYWORDS, it) }
                             }
                             InsetDivider()
-                            SwitchRow(quietEnabled, "禁收时段", "指定时段内不自动收款") { quietEnabled = it }
-                            if (quietEnabled) {
-                                InsetDivider(); TimeOfDayPickerRow("开始时间", quietStart) { quietStart = it }
-                                InsetDivider(); TimeOfDayPickerRow("结束时间", quietEnd) { quietEnd = it }
-                            }
+                            SwitchRow(quietEnabled, "禁收时段", "指定时段内不自动收款") { quietEnabled = it; sp.edit().putBoolean(AutoTransferSettings.KEY_QUIET_ENABLE, it).apply() }
+                            InsetDivider(); TimeOfDayPickerRow("开始时间", quietStart) { quietStart = it; persistQuietTimes() }
+                            InsetDivider(); TimeOfDayPickerRow("结束时间", quietEnd) { quietEnd = it; persistQuietTimes() }
                         }
                     }
                     item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "模板变量") }
@@ -466,9 +460,10 @@ internal fun AutoTransferMiuixPage(
                         SettingsCard {
                             InputRow(
                                 "时间变量格式",
-                                "用于 {time}，例如 yyyy-MM-dd HH:mm:ss",
-                                timeFormat
-                            ) { timeFormat = it }
+                                if (timeFormat.isNotBlank() && !PaymentTemplateTimeFormatter.isValidPattern(timeFormat)) "时间格式无效，保留上次有效配置" else "用于 {time}，例如 yyyy-MM-dd HH:mm:ss",
+                                timeFormat,
+                                onEditingFinished = { if (it.isBlank()) sp.edit().putString(AutoTransferSettings.KEY_TIME_FORMAT, PaymentTemplateTimeFormatter.normalizePattern(it)).apply() }
+                            ) { timeFormat = it; if (it.isNotBlank() && PaymentTemplateTimeFormatter.isValidPattern(it)) sp.edit().putString(AutoTransferSettings.KEY_TIME_FORMAT, PaymentTemplateTimeFormatter.normalizePattern(it)).apply() }
                         }
                     }
                     item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "收款后回复") }
@@ -488,11 +483,19 @@ internal fun AutoTransferMiuixPage(
                     item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "成功提醒") }
                     item {
                         TransferNotificationSettingsCard(
-                            context, notifySystemEnabled, { notifySystemEnabled = it }, notifyToastEnabled, { notifyToastEnabled = it },
-                            notifySoundEnabled, { notifySoundEnabled = it }, notifySoundMode, { notifySoundMode = it; notifySoundUri = "" },
-                            notifyVibrateEnabled, { notifyVibrateEnabled = it }, notifySoundUri, { notifySoundUri = it },
-                            notifyText, { notifyText = it }, notifyToastText, { notifyToastText = it },
-                            announceEnabled, { announceEnabled = it }, announceText, { announceText = it }
+                            context, notifySystemEnabled, { notifySystemEnabled = it; sp.edit().putBoolean(AutoTransferSettings.KEY_NOTIFY_SYSTEM_ENABLE, it).apply() },
+                            notifyToastEnabled, { notifyToastEnabled = it; sp.edit().putBoolean(AutoTransferSettings.KEY_NOTIFY_TOAST_ENABLE, it).apply() },
+                            notifySoundEnabled, { notifySoundEnabled = it; sp.edit().putBoolean(AutoTransferSettings.KEY_NOTIFY_SOUND_ENABLE, it).apply() },
+                            notifySoundMode, { notifySoundMode = it; notifySoundUri = ""; sp.edit().putInt(AutoTransferSettings.KEY_NOTIFY_SOUND_MODE, it).putString(AutoTransferSettings.KEY_NOTIFY_SOUND_URI, "").apply() },
+                            notifyVibrateEnabled, { notifyVibrateEnabled = it; sp.edit().putBoolean(AutoTransferSettings.KEY_NOTIFY_VIBRATE_ENABLE, it).apply() },
+                            notifySoundUri, { notifySoundUri = it; sp.edit().putString(AutoTransferSettings.KEY_NOTIFY_SOUND_URI, it).apply() },
+                            notifyText, { notifyText = it; persistText(AutoTransferSettings.KEY_NOTIFY_TEXT, it) },
+                            notifyToastText, { notifyToastText = it; persistText(AutoTransferSettings.KEY_NOTIFY_TOAST_TEXT, it) },
+                            announceEnabled, { announceEnabled = it; sp.edit().putBoolean(AutoTransferSettings.KEY_ANNOUNCE_ENABLE, it).apply() },
+                            announceText, { announceText = it; persistText(AutoTransferSettings.KEY_ANNOUNCE_TEXT, it) },
+                            onNoticeTextFinished = { persistText(AutoTransferSettings.KEY_NOTIFY_TEXT, it, true) },
+                            onToastTextFinished = { persistText(AutoTransferSettings.KEY_NOTIFY_TOAST_TEXT, it, true) },
+                            onAnnounceTextFinished = { persistText(AutoTransferSettings.KEY_ANNOUNCE_TEXT, it, true) }
                         )
                     }
                 }
@@ -513,15 +516,15 @@ private fun TransferTemplateListPage(
         title = "收款规则模板",
         largeTitle = "收款规则模板",
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar("新增模板", onAdd, "返回", onBack)
-        }
+        onBack = onBack,
+        showBackIcon = false,
+        topBarActions = { TopBarTextAction("新增模板", onClick = onAdd) }
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "模板") }
@@ -571,51 +574,29 @@ private fun TransferBindingListPage(
     val allVisibleSelected = visibleIds.isNotEmpty() && visibleIds.all { it in selectedIds }
     val selectedBindings = bindings.filter { it.id in selectedIds }
     val scrollBehavior = MiuixScrollBehavior()
+    val selectionBackState = rememberNavigationEventState(currentInfo = NavigationEventInfo.None)
+    NavigationBackHandler(state = selectionBackState, isBackEnabled = batchDeleteMode && LocalSettingsBackRegistrationEnabled.current, onBackCompleted = {
+        batchDeleteMode = false
+        selectedIds = emptySet()
+    })
     PageScaffold(
         title = "适用聊天",
         largeTitle = "适用聊天",
         scrollBehavior = scrollBehavior,
-        bottomBar = {
+        onBack = { if (batchDeleteMode) { batchDeleteMode = false; selectedIds = emptySet() } else onBack() },
+        showBackIcon = false,
+        topBarActions = {
             if (batchDeleteMode) {
-                BottomActionBar(
-                    primaryText = "删除所选（${selectedBindings.size}）",
-                    onPrimaryClick = {
-                        if (selectedBindings.isEmpty()) {
-                            Toast.makeText(context, "请先选择适用聊天", Toast.LENGTH_SHORT).show()
-                        } else {
-                            showDeleteConfirm = true
-                        }
-                    },
-                    secondaryText = "取消",
-                    onSecondaryClick = {
-                        batchDeleteMode = false
-                        selectedIds = emptySet()
-                    },
-                    middleText = if (visibleIds.isEmpty()) null else if (allVisibleSelected) "取消全选" else "全选",
-                    onMiddleClick = if (visibleIds.isEmpty()) null else {
-                        {
-                            selectedIds = if (allVisibleSelected) {
-                                selectedIds - visibleIds
-                            } else {
-                                selectedIds + visibleIds
-                            }
-                        }
-                    }
-                )
+                if (visibleIds.isNotEmpty()) TopBarTextAction(if (allVisibleSelected) "取消全选" else "全选") {
+                    selectedIds = if (allVisibleSelected) selectedIds - visibleIds else selectedIds + visibleIds
+                }
+                TopBarTextAction("删除（${selectedBindings.size}）") {
+                    if (selectedBindings.isEmpty()) Toast.makeText(context, "请先选择适用聊天", Toast.LENGTH_SHORT).show()
+                    else showDeleteConfirm = true
+                }
             } else {
-                BottomActionBar(
-                    primaryText = "添加聊天",
-                    onPrimaryClick = onAdd,
-                    secondaryText = "返回",
-                    onSecondaryClick = onBack,
-                    middleText = if (bindings.isEmpty()) null else "批量删除",
-                    onMiddleClick = if (bindings.isEmpty()) null else {
-                        {
-                            batchDeleteMode = true
-                            selectedIds = emptySet()
-                        }
-                    }
-                )
+                if (bindings.isNotEmpty()) TopBarTextAction("批量删除") { batchDeleteMode = true; selectedIds = emptySet() }
+                TopBarTextAction("添加聊天", onClick = onAdd)
             }
         }
     ) { padding ->
@@ -623,7 +604,7 @@ private fun TransferBindingListPage(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item {
@@ -699,27 +680,25 @@ private fun TransferBindingEditorPage(
     var enabled by remember(request) { mutableStateOf(request.binding.enabled) }
     var templateId by remember(request) { mutableStateOf(request.binding.templateId) }
     val scrollBehavior = MiuixScrollBehavior()
+    fun persist(create: Boolean = false) {
+        if (request.canDelete || create) onSave(request.binding.copy(enabled = enabled, templateId = templateId))
+    }
     PageScaffold(
         title = request.binding.label.ifBlank { request.binding.targetId },
         largeTitle = request.binding.label.ifBlank { request.binding.targetId },
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar(
-                "保存聊天",
-                {
-                    onSave(request.binding.copy(enabled = enabled, templateId = templateId))
-                    Toast.makeText(context, "适用聊天已保存", Toast.LENGTH_SHORT).show()
-                },
-                "返回",
-                onBack
-            )
+        onBack = onBack,
+        showBackIcon = false,
+        topBarActions = {
+            if (!request.canDelete) TopBarTextAction("新增") { persist(create = true) }
+            else TopBarTextAction("移除", onClick = onDelete)
         }
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "聊天") }
@@ -727,7 +706,7 @@ private fun TransferBindingEditorPage(
                 SettingsCard {
                     InfoRow("ID", request.binding.targetId)
                     InsetDivider()
-                    SwitchRow(enabled, "启用自动收款", "关闭后该聊天不会自动收款") { enabled = it }
+                    SwitchRow(enabled, "自动收款", "关闭后该聊天不会自动收款") { enabled = it; persist() }
                 }
             }
             item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "模板") }
@@ -736,19 +715,15 @@ private fun TransferBindingEditorPage(
                     OptionChoiceRow(
                         OptionItem("跟随默认规则", -1, "使用默认模板或全局设置"),
                         templateId.isBlank()
-                    ) { templateId = "" }
+                    ) { templateId = ""; persist() }
                     templates.forEachIndexed { index, template ->
                         InsetDivider()
                         OptionChoiceRow(
                             OptionItem(template.name.ifBlank { "模板 ${index + 1}" }, index, describeTransferTemplate(template)),
                             templateId == template.id
-                        ) { templateId = template.id }
+                        ) { templateId = template.id; persist() }
                     }
                 }
-            }
-            if (request.canDelete) {
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
-                item { SettingsCard { ActionRow("移除适用聊天", "移除后恢复默认规则", onDelete) } }
             }
         }
     }
@@ -766,13 +741,14 @@ private fun TransferBatchApplyPage(
         title = "批量套用模板",
         largeTitle = "批量套用模板",
         scrollBehavior = scrollBehavior,
-        bottomBar = { BottomActionBar("返回", onBack) }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "选择模板") }
@@ -795,6 +771,12 @@ private fun TransferBatchApplyPage(
     }
 }
 
+private sealed class TransferTemplateRoute {
+    object Main : TransferTemplateRoute()
+    data class Reply(val target: TransferReplyTarget) : TransferTemplateRoute()
+    data class Picker(val request: ContactPickerRequest) : TransferTemplateRoute()
+}
+
 @Composable
 private fun TransferTemplateEditorPage(
     context: Context,
@@ -804,127 +786,159 @@ private fun TransferTemplateEditorPage(
     onDelete: () -> Unit
 ) {
     var value by remember(request) { mutableStateOf(request.template) }
+    var storedValue by remember(request) { mutableStateOf(request.template) }
     var showReplySteps by remember { mutableStateOf(false) }
     var replyTarget by remember { mutableStateOf(TransferReplyTarget.PRIVATE) }
     var groupReplySteps by remember(request) {
         mutableStateOf(request.template.groupReplySteps ?: request.template.replySteps)
     }
+    var groupReplyEdited by remember(request) { mutableStateOf(false) }
+    var delayText by remember(request) { mutableStateOf(request.template.delayMs.toString()) }
+    var minText by remember(request) { mutableStateOf(request.template.randomMinMs.toString()) }
+    var maxText by remember(request) { mutableStateOf(request.template.randomMaxMs.toString()) }
+    var amountText by remember(request) { mutableStateOf(request.template.amountValue) }
     var picker by remember { mutableStateOf<ContactPickerRequest?>(null) }
     val accountOptions = remember { transferReceiveAccountOptions(context) }
-    if (showReplySteps) {
-        RedPacketReplyStepsPage(
-            context = context,
-            title = if (replyTarget == TransferReplyTarget.GROUP) "模板群聊收款回复" else "模板私聊收款回复",
-            initialSteps = if (replyTarget == TransferReplyTarget.GROUP) groupReplySteps else value.replySteps,
-            templateVariables = transferTemplateVariables,
-            onBack = { showReplySteps = false },
-            onSave = {
-                if (replyTarget == TransferReplyTarget.GROUP) groupReplySteps = it else value = value.copy(replySteps = it)
-                showReplySteps = false
-            }
-        )
-        return
+    fun update(change: (TransferRuleTemplate) -> TransferRuleTemplate) {
+        value = change(value)
+        if (request.canDelete) {
+            storedValue = change(storedValue)
+            onSave(storedValue)
+        }
     }
-    picker?.let { requestPicker ->
-        ContactPickerPage(
-            context = context,
-            request = requestPicker,
-            onBack = { picker = null },
-            onConfirm = {
-                requestPicker.onValue(formatIds(it.map { option -> option.id }))
-                picker = null
-            }
-        )
-        return
+    fun updateDelay() {
+        val delay = delayText.toLongOrNull()?.takeIf { it in 0L..600000L }
+        val min = minText.toLongOrNull()?.takeIf { it in 0L..600000L }
+        val max = maxText.toLongOrNull()?.takeIf { min != null && it in min..600000L }
+        when (value.delayMode) {
+            TransferRuleConfig.DELAY_CUSTOM -> if (delay != null) update { it.copy(delayMode = value.delayMode, delayMs = delay) }
+            TransferRuleConfig.DELAY_RANDOM -> if (min != null && max != null) update { it.copy(delayMode = value.delayMode, randomMinMs = min, randomMaxMs = max) }
+            else -> update { it.copy(delayMode = value.delayMode, delayMs = 0L) }
+        }
     }
     val scrollBehavior = MiuixScrollBehavior()
+    val innerRoute = when {
+        showReplySteps -> TransferTemplateRoute.Reply(replyTarget)
+        picker != null -> TransferTemplateRoute.Picker(picker!!)
+        else -> TransferTemplateRoute.Main
+    }
+    SettingsRouteTransition(
+        targetState = innerRoute,
+        label = "TransferTemplateRoute",
+        depthOf = { if (it is TransferTemplateRoute.Main) 0 else 1 }
+    ) { current ->
+        when (current) {
+            is TransferTemplateRoute.Reply -> RedPacketReplyStepsPage(
+                context = context,
+                title = if (current.target == TransferReplyTarget.GROUP) "模板群聊收款回复" else "模板私聊收款回复",
+                initialSteps = if (current.target == TransferReplyTarget.GROUP) groupReplySteps else value.replySteps,
+                templateVariables = transferTemplateVariables,
+                onBack = { showReplySteps = false },
+                onSave = { steps ->
+                    if (current.target == TransferReplyTarget.GROUP) {
+                        groupReplyEdited = true
+                        groupReplySteps = steps
+                        update { it.copy(groupReplySteps = steps) }
+                    } else {
+                        if (value.groupReplySteps == null && !groupReplyEdited) groupReplySteps = steps
+                        update { it.copy(replySteps = steps) }
+                    }
+                }
+            )
+            is TransferTemplateRoute.Picker -> ContactPickerPage(
+                context = context,
+                request = current.request,
+                onBack = { picker = null },
+                onSelectionChange = { current.request.onValue(formatIds(it)) }
+            )
+            TransferTemplateRoute.Main ->
     PageScaffold(
         title = value.name.ifBlank { "收款模板" },
         largeTitle = value.name.ifBlank { "收款模板" },
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar(
-                "保存模板",
-                {
-                    onSave(value.copy(
-                        name = value.name.ifBlank { "收款模板" },
-                        replySteps = cleanRedPacketReplySteps(value.replySteps),
-                        groupReplySteps = cleanRedPacketReplySteps(groupReplySteps)
-                    ))
-                    Toast.makeText(context, "收款模板已保存", Toast.LENGTH_SHORT).show()
-                },
-                "返回",
-                onBack
-            )
+        onBack = onBack,
+        showBackIcon = false,
+        topBarActions = {
+            if (!request.canDelete) TopBarTextAction("新增") {
+                val validDelay = when (value.delayMode) {
+                    TransferRuleConfig.DELAY_CUSTOM -> delayText.toLongOrNull()?.let { it in 0L..600000L } == true
+                    TransferRuleConfig.DELAY_RANDOM -> minText.toLongOrNull()?.let { min -> min in 0L..600000L && maxText.toLongOrNull()?.let { it in min..600000L } == true } == true
+                    else -> true
+                }
+                if (!validDelay || (amountText.isNotBlank() && !isCompleteTransferAmount(amountText))) Toast.makeText(context, "请输入有效金额和延迟", Toast.LENGTH_SHORT).show()
+                else onSave(value.copy(name = value.name.ifBlank { "收款模板" }, amountValue = amountText))
+            } else TopBarTextAction("删除", onClick = onDelete)
         }
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "模板") }
             item {
                 SettingsCard {
-                    InputRow("模板名称", "用于默认规则和聊天绑定", value.name) { value = value.copy(name = it) }
+                    InputRow("模板名称", if (value.name.isBlank() && request.canDelete) "请输入名称，保留上次有效配置" else "用于默认规则和聊天绑定", value.name) { text ->
+                        if (text.isBlank()) value = value.copy(name = text) else update { it.copy(name = text) }
+                    }
                     InsetDivider()
-                    SwitchRow(value.enabled, "启用模板", "关闭后使用该模板的聊天不会自动收款") { value = value.copy(enabled = it) }
+                    SwitchRow(value.enabled, "模板", "关闭后使用该模板的聊天不会自动收款") { checked -> update { it.copy(enabled = checked) } }
                 }
             }
             item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "收款") }
             item {
                 SettingsCard {
-                    PopupChoiceRow("收款位置", "选择转账到账账户", accountOptions, value.receiveAccount, onValueChanged = { value = value.copy(receiveAccount = it) })
+                    PopupChoiceRow("收款位置", "选择转账到账账户", accountOptions, value.receiveAccount, onValueChanged = { selected -> update { it.copy(receiveAccount = selected) } })
                     InsetDivider()
-                    SwitchRow(value.refundRejected, "拒收时退回", "规则不通过时原路退回") { value = value.copy(refundRejected = it) }
+                    SwitchRow(value.refundRejected, "拒收时退回", "规则不通过时原路退回") { checked -> update { it.copy(refundRejected = checked) } }
                     InsetDivider()
-                    PopupOptionRow("收款延迟", transferDelayModeLabel(value.delayMode), redPacketDelayModeOptions(true), value.delayMode, onValueChanged = { value = value.copy(delayMode = it) })
+                    PopupOptionRow("收款延迟", transferDelayModeLabel(value.delayMode), redPacketDelayModeOptions(true), value.delayMode, onValueChanged = { value = value.copy(delayMode = it); updateDelay() })
                     if (value.delayMode == TransferRuleConfig.DELAY_CUSTOM) {
-                        InsetDivider(); NumberInputRow("自定义延迟", "单位 ms", value.delayMs.toString()) { value = value.copy(delayMs = it.toLongOrNull()?.coerceIn(0L, 600000L) ?: 0L) }
+                        InsetDivider(); NumberInputRow("自定义延迟", if (delayText.toLongOrNull()?.let { it in 0L..600000L } != true) "请输入 0–600000，保留上次有效配置" else "单位 ms", delayText) { delayText = it; updateDelay() }
                     } else if (value.delayMode == TransferRuleConfig.DELAY_RANDOM) {
-                        InsetDivider(); NumberInputRow("最小延迟", "单位 ms", value.randomMinMs.toString()) { value = value.copy(randomMinMs = it.toLongOrNull()?.coerceIn(0L, 600000L) ?: 0L) }
-                        InsetDivider(); NumberInputRow("最大延迟", "单位 ms", value.randomMaxMs.toString()) { value = value.copy(randomMaxMs = it.toLongOrNull()?.coerceIn(value.randomMinMs, 600000L) ?: value.randomMinMs) }
+                        InsetDivider(); NumberInputRow("最小延迟", "单位 ms", minText) { minText = it; updateDelay() }
+                        InsetDivider(); NumberInputRow("最大延迟", "单位 ms", maxText) { maxText = it; updateDelay() }
+                        if (minText.toLongOrNull()?.let { min -> min in 0L..600000L && maxText.toLongOrNull()?.let { it in min..600000L } == true } != true) {
+                            InsetDivider(); InfoRow("延迟范围", "请输入有效范围，保留上次有效配置")
+                        }
                     }
                 }
             }
             item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "过滤") }
             item {
                 SettingsCard {
-                    PopupOptionRow("收款范围", transferListModeLabel(value.listMode), optionItems("全部接收" to 0, "只接收白名单" to 1, "拒收黑名单" to 2), value.listMode, onValueChanged = { value = value.copy(listMode = it) })
+                    PopupOptionRow("收款范围", transferListModeLabel(value.listMode), optionItems("全部接收" to 0, "只接收白名单" to 1, "拒收黑名单" to 2), value.listMode, onValueChanged = { selected -> update { it.copy(listMode = selected) } })
                     if (value.listMode == 1 || value.listMode == 2) {
                         InsetDivider()
                         val listValue = if (value.listMode == 1) value.whitelist else value.blacklist
                         ActionRow(if (value.listMode == 1) "白名单" else "黑名单", autoReplySelectedIdSummary(listValue)) {
+                            val white = value.listMode == 1
                             picker = ContactPickerRequest(
                                 if (value.listMode == 1) "选择白名单" else "选择黑名单",
                                 ContactPickerMode.BOTH,
                                 true,
                                 listValue,
-                                { selected -> value = if (value.listMode == 1) value.copy(whitelist = selected) else value.copy(blacklist = selected) },
+                                { selected -> update { if (white) it.copy(whitelist = selected) else it.copy(blacklist = selected) } },
                                 true
                             )
                         }
                     }
                     InsetDivider()
-                    SwitchRow(value.amountEnabled, "启用金额规则", "按转账金额决定接收或拒收") { value = value.copy(amountEnabled = it) }
-                    if (value.amountEnabled) {
-                        InsetDivider(); PopupOptionRow("金额条件", transferAmountConditionLabel(value.amountCondition), optionItems("大于" to 0, "小于" to 1, "等于" to 2), value.amountCondition, onValueChanged = { value = value.copy(amountCondition = it) })
-                        InsetDivider(); InputRow("金额数值", "单位元，例如 10.5", value.amountValue) { text -> value = value.copy(amountValue = text.filter { it.isDigit() || it == '.' }) }
-                        InsetDivider(); PopupOptionRow("命中后动作", transferAmountActionLabel(value.amountAction), optionItems("拒收/忽略" to 0, "仅接收满足条件" to 1), value.amountAction, onValueChanged = { value = value.copy(amountAction = it) })
-                    }
+                    SwitchRow(value.amountEnabled, "金额规则", "按转账金额决定接收或拒收") { checked -> update { it.copy(amountEnabled = checked) } }
+                    InsetDivider(); PopupOptionRow("金额条件", transferAmountConditionLabel(value.amountCondition), optionItems("大于" to 0, "小于" to 1, "等于" to 2), value.amountCondition, onValueChanged = { selected -> update { it.copy(amountCondition = selected) } })
+                    InsetDivider(); InputRow("金额数值", if (amountText.isNotBlank() && !isCompleteTransferAmount(amountText)) "请输入有效金额，保留上次有效配置" else "单位元，例如 10.5", amountText, onEditingFinished = { text -> if (text.isBlank()) update { it.copy(amountValue = "") } }) { text -> amountText = text; if (isCompleteTransferAmount(text)) update { it.copy(amountValue = text) } }
+                    InsetDivider(); PopupOptionRow("命中后动作", transferAmountActionLabel(value.amountAction), optionItems("拒收/忽略" to 0, "仅接收满足条件" to 1), value.amountAction, onValueChanged = { selected -> update { it.copy(amountAction = selected) } })
                     InsetDivider()
-                    PopupOptionRow("关键词规则", transferKeywordModeLabel(value.keywordMode), optionItems("不启用" to 0, "必须包含关键词" to 1, "包含则拒收" to 2), value.keywordMode, onValueChanged = { value = value.copy(keywordMode = it) })
+                    PopupOptionRow("关键词规则", transferKeywordModeLabel(value.keywordMode), optionItems("不启用" to 0, "必须包含关键词" to 1, "包含则拒收" to 2), value.keywordMode, onValueChanged = { selected -> update { it.copy(keywordMode = selected) } })
                     if (value.keywordMode != 0) {
-                        InsetDivider(); InputRow("关键词", "多个关键词用 |、逗号或换行分隔", value.keywords, minLines = 2) { value = value.copy(keywords = it) }
+                        InsetDivider(); InputRow("关键词", "多个关键词用 |、逗号或换行分隔", value.keywords, minLines = 2, onEditingFinished = { text -> if (text.isBlank()) update { it.copy(keywords = text) } }) { text -> if (text.isBlank()) value = value.copy(keywords = text) else update { it.copy(keywords = text) } }
                     }
                     InsetDivider()
-                    SwitchRow(value.quietEnabled, "禁收时段", "指定时段内不自动收款") { value = value.copy(quietEnabled = it) }
-                    if (value.quietEnabled) {
-                        InsetDivider(); TimeOfDayPickerRow("开始时间", formatRedPacketSecond(value.quietStartSecond)) { value = value.copy(quietStartSecond = parseRedPacketSecond(it, value.quietStartSecond)) }
-                        InsetDivider(); TimeOfDayPickerRow("结束时间", formatRedPacketSecond(value.quietEndSecond)) { value = value.copy(quietEndSecond = parseRedPacketSecond(it, value.quietEndSecond)) }
-                    }
+                    SwitchRow(value.quietEnabled, "禁收时段", "指定时段内不自动收款") { checked -> update { it.copy(quietEnabled = checked) } }
+                    InsetDivider(); TimeOfDayPickerRow("开始时间", formatRedPacketSecond(value.quietStartSecond)) { text -> update { it.copy(quietStartSecond = parseRedPacketSecond(text, it.quietStartSecond)) } }
+                    InsetDivider(); TimeOfDayPickerRow("结束时间", formatRedPacketSecond(value.quietEndSecond)) { text -> update { it.copy(quietEndSecond = parseRedPacketSecond(text, it.quietEndSecond)) } }
                 }
             }
             item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "收款后回复") }
@@ -945,22 +959,23 @@ private fun TransferTemplateEditorPage(
             item {
                 TransferNotificationSettingsCard(
                     context,
-                    value.notifySystemEnabled, { value = value.copy(notifySystemEnabled = it) },
-                    value.notifyToastEnabled, { value = value.copy(notifyToastEnabled = it) },
-                    value.notifySoundEnabled, { value = value.copy(notifySoundEnabled = it) },
-                    value.notifySoundMode, { value = value.copy(notifySoundMode = it, notifySoundUri = "") },
-                    value.notifyVibrateEnabled, { value = value.copy(notifyVibrateEnabled = it) },
-                    value.notifySoundUri, { value = value.copy(notifySoundUri = it) },
-                    value.notifyText, { value = value.copy(notifyText = it) },
-                    value.notifyToastText, { value = value.copy(notifyToastText = it) },
-                    value.announceEnabled, { value = value.copy(announceEnabled = it) },
-                    value.announceText, { value = value.copy(announceText = it) }
+                    value.notifySystemEnabled, { checked -> update { it.copy(notifySystemEnabled = checked) } },
+                    value.notifyToastEnabled, { checked -> update { it.copy(notifyToastEnabled = checked) } },
+                    value.notifySoundEnabled, { checked -> update { it.copy(notifySoundEnabled = checked) } },
+                    value.notifySoundMode, { selected -> update { it.copy(notifySoundMode = selected, notifySoundUri = "") } },
+                    value.notifyVibrateEnabled, { checked -> update { it.copy(notifyVibrateEnabled = checked) } },
+                    value.notifySoundUri, { uri -> update { it.copy(notifySoundUri = uri) } },
+                    value.notifyText, { text -> if (text.isBlank()) value = value.copy(notifyText = text) else update { it.copy(notifyText = text) } },
+                    value.notifyToastText, { text -> if (text.isBlank()) value = value.copy(notifyToastText = text) else update { it.copy(notifyToastText = text) } },
+                    value.announceEnabled, { checked -> update { it.copy(announceEnabled = checked) } },
+                    value.announceText, { text -> if (text.isBlank()) value = value.copy(announceText = text) else update { it.copy(announceText = text) } },
+                    onNoticeTextFinished = { text -> if (text.isBlank()) update { it.copy(notifyText = text) } },
+                    onToastTextFinished = { text -> if (text.isBlank()) update { it.copy(notifyToastText = text) } },
+                    onAnnounceTextFinished = { text -> if (text.isBlank()) update { it.copy(announceText = text) } }
                 )
             }
-            if (request.canDelete) {
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
-                item { SettingsCard { ActionRow("删除模板", "删除后相关聊天恢复默认规则", onDelete) } }
-            }
+        }
+    }
         }
     }
 }
@@ -987,59 +1002,58 @@ private fun TransferNotificationSettingsCard(
     announce: Boolean,
     onAnnounce: (Boolean) -> Unit,
     announceText: String,
-    onAnnounceText: (String) -> Unit
+    onAnnounceText: (String) -> Unit,
+    onNoticeTextFinished: ((String) -> Unit)? = null,
+    onToastTextFinished: ((String) -> Unit)? = null,
+    onAnnounceTextFinished: ((String) -> Unit)? = null
 ) {
     SettingsCard {
         SwitchRow(system, "通知栏提醒", "收款请求成功后显示") { onSystem(it) }
-        if (system) {
-            InsetDivider(); VariableInputRow("通知栏文案", "支持下方变量", noticeText, transferTemplateVariables, onValueChange = onNoticeText)
-        }
+        InsetDivider(); VariableInputRow("通知栏文案", "支持下方变量", noticeText, transferTemplateVariables, onEditingFinished = onNoticeTextFinished, onValueChange = onNoticeText)
+
         InsetDivider()
         SwitchRow(toast, "浮窗提醒", "收款请求成功后短暂提示") { onToast(it) }
-        if (toast) {
-            InsetDivider(); VariableInputRow("浮窗文案", "支持下方变量", toastText, transferTemplateVariables, onValueChange = onToastText)
-        }
+        InsetDivider(); VariableInputRow("浮窗文案", "支持下方变量", toastText, transferTemplateVariables, onEditingFinished = onToastTextFinished, onValueChange = onToastText)
+
         InsetDivider()
         SwitchRow(sound, "通知铃声", "开启后播放通知铃声") { onSound(it) }
-        if (sound) {
-            InsetDivider()
-            PopupOptionRow(
-                "铃声模式",
-                if (soundMode == AutoTransferSettings.NOTIFY_SOUND_MODE_CUSTOM) "从文件选择铃声" else "选择系统铃声",
-                optionItems("选择系统铃声" to AutoTransferSettings.NOTIFY_SOUND_MODE_SYSTEM, "从文件选择铃声" to AutoTransferSettings.NOTIFY_SOUND_MODE_CUSTOM),
-                soundMode,
-                onSoundMode
-            )
-            InsetDivider()
-            ActionRow("选择铃声", ringtoneDisplayName(context, soundUri, soundMode)) {
-                val activity = context as? Activity
-                if (activity == null) {
-                    Toast.makeText(context, "当前页面无法打开铃声选择器", Toast.LENGTH_SHORT).show()
+        InsetDivider()
+        PopupOptionRow(
+            "铃声模式",
+            if (soundMode == AutoTransferSettings.NOTIFY_SOUND_MODE_CUSTOM) "从文件选择铃声" else "选择系统铃声",
+            optionItems("选择系统铃声" to AutoTransferSettings.NOTIFY_SOUND_MODE_SYSTEM, "从文件选择铃声" to AutoTransferSettings.NOTIFY_SOUND_MODE_CUSTOM),
+            soundMode,
+            onSoundMode
+        )
+        InsetDivider()
+        ActionRow("选择铃声", ringtoneDisplayName(context, soundUri, soundMode)) {
+            val activity = context as? Activity
+            if (activity == null) {
+                Toast.makeText(context, "当前页面无法打开铃声选择器", Toast.LENGTH_SHORT).show()
+            } else {
+                val picked: (String) -> Unit = { uri ->
+                    if (uri.isNotBlank()) {
+                        onSoundUri(
+                            if (soundMode == AutoTransferSettings.NOTIFY_SOUND_MODE_CUSTOM) {
+                                CustomNotificationRuntime.freezeRingtoneUri(context, uri)
+                            } else uri
+                        )
+                    }
+                }
+                if (soundMode == AutoTransferSettings.NOTIFY_SOUND_MODE_CUSTOM) {
+                    RingtonePickerBridge.launchFile(activity, picked)
                 } else {
-                    val picked: (String) -> Unit = { uri ->
-                        if (uri.isNotBlank()) {
-                            onSoundUri(
-                                if (soundMode == AutoTransferSettings.NOTIFY_SOUND_MODE_CUSTOM) {
-                                    CustomNotificationRuntime.freezeRingtoneUri(context, uri)
-                                } else uri
-                            )
-                        }
-                    }
-                    if (soundMode == AutoTransferSettings.NOTIFY_SOUND_MODE_CUSTOM) {
-                        RingtonePickerBridge.launchFile(activity, picked)
-                    } else {
-                        RingtonePickerBridge.launchSystem(activity, soundUri, picked)
-                    }
+                    RingtonePickerBridge.launchSystem(activity, soundUri, picked)
                 }
             }
         }
+
         InsetDivider()
         SwitchRow(vibrate, "通知震动", "开启后触发通知震动") { onVibrate(it) }
         InsetDivider()
         SwitchRow(announce, "收款语音播报", "收款请求成功后用系统语音播报") { onAnnounce(it) }
-        if (announce) {
-            InsetDivider(); VariableInputRow("播报文案", "支持下方变量", announceText, transferTemplateVariables, onValueChange = onAnnounceText)
-        }
+        InsetDivider(); VariableInputRow("播报文案", "支持下方变量", announceText, transferTemplateVariables, onEditingFinished = onAnnounceTextFinished, onValueChange = onAnnounceText)
+
     }
 }
 
@@ -1150,37 +1164,15 @@ internal fun FakeWalletBalanceMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar(
-                primaryText = "保存设置",
-                onPrimaryClick = {
-                    val normalizedBalance = FakeWalletBalanceSettings.normalizeAmount(balanceAmount)
-                    val normalizedLqt = FakeWalletBalanceSettings.normalizeAmount(lqtAmount)
-                    val normalizedBusiness = FakeWalletBalanceSettings.normalizeAmount(businessAmount)
-                    balanceAmount = normalizedBalance
-                    lqtAmount = normalizedLqt
-                    businessAmount = normalizedBusiness
-                    sp.edit()
-                        .putString(FakeWalletBalanceSettings.KEY_BALANCE_AMOUNT, normalizedBalance)
-                        .putString(FakeWalletBalanceSettings.KEY_LQT_AMOUNT, normalizedLqt)
-                        .putString(FakeWalletBalanceSettings.KEY_BUSINESS_AMOUNT, normalizedBusiness)
-                        .putString(FakeWalletBalanceSettings.KEY_BALANCE_MODE, balanceMode)
-                        .putString(FakeWalletBalanceSettings.KEY_LQT_MODE, lqtMode)
-                        .putString(FakeWalletBalanceSettings.KEY_BUSINESS_MODE, businessMode)
-                        .apply()
-                    Toast.makeText(context, "设置已保存", Toast.LENGTH_SHORT).show()
-                },
-                secondaryText = "返回",
-                onSecondaryClick = onBack
-            )
-        }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "显示") }
@@ -1214,97 +1206,103 @@ internal fun FakeWalletBalanceMiuixPage(
                     }
                 }
             }
-            if (balanceEnabled || lqtEnabled || businessEnabled) {
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "金额") }
-                item {
-                    SettingsCard {
-                        if (balanceEnabled) {
-                            PopupChoiceRow(
-                                title = "余额显示方式",
-                                summary = "选择固定显示或按真实余额计算",
-                                options = amountModeOptions,
-                                currentValue = balanceMode,
-                                onValueChanged = { balanceMode = it }
-                            )
-                            InsetDivider()
-                            InputRow(
-                                when (balanceMode) {
-                                    FakeWalletBalanceSettings.MODE_INCREASE -> "余额增加金额"
-                                    FakeWalletBalanceSettings.MODE_DECREASE -> "余额减少金额"
-                                    else -> "余额金额"
-                                },
-                                if (balanceMode == FakeWalletBalanceSettings.MODE_FIXED) {
-                                    "直接显示该金额"
-                                } else {
-                                    "基于微信真实余额计算"
-                                },
-                                balanceAmount
-                            ) { value ->
-                                balanceAmount = value.filter { it.isDigit() || it == '.' || it == ',' }
-                            }
-                        }
-                        if (balanceEnabled && (lqtEnabled || businessEnabled)) {
-                            InsetDivider()
-                        }
-                        if (lqtEnabled) {
-                            PopupChoiceRow(
-                                title = "零钱通显示方式",
-                                summary = "选择固定显示或按真实金额计算",
-                                options = amountModeOptions,
-                                currentValue = lqtMode,
-                                onValueChanged = { lqtMode = it }
-                            )
-                            InsetDivider()
-                            InputRow(
-                                when (lqtMode) {
-                                    FakeWalletBalanceSettings.MODE_INCREASE -> "零钱通增加金额"
-                                    FakeWalletBalanceSettings.MODE_DECREASE -> "零钱通减少金额"
-                                    else -> "零钱通金额"
-                                },
-                                if (lqtMode == FakeWalletBalanceSettings.MODE_FIXED) {
-                                    "直接显示该金额"
-                                } else {
-                                    "基于微信真实金额计算"
-                                },
-                                lqtAmount
-                            ) { value ->
-                                lqtAmount = value.filter { it.isDigit() || it == '.' || it == ',' }
-                            }
-                        }
-                        if (lqtEnabled && businessEnabled) {
-                            InsetDivider()
-                        }
-                        if (businessEnabled) {
-                            PopupChoiceRow(
-                                title = "经营账户显示方式",
-                                summary = "选择固定显示或按真实金额计算",
-                                options = amountModeOptions,
-                                currentValue = businessMode,
-                                onValueChanged = { businessMode = it }
-                            )
-                            InsetDivider()
-                            InputRow(
-                                when (businessMode) {
-                                    FakeWalletBalanceSettings.MODE_INCREASE -> "经营账户增加金额"
-                                    FakeWalletBalanceSettings.MODE_DECREASE -> "经营账户减少金额"
-                                    else -> "经营账户金额"
-                                },
-                                if (businessMode == FakeWalletBalanceSettings.MODE_FIXED) {
-                                    "直接显示该金额"
-                                } else {
-                                    "基于微信真实金额计算"
-                                },
-                                businessAmount
-                            ) { value ->
-                                businessAmount = value.filter { it.isDigit() || it == '.' || it == ',' }
-                            }
-                        }
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "金额") }
+            item {
+                SettingsCard {
+                    PopupChoiceRow(
+                        title = "余额显示方式",
+                        summary = "选择固定显示或按真实余额计算",
+                        options = amountModeOptions,
+                        currentValue = balanceMode,
+                        onValueChanged = { balanceMode = it; sp.edit().putString(FakeWalletBalanceSettings.KEY_BALANCE_MODE, it).apply() }
+                    )
+                    InsetDivider()
+                    InputRow(
+                        when (balanceMode) {
+                            FakeWalletBalanceSettings.MODE_INCREASE -> "余额增加金额"
+                            FakeWalletBalanceSettings.MODE_DECREASE -> "余额减少金额"
+                            else -> "余额金额"
+                        },
+                        if (balanceAmount.isNotBlank() && !isCompleteWalletAmount(balanceAmount)) {
+                            "金额不完整；保留上次保存的值"
+                        } else if (balanceMode == FakeWalletBalanceSettings.MODE_FIXED) {
+                            "直接显示该金额"
+                        } else {
+                            "基于微信真实余额计算"
+                        },
+                        balanceAmount,
+                        onEditingFinished = { if (it.isBlank()) sp.edit().putString(FakeWalletBalanceSettings.KEY_BALANCE_AMOUNT, FakeWalletBalanceSettings.normalizeAmount("0")).apply() }
+                    ) { value ->
+                        balanceAmount = value.filter { it.isDigit() || it == '.' || it == ',' }
+                        if (isCompleteWalletAmount(balanceAmount)) sp.edit().putString(FakeWalletBalanceSettings.KEY_BALANCE_AMOUNT, FakeWalletBalanceSettings.normalizeAmount(balanceAmount)).apply()
+                    }
+                    InsetDivider()
+                    PopupChoiceRow(
+                        title = "零钱通显示方式",
+                        summary = "选择固定显示或按真实金额计算",
+                        options = amountModeOptions,
+                        currentValue = lqtMode,
+                        onValueChanged = { lqtMode = it; sp.edit().putString(FakeWalletBalanceSettings.KEY_LQT_MODE, it).apply() }
+                    )
+                    InsetDivider()
+                    InputRow(
+                        when (lqtMode) {
+                            FakeWalletBalanceSettings.MODE_INCREASE -> "零钱通增加金额"
+                            FakeWalletBalanceSettings.MODE_DECREASE -> "零钱通减少金额"
+                            else -> "零钱通金额"
+                        },
+                        if (lqtAmount.isNotBlank() && !isCompleteWalletAmount(lqtAmount)) {
+                            "金额不完整；保留上次保存的值"
+                        } else if (lqtMode == FakeWalletBalanceSettings.MODE_FIXED) {
+                            "直接显示该金额"
+                        } else {
+                            "基于微信真实金额计算"
+                        },
+                        lqtAmount,
+                        onEditingFinished = { if (it.isBlank()) sp.edit().putString(FakeWalletBalanceSettings.KEY_LQT_AMOUNT, FakeWalletBalanceSettings.normalizeAmount("0")).apply() }
+                    ) { value ->
+                        lqtAmount = value.filter { it.isDigit() || it == '.' || it == ',' }
+                        if (isCompleteWalletAmount(lqtAmount)) sp.edit().putString(FakeWalletBalanceSettings.KEY_LQT_AMOUNT, FakeWalletBalanceSettings.normalizeAmount(lqtAmount)).apply()
+                    }
+                    InsetDivider()
+                    PopupChoiceRow(
+                        title = "经营账户显示方式",
+                        summary = "选择固定显示或按真实金额计算",
+                        options = amountModeOptions,
+                        currentValue = businessMode,
+                        onValueChanged = { businessMode = it; sp.edit().putString(FakeWalletBalanceSettings.KEY_BUSINESS_MODE, it).apply() }
+                    )
+                    InsetDivider()
+                    InputRow(
+                        when (businessMode) {
+                            FakeWalletBalanceSettings.MODE_INCREASE -> "经营账户增加金额"
+                            FakeWalletBalanceSettings.MODE_DECREASE -> "经营账户减少金额"
+                            else -> "经营账户金额"
+                        },
+                        if (businessAmount.isNotBlank() && !isCompleteWalletAmount(businessAmount)) {
+                            "金额不完整；保留上次保存的值"
+                        } else if (businessMode == FakeWalletBalanceSettings.MODE_FIXED) {
+                            "直接显示该金额"
+                        } else {
+                            "基于微信真实金额计算"
+                        },
+                        businessAmount,
+                        onEditingFinished = { if (it.isBlank()) sp.edit().putString(FakeWalletBalanceSettings.KEY_BUSINESS_AMOUNT, FakeWalletBalanceSettings.normalizeAmount("0")).apply() }
+                    ) { value ->
+                        businessAmount = value.filter { it.isDigit() || it == '.' || it == ',' }
+                        if (isCompleteWalletAmount(businessAmount)) sp.edit().putString(FakeWalletBalanceSettings.KEY_BUSINESS_AMOUNT, FakeWalletBalanceSettings.normalizeAmount(businessAmount)).apply()
                     }
                 }
             }
         }
     }
 }
+
+internal fun isCompleteWalletAmount(value: String): Boolean =
+    value.matches(Regex("[0-9]+(?:,[0-9]+)*(?:\\.[0-9]+)?"))
+
+internal fun isCompleteTransferAmount(value: String): Boolean =
+    value.matches(Regex("[0-9]+(?:\\.[0-9]+)?")) && value.toDoubleOrNull()?.isFinite() == true
 
 @Composable
 internal fun MemberTitleMiuixPage(
@@ -1327,40 +1325,28 @@ internal fun MemberTitleMiuixPage(
     var showMember by remember { mutableStateOf(sp.getBoolean(MemberTitleSettings.KEY_SHOW_MEMBER, MemberTitleSettings.DEFAULT_SHOW_MEMBER)) }
     val listState = rememberLazyListState()
     val scrollBehavior = MiuixScrollBehavior()
+    fun saveTitle(key: String, value: String, fallback: String, finished: Boolean = false) {
+        val cleaned = MemberTitleStore.cleanTitle(value)
+        if (value.trim().length <= 8 && cleaned.isNotEmpty()) sp.edit().putString(key, cleaned).apply()
+        else if (finished && value.isBlank()) sp.edit().putString(key, fallback).apply()
+    }
+    fun saveColor(key: String, value: String, fallback: String, finished: Boolean = false) {
+        if (isCompleteColorSpec(value, true)) sp.edit().putString(key, MemberTitleStore.cleanColorSpec(value)).apply()
+        else if (finished && value.isBlank()) sp.edit().putString(key, fallback).apply()
+    }
     PageScaffold(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar(
-                primaryText = "保存设置",
-                onPrimaryClick = {
-                    sp.edit()
-                        .putString(MemberTitleSettings.KEY_OWNER_TITLE, MemberTitleStore.cleanTitle(ownerTitle).ifEmpty { MemberTitleSettings.DEFAULT_OWNER_TITLE })
-                        .putString(MemberTitleSettings.KEY_ADMIN_TITLE, MemberTitleStore.cleanTitle(adminTitle).ifEmpty { MemberTitleSettings.DEFAULT_ADMIN_TITLE })
-                        .putString(MemberTitleSettings.KEY_MEMBER_TITLE, MemberTitleStore.cleanTitle(memberTitle).ifEmpty { MemberTitleSettings.DEFAULT_MEMBER_TITLE })
-                        .putString(MemberTitleSettings.KEY_OWNER_COLOR, MemberTitleStore.cleanColorSpec(ownerColor).ifEmpty { MemberTitleSettings.DEFAULT_OWNER_COLOR })
-                        .putString(MemberTitleSettings.KEY_ADMIN_COLOR, MemberTitleStore.cleanColorSpec(adminColor).ifEmpty { MemberTitleSettings.DEFAULT_ADMIN_COLOR })
-                        .putString(MemberTitleSettings.KEY_MEMBER_COLOR, MemberTitleStore.cleanColorSpec(memberColor).ifEmpty { MemberTitleSettings.DEFAULT_MEMBER_COLOR })
-                        .putString(MemberTitleSettings.KEY_CUSTOM_COLOR, MemberTitleStore.cleanColorSpec(customColor).ifEmpty { MemberTitleSettings.DEFAULT_CUSTOM_COLOR })
-                        .putString(MemberTitleSettings.KEY_OWNER_TEXT_COLOR, MemberTitleStore.cleanColorSpec(ownerTextColor).ifEmpty { MemberTitleSettings.DEFAULT_TEXT_COLOR })
-                        .putString(MemberTitleSettings.KEY_ADMIN_TEXT_COLOR, MemberTitleStore.cleanColorSpec(adminTextColor).ifEmpty { MemberTitleSettings.DEFAULT_TEXT_COLOR })
-                        .putString(MemberTitleSettings.KEY_MEMBER_TEXT_COLOR, MemberTitleStore.cleanColorSpec(memberTextColor).ifEmpty { MemberTitleSettings.DEFAULT_TEXT_COLOR })
-                        .putString(MemberTitleSettings.KEY_CUSTOM_TEXT_COLOR, MemberTitleStore.cleanColorSpec(customTextColor).ifEmpty { MemberTitleSettings.DEFAULT_TEXT_COLOR })
-                        .apply()
-                    Toast.makeText(context, "设置已保存", Toast.LENGTH_SHORT).show()
-                },
-                secondaryText = "返回",
-                onSecondaryClick = onBack
-            )
-        }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "基础") }
@@ -1377,35 +1363,33 @@ internal fun MemberTitleMiuixPage(
             item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "名称") }
             item {
                 SettingsCard {
-                    InputRow("群主名称", "最多 8 个字符", ownerTitle) { ownerTitle = it.take(8) }
+                    InputRow("群主名称", if (ownerTitle.length > 8) "最多 8 个字符，保留上次有效配置" else "最多 8 个字符", ownerTitle, onEditingFinished = { saveTitle(MemberTitleSettings.KEY_OWNER_TITLE, it, MemberTitleSettings.DEFAULT_OWNER_TITLE, true) }) { ownerTitle = it; saveTitle(MemberTitleSettings.KEY_OWNER_TITLE, it, MemberTitleSettings.DEFAULT_OWNER_TITLE) }
                     InsetDivider()
-                    InputRow("管理员名称", "最多 8 个字符", adminTitle) { adminTitle = it.take(8) }
-                    if (showMember) {
-                        InsetDivider()
-                        InputRow("群员名称", "最多 8 个字符", memberTitle) { memberTitle = it.take(8) }
-                    }
+                    InputRow("管理员名称", if (adminTitle.length > 8) "最多 8 个字符，保留上次有效配置" else "最多 8 个字符", adminTitle, onEditingFinished = { saveTitle(MemberTitleSettings.KEY_ADMIN_TITLE, it, MemberTitleSettings.DEFAULT_ADMIN_TITLE, true) }) { adminTitle = it; saveTitle(MemberTitleSettings.KEY_ADMIN_TITLE, it, MemberTitleSettings.DEFAULT_ADMIN_TITLE) }
+                    InsetDivider()
+                    InputRow("群员名称", if (memberTitle.length > 8) "最多 8 个字符，保留上次有效配置" else "最多 8 个字符", memberTitle, onEditingFinished = { saveTitle(MemberTitleSettings.KEY_MEMBER_TITLE, it, MemberTitleSettings.DEFAULT_MEMBER_TITLE, true) }) { memberTitle = it; saveTitle(MemberTitleSettings.KEY_MEMBER_TITLE, it, MemberTitleSettings.DEFAULT_MEMBER_TITLE) }
+
                 }
             }
             item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "颜色") }
             item {
                 SettingsCard {
-                    ColorPickerRow("群主颜色", "默认黄色，渐变用 #F59E0B,#FDE047", ownerColor, onReset = { ownerColor = MemberTitleSettings.DEFAULT_OWNER_COLOR }) { ownerColor = it.take(19) }
+                    ColorPickerRow("群主颜色", "默认黄色，渐变用 #F59E0B,#FDE047", ownerColor, onReset = { ownerColor = MemberTitleSettings.DEFAULT_OWNER_COLOR; saveColor(MemberTitleSettings.KEY_OWNER_COLOR, ownerColor, MemberTitleSettings.DEFAULT_OWNER_COLOR) }, error = if (ownerColor.isNotBlank() && !isCompleteColorSpec(ownerColor, true)) "颜色不完整，保留上次有效配置" else null, onEditingFinished = { saveColor(MemberTitleSettings.KEY_OWNER_COLOR, it, MemberTitleSettings.DEFAULT_OWNER_COLOR, true) }) { ownerColor = it; saveColor(MemberTitleSettings.KEY_OWNER_COLOR, it, MemberTitleSettings.DEFAULT_OWNER_COLOR) }
                     InsetDivider()
-                    ColorPickerRow("群主文字颜色", "默认白色，支持渐变", ownerTextColor, onReset = { ownerTextColor = MemberTitleSettings.DEFAULT_TEXT_COLOR }) { ownerTextColor = it.take(19) }
+                    ColorPickerRow("群主文字颜色", "默认白色，支持渐变", ownerTextColor, onReset = { ownerTextColor = MemberTitleSettings.DEFAULT_TEXT_COLOR; saveColor(MemberTitleSettings.KEY_OWNER_TEXT_COLOR, ownerTextColor, MemberTitleSettings.DEFAULT_TEXT_COLOR) }, error = if (ownerTextColor.isNotBlank() && !isCompleteColorSpec(ownerTextColor, true)) "颜色不完整，保留上次有效配置" else null, onEditingFinished = { saveColor(MemberTitleSettings.KEY_OWNER_TEXT_COLOR, it, MemberTitleSettings.DEFAULT_TEXT_COLOR, true) }) { ownerTextColor = it; saveColor(MemberTitleSettings.KEY_OWNER_TEXT_COLOR, it, MemberTitleSettings.DEFAULT_TEXT_COLOR) }
                     InsetDivider()
-                    ColorPickerRow("管理员颜色", "默认绿色，渐变用 #22C55E,#14B8A6", adminColor, onReset = { adminColor = MemberTitleSettings.DEFAULT_ADMIN_COLOR }) { adminColor = it.take(19) }
+                    ColorPickerRow("管理员颜色", "默认绿色，渐变用 #22C55E,#14B8A6", adminColor, onReset = { adminColor = MemberTitleSettings.DEFAULT_ADMIN_COLOR; saveColor(MemberTitleSettings.KEY_ADMIN_COLOR, adminColor, MemberTitleSettings.DEFAULT_ADMIN_COLOR) }, error = if (adminColor.isNotBlank() && !isCompleteColorSpec(adminColor, true)) "颜色不完整，保留上次有效配置" else null, onEditingFinished = { saveColor(MemberTitleSettings.KEY_ADMIN_COLOR, it, MemberTitleSettings.DEFAULT_ADMIN_COLOR, true) }) { adminColor = it; saveColor(MemberTitleSettings.KEY_ADMIN_COLOR, it, MemberTitleSettings.DEFAULT_ADMIN_COLOR) }
                     InsetDivider()
-                    ColorPickerRow("管理员文字颜色", "默认白色，支持渐变", adminTextColor, onReset = { adminTextColor = MemberTitleSettings.DEFAULT_TEXT_COLOR }) { adminTextColor = it.take(19) }
-                    if (showMember) {
-                        InsetDivider()
-                        ColorPickerRow("群员颜色", "默认灰色，渐变用 #64748B,#94A3B8", memberColor, onReset = { memberColor = MemberTitleSettings.DEFAULT_MEMBER_COLOR }) { memberColor = it.take(19) }
-                        InsetDivider()
-                        ColorPickerRow("群员文字颜色", "默认白色，支持渐变", memberTextColor, onReset = { memberTextColor = MemberTitleSettings.DEFAULT_TEXT_COLOR }) { memberTextColor = it.take(19) }
-                    }
+                    ColorPickerRow("管理员文字颜色", "默认白色，支持渐变", adminTextColor, onReset = { adminTextColor = MemberTitleSettings.DEFAULT_TEXT_COLOR; saveColor(MemberTitleSettings.KEY_ADMIN_TEXT_COLOR, adminTextColor, MemberTitleSettings.DEFAULT_TEXT_COLOR) }, error = if (adminTextColor.isNotBlank() && !isCompleteColorSpec(adminTextColor, true)) "颜色不完整，保留上次有效配置" else null, onEditingFinished = { saveColor(MemberTitleSettings.KEY_ADMIN_TEXT_COLOR, it, MemberTitleSettings.DEFAULT_TEXT_COLOR, true) }) { adminTextColor = it; saveColor(MemberTitleSettings.KEY_ADMIN_TEXT_COLOR, it, MemberTitleSettings.DEFAULT_TEXT_COLOR) }
                     InsetDivider()
-                    ColorPickerRow("自定义默认色", "点击聊天头衔可单独设置每个人的名称和颜色，支持渐变", customColor, onReset = { customColor = MemberTitleSettings.DEFAULT_CUSTOM_COLOR }) { customColor = it.take(19) }
+                    ColorPickerRow("群员颜色", "默认灰色，渐变用 #64748B,#94A3B8", memberColor, onReset = { memberColor = MemberTitleSettings.DEFAULT_MEMBER_COLOR; saveColor(MemberTitleSettings.KEY_MEMBER_COLOR, memberColor, MemberTitleSettings.DEFAULT_MEMBER_COLOR) }, error = if (memberColor.isNotBlank() && !isCompleteColorSpec(memberColor, true)) "颜色不完整，保留上次有效配置" else null, onEditingFinished = { saveColor(MemberTitleSettings.KEY_MEMBER_COLOR, it, MemberTitleSettings.DEFAULT_MEMBER_COLOR, true) }) { memberColor = it; saveColor(MemberTitleSettings.KEY_MEMBER_COLOR, it, MemberTitleSettings.DEFAULT_MEMBER_COLOR) }
                     InsetDivider()
-                    ColorPickerRow("自定义文字默认色", "单人未设置文字颜色时使用，支持渐变", customTextColor, onReset = { customTextColor = MemberTitleSettings.DEFAULT_TEXT_COLOR }) { customTextColor = it.take(19) }
+                    ColorPickerRow("群员文字颜色", "默认白色，支持渐变", memberTextColor, onReset = { memberTextColor = MemberTitleSettings.DEFAULT_TEXT_COLOR; saveColor(MemberTitleSettings.KEY_MEMBER_TEXT_COLOR, memberTextColor, MemberTitleSettings.DEFAULT_TEXT_COLOR) }, error = if (memberTextColor.isNotBlank() && !isCompleteColorSpec(memberTextColor, true)) "颜色不完整，保留上次有效配置" else null, onEditingFinished = { saveColor(MemberTitleSettings.KEY_MEMBER_TEXT_COLOR, it, MemberTitleSettings.DEFAULT_TEXT_COLOR, true) }) { memberTextColor = it; saveColor(MemberTitleSettings.KEY_MEMBER_TEXT_COLOR, it, MemberTitleSettings.DEFAULT_TEXT_COLOR) }
+
+                    InsetDivider()
+                    ColorPickerRow("自定义默认色", "点击聊天头衔可单独设置每个人的名称和颜色，支持渐变", customColor, onReset = { customColor = MemberTitleSettings.DEFAULT_CUSTOM_COLOR; saveColor(MemberTitleSettings.KEY_CUSTOM_COLOR, customColor, MemberTitleSettings.DEFAULT_CUSTOM_COLOR) }, error = if (customColor.isNotBlank() && !isCompleteColorSpec(customColor, true)) "颜色不完整，保留上次有效配置" else null, onEditingFinished = { saveColor(MemberTitleSettings.KEY_CUSTOM_COLOR, it, MemberTitleSettings.DEFAULT_CUSTOM_COLOR, true) }) { customColor = it; saveColor(MemberTitleSettings.KEY_CUSTOM_COLOR, it, MemberTitleSettings.DEFAULT_CUSTOM_COLOR) }
+                    InsetDivider()
+                    ColorPickerRow("自定义文字默认色", "单人未设置文字颜色时使用，支持渐变", customTextColor, onReset = { customTextColor = MemberTitleSettings.DEFAULT_TEXT_COLOR; saveColor(MemberTitleSettings.KEY_CUSTOM_TEXT_COLOR, customTextColor, MemberTitleSettings.DEFAULT_TEXT_COLOR) }, error = if (customTextColor.isNotBlank() && !isCompleteColorSpec(customTextColor, true)) "颜色不完整，保留上次有效配置" else null, onEditingFinished = { saveColor(MemberTitleSettings.KEY_CUSTOM_TEXT_COLOR, it, MemberTitleSettings.DEFAULT_TEXT_COLOR, true) }) { customTextColor = it; saveColor(MemberTitleSettings.KEY_CUSTOM_TEXT_COLOR, it, MemberTitleSettings.DEFAULT_TEXT_COLOR) }
                 }
             }
         }
@@ -1441,35 +1425,15 @@ internal fun GroupNicknameColorMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar(
-                primaryText = "保存设置",
-                onPrimaryClick = {
-                    sp.edit()
-                        .putString(
-                            GroupNicknameColorSettings.KEY_COLOR,
-                            GroupNicknameColorStore.cleanColorSpec(color)
-                        )
-                        .putInt(
-                            GroupNicknameColorSettings.KEY_WEIGHT,
-                            GroupNicknameColorStore.cleanWeight(
-                                weight.toIntOrNull() ?: GroupNicknameColorSettings.DEFAULT_WEIGHT
-                            )
-                        )
-                        .apply()
-                    Toast.makeText(context, "设置已保存", Toast.LENGTH_SHORT).show()
-                },
-                secondaryText = "返回",
-                onSecondaryClick = onBack
-            )
-        }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "群昵称") }
@@ -1479,16 +1443,27 @@ internal fun GroupNicknameColorMiuixPage(
                         enabled = it
                         sp.edit().putBoolean(GroupNicknameColorSettings.KEY_ENABLE, it).apply()
                     }
-                    if (enabled) {
-                        InsetDivider()
-                        ColorPickerRow(
-                            "昵称颜色",
-                            "留空跟随微信，渐变用 #F59E0B,#22C55E",
-                            color,
-                            onReset = { color = GroupNicknameColorSettings.DEFAULT_COLOR }
-                        ) { color = it.take(19) }
-                        InsetDivider()
-                        WeightInputRow("昵称粗细", weight) { weight = it }
+                    InsetDivider()
+                    ColorPickerRow(
+                        "昵称颜色",
+                        "留空跟随微信，渐变用 #F59E0B,#22C55E",
+                        color,
+                        onReset = {
+                            color = GroupNicknameColorSettings.DEFAULT_COLOR
+                            sp.edit().putString(GroupNicknameColorSettings.KEY_COLOR, color).apply()
+                        },
+                        error = if (color.isNotBlank() && !isCompleteColorSpec(color, true)) "颜色不完整，保留上次保存的值" else null,
+                        onEditingFinished = { if (it.isBlank()) sp.edit().putString(GroupNicknameColorSettings.KEY_COLOR, "").apply() }
+                    ) {
+                        color = it
+                        if (isCompleteColorSpec(it, true)) sp.edit().putString(GroupNicknameColorSettings.KEY_COLOR, GroupNicknameColorStore.cleanColorSpec(it)).apply()
+                    }
+                    InsetDivider()
+                    InputRow("昵称粗细", if (weight.toIntOrNull()?.let { it in 100..900 } != true) "请输入 100-900；保留上次保存的值" else "100-900，600 以上显示为加粗", weight) {
+                        weight = it.filter(Char::isDigit).take(3)
+                        weight.toIntOrNull()?.takeIf { value -> value in 100..900 }?.let { value ->
+                            sp.edit().putInt(GroupNicknameColorSettings.KEY_WEIGHT, GroupNicknameColorStore.cleanWeight(value)).apply()
+                        }
                     }
                 }
             }
@@ -1520,41 +1495,31 @@ internal fun RealNameTailMiuixPage(
     var showRegion by remember { mutableStateOf(sp.getBoolean(RealNameTailSettings.KEY_SHOW_REGION, RealNameTailSettings.DEFAULT_SHOW_REGION)) }
     val listState = rememberLazyListState()
     val scrollBehavior = MiuixScrollBehavior()
+    fun saveText(key: String, value: String, limit: Int, finished: Boolean = false) {
+        if (value.length <= limit && (value.isNotBlank() || finished)) sp.edit().putString(key, value.trim()).apply()
+    }
+    fun saveColor(key: String, value: String, finished: Boolean = false) {
+        if (isCompleteColorSpec(value, true)) sp.edit().putString(key, RealNameTailStore.cleanColorSpec(value)).apply()
+        else if (finished && value.isBlank()) sp.edit().putString(key, "").apply()
+    }
+    fun saveWeight(key: String, value: String, finished: Boolean = false) {
+        val number = value.toIntOrNull()
+        if (number != null && number in 100..900) sp.edit().putInt(key, RealNameTailStore.cleanWeight(number)).apply()
+        else if (finished && value.isBlank()) sp.edit().putInt(key, RealNameTailSettings.DEFAULT_TEXT_WEIGHT).apply()
+    }
     PageScaffold(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar(
-                primaryText = "保存设置",
-                onPrimaryClick = {
-                    sp.edit()
-                        .putString(RealNameTailSettings.KEY_GLOBAL_PREFIX, prefix.trim().take(8))
-                        .putString(RealNameTailSettings.KEY_GENDER_MALE_TEXT, maleText.trim().take(12))
-                        .putString(RealNameTailSettings.KEY_GENDER_FEMALE_TEXT, femaleText.trim().take(12))
-                        .putString(RealNameTailSettings.KEY_GENDER_UNKNOWN_TEXT, unknownGenderText.trim().take(12))
-                        .putString(RealNameTailSettings.KEY_TAIL_COLOR, RealNameTailStore.cleanColorSpec(tailColor))
-                        .putString(RealNameTailSettings.KEY_BRACKET_COLOR, RealNameTailStore.cleanColorSpec(bracketColor))
-                        .putString(RealNameTailSettings.KEY_GENDER_COLOR, RealNameTailStore.cleanColorSpec(genderColor))
-                        .putString(RealNameTailSettings.KEY_REGION_COLOR, RealNameTailStore.cleanColorSpec(regionColor))
-                        .putInt(RealNameTailSettings.KEY_TAIL_WEIGHT, RealNameTailStore.cleanWeight(tailWeight.toIntOrNull() ?: RealNameTailSettings.DEFAULT_TEXT_WEIGHT))
-                        .putInt(RealNameTailSettings.KEY_BRACKET_WEIGHT, RealNameTailStore.cleanWeight(bracketWeight.toIntOrNull() ?: RealNameTailSettings.DEFAULT_TEXT_WEIGHT))
-                        .putInt(RealNameTailSettings.KEY_GENDER_WEIGHT, RealNameTailStore.cleanWeight(genderWeight.toIntOrNull() ?: RealNameTailSettings.DEFAULT_TEXT_WEIGHT))
-                        .putInt(RealNameTailSettings.KEY_REGION_WEIGHT, RealNameTailStore.cleanWeight(regionWeight.toIntOrNull() ?: RealNameTailSettings.DEFAULT_TEXT_WEIGHT))
-                        .apply()
-                    Toast.makeText(context, "设置已保存", Toast.LENGTH_SHORT).show()
-                },
-                secondaryText = "返回",
-                onSecondaryClick = onBack
-            )
-        }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "基础") }
@@ -1574,48 +1539,44 @@ internal fun RealNameTailMiuixPage(
                         prefixEnabled = it
                         sp.edit().putBoolean(RealNameTailSettings.KEY_GLOBAL_PREFIX_ENABLE, it).apply()
                     }
-                    if (prefixEnabled) {
-                        InsetDivider()
-                        InputRow("前缀内容", "最多 8 个字符，例如 *", prefix) { prefix = it.take(8) }
-                    }
+                    InsetDivider()
+                    InputRow("前缀内容", if (prefix.length > 8) "最多 8 个字符，保留上次有效配置" else "最多 8 个字符，例如 *", prefix, onEditingFinished = { saveText(RealNameTailSettings.KEY_GLOBAL_PREFIX, it, 8, true) }) { prefix = it; saveText(RealNameTailSettings.KEY_GLOBAL_PREFIX, it, 8) }
+
                     InsetDivider()
                     SwitchRow(showGender, "显示性别", "在实名尾字后追加联系人性别") {
                         showGender = it
                         sp.edit().putBoolean(RealNameTailSettings.KEY_SHOW_GENDER, it).apply()
                     }
-                    if (showGender) {
-                        InsetDivider()
-                        InputRow("男性文案", "最多 12 个字符，默认 男", maleText) { maleText = it.take(12) }
-                        InsetDivider()
-                        InputRow("女性文案", "最多 12 个字符，默认 女", femaleText) { femaleText = it.take(12) }
-                        InsetDivider()
-                        InputRow("未知文案", "最多 12 个字符，留空则不显示", unknownGenderText) { unknownGenderText = it.take(12) }
-                    }
+                    InsetDivider()
+                    InputRow("男性文案", if (maleText.length > 12) "最多 12 个字符，保留上次有效配置" else "最多 12 个字符，默认 男", maleText, onEditingFinished = { saveText(RealNameTailSettings.KEY_GENDER_MALE_TEXT, it, 12, true) }) { maleText = it; saveText(RealNameTailSettings.KEY_GENDER_MALE_TEXT, it, 12) }
+                    InsetDivider()
+                    InputRow("女性文案", if (femaleText.length > 12) "最多 12 个字符，保留上次有效配置" else "最多 12 个字符，默认 女", femaleText, onEditingFinished = { saveText(RealNameTailSettings.KEY_GENDER_FEMALE_TEXT, it, 12, true) }) { femaleText = it; saveText(RealNameTailSettings.KEY_GENDER_FEMALE_TEXT, it, 12) }
+                    InsetDivider()
+                    InputRow("未知文案", if (unknownGenderText.length > 12) "最多 12 个字符，保留上次有效配置" else "最多 12 个字符，留空则不显示", unknownGenderText, onEditingFinished = { saveText(RealNameTailSettings.KEY_GENDER_UNKNOWN_TEXT, it, 12, true) }) { unknownGenderText = it; saveText(RealNameTailSettings.KEY_GENDER_UNKNOWN_TEXT, it, 12) }
+
                     InsetDivider()
                     SwitchRow(showRegion, "显示地区", "在实名尾字后追加联系人地区") {
                         showRegion = it
                         sp.edit().putBoolean(RealNameTailSettings.KEY_SHOW_REGION, it).apply()
                     }
                     InsetDivider()
-                    ColorPickerRow("尾字颜色", "留空跟随昵称，渐变用 #F59E0B,#22C55E", tailColor, onReset = { tailColor = RealNameTailSettings.DEFAULT_TAIL_COLOR }) { tailColor = it.take(19) }
+                    ColorPickerRow("尾字颜色", "留空跟随昵称，渐变用 #F59E0B,#22C55E", tailColor, onReset = { tailColor = RealNameTailSettings.DEFAULT_TAIL_COLOR; saveColor(RealNameTailSettings.KEY_TAIL_COLOR, tailColor, true) }, error = if (tailColor.isNotBlank() && !isCompleteColorSpec(tailColor, true)) "颜色不完整，保留上次有效配置" else null, onEditingFinished = { saveColor(RealNameTailSettings.KEY_TAIL_COLOR, it, true) }) { tailColor = it; saveColor(RealNameTailSettings.KEY_TAIL_COLOR, it) }
                     InsetDivider()
-                    WeightInputRow("尾字粗细", tailWeight) { tailWeight = it }
+                    WeightInputRow("尾字粗细", tailWeight, onEditingFinished = { saveWeight(RealNameTailSettings.KEY_TAIL_WEIGHT, it, true) }) { tailWeight = it; saveWeight(RealNameTailSettings.KEY_TAIL_WEIGHT, it) }
                     InsetDivider()
-                    ColorPickerRow("括号颜色", "留空跟随昵称，渐变用 #F59E0B,#22C55E", bracketColor, onReset = { bracketColor = RealNameTailSettings.DEFAULT_BRACKET_COLOR }) { bracketColor = it.take(19) }
+                    ColorPickerRow("括号颜色", "留空跟随昵称，渐变用 #F59E0B,#22C55E", bracketColor, onReset = { bracketColor = RealNameTailSettings.DEFAULT_BRACKET_COLOR; saveColor(RealNameTailSettings.KEY_BRACKET_COLOR, bracketColor, true) }, error = if (bracketColor.isNotBlank() && !isCompleteColorSpec(bracketColor, true)) "颜色不完整，保留上次有效配置" else null, onEditingFinished = { saveColor(RealNameTailSettings.KEY_BRACKET_COLOR, it, true) }) { bracketColor = it; saveColor(RealNameTailSettings.KEY_BRACKET_COLOR, it) }
                     InsetDivider()
-                    WeightInputRow("括号粗细", bracketWeight) { bracketWeight = it }
-                    if (showGender) {
-                        InsetDivider()
-                        ColorPickerRow("性别颜色", "留空跟随昵称，支持渐变", genderColor, onReset = { genderColor = RealNameTailSettings.DEFAULT_GENDER_COLOR }) { genderColor = it.take(19) }
-                        InsetDivider()
-                        WeightInputRow("性别粗细", genderWeight) { genderWeight = it }
-                    }
-                    if (showRegion) {
-                        InsetDivider()
-                        ColorPickerRow("地区颜色", "留空跟随昵称，支持渐变", regionColor, onReset = { regionColor = RealNameTailSettings.DEFAULT_REGION_COLOR }) { regionColor = it.take(19) }
-                        InsetDivider()
-                        WeightInputRow("地区粗细", regionWeight) { regionWeight = it }
-                    }
+                    WeightInputRow("括号粗细", bracketWeight, onEditingFinished = { saveWeight(RealNameTailSettings.KEY_BRACKET_WEIGHT, it, true) }) { bracketWeight = it; saveWeight(RealNameTailSettings.KEY_BRACKET_WEIGHT, it) }
+                    InsetDivider()
+                    ColorPickerRow("性别颜色", "留空跟随昵称，支持渐变", genderColor, onReset = { genderColor = RealNameTailSettings.DEFAULT_GENDER_COLOR; saveColor(RealNameTailSettings.KEY_GENDER_COLOR, genderColor, true) }, error = if (genderColor.isNotBlank() && !isCompleteColorSpec(genderColor, true)) "颜色不完整，保留上次有效配置" else null, onEditingFinished = { saveColor(RealNameTailSettings.KEY_GENDER_COLOR, it, true) }) { genderColor = it; saveColor(RealNameTailSettings.KEY_GENDER_COLOR, it) }
+                    InsetDivider()
+                    WeightInputRow("性别粗细", genderWeight, onEditingFinished = { saveWeight(RealNameTailSettings.KEY_GENDER_WEIGHT, it, true) }) { genderWeight = it; saveWeight(RealNameTailSettings.KEY_GENDER_WEIGHT, it) }
+
+                    InsetDivider()
+                    ColorPickerRow("地区颜色", "留空跟随昵称，支持渐变", regionColor, onReset = { regionColor = RealNameTailSettings.DEFAULT_REGION_COLOR; saveColor(RealNameTailSettings.KEY_REGION_COLOR, regionColor, true) }, error = if (regionColor.isNotBlank() && !isCompleteColorSpec(regionColor, true)) "颜色不完整，保留上次有效配置" else null, onEditingFinished = { saveColor(RealNameTailSettings.KEY_REGION_COLOR, it, true) }) { regionColor = it; saveColor(RealNameTailSettings.KEY_REGION_COLOR, it) }
+                    InsetDivider()
+                    WeightInputRow("地区粗细", regionWeight, onEditingFinished = { saveWeight(RealNameTailSettings.KEY_REGION_WEIGHT, it, true) }) { regionWeight = it; saveWeight(RealNameTailSettings.KEY_REGION_WEIGHT, it) }
+
                 }
             }
         }

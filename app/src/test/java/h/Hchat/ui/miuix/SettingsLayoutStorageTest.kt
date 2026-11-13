@@ -11,6 +11,7 @@ import h.Hchat.hooks.items.customnotify.CustomNotificationSettings
 import h.Hchat.hooks.items.forwardlimit.RemoveForwardLimitSettings
 import h.Hchat.hooks.items.grouplabel.QuickGroupChatLabelSettings
 import h.Hchat.hooks.items.messageforward.MessageForwardSettings
+import h.Hchat.hooks.items.messageblock.MessageBlockSettings
 import h.Hchat.hooks.items.quickcontactedit.QuickContactEditSettings
 import h.Hchat.hooks.items.quickmoments.QuickMomentsSettings
 import h.Hchat.hooks.items.quickterminate.QuickTerminateSettings
@@ -51,7 +52,8 @@ class SettingsLayoutStorageTest {
             QuickMomentsSettings.PREFS_NAME, QuickTerminateSettings.PREFS_NAME,
             QuickGroupChatLabelSettings.PREFS_NAME, QuickContactEditSettings.PREFS_NAME,
             SettingsEntrySettings.PREFS_NAME, AutoReplySettings.PREFS_NAME, CustomNotificationSettings.PREFS_NAME,
-            ScheduledTaskSettings.PREFS_NAME, KeywordNotificationSettings.PREFS_NAME
+            ScheduledTaskSettings.PREFS_NAME, KeywordNotificationSettings.PREFS_NAME,
+            MessageBlockSettings.PREFS_NAME
         )
         val prefs = names.associateWith { HchatStorage.preferences(activity, it) }
         prefs.values.forEach { it.edit().clear().commit() }
@@ -67,13 +69,17 @@ class SettingsLayoutStorageTest {
                 .commit()
             AutoReplySettings(activity).saveRules(listOf(AutoReplyRule(id = "rule-1", name = "kept")))
             ScheduledTaskSettings(activity).saveTasks(listOf(ScheduledTaskSettings.newDraft(1000000L).copy(id = "task-1")))
+            val legacyTemplate = newMessageBlockTemplate(1).copy(id = "legacy-template", targets = "legacy-contact")
+            prefs.getValue(MessageBlockSettings.PREFS_NAME).edit()
+                .putString(MessageBlockSettings.KEY_TEMPLATES, MessageBlockSettings.encodeTemplates(listOf(legacyTemplate)))
+                .commit()
         }
         val before = prefs.mapValues { it.value.all.toMap() }
         assertFalse(prefs.getValue(MessageForwardSettings.PREFS_NAME).contains(MessageForwardSettings.KEY_FAVORITE_FORWARD_ENABLE))
 
         val rendered = mutableSetOf<Int>()
         try {
-            for (stage in 0..5) {
+            for (stage in 0..6) {
                 val owner = EmbeddedComposeOwner()
                 val view = ComposeView(activity)
                 owner.install(activity.window.decorView)
@@ -96,7 +102,8 @@ class SettingsLayoutStorageTest {
                             else -> AutoReplyInitialScene.MAIN
                         }, emptyList(), {})
                     4 -> CustomNotificationMiuixPage(activity, Provider("custom_notification"), {}, emptyList(), {})
-                    else -> ScheduledTaskMiuixPage(activity, Provider("scheduled_task"), {})
+                    5 -> ScheduledTaskMiuixPage(activity, Provider("scheduled_task"), {})
+                    else -> MessageBlockMiuixPage(activity, Provider("message_block"), {})
                 }
                 SideEffect { rendered.add(stage) }
                     }
@@ -110,7 +117,7 @@ class SettingsLayoutStorageTest {
                     owner.destroy()
                 }
             }
-            assertEquals((0..5).toSet(), rendered)
+            assertEquals((0..6).toSet(), rendered)
             assertEquals(before, prefs.mapValues { it.value.all.toMap() })
         } finally {
             activity.finish()

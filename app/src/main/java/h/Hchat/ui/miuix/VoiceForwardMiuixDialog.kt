@@ -98,7 +98,6 @@ import top.yukonga.miuix.kmp.basic.Checkbox
 import top.yukonga.miuix.kmp.basic.NumberPicker
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
-import top.yukonga.miuix.kmp.window.WindowDialog
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.theme.darkColorScheme
 import top.yukonga.miuix.kmp.theme.lightColorScheme
@@ -309,7 +308,7 @@ object VoiceForwardMiuixDialog {
         message: String = "正在载入好友和群聊..."
     ): DialogHandle {
         return show(activity, onDismiss) { close ->
-            WindowDialog(
+            SettingsWindowDialog(
                 show = true,
                 title = title,
                 onDismissRequest = close,
@@ -344,10 +343,11 @@ object VoiceForwardMiuixDialog {
         initialSelectedIds: Set<String> = emptySet(),
         allowEmpty: Boolean = false,
         singleSelection: Boolean = false,
-        showClearSelectionAction: Boolean = false
+        showClearSelectionAction: Boolean = false,
+        onSelectionChange: ((List<ContactItem>) -> Unit)? = null
     ): DialogHandle {
         return show(activity, onDismiss) { close ->
-            WindowDialog(
+            SettingsWindowDialog(
                 show = true,
                 title = title,
                 onDismissRequest = close,
@@ -473,6 +473,7 @@ object VoiceForwardMiuixDialog {
                                             } else {
                                                 selectedIds + contact.id
                                             }
+                                            onSelectionChange?.invoke(contacts.filter { selectedIds.contains(it.id) })
                                         }
                                     }
                                 }
@@ -482,7 +483,7 @@ object VoiceForwardMiuixDialog {
                             modifier = Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 10.dp),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            DialogActionButton(
+                            if (onSelectionChange == null) DialogActionButton(
                                 text = "取消",
                                 onClick = close,
                                 modifier = Modifier.weight(1f)
@@ -504,13 +505,15 @@ object VoiceForwardMiuixDialog {
                                         } else {
                                             selectedIds + visibleIds
                                         }
+                                        onSelectionChange?.invoke(contacts.filter { selectedIds.contains(it.id) })
                                     },
                                     modifier = Modifier.weight(1f)
                                 )
                             }
                             DialogActionButton(
-                                text = if (selectedIds.isEmpty()) confirmText else "$confirmText(${selectedIds.size})",
+                                text = if (onSelectionChange != null) "完成" else if (selectedIds.isEmpty()) confirmText else "$confirmText(${selectedIds.size})",
                                 onClick = sendClick@{
+                                    if (onSelectionChange != null) { close(); return@sendClick }
                                     if (selectedIds.isEmpty() && !allowEmpty) return@sendClick
                                     val selected = contacts.filter { selectedIds.contains(it.id) }
                                     onConfirmRequest?.invoke()
@@ -736,7 +739,8 @@ object VoiceForwardMiuixDialog {
         allowEmpty: Boolean = false,
         onConfirm: (String) -> Unit,
         onDismiss: () -> Unit,
-        position: DialogPosition = DialogPosition.BOTTOM
+        position: DialogPosition = DialogPosition.BOTTOM,
+        onValidChange: ((String) -> Unit)? = null
     ): DialogHandle {
         return show(activity, onDismiss) { close ->
             PositionedWindowDialog(
@@ -790,8 +794,10 @@ object VoiceForwardMiuixDialog {
                                     val text = next.text.take(safeMaxLength)
                                     val start = next.selection.start.coerceAtMost(text.length)
                                     val end = next.selection.end.coerceAtMost(text.length)
+                                    val changed = text != value.text
                                     value = TextFieldValue(text, TextRange(start, end))
                                     error = ""
+                                    if (changed && (allowEmpty || text.isNotBlank())) onValidChange?.invoke(text.trim())
                                 },
                                 singleLine = singleLine,
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
@@ -816,13 +822,13 @@ object VoiceForwardMiuixDialog {
                             modifier = Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 6.dp),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            DialogActionButton(
+                            if (onValidChange == null) DialogActionButton(
                                 text = "取消",
                                 onClick = close,
                                 modifier = Modifier.weight(1f)
                             )
                             DialogActionButton(
-                                text = "确定",
+                                text = if (onValidChange == null) "确定" else "完成",
                                 onClick = confirm@ {
                                     val text = value.text.trim()
                                     if (text.isEmpty() && !allowEmpty) {
@@ -852,7 +858,7 @@ object VoiceForwardMiuixDialog {
         onDismiss: () -> Unit
     ): DialogHandle {
         return show(activity, onDismiss) { close ->
-            WindowDialog(
+            SettingsWindowDialog(
                 show = true,
                 title = title,
                 onDismissRequest = close,
@@ -966,7 +972,7 @@ object VoiceForwardMiuixDialog {
         onDismiss: () -> Unit
     ): DialogHandle {
         return show(activity, onDismiss) { close ->
-            WindowDialog(
+            SettingsWindowDialog(
                 show = true,
                 title = title,
                 onDismissRequest = close,
@@ -1125,7 +1131,7 @@ object VoiceForwardMiuixDialog {
         onDismiss: () -> Unit
     ): DialogHandle {
         return show(activity, onDismiss) { close ->
-            WindowDialog(
+            SettingsWindowDialog(
                 show = true,
                 title = "转发语音",
                 onDismissRequest = close,
@@ -1166,7 +1172,7 @@ object VoiceForwardMiuixDialog {
         onDismiss: () -> Unit
     ): DialogHandle {
         return show(activity, onDismiss) { close ->
-            WindowDialog(
+            SettingsWindowDialog(
                 show = true,
                 title = "发送收藏语音",
                 onDismissRequest = close,
@@ -1837,7 +1843,7 @@ object VoiceForwardMiuixDialog {
         content: @Composable () -> Unit
     ) {
         if (position != DialogPosition.TOP) {
-            WindowDialog(
+            SettingsWindowDialog(
                 show = show,
                 title = title,
                 onDismissRequest = onDismissRequest,
@@ -1970,6 +1976,7 @@ object VoiceForwardMiuixDialog {
             )
         )
         decor.addView(root)
+        attachEmbeddedBackInput(root, owner.navigationEventDispatcher)
         root.requestFocus()
         return object : DialogHandle {
             override fun close() = closeDialog()

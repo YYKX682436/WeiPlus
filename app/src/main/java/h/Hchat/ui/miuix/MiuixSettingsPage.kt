@@ -10,10 +10,12 @@ import android.content.SharedPreferences
 import android.graphics.Color as AndroidColor
 import android.media.RingtoneManager
 import android.os.Bundle
+import android.os.Build
 import android.os.Parcelable
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowInsets
 import android.widget.FrameLayout
 import android.widget.Toast
 import h.Hchat.BuildConfig
@@ -28,11 +30,13 @@ import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
@@ -46,14 +50,21 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.addPathNodes
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigationevent.compose.LocalNavigationEventDispatcherOwner
+import androidx.navigationevent.DirectNavigationEventInput
+import androidx.navigationevent.NavigationEventInfo
+import androidx.navigationevent.NavigationEventTransitionState
+import androidx.navigationevent.compose.NavigationBackHandler
+import androidx.navigationevent.compose.rememberNavigationEventState
 import h.Hchat.hooks.api.core.WeChatApis
 import h.Hchat.hooks.items.antirecall.AntiRecallSettings
 import h.Hchat.hooks.items.autoreply.AutoReplySettings
@@ -520,17 +531,34 @@ private class SettingsBackHandlerRegistry {
 }
 
 private val LocalSettingsBackHandlerRegistry = staticCompositionLocalOf<SettingsBackHandlerRegistry?> { null }
+internal val LocalSettingsBackRegistrationEnabled = staticCompositionLocalOf { true }
+
+@Composable
+internal fun rememberSettingsBackDispatch(): () -> Boolean {
+    val registry = LocalSettingsBackHandlerRegistry.current
+    return remember(registry) { { registry?.handle() == true } }
+}
 
 @Composable
 internal fun RegisterSettingsBackHandler(onBack: (() -> Unit)?) {
     val registry = LocalSettingsBackHandlerRegistry.current
+    val registrationEnabled = LocalSettingsBackRegistrationEnabled.current
     val currentOnBack by rememberUpdatedState(onBack)
     val token = remember { Any() }
-    DisposableEffect(registry, token, onBack != null) {
-        if (registry != null && onBack != null) {
+    DisposableEffect(registry, token, onBack != null, registrationEnabled) {
+        if (registry != null && onBack != null && registrationEnabled) {
             registry.register(token) { currentOnBack?.invoke() }
         }
         onDispose { registry?.unregister(token) }
+    }
+}
+
+@Composable
+private fun EmbeddedImeBackGate(owner: EmbeddedComposeOwner, onImeVisibilityChanged: (Boolean) -> Unit) {
+    val imeVisible = androidx.compose.foundation.layout.WindowInsets.ime.getBottom(LocalDensity.current) > 0
+    SideEffect {
+        onImeVisibilityChanged(imeVisible)
+        owner.navigationEventDispatcher.isEnabled = !imeVisible
     }
 }
 
@@ -572,8 +600,9 @@ object MiuixSettingsPage {
 
         val hostTag = SettingsPageHostTag()
         val owner = EmbeddedComposeOwner()
+        val directBackInput = DirectNavigationEventInput()
+        owner.navigationEventDispatcher.addInput(directBackInput)
         val detailBackStack = navBackStackOf(SettingsNavKey(initialPage))
-        fun currentDetail(): DetailPage? = (detailBackStack.lastOrNull() as? SettingsNavKey)?.page
         fun openDetail(page: DetailPage?) {
             detailBackStack.add(SettingsNavKey(page))
         }
@@ -625,8 +654,6 @@ object MiuixSettingsPage {
             if (detailBackStack.size > 1) popDetail() else closePage()
         }
         fun handleBack() {
-            if (consumingBack) return
-            consumingBack = true
             if (settingsBackHandlers.handle()) {
                 // The current nested settings route owns this back event.
             } else if (detailBackStack.size <= 1) {
@@ -634,8 +661,16 @@ object MiuixSettingsPage {
             } else {
                 popDetail()
             }
+        }
+        fun dispatchBack() {
+            if (consumingBack) return
+            consumingBack = true
+            directBackInput.backCompleted()
             page.post { consumingBack = false }
         }
+        var imeVisible = false
+        fun isImeVisible(): Boolean = imeVisible || (Build.VERSION.SDK_INT >= 30 &&
+            page.rootWindowInsets?.isVisible(WindowInsets.Type.ime()) == true)
         hostTag.close = { closePage() }
         fun installActivityBackHooks() {
             XposedRuntime.retryFailedUnhooks()
@@ -647,10 +682,10 @@ object MiuixSettingsPage {
                     val event =
                         chain.args.firstOrNull { it is KeyEvent } as? KeyEvent
                             ?: return@Hooker chain.proceed()
-                    if (event.keyCode != KeyEvent.KEYCODE_BACK || page.parent == null)
+                    if (event.keyCode != KeyEvent.KEYCODE_BACK || page.parent == null || isImeVisible())
                         return@Hooker chain.proceed()
                     if (event.action == KeyEvent.ACTION_UP) {
-                        handleBack()
+                        dispatchBack()
                     }
                     return@Hooker true
                 }
@@ -658,8 +693,8 @@ object MiuixSettingsPage {
                 XposedInterface.Hooker { chain ->
                     if (chain.thisObject !== activity) return@Hooker chain.proceed()
 
-                    if (page.parent == null) return@Hooker chain.proceed()
-                    handleBack()
+                    if (page.parent == null || isImeVisible()) return@Hooker chain.proceed()
+                    dispatchBack()
                     return@Hooker null
                 }
             try {
@@ -681,9 +716,9 @@ object MiuixSettingsPage {
 
         page = object : FrameLayout(activity) {
             override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-                if (event.keyCode == KeyEvent.KEYCODE_BACK) {
+                if (event.keyCode == KeyEvent.KEYCODE_BACK && !isImeVisible()) {
                     if (event.action == KeyEvent.ACTION_UP) {
-                        handleBack()
+                        dispatchBack()
                     }
                     return true
                 }
@@ -699,7 +734,7 @@ object MiuixSettingsPage {
                     closePage()
                 }
             })
-            setBackgroundColor(if (isDarkMode(activity)) AndroidColor.BLACK else AndroidColor.WHITE)
+            setBackgroundColor(AndroidColor.TRANSPARENT)
             isClickable = true
             isFocusable = true
             isFocusableInTouchMode = true
@@ -726,6 +761,15 @@ object MiuixSettingsPage {
                     LocalSettingsBackHandlerRegistry provides settingsBackHandlers
                 ) {
                     HchatMiuixTheme(activity) {
+                        EmbeddedImeBackGate(owner) { imeVisible = it }
+                        val rootBackState = rememberNavigationEventState(currentInfo = NavigationEventInfo.None)
+                        NavigationBackHandler(
+                            state = rootBackState,
+                            isBackEnabled = true,
+                            onBackCompleted = ::handleBack
+                        )
+                        val rootBackProgress = (rootBackState.transitionState as? NavigationEventTransitionState.InProgress)
+                            ?.latestEvent?.progress ?: 0f
                         if (!termsAccepted.value) {
                             FirstUseAgreementDialog(
                                 context = activity,
@@ -742,13 +786,23 @@ object MiuixSettingsPage {
                         }
                         NavDisplay(
                             backStack = detailBackStack,
-                            modifier = Modifier.fillMaxSize().background(MiuixTheme.colorScheme.background),
+                            modifier = Modifier.fillMaxSize().graphicsLayer {
+                                if (detailBackStack.size == 1) {
+                                    val progress = rootBackProgress.coerceIn(0f, 1f)
+                                    scaleX = 1f - 0.08f * progress
+                                    scaleY = 1f - 0.08f * progress
+                                    alpha = 1f - 0.25f * progress
+                                }
+                            }.background(MiuixTheme.colorScheme.background),
                             transition = NavTransitions.MiuixDefault,
                             onBack = {
                                 if (detailBackStack.size > 1) popDetail() else closePage()
                             }
                         ) {
                             entry<SettingsNavKey> { route ->
+                                CompositionLocalProvider(
+                                    LocalSettingsBackRegistrationEnabled provides (route == detailBackStack.lastOrNull())
+                                ) {
                                 val targetPage = route.page
                                 val providers = UIRegistry.get().getAllProviders()
                                 fun openProvider(provider: FeatureSettingsProvider, scene: AutoReplyInitialScene? = null, focusId: String? = null) {
@@ -801,6 +855,7 @@ object MiuixSettingsPage {
                                     onOpenProvider = { openProvider(it) },
                                     initialScene = targetPage.initialScene
                                 )
+                                }
                             }
                             }
                         }
@@ -826,6 +881,7 @@ object MiuixSettingsPage {
                 )
             )
             decor.addView(page)
+            attachEmbeddedBackInput(page, owner.navigationEventDispatcher)
             composeView.createComposition()
         } catch (throwable: Throwable) {
             closePage()

@@ -1,7 +1,6 @@
 package h.Hchat.ui.miuix
 
 import android.content.Context
-import android.widget.Toast
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -56,31 +55,15 @@ internal fun HomeTextColorMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar(
-                primaryText = "保存设置",
-                onPrimaryClick = {
-                    val cleanedTitle = HomeTextColorSettings.cleanColorSpec(titleColor)
-                    val cleanedSubtitle = HomeTextColorSettings.cleanColorSpec(subtitleColor)
-                    sp.edit()
-                        .putString(HomeTextColorSettings.KEY_TITLE_COLOR, cleanedTitle)
-                        .putString(HomeTextColorSettings.KEY_SUBTITLE_COLOR, cleanedSubtitle)
-                        .apply()
-                    titleColor = cleanedTitle
-                    subtitleColor = cleanedSubtitle
-                    Toast.makeText(context, "设置已保存", Toast.LENGTH_SHORT).show()
-                },
-                secondaryText = "返回",
-                onSecondaryClick = onBack
-            )
-        }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "基础") }
@@ -88,7 +71,7 @@ internal fun HomeTextColorMiuixPage(
                 SettingsCard {
                     SwitchRow(
                         checked = enabled,
-                        title = "启用首页文字颜色",
+                        title = "首页文字颜色",
                         summary = "应用到微信、通讯录、发现和我",
                         onCheckedChange = {
                             enabled = it
@@ -97,23 +80,41 @@ internal fun HomeTextColorMiuixPage(
                     )
                 }
             }
-            if (enabled) {
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "颜色") }
-                item {
-                    SettingsCard {
-                        ColorPickerRow(
-                            title = "标题颜色",
-                            summary = "会话名称、联系人名称和菜单标题",
-                            value = titleColor,
-                            onReset = { titleColor = HomeTextColorSettings.DEFAULT_TITLE_COLOR }
-                        ) { titleColor = it.take(19) }
-                        InsetDivider()
-                        ColorPickerRow(
-                            title = "副标题颜色",
-                            summary = "消息摘要、账号信息和辅助文字",
-                            value = subtitleColor,
-                            onReset = { subtitleColor = HomeTextColorSettings.DEFAULT_SUBTITLE_COLOR }
-                        ) { subtitleColor = it.take(19) }
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "颜色") }
+            item {
+                SettingsCard {
+                    ColorPickerRow(
+                        title = "标题颜色",
+                        summary = "会话名称、联系人名称和菜单标题",
+                        value = titleColor,
+                        onReset = {
+                            titleColor = HomeTextColorSettings.DEFAULT_TITLE_COLOR
+                            sp.edit().putString(HomeTextColorSettings.KEY_TITLE_COLOR, titleColor).apply()
+                        },
+                        error = if (titleColor.isNotBlank() && !isCompleteColorSpec(titleColor, true)) "颜色不完整，保留上次保存的值" else null,
+                        onEditingFinished = { if (it.isBlank()) sp.edit().putString(HomeTextColorSettings.KEY_TITLE_COLOR, "").apply() }
+                    ) {
+                        titleColor = it
+                        if (isCompleteColorSpec(it, true)) {
+                            sp.edit().putString(HomeTextColorSettings.KEY_TITLE_COLOR, HomeTextColorSettings.cleanColorSpec(it)).apply()
+                        }
+                    }
+                    InsetDivider()
+                    ColorPickerRow(
+                        title = "副标题颜色",
+                        summary = "消息摘要、账号信息和辅助文字",
+                        value = subtitleColor,
+                        onReset = {
+                            subtitleColor = HomeTextColorSettings.DEFAULT_SUBTITLE_COLOR
+                            sp.edit().putString(HomeTextColorSettings.KEY_SUBTITLE_COLOR, subtitleColor).apply()
+                        },
+                        error = if (subtitleColor.isNotBlank() && !isCompleteColorSpec(subtitleColor, true)) "颜色不完整，保留上次保存的值" else null,
+                        onEditingFinished = { if (it.isBlank()) sp.edit().putString(HomeTextColorSettings.KEY_SUBTITLE_COLOR, "").apply() }
+                    ) {
+                        subtitleColor = it
+                        if (isCompleteColorSpec(it, true)) {
+                            sp.edit().putString(HomeTextColorSettings.KEY_SUBTITLE_COLOR, HomeTextColorSettings.cleanColorSpec(it)).apply()
+                        }
                     }
                 }
             }

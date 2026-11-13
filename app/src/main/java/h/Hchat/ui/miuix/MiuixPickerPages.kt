@@ -123,39 +123,20 @@ internal fun MessageBlockContactPickerPage(
         title = pageTitle,
         largeTitle = pageTitle,
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar(
-                primaryText = "保存选择",
-                onPrimaryClick = {
+        onBack = {
+            if (currentLabel == null) onBack() else { selectedLabel = null; query = "" }
+        },
+        showBackIcon = false,
+        topBarActions = {
+            if (!bottomShowingLabelList && bottomVisibleContactIds.isNotEmpty()) {
+                TopBarTextAction(if (bottomVisibleAllSelected) "取消全选" else "全选") {
+                    selectedIds = if (bottomVisibleAllSelected) selectedIds - bottomVisibleContactIds else selectedIds + bottomVisibleContactIds
+                }
+            }
+            TopBarTextAction("下一步") {
                     val picked = availableContacts.filter { selectedIds.contains(it.contact.id) }
                     onConfirm(picked)
-                },
-                secondaryText = if (currentLabel == null) "返回" else "返回标签",
-                onSecondaryClick = {
-                    if (currentLabel == null) {
-                        onBack()
-                    } else {
-                        selectedLabel = null
-                        query = ""
-                    }
-                },
-                middleText = if (!bottomShowingLabelList && bottomVisibleContactIds.isNotEmpty()) {
-                    if (bottomVisibleAllSelected) "取消全选" else "全选"
-                } else {
-                    null
-                },
-                onMiddleClick = if (!bottomShowingLabelList && bottomVisibleContactIds.isNotEmpty()) {
-                    {
-                        selectedIds = if (bottomVisibleAllSelected) {
-                            selectedIds - bottomVisibleContactIds
-                        } else {
-                            selectedIds + bottomVisibleContactIds
-                        }
-                    }
-                } else {
-                    null
-                }
-            )
+            }
         }
     ) { padding ->
         val listRoute = if (contactFilter == MessageBlockContactFilter.LABELS && currentLabel == null) {
@@ -208,7 +189,7 @@ internal fun MessageBlockContactPickerPage(
                 state = routeListState,
                 contentPadding = PaddingValues(
                     top = padding.calculateTopPadding() + 8.dp,
-                    bottom = padding.calculateBottomPadding() + 84.dp
+                    bottom = padding.calculateBottomPadding() + 16.dp
                 )
             ) {
                 item {
@@ -305,7 +286,8 @@ internal fun ContactPickerPage(
     context: Context,
     request: ContactPickerRequest,
     onBack: () -> Unit,
-    onConfirm: (List<ContactOption>) -> Unit
+    onSelectionChange: ((Set<String>) -> Unit)? = null,
+    onConfirm: (List<ContactOption>) -> Unit = {}
 ) {
     var loading by remember(request) { mutableStateOf(true) }
     var error by remember(request) { mutableStateOf("") }
@@ -348,6 +330,7 @@ internal fun ContactPickerPage(
     fun updateSelection(next: Set<String>) {
         if (!request.flatBatchSelection) {
             selectedIds = next
+            onSelectionChange?.invoke(next)
             return
         }
         if (!canUseBatchCandidates()) return
@@ -555,15 +538,25 @@ internal fun ContactPickerPage(
         title = request.title,
         largeTitle = request.title,
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar(
-                primaryText = when {
-                    request.multiSelectConfirmPrefix != null -> "${request.multiSelectConfirmPrefix}（$selectedContactCount）"
-                    request.showSelectedCount -> "下一步 · 已选 $selectedContactCount 项"
-                    request.multiSelect -> "保存选择"
-                    else -> request.singleConfirmText
-                },
-                onPrimaryClick = confirm@{
+        onBack = onBack,
+        showBackIcon = false,
+        topBarActions = {
+            if (request.multiSelect && bottomVisibleIds.isNotEmpty()) {
+                TopBarTextAction(if (bottomVisibleAllSelected) "取消全选" else "全选") {
+                    val next = if (request.flatBatchSelection) {
+                        BatchSelectionState.toggleVisible(batchSelectionOrderForUi, bottomVisibleIds).toSet()
+                    } else if (bottomVisibleAllSelected) {
+                        selectedIdsForUi - bottomVisibleIds
+                    } else {
+                        selectedIdsForUi + bottomVisibleIds
+                    }
+                    updateSelection(next)
+                }
+            }
+            if (onSelectionChange == null) {
+                val action = request.multiSelectConfirmPrefix
+                    ?: if (request.showSelectedCount) "下一步" else if (request.multiSelect) "完成" else request.singleConfirmText
+                TopBarTextAction(action, enabled = batchConfirmEnabled, onClick = confirm@{
                     val picked = if (request.flatBatchSelection) {
                         if (!canUseBatchCandidates()) return@confirm
                         batchSelectionOrder.mapNotNull(selectableBatchContacts::get)
@@ -577,30 +570,8 @@ internal fun ContactPickerPage(
                     } else {
                         onConfirm(picked)
                     }
-                },
-                secondaryText = "返回",
-                onSecondaryClick = onBack,
-                middleText = if (request.multiSelect && bottomVisibleIds.isNotEmpty()) {
-                    if (bottomVisibleAllSelected) "取消全选" else "全选"
-                } else {
-                    null
-                },
-                onMiddleClick = if (request.multiSelect && bottomVisibleIds.isNotEmpty()) {
-                    {
-                        val next = if (request.flatBatchSelection) {
-                            BatchSelectionState.toggleVisible(batchSelectionOrderForUi, bottomVisibleIds).toSet()
-                        } else if (bottomVisibleAllSelected) {
-                            selectedIdsForUi - bottomVisibleIds
-                        } else {
-                            selectedIdsForUi + bottomVisibleIds
-                        }
-                        updateSelection(next)
-                    }
-                } else {
-                    null
-                },
-                primaryEnabled = batchConfirmEnabled
-            )
+                })
+            }
         }
     ) { padding ->
         LazyColumn(
@@ -608,7 +579,7 @@ internal fun ContactPickerPage(
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             var hasControlCard = false
@@ -700,11 +671,12 @@ internal fun ContactPickerPage(
                                 label = label,
                                 selectedCount = selectedCount,
                                 onClick = {
-                                    selectedIds = if (selectedCount == label.groupIds.size) {
+                                    val next = if (selectedCount == label.groupIds.size) {
                                         selectedIds - label.groupIds
                                     } else {
                                         selectedIds + label.groupIds
                                     }
+                                    updateSelection(next)
                                 }
                             )
                             if (index < selectableGroupLabels.lastIndex) InsetDivider()
@@ -965,35 +937,22 @@ internal fun FavoritePickerPage(
     )
     val visibleIds = visible.map { it.localId.toString() }.toSet()
     val visibleAllSelected = visibleIds.isNotEmpty() && visibleIds.all { selectedIds.contains(it) }
+    fun updateFavoriteSelection(next: Set<String>) {
+        selectedIds = next
+        request.onValue(formatFavoriteIds(next, request.delimiter, request.multiSelect))
+    }
     PageScaffold(
         title = request.title,
         largeTitle = request.title,
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar(
-                primaryText = "保存选择",
-                onPrimaryClick = {
-                    if (!request.multiSelect && selectedIds.isEmpty()) {
-                        Toast.makeText(context, "请选择收藏", Toast.LENGTH_SHORT).show()
-                    } else {
-                        request.onValue(formatFavoriteIds(selectedIds, request.delimiter, request.multiSelect))
-                        onBack()
-                    }
-                },
-                secondaryText = "返回",
-                onSecondaryClick = onBack,
-                middleText = if (request.multiSelect && visibleIds.isNotEmpty()) {
-                    if (visibleAllSelected) "取消全选" else "全选"
-                } else {
-                    null
-                },
-                onMiddleClick = if (request.multiSelect && visibleIds.isNotEmpty()) {
-                    {
-                        selectedIds = FavoritePickerSelectionPolicy.toggleVisible(selectedIds, visibleIds)
-                    }
-                } else null,
-                primaryEnabled = true
-            )
+        onBack = onBack,
+        showBackIcon = false,
+        topBarActions = {
+            if (request.multiSelect && visibleIds.isNotEmpty()) {
+                TopBarTextAction(if (visibleAllSelected) "取消全选" else "全选") {
+                    updateFavoriteSelection(FavoritePickerSelectionPolicy.toggleVisible(selectedIds, visibleIds))
+                }
+            }
         }
     ) { padding ->
         LazyColumn(
@@ -1001,7 +960,7 @@ internal fun FavoritePickerPage(
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item {
@@ -1037,11 +996,12 @@ internal fun FavoritePickerPage(
                             multiSelect = request.multiSelect,
                             onPreview = { path -> preview = FavoriteMediaPreview(favorite, path) },
                             onClick = {
-                                selectedIds = if (request.multiSelect) {
+                                val next = if (request.multiSelect) {
                                     if (selectedIds.contains(id)) selectedIds - id else selectedIds + id
                                 } else {
                                     setOf(id)
                                 }
+                                updateFavoriteSelection(next)
                             }
                         )
                     }
@@ -1062,7 +1022,8 @@ internal fun GroupMemberPickerPage(
     context: Context,
     request: GroupMemberPickerRequest,
     onBack: () -> Unit,
-    onConfirm: (List<String>) -> Unit
+    onConfirm: (List<String>) -> Unit = {},
+    onSelectionChange: ((Set<String>) -> Unit)? = null
 ) {
     var groupLoading by remember(request) { mutableStateOf(true) }
     var groupError by remember(request) { mutableStateOf("") }
@@ -1123,33 +1084,26 @@ internal fun GroupMemberPickerPage(
         title = group?.label ?: request.title,
         largeTitle = group?.label ?: request.title,
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar(
-                primaryText = if (group == null && selectedEntries.isEmpty() && !selectionEdited) "选择群聊" else "保存选择",
-                onPrimaryClick = {
+        onBack = {
+            if (selectedGroup == null) onBack() else {
+                selectedGroup = null
+                query = ""
+            }
+        },
+        showBackIcon = false,
+        topBarActions = {
+            if (selectedEntries.isNotEmpty()) TopBarTextAction("清空") {
+                selectedEntries = emptySet()
+                selectionEdited = true
+                onSelectionChange?.invoke(selectedEntries)
+            }
+            if (onSelectionChange == null) TopBarTextAction("完成") {
                     if (selectedGroup == null && selectedEntries.isEmpty() && !selectionEdited) {
                         Toast.makeText(context, "请先选择群聊", Toast.LENGTH_SHORT).show()
                     } else {
                         onConfirm(selectedEntries.toList())
                     }
-                },
-                secondaryText = if (group == null) "返回" else "重新选群",
-                onSecondaryClick = {
-                    if (selectedGroup == null) {
-                        onBack()
-                    } else {
-                        selectedGroup = null
-                        query = ""
-                    }
-                },
-                middleText = if (selectedEntries.isEmpty()) null else "清空选择",
-                onMiddleClick = if (selectedEntries.isEmpty()) null else {
-                    {
-                        selectedEntries = emptySet()
-                        selectionEdited = true
-                    }
-                }
-            )
+            }
         }
     ) { padding ->
         val listRoute = group?.let { GroupMemberPickerRoute.Members(it) } ?: GroupMemberPickerRoute.Groups
@@ -1176,7 +1130,7 @@ internal fun GroupMemberPickerPage(
                 state = routeListState,
                 contentPadding = PaddingValues(
                     top = padding.calculateTopPadding() + 8.dp,
-                    bottom = padding.calculateBottomPadding() + 84.dp
+                    bottom = padding.calculateBottomPadding() + 16.dp
                 )
             ) {
                 item {
@@ -1214,9 +1168,11 @@ internal fun GroupMemberPickerPage(
                                     } else if (selectedEntries.contains(entry)) {
                                         selectedEntries = selectedEntries - entry
                                         selectionEdited = true
+                                        onSelectionChange?.invoke(selectedEntries)
                                     } else {
                                         selectedEntries = selectedEntries + entry
                                         selectionEdited = true
+                                        onSelectionChange?.invoke(selectedEntries)
                                     }
                                 }
                             )
@@ -1241,16 +1197,15 @@ internal fun OptionPickerPage(
         title = request.title,
         largeTitle = request.title,
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar("返回", onBack)
-        }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "选项") }

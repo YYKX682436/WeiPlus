@@ -49,11 +49,12 @@ internal fun SportStepMiuixPage(context: Context, provider: FeatureSettingsProvi
         onDispose { runtime?.stopListening(observer) }
     }
     PageScaffold(title = provider.title(), largeTitle = provider.title(), scrollBehavior = scrollBehavior,
-        bottomBar = { BottomActionBar("返回", onBack) }) { padding ->
+        onBack = onBack,
+        showBackIcon = false) { padding ->
         LazyColumn(modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState, contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )) {
             item { SmallTitle(text = "手动提交") }
             item {

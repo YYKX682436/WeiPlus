@@ -31,12 +31,16 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.navigationevent.compose.rememberNavigationEventState
+import androidx.navigationevent.compose.NavigationBackHandler
+import androidx.navigationevent.NavigationEventInfo
 import androidx.compose.ui.unit.sp
 import h.Hchat.hooks.items.antirecall.AntiRecallSettings
 import h.Hchat.hooks.items.customnotify.CustomNotificationRuntime
 import h.Hchat.hooks.items.payment.core.PaymentTemplateTimeFormatter
 import h.Hchat.hooks.items.payment.core.RedPacketRuleBinding
 import h.Hchat.hooks.items.payment.core.RedPacketRuleConfig
+import h.Hchat.hooks.items.payment.core.RedPacketReplyStep
 import h.Hchat.hooks.items.payment.core.RedPacketRuleTemplate
 import h.Hchat.hooks.items.payment.core.RedPacketSettings
 import h.Hchat.preferences.HchatStorage
@@ -47,7 +51,6 @@ import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-import top.yukonga.miuix.kmp.window.WindowDialog
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.LinkedHashSet
@@ -79,8 +82,8 @@ internal fun RedPacketMiuixPage(
     var blacklist by remember { mutableStateOf(sp.getString(RedPacketSettings.KEY_BLACKLIST, "") ?: "") }
     var listMode by remember { mutableStateOf(sp.getInt(RedPacketSettings.KEY_MODE, 0)) }
     var wishText by remember { mutableStateOf(sp.getString(RedPacketSettings.KEY_WISH_TEXT, "谢谢老板") ?: "谢谢老板") }
-    var privateReplySteps by remember { mutableStateOf(loadGlobalRedPacketReplySteps(sp)) }
-    var groupReplySteps by remember { mutableStateOf(loadGlobalGroupRedPacketReplySteps(sp)) }
+    var privateReplySteps by remember { mutableStateOf(loadGlobalRedPacketReplySteps(sp, includeDisabledLegacy = true)) }
+    var groupReplySteps by remember { mutableStateOf(loadGlobalGroupRedPacketReplySteps(sp, includeDisabledLegacy = true)) }
     var notifyText by remember { mutableStateOf(sp.getString(RedPacketSettings.KEY_NOTIFY_TEXT, "抢到红包 {amount} 元") ?: "") }
     var notifyToastText by remember {
         mutableStateOf(
@@ -154,6 +157,51 @@ internal fun RedPacketMiuixPage(
             .commit()
     }
 
+    fun persistReplySteps(group: Boolean, steps: List<RedPacketReplyStep>) {
+        val editor = sp.edit()
+        if (group) {
+            editor.putString(RedPacketSettings.KEY_REPLY_GROUP_ITEMS, RedPacketRuleConfig.encodeReplySteps(steps))
+        } else {
+            val first = steps.firstOrNull()
+            val mode = first?.mode ?: RedPacketRuleConfig.REPLY_OFF
+            val content = first?.content.orEmpty()
+            val delay = first?.delayMs?.coerceAtLeast(0L) ?: 0L
+            editor.putString(RedPacketSettings.KEY_REPLY_ITEMS, RedPacketRuleConfig.encodeReplySteps(steps))
+                .putInt(RedPacketSettings.KEY_REPLY_TYPE, mode)
+                .putString(RedPacketSettings.KEY_REPLY_TEMPLATES, if (redPacketReplyUsesText(mode)) content else "")
+                .putString(RedPacketSettings.KEY_REPLY_TEXT, if (redPacketReplyUsesText(mode)) firstTemplate(content) else "")
+                .putString(RedPacketSettings.KEY_REPLY_MEDIA_PATHS, if (mode != RedPacketRuleConfig.REPLY_OFF && !redPacketReplyUsesText(mode)) content.trim() else "")
+                .putInt(RedPacketSettings.KEY_REPLY_DELAY_VALUE, (delay / 1000L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
+                .putInt(RedPacketSettings.KEY_REPLY_DELAY_UNIT, 1)
+                .putBoolean(RedPacketSettings.KEY_REPLY_CUSTOM_ENABLE, delay > 0L)
+                .putBoolean(RedPacketSettings.KEY_REPLY_RANDOM, first?.random ?: false)
+        }
+        editor.apply()
+    }
+
+    fun persistDelay() {
+        val editor = sp.edit()
+        when (grabDelayMode) {
+            RedPacketRuleConfig.DELAY_CUSTOM -> {
+                val delay = grabDelay.toIntOrNull()?.takeIf { it in 0..10000 } ?: return
+                editor.putInt(RedPacketSettings.KEY_DELAY_VALUE, delay)
+            }
+            RedPacketRuleConfig.DELAY_RANDOM -> {
+                val min = grabRandomMinDelay.toIntOrNull()?.takeIf { it in 0..600000 } ?: return
+                val max = grabRandomMaxDelay.toIntOrNull()?.takeIf { it in min..600000 } ?: return
+                editor.putInt(RedPacketSettings.KEY_DELAY_VALUE, 0)
+                    .putInt(RedPacketSettings.KEY_DELAY_RANDOM_MIN, min)
+                    .putInt(RedPacketSettings.KEY_DELAY_RANDOM_MAX, max)
+            }
+            else -> editor.putInt(RedPacketSettings.KEY_DELAY_VALUE, 0)
+        }
+        editor.putInt(RedPacketSettings.KEY_DELAY_MODE, grabDelayMode).apply()
+    }
+
+    fun persistText(key: String, value: String, finished: Boolean = false) {
+        if (value.isNotBlank() || finished) sp.edit().putString(key, value).apply()
+    }
+
     val route = when {
         templateEditor != null -> RedPacketRoute.TemplateEditor(templateEditor!!)
         bindingEditor != null -> RedPacketRoute.BindingEditor(bindingEditor!!)
@@ -169,7 +217,8 @@ internal fun RedPacketMiuixPage(
     SettingsRouteTransition(
         targetState = route,
         label = "RedPacketRouteTransition",
-        depthOf = { it.depth() }
+        depthOf = { it.depth() },
+        horizontalOnSameDepth = false
     ) { currentRoute ->
         when (currentRoute) {
             is RedPacketRoute.TemplateEditor -> {
@@ -184,13 +233,9 @@ internal fun RedPacketMiuixPage(
                         } else {
                             templates + updated
                         }
-                        val nextDefault = defaultTemplateId
-                            .takeIf { id -> next.any { it.id == id } }
-                            ?: next.firstOrNull()?.id.orEmpty()
                         templates = next
-                        defaultTemplateId = nextDefault
-                        persistRules(nextTemplates = next, nextDefaultTemplateId = nextDefault)
-                        templateEditor = null
+                        persistRules(nextTemplates = next)
+                        if (!request.canDelete) templateEditor = null
                     },
                     onDelete = {
                         if (request.index in templates.indices) {
@@ -220,19 +265,17 @@ internal fun RedPacketMiuixPage(
                     onBack = { bindingEditor = null },
                     onSave = { updated ->
                         val normalized = normalizedRedPacketBinding(updated)
-                        val base = if (request.index in bindings.indices) {
-                            bindings.toMutableList().also { it.removeAt(request.index) }
-                        } else {
-                            bindings
-                        }
-                        val next = upsertRedPacketBindings(base, listOf(normalized))
+                        val index = bindings.indexOfFirst { it.targetId == request.binding.targetId }
+                        val next = if (index >= 0) bindings.toMutableList().also { it[index] = normalized }
+                            else bindings + normalized
                         bindings = next
                         persistRules(nextBindings = next)
-                        bindingEditor = null
+                        if (!request.canDelete) bindingEditor = null
                     },
                     onDelete = {
-                        if (request.index in bindings.indices) {
-                            val next = bindings.toMutableList().also { it.removeAt(request.index) }
+                        val index = bindings.indexOfFirst { it.targetId == request.binding.targetId }
+                        if (index >= 0) {
+                            val next = bindings.toMutableList().also { it.removeAt(index) }
                             bindings = next
                             persistRules(nextBindings = next)
                         }
@@ -319,10 +362,7 @@ internal fun RedPacketMiuixPage(
                     context = context,
                     request = request,
                     onBack = { picker = null },
-                    onConfirm = { selected ->
-                        request.onValue(formatIds(selected.map { it.id }))
-                        picker = null
-                    }
+                    onSelectionChange = { selected -> request.onValue(formatIds(selected)) }
                 )
             }
             is RedPacketRoute.OptionPicker -> {
@@ -343,9 +383,13 @@ internal fun RedPacketMiuixPage(
                     initialSteps = if (group) groupReplySteps else privateReplySteps,
                     onBack = { editingReplyStepsForGroup = null },
                     onSave = { steps ->
-                        if (group) groupReplySteps = steps else privateReplySteps = steps
-                        editingReplyStepsForGroup = null
-                        Toast.makeText(context, "回复步骤已更新", Toast.LENGTH_SHORT).show()
+                        if (group) {
+                            groupReplySteps = steps
+                        } else {
+                            privateReplySteps = steps
+                            if (!sp.contains(RedPacketSettings.KEY_REPLY_GROUP_ITEMS)) groupReplySteps = steps
+                        }
+                        persistReplySteps(group, steps)
                     }
                 )
             }
@@ -353,80 +397,15 @@ internal fun RedPacketMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar(
-                primaryText = "保存设置",
-                onPrimaryClick = save@{
-                    if (!PaymentTemplateTimeFormatter.isValidPattern(timeFormat)) {
-                        Toast.makeText(context, "时间格式无效", Toast.LENGTH_SHORT).show()
-                        return@save
-                    }
-                    val normalizedTimeFormat = PaymentTemplateTimeFormatter.normalizePattern(timeFormat)
-                    val cleanPrivateReplySteps = cleanRedPacketReplySteps(privateReplySteps)
-                    val cleanGroupReplySteps = cleanRedPacketReplySteps(groupReplySteps)
-                    val firstReply = cleanPrivateReplySteps.firstOrNull()
-                    val firstReplyText = firstReply?.content.orEmpty()
-                    val firstReplyMode = firstReply?.mode ?: RedPacketRuleConfig.REPLY_OFF
-                    val firstReplyDelayMs = firstReply?.delayMs?.coerceAtLeast(0L) ?: 0L
-                    val randomMinDelay = grabRandomMinDelay.toIntOrNull()?.coerceIn(0, 600000) ?: 0
-                    val randomMaxDelay = grabRandomMaxDelay.toIntOrNull()?.coerceIn(randomMinDelay, 600000) ?: randomMinDelay
-                    sp.edit()
-                        .putString(RedPacketSettings.KEY_KEYWORDS, if (keywordMode == 0) "" else keywords)
-                        .putString(RedPacketSettings.KEY_WHITELIST, whitelist)
-                        .putString(RedPacketSettings.KEY_BLACKLIST, blacklist)
-                        .putString(RedPacketSettings.KEY_WISH_TEXT, wishText)
-                        .putInt(RedPacketSettings.KEY_REPLY_TYPE, firstReplyMode)
-                        .putString(RedPacketSettings.KEY_REPLY_TEMPLATES, if (redPacketReplyUsesText(firstReplyMode)) firstReplyText else "")
-                        .putString(RedPacketSettings.KEY_REPLY_TEXT, if (redPacketReplyUsesText(firstReplyMode)) firstTemplate(firstReplyText) else "")
-                        .putString(
-                            RedPacketSettings.KEY_REPLY_MEDIA_PATHS,
-                            if (firstReplyMode != RedPacketRuleConfig.REPLY_OFF && !redPacketReplyUsesText(firstReplyMode)) {
-                                firstReplyText.trim()
-                            } else {
-                                ""
-                            }
-                        )
-                        .putString(RedPacketSettings.KEY_REPLY_ITEMS, RedPacketRuleConfig.encodeReplySteps(cleanPrivateReplySteps))
-                        .putString(RedPacketSettings.KEY_REPLY_GROUP_ITEMS, RedPacketRuleConfig.encodeReplySteps(cleanGroupReplySteps))
-                        .putString(RedPacketSettings.KEY_NOTIFY_TEXT, notifyText)
-                        .putString(RedPacketSettings.KEY_NOTIFY_TOAST_TEXT, notifyToastText)
-                        .putString(RedPacketSettings.KEY_NOTIFY_FAILED_TEXT, failText)
-                        .putString(RedPacketSettings.KEY_NOTIFY_FAILED_TOAST_TEXT, failToastText)
-                        .putString(RedPacketSettings.KEY_ANNOUNCE_TEXT, announceText)
-                        .putString(RedPacketSettings.KEY_TIME_FORMAT, normalizedTimeFormat)
-                        .putString(RedPacketSettings.KEY_NOTIFY_SOUND_URI, notifySoundUri.trim())
-                        .putInt(RedPacketSettings.KEY_DELAY_MODE, grabDelayMode)
-                        .putInt(
-                            RedPacketSettings.KEY_DELAY_VALUE,
-                            if (grabDelayMode == RedPacketRuleConfig.DELAY_CUSTOM) {
-                                grabDelay.toIntOrNull()?.coerceIn(0, 10000) ?: 0
-                            } else {
-                                0
-                            }
-                        )
-                        .putInt(RedPacketSettings.KEY_DELAY_RANDOM_MIN, randomMinDelay)
-                        .putInt(RedPacketSettings.KEY_DELAY_RANDOM_MAX, randomMaxDelay)
-                        .putInt(RedPacketSettings.KEY_REPLY_DELAY_VALUE, (firstReplyDelayMs / 1000L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
-                        .putInt(RedPacketSettings.KEY_REPLY_DELAY_UNIT, 1)
-                        .putBoolean(RedPacketSettings.KEY_REPLY_CUSTOM_ENABLE, firstReplyDelayMs > 0L)
-                        .putBoolean(RedPacketSettings.KEY_REPLY_RANDOM, firstReply?.random ?: false)
-                        .apply()
-                    privateReplySteps = cleanPrivateReplySteps
-                    groupReplySteps = cleanGroupReplySteps
-                    timeFormat = normalizedTimeFormat
-                    Toast.makeText(context, "设置已保存", Toast.LENGTH_SHORT).show()
-                },
-                secondaryText = "返回",
-                onSecondaryClick = onBack
-            )
-        }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "核心功能") }
@@ -462,16 +441,20 @@ internal fun RedPacketMiuixPage(
                         onValueChanged = { mode ->
                             grabDelayMode = mode
                             if (mode == RedPacketRuleConfig.DELAY_FIXED) grabDelay = "0"
+                            persistDelay()
                         }
                     )
                     if (grabDelayMode == RedPacketRuleConfig.DELAY_CUSTOM) {
                         InsetDivider()
-                        NumberInputRow("自定义延迟", "单位 ms，保存后生效", grabDelay) { grabDelay = it }
+                        NumberInputRow("自定义延迟", if (grabDelay.toIntOrNull()?.let { it in 0..10000 } != true) "请输入 0–10000，保留上次有效配置" else "单位 ms", grabDelay) { grabDelay = it; persistDelay() }
                     } else if (grabDelayMode == RedPacketRuleConfig.DELAY_RANDOM) {
                         InsetDivider()
-                        NumberInputRow("最小延迟", "单位 ms，保存后生效", grabRandomMinDelay) { grabRandomMinDelay = it }
+                        NumberInputRow("最小延迟", "单位 ms，不能大于最大延迟", grabRandomMinDelay) { grabRandomMinDelay = it; persistDelay() }
                         InsetDivider()
-                        NumberInputRow("最大延迟", "单位 ms，不能小于最小延迟", grabRandomMaxDelay) { grabRandomMaxDelay = it }
+                        NumberInputRow("最大延迟", "单位 ms，不能小于最小延迟", grabRandomMaxDelay) { grabRandomMaxDelay = it; persistDelay() }
+                        if (grabRandomMinDelay.toIntOrNull()?.let { min -> min in 0..600000 && grabRandomMaxDelay.toIntOrNull()?.let { it in min..600000 } == true } != true) {
+                            InsetDivider(); InfoRow("延迟范围", "请输入有效范围，保留上次有效配置")
+                        }
                     }
                 }
             }
@@ -545,14 +528,12 @@ internal fun RedPacketMiuixPage(
                         title = "关键词过滤",
                         options = optionItems("无限制" to 0, "只抢含关键词的" to 1, "屏蔽含关键词的" to 2),
                         defaultValue = 0,
-                        onValueChanged = {
-                            keywordMode = it
-                            if (it == 0) keywords = ""
-                        }
+                        onValueChanged = { keywordMode = it }
                     )
                     if (keywordMode != 0) {
                         InsetDivider()
-                        InputRow("关键词列表", "多个关键词用 | 分隔", keywords) { keywords = it }
+                        InputRow("关键词列表", "多个关键词用 | 分隔", keywords,
+                            onEditingFinished = { persistText(RedPacketSettings.KEY_KEYWORDS, it, true) }) { keywords = it; persistText(RedPacketSettings.KEY_KEYWORDS, it) }
                     }
                     if (listMode == 1) {
                         InsetDivider()
@@ -562,7 +543,7 @@ internal fun RedPacketMiuixPage(
                                 mode = ContactPickerMode.BOTH,
                                 multiSelect = true,
                                 existingValue = whitelist,
-                                onValue = { whitelist = it },
+                                onValue = { whitelist = it; sp.edit().putString(RedPacketSettings.KEY_WHITELIST, it).apply() },
                                 enableLabels = true
                             )
                         }
@@ -574,7 +555,7 @@ internal fun RedPacketMiuixPage(
                                 mode = ContactPickerMode.BOTH,
                                 multiSelect = true,
                                 existingValue = blacklist,
-                                onValue = { blacklist = it },
+                                onValue = { blacklist = it; sp.edit().putString(RedPacketSettings.KEY_BLACKLIST, it).apply() },
                                 enableLabels = true
                             )
                         }
@@ -586,9 +567,10 @@ internal fun RedPacketMiuixPage(
                 SettingsCard {
                     InputRow(
                         "时间变量格式",
-                        "用于 {time}，例如 yyyy-MM-dd HH:mm:ss",
-                        timeFormat
-                    ) { timeFormat = it }
+                        if (timeFormat.isNotBlank() && !PaymentTemplateTimeFormatter.isValidPattern(timeFormat)) "时间格式无效，保留上次有效配置" else "用于 {time}，例如 yyyy-MM-dd HH:mm:ss",
+                        timeFormat,
+                        onEditingFinished = { if (it.isBlank()) sp.edit().putString(RedPacketSettings.KEY_TIME_FORMAT, PaymentTemplateTimeFormatter.normalizePattern(it)).apply() }
+                    ) { timeFormat = it; if (it.isNotBlank() && PaymentTemplateTimeFormatter.isValidPattern(it)) sp.edit().putString(RedPacketSettings.KEY_TIME_FORMAT, PaymentTemplateTimeFormatter.normalizePattern(it)).apply() }
                 }
             }
             item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "自动祝福") }
@@ -598,12 +580,11 @@ internal fun RedPacketMiuixPage(
                         wishEnabled = it
                         sp.edit().putBoolean(RedPacketSettings.KEY_WISH_ENABLE, it).apply()
                     }
-                    if (wishEnabled) {
-                        InsetDivider()
-                        InputRow("祝福语内容", "抢到红包后发送的文字", wishText) { wishText = it }
-                        InsetDivider()
-                        SwitchRow(sp, RedPacketSettings.KEY_WISH_RANDOM, "随机祝福语", "从模板中随机选择", false)
-                    }
+                    InsetDivider()
+                    InputRow("祝福语内容", "抢到红包后发送的文字", wishText, onEditingFinished = { persistText(RedPacketSettings.KEY_WISH_TEXT, it, true) }) { wishText = it; persistText(RedPacketSettings.KEY_WISH_TEXT, it) }
+                    InsetDivider()
+                    SwitchRow(sp, RedPacketSettings.KEY_WISH_RANDOM, "随机祝福语", "从模板中随机选择", false)
+
                 }
             }
             item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "自动回复") }
@@ -613,20 +594,19 @@ internal fun RedPacketMiuixPage(
                         replyEnabled = it
                         sp.edit().putBoolean(RedPacketSettings.KEY_REPLY_ENABLE, it).apply()
                     }
-                    if (replyEnabled) {
-                        InsetDivider()
-                        SelectRow(
-                            title = "私聊红包回复",
-                            summary = describeRedPacketReplySteps(privateReplySteps),
-                            onClick = { editingReplyStepsForGroup = false }
-                        )
-                        InsetDivider()
-                        SelectRow(
-                            title = "群红包回复",
-                            summary = describeRedPacketReplySteps(groupReplySteps),
-                            onClick = { editingReplyStepsForGroup = true }
-                        )
-                    }
+                    InsetDivider()
+                    SelectRow(
+                        title = "私聊红包回复",
+                        summary = describeRedPacketReplySteps(privateReplySteps),
+                        onClick = { editingReplyStepsForGroup = false }
+                    )
+                    InsetDivider()
+                    SelectRow(
+                        title = "群红包回复",
+                        summary = describeRedPacketReplySteps(groupReplySteps),
+                        onClick = { editingReplyStepsForGroup = true }
+                    )
+
                 }
             }
             item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "通知提醒") }
@@ -636,84 +616,83 @@ internal fun RedPacketMiuixPage(
                         notifySystemEnabled = it
                         sp.edit().putBoolean(RedPacketSettings.KEY_NOTIFY_SYSTEM_ENABLE, it).apply()
                     }
-                    if (notifySystemEnabled) {
-                        InsetDivider()
-                        VariableInputRow(
-                            title = "通知栏文案",
-                            summary = "支持下方变量",
-                            value = notifyText,
-                            variables = redPacketTemplateVariables,
-                            onValueChange = { notifyText = it }
-                        )
-                    }
+                    InsetDivider()
+                    VariableInputRow(
+                        title = "通知栏文案",
+                        summary = "支持下方变量",
+                        value = notifyText,
+                        variables = redPacketTemplateVariables,
+                        onEditingFinished = { persistText(RedPacketSettings.KEY_NOTIFY_TEXT, it, true) },
+                        onValueChange = { notifyText = it; persistText(RedPacketSettings.KEY_NOTIFY_TEXT, it) }
+                    )
+
                     InsetDivider()
                     SwitchRow(notifyToastEnabled, "浮窗提醒", "抢到红包时短暂提示") {
                         notifyToastEnabled = it
                         sp.edit().putBoolean(RedPacketSettings.KEY_NOTIFY_TOAST_ENABLE, it).apply()
                     }
-                    if (notifyToastEnabled) {
-                        InsetDivider()
-                        VariableInputRow(
-                            title = "浮窗文案",
-                            summary = "支持下方变量",
-                            value = notifyToastText,
-                            variables = redPacketTemplateVariables,
-                            onValueChange = { notifyToastText = it }
-                        )
-                    }
+                    InsetDivider()
+                    VariableInputRow(
+                        title = "浮窗文案",
+                        summary = "支持下方变量",
+                        value = notifyToastText,
+                        variables = redPacketTemplateVariables,
+                        onEditingFinished = { persistText(RedPacketSettings.KEY_NOTIFY_TOAST_TEXT, it, true) },
+                        onValueChange = { notifyToastText = it; persistText(RedPacketSettings.KEY_NOTIFY_TOAST_TEXT, it) }
+                    )
+
                     InsetDivider()
                     SwitchRow(notifySoundEnabled, "通知铃声", "开启后播放通知铃声") {
                         notifySoundEnabled = it
                         sp.edit().putBoolean(RedPacketSettings.KEY_NOTIFY_SOUND_ENABLE, it).apply()
                     }
-                    if (notifySoundEnabled) {
-                        InsetDivider()
-                        OptionRow(
-                            sp = sp,
-                            key = RedPacketSettings.KEY_NOTIFY_SOUND_MODE,
-                            title = "铃声模式",
-                            options = optionItems(
-                                "选择系统铃声" to RedPacketSettings.NOTIFY_SOUND_MODE_SYSTEM,
-                                "从文件选择铃声" to RedPacketSettings.NOTIFY_SOUND_MODE_CUSTOM
-                            ),
-                            defaultValue = RedPacketSettings.NOTIFY_SOUND_MODE_SYSTEM,
-                            onValueChanged = { mode ->
-                                notifySoundMode = mode
-                                notifySoundUri = ""
-                                sp.edit()
-                                    .putInt(RedPacketSettings.KEY_NOTIFY_SOUND_MODE, mode)
-                                    .putString(RedPacketSettings.KEY_NOTIFY_SOUND_URI, "")
-                                    .apply()
-                                optionPicker = null
-                                val activity = context as? Activity
-                                if (activity == null) {
-                                    Toast.makeText(context, "当前页面无法打开铃声选择器", Toast.LENGTH_SHORT).show()
-                                } else {
-                                    val onPicked: (String) -> Unit = { uri ->
-                                        if (uri.isNotBlank()) {
-                                            val storedUri = if (mode == RedPacketSettings.NOTIFY_SOUND_MODE_CUSTOM) {
-                                                CustomNotificationRuntime.freezeRingtoneUri(context, uri)
-                                            } else {
-                                                uri
-                                            }
-                                            notifySoundUri = storedUri
-                                            sp.edit()
-                                                .putInt(RedPacketSettings.KEY_NOTIFY_SOUND_MODE, mode)
-                                                .putString(RedPacketSettings.KEY_NOTIFY_SOUND_URI, storedUri)
-                                                .apply()
+                    InsetDivider()
+                    OptionRow(
+                        sp = sp,
+                        key = RedPacketSettings.KEY_NOTIFY_SOUND_MODE,
+                        title = "铃声模式",
+                        options = optionItems(
+                            "选择系统铃声" to RedPacketSettings.NOTIFY_SOUND_MODE_SYSTEM,
+                            "从文件选择铃声" to RedPacketSettings.NOTIFY_SOUND_MODE_CUSTOM
+                        ),
+                        defaultValue = RedPacketSettings.NOTIFY_SOUND_MODE_SYSTEM,
+                        onValueChanged = { mode ->
+                            notifySoundMode = mode
+                            notifySoundUri = ""
+                            sp.edit()
+                                .putInt(RedPacketSettings.KEY_NOTIFY_SOUND_MODE, mode)
+                                .putString(RedPacketSettings.KEY_NOTIFY_SOUND_URI, "")
+                                .apply()
+                            optionPicker = null
+                            val activity = context as? Activity
+                            if (activity == null) {
+                                Toast.makeText(context, "当前页面无法打开铃声选择器", Toast.LENGTH_SHORT).show()
+                            } else {
+                                val onPicked: (String) -> Unit = { uri ->
+                                    if (uri.isNotBlank()) {
+                                        val storedUri = if (mode == RedPacketSettings.NOTIFY_SOUND_MODE_CUSTOM) {
+                                            CustomNotificationRuntime.freezeRingtoneUri(context, uri)
+                                        } else {
+                                            uri
                                         }
-                                    }
-                                    if (mode == RedPacketSettings.NOTIFY_SOUND_MODE_CUSTOM) {
-                                        RingtonePickerBridge.launchFile(activity, onPicked)
-                                    } else {
-                                        RingtonePickerBridge.launchSystem(activity, notifySoundUri, onPicked)
+                                        notifySoundUri = storedUri
+                                        sp.edit()
+                                            .putInt(RedPacketSettings.KEY_NOTIFY_SOUND_MODE, mode)
+                                            .putString(RedPacketSettings.KEY_NOTIFY_SOUND_URI, storedUri)
+                                            .apply()
                                     }
                                 }
+                                if (mode == RedPacketSettings.NOTIFY_SOUND_MODE_CUSTOM) {
+                                    RingtonePickerBridge.launchFile(activity, onPicked)
+                                } else {
+                                    RingtonePickerBridge.launchSystem(activity, notifySoundUri, onPicked)
+                                }
                             }
-                        )
-                        InsetDivider()
-                        InfoRow("当前铃声", ringtoneDisplayName(context, notifySoundUri, notifySoundMode))
-                    }
+                        }
+                    )
+                    InsetDivider()
+                    InfoRow("当前铃声", ringtoneDisplayName(context, notifySoundUri, notifySoundMode))
+
                     InsetDivider()
                     SwitchRow(sp, RedPacketSettings.KEY_NOTIFY_VIBRATE_ENABLE, "通知震动", "开启后触发通知震动", false)
                     InsetDivider()
@@ -721,46 +700,46 @@ internal fun RedPacketMiuixPage(
                         announceEnabled = it
                         sp.edit().putBoolean(RedPacketSettings.KEY_ANNOUNCE_ENABLE, it).apply()
                     }
-                    if (announceEnabled) {
-                        InsetDivider()
-                        VariableInputRow(
-                            title = "播报文案",
-                            summary = "支持下方变量",
-                            value = announceText,
-                            variables = redPacketTemplateVariables,
-                            onValueChange = { announceText = it }
-                        )
-                    }
+                    InsetDivider()
+                    VariableInputRow(
+                        title = "播报文案",
+                        summary = "支持下方变量",
+                        value = announceText,
+                        variables = redPacketTemplateVariables,
+                        onEditingFinished = { persistText(RedPacketSettings.KEY_ANNOUNCE_TEXT, it, true) },
+                        onValueChange = { announceText = it; persistText(RedPacketSettings.KEY_ANNOUNCE_TEXT, it) }
+                    )
+
                     InsetDivider()
                     SwitchRow(notifyFailedSystemEnabled, "未抢到提醒", "未抢到红包时通知") {
                         notifyFailedSystemEnabled = it
                         sp.edit().putBoolean(RedPacketSettings.KEY_NOTIFY_FAILED_SYSTEM_ENABLE, it).apply()
                     }
-                    if (notifyFailedSystemEnabled) {
-                        InsetDivider()
-                        VariableInputRow(
-                            title = "未抢到通知栏文案",
-                            summary = "支持下方变量",
-                            value = failText,
-                            variables = redPacketTemplateVariables,
-                            onValueChange = { failText = it }
-                        )
-                    }
+                    InsetDivider()
+                    VariableInputRow(
+                        title = "未抢到通知栏文案",
+                        summary = "支持下方变量",
+                        value = failText,
+                        variables = redPacketTemplateVariables,
+                        onEditingFinished = { persistText(RedPacketSettings.KEY_NOTIFY_FAILED_TEXT, it, true) },
+                        onValueChange = { failText = it; persistText(RedPacketSettings.KEY_NOTIFY_FAILED_TEXT, it) }
+                    )
+
                     InsetDivider()
                     SwitchRow(notifyFailedToastEnabled, "未抢到浮窗", "未抢到红包时短暂提示") {
                         notifyFailedToastEnabled = it
                         sp.edit().putBoolean(RedPacketSettings.KEY_NOTIFY_FAILED_TOAST_ENABLE, it).apply()
                     }
-                    if (notifyFailedToastEnabled) {
-                        InsetDivider()
-                        VariableInputRow(
-                            title = "未抢到浮窗文案",
-                            summary = "支持下方变量",
-                            value = failToastText,
-                            variables = redPacketTemplateVariables,
-                            onValueChange = { failToastText = it }
-                        )
-                    }
+                    InsetDivider()
+                    VariableInputRow(
+                        title = "未抢到浮窗文案",
+                        summary = "支持下方变量",
+                        value = failToastText,
+                        variables = redPacketTemplateVariables,
+                        onEditingFinished = { persistText(RedPacketSettings.KEY_NOTIFY_FAILED_TOAST_TEXT, it, true) },
+                        onValueChange = { failToastText = it; persistText(RedPacketSettings.KEY_NOTIFY_FAILED_TOAST_TEXT, it) }
+                    )
+
                 }
             }
             item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "假红包兼容") }
@@ -791,21 +770,16 @@ private fun RedPacketTemplateListPage(
         title = "红包模板",
         largeTitle = "红包模板",
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar(
-                primaryText = "新增模板",
-                onPrimaryClick = onAddTemplate,
-                secondaryText = "返回",
-                onSecondaryClick = onBack
-            )
-        }
+        onBack = onBack,
+        showBackIcon = false,
+        topBarActions = { TopBarTextAction("新增模板", onClick = onAddTemplate) }
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "模板") }
@@ -860,51 +834,29 @@ private fun RedPacketBindingListPage(
     val visibleIds = visibleBindings.mapTo(LinkedHashSet()) { it.second.id }
     val allVisibleSelected = visibleIds.isNotEmpty() && visibleIds.all { it in selectedIds }
     val selectedBindings = bindings.filter { it.id in selectedIds }
+    val selectionBackState = rememberNavigationEventState(currentInfo = NavigationEventInfo.None)
+    NavigationBackHandler(state = selectionBackState, isBackEnabled = batchDeleteMode && LocalSettingsBackRegistrationEnabled.current, onBackCompleted = {
+        batchDeleteMode = false
+        selectedIds = emptySet()
+    })
     PageScaffold(
         title = "适用聊天",
         largeTitle = "适用聊天",
         scrollBehavior = scrollBehavior,
-        bottomBar = {
+        onBack = { if (batchDeleteMode) { batchDeleteMode = false; selectedIds = emptySet() } else onBack() },
+        showBackIcon = false,
+        topBarActions = {
             if (batchDeleteMode) {
-                BottomActionBar(
-                    primaryText = "删除所选（${selectedBindings.size}）",
-                    onPrimaryClick = {
-                        if (selectedBindings.isEmpty()) {
-                            Toast.makeText(context, "请先选择适用聊天", Toast.LENGTH_SHORT).show()
-                        } else {
-                            showDeleteConfirm = true
-                        }
-                    },
-                    secondaryText = "取消",
-                    onSecondaryClick = {
-                        batchDeleteMode = false
-                        selectedIds = emptySet()
-                    },
-                    middleText = if (visibleIds.isEmpty()) null else if (allVisibleSelected) "取消全选" else "全选",
-                    onMiddleClick = if (visibleIds.isEmpty()) null else {
-                        {
-                            selectedIds = if (allVisibleSelected) {
-                                selectedIds - visibleIds
-                            } else {
-                                selectedIds + visibleIds
-                            }
-                        }
-                    }
-                )
+                if (visibleIds.isNotEmpty()) TopBarTextAction(if (allVisibleSelected) "取消全选" else "全选") {
+                    selectedIds = if (allVisibleSelected) selectedIds - visibleIds else selectedIds + visibleIds
+                }
+                TopBarTextAction("删除（${selectedBindings.size}）") {
+                    if (selectedBindings.isEmpty()) Toast.makeText(context, "请先选择适用聊天", Toast.LENGTH_SHORT).show()
+                    else showDeleteConfirm = true
+                }
             } else {
-                BottomActionBar(
-                    primaryText = "添加聊天",
-                    onPrimaryClick = onAddBinding,
-                    secondaryText = "返回",
-                    onSecondaryClick = onBack,
-                    middleText = if (bindings.isEmpty()) null else "批量删除",
-                    onMiddleClick = if (bindings.isEmpty()) null else {
-                        {
-                            batchDeleteMode = true
-                            selectedIds = emptySet()
-                        }
-                    }
-                )
+                if (bindings.isNotEmpty()) TopBarTextAction("批量删除") { batchDeleteMode = true; selectedIds = emptySet() }
+                TopBarTextAction("添加聊天", onClick = onAddBinding)
             }
         }
     ) { padding ->
@@ -913,7 +865,7 @@ private fun RedPacketBindingListPage(
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item {
@@ -975,7 +927,7 @@ private fun RedPacketBindingListPage(
         }
     }
     if (showDeleteConfirm) {
-        WindowDialog(
+        SettingsWindowDialog(
             show = true,
             title = "确认批量删除",
             onDismissRequest = { showDeleteConfirm = false },
@@ -1196,89 +1148,111 @@ private fun RedPacketTemplatePage(
         )
     }
     var editingReplyStepsForGroup by remember(request) { mutableStateOf<Boolean?>(null) }
+    var lastSaved by remember(request) { mutableStateOf(request.template) }
+    var groupReplyEdited by remember(request) { mutableStateOf(false) }
+    var privateReplyEdited by remember(request) { mutableStateOf(false) }
+    var notificationsEdited by remember(request) { mutableStateOf(false) }
+    var validKeywords by remember(request) { mutableStateOf(keywords) }
+    var validNotifyText by remember(request) { mutableStateOf(notifyText) }
+    var validNotifyToastText by remember(request) { mutableStateOf(notifyToastText) }
+    var validFailedText by remember(request) { mutableStateOf(notifyFailedText) }
+    var validFailedToastText by remember(request) { mutableStateOf(notifyFailedToastText) }
+    var validAnnounceText by remember(request) { mutableStateOf(announceText) }
     val listState = rememberLazyListState()
     val scrollBehavior = MiuixScrollBehavior()
 
-    editingReplyStepsForGroup?.let { group ->
+    fun persist(create: Boolean = false) {
+        if (!create && !request.canDelete) return
+        val parsedDelay = delayMs.toLongOrNull()?.takeIf { it in 0L..600000L }
+        val minDelay = randomMinMs.toLongOrNull()?.takeIf { it in 0L..600000L }
+        val maxDelay = randomMaxMs.toLongOrNull()?.takeIf { minDelay != null && it in minDelay..600000L }
+        val delayValid = when (delayMode) {
+            RedPacketRuleConfig.DELAY_CUSTOM -> parsedDelay != null
+            RedPacketRuleConfig.DELAY_RANDOM -> minDelay != null && maxDelay != null
+            else -> true
+        }
+        if (create && !delayValid) {
+            Toast.makeText(context, "请输入有效的延迟或延迟范围", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val first = privateReplySteps.firstOrNull()
+        val saveNotification = lastSaved.notificationConfigured || notificationsEdited
+        val savePrivateReply = privateReplyEdited || create
+        val next = lastSaved.copy(
+            name = name.trim().ifBlank { if (create) "模板 ${request.index + 1}" else lastSaved.name },
+            enabled = enabled,
+            grabMode = grabMode,
+            delayMode = if (delayValid) delayMode else lastSaved.delayMode,
+            delayMs = if (!delayValid) lastSaved.delayMs else if (delayMode == RedPacketRuleConfig.DELAY_CUSTOM) parsedDelay!! else 0L,
+            randomMinMs = if (minDelay != null && maxDelay != null) minDelay else lastSaved.randomMinMs,
+            randomMaxMs = if (minDelay != null && maxDelay != null) maxDelay else lastSaved.randomMaxMs,
+            skipSelf = skipSelf,
+            keywordMode = keywordMode,
+            keywords = validKeywords.trim(),
+            quietEnabled = quietEnabled,
+            quietStartSecond = parseRedPacketSecond(quietStart, lastSaved.quietStartSecond),
+            quietEndSecond = parseRedPacketSecond(quietEnd, lastSaved.quietEndSecond),
+            replyMode = if (savePrivateReply) first?.mode ?: RedPacketRuleConfig.REPLY_OFF else lastSaved.replyMode,
+            replyText = if (savePrivateReply) first?.content.orEmpty() else lastSaved.replyText,
+            replyDelayMs = if (savePrivateReply) first?.delayMs ?: 0L else lastSaved.replyDelayMs,
+            replyRandom = if (savePrivateReply) first?.random ?: false else lastSaved.replyRandom,
+            replySteps = if (savePrivateReply) privateReplySteps else lastSaved.replySteps,
+            groupReplySteps = if (lastSaved.groupReplySteps != null || groupReplyEdited || create) groupReplySteps else null,
+            notificationConfigured = saveNotification,
+            notifySystemEnabled = if (saveNotification) notifySystemEnabled else lastSaved.notifySystemEnabled,
+            notifyToastEnabled = if (saveNotification) notifyToastEnabled else lastSaved.notifyToastEnabled,
+            notifySoundEnabled = if (saveNotification) notifySoundEnabled else lastSaved.notifySoundEnabled,
+            notifySoundMode = if (saveNotification) notifySoundMode else lastSaved.notifySoundMode,
+            notifyVibrateEnabled = if (saveNotification) notifyVibrateEnabled else lastSaved.notifyVibrateEnabled,
+            notifySoundUri = if (saveNotification) notifySoundUri.trim() else lastSaved.notifySoundUri,
+            notifyText = if (saveNotification) validNotifyText else lastSaved.notifyText,
+            notifyToastText = if (saveNotification) validNotifyToastText else lastSaved.notifyToastText,
+            notifyFailedSystemEnabled = if (saveNotification) notifyFailedSystemEnabled else lastSaved.notifyFailedSystemEnabled,
+            notifyFailedToastEnabled = if (saveNotification) notifyFailedToastEnabled else lastSaved.notifyFailedToastEnabled,
+            notifyFailedText = if (saveNotification) validFailedText else lastSaved.notifyFailedText,
+            notifyFailedToastText = if (saveNotification) validFailedToastText else lastSaved.notifyFailedToastText,
+            announceEnabled = if (saveNotification) announceEnabled else lastSaved.announceEnabled,
+            announceText = if (saveNotification) validAnnounceText else lastSaved.announceText
+        )
+        lastSaved = next
+        onSave(next)
+    }
+
+    SettingsRouteTransition(
+        targetState = editingReplyStepsForGroup,
+        label = "RedPacketTemplateReplyRoute",
+        depthOf = { if (it == null) 0 else 1 }
+    ) { group ->
+        if (group != null) {
         RedPacketReplyStepsPage(
             context = context,
             title = if (group) "群红包回复" else "私聊红包回复",
             initialSteps = if (group) groupReplySteps else privateReplySteps,
             onBack = { editingReplyStepsForGroup = null },
             onSave = { steps ->
-                if (group) groupReplySteps = steps else privateReplySteps = steps
-                editingReplyStepsForGroup = null
-                Toast.makeText(context, "回复步骤已更新", Toast.LENGTH_SHORT).show()
+                if (group) {
+                    groupReplyEdited = true
+                    groupReplySteps = steps
+                } else {
+                    privateReplyEdited = true
+                    privateReplySteps = steps
+                    if (lastSaved.groupReplySteps == null && !groupReplyEdited) groupReplySteps = steps
+                }
+                persist()
             }
         )
-        return
-    }
-
-    PageScaffold(
+        } else PageScaffold(
         title = name.ifBlank { "红包模板" },
         largeTitle = name.ifBlank { "红包模板" },
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar(
-                primaryText = "保存模板",
-                onPrimaryClick = {
-                    val customDelay = if (delayMode == RedPacketRuleConfig.DELAY_CUSTOM) {
-                        delayMs.toLongOrNull()?.coerceIn(0L, 600000L) ?: 0L
-                    } else {
-                        0L
-                    }
-                    val minDelay = randomMinMs.toLongOrNull()?.coerceIn(0L, 600000L) ?: 0L
-                    val maxDelay = randomMaxMs.toLongOrNull()?.coerceIn(minDelay, 600000L) ?: minDelay
-                    val cleanPrivateReplySteps = cleanRedPacketReplySteps(privateReplySteps)
-                    val cleanGroupReplySteps = cleanRedPacketReplySteps(groupReplySteps)
-                    val firstReply = cleanPrivateReplySteps.firstOrNull()
-                    onSave(
-                        RedPacketRuleTemplate(
-                            id = request.template.id,
-                            name = name.trim().ifBlank { "模板 ${request.index + 1}" },
-                            enabled = enabled,
-                            grabMode = grabMode,
-                            delayMode = delayMode,
-                            delayMs = customDelay,
-                            randomMinMs = minDelay,
-                            randomMaxMs = maxDelay,
-                            skipSelf = skipSelf,
-                            listMode = request.template.listMode,
-                            whitelist = request.template.whitelist,
-                            blacklist = request.template.blacklist,
-                            keywordMode = keywordMode,
-                            keywords = if (keywordMode == 0) "" else keywords.trim(),
-                            quietEnabled = quietEnabled,
-                            quietStartSecond = parseRedPacketSecond(quietStart, request.template.quietStartSecond),
-                            quietEndSecond = parseRedPacketSecond(quietEnd, request.template.quietEndSecond),
-                            replyMode = firstReply?.mode ?: RedPacketRuleConfig.REPLY_OFF,
-                            replyText = firstReply?.content.orEmpty(),
-                            replyDelayMs = firstReply?.delayMs ?: 0L,
-                            replyRandom = firstReply?.random ?: false,
-                            replySteps = cleanPrivateReplySteps,
-                            groupReplySteps = cleanGroupReplySteps,
-                            notificationConfigured = true,
-                            notifySystemEnabled = notifySystemEnabled,
-                            notifyToastEnabled = notifyToastEnabled,
-                            notifySoundEnabled = notifySoundEnabled,
-                            notifySoundMode = notifySoundMode,
-                            notifyVibrateEnabled = notifyVibrateEnabled,
-                            notifySoundUri = notifySoundUri.trim(),
-                            notifyText = notifyText,
-                            notifyToastText = notifyToastText,
-                            notifyFailedSystemEnabled = notifyFailedSystemEnabled,
-                            notifyFailedToastEnabled = notifyFailedToastEnabled,
-                            notifyFailedText = notifyFailedText,
-                            notifyFailedToastText = notifyFailedToastText,
-                            announceEnabled = announceEnabled,
-                            announceText = announceText
-                        )
-                    )
-                    Toast.makeText(context, "模板已保存", Toast.LENGTH_SHORT).show()
-                },
-                secondaryText = "返回",
-                onSecondaryClick = onBack
-            )
+        onBack = onBack,
+        showBackIcon = false,
+        topBarActions = {
+            if (!request.canDelete) TopBarTextAction("新增") { persist(create = true) }
+            else TopBarTextAction("删除") {
+                onDelete()
+                Toast.makeText(context, "模板已删除", Toast.LENGTH_SHORT).show()
+            }
         }
     ) { padding ->
         LazyColumn(
@@ -1286,19 +1260,19 @@ private fun RedPacketTemplatePage(
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "模板") }
             item {
                 SettingsCard {
-                    InputRow("模板名称", "例如：慢抢红包群、只抢口令红包", name) { name = it }
+                    InputRow("模板名称", if (name.isBlank() && request.canDelete) "请输入名称，保留上次有效配置" else "例如：慢抢红包群、只抢口令红包", name) { name = it; persist() }
                     InsetDivider()
                     SwitchRow(
                         checked = enabled,
-                        title = "启用模板",
+                        title = "模板",
                         summary = "关闭后使用该模板的聊天不会自动抢",
-                        onCheckedChange = { enabled = it }
+                        onCheckedChange = { enabled = it; persist() }
                     )
                 }
             }
@@ -1310,14 +1284,14 @@ private fun RedPacketTemplatePage(
                         summary = if (grabMode == 1) "静默抢包" else "打开红包页面",
                         options = optionItems("打开红包页面" to 0, "静默抢包" to 1),
                         currentValue = grabMode,
-                        onValueChanged = { grabMode = it }
+                        onValueChanged = { grabMode = it; persist() }
                     )
                     InsetDivider()
                     SwitchRow(
                         checked = skipSelf,
                         title = "跳过自己的红包",
                         summary = "自己发出的红包不会抢",
-                        onCheckedChange = { skipSelf = it }
+                        onCheckedChange = { skipSelf = it; persist() }
                     )
                 }
             }
@@ -1329,16 +1303,19 @@ private fun RedPacketTemplatePage(
                         summary = redPacketDelayModeLabel(delayMode),
                         options = redPacketDelayModeOptions(includeRandom = true),
                         currentValue = delayMode,
-                        onValueChanged = { delayMode = it }
+                        onValueChanged = { delayMode = it; persist() }
                     )
                     if (delayMode == RedPacketRuleConfig.DELAY_CUSTOM) {
                         InsetDivider()
-                        NumberInputRow("自定义延迟", "单位 ms，0 表示不延迟", delayMs) { delayMs = it }
+                        NumberInputRow("自定义延迟", if (delayMs.toLongOrNull()?.let { it in 0L..600000L } != true) "请输入 0–600000，保留上次有效配置" else "单位 ms，0 表示不延迟", delayMs) { delayMs = it; persist() }
                     } else if (delayMode == RedPacketRuleConfig.DELAY_RANDOM) {
                         InsetDivider()
-                        NumberInputRow("最小延迟", "单位 ms", randomMinMs) { randomMinMs = it }
+                        NumberInputRow("最小延迟", "单位 ms", randomMinMs) { randomMinMs = it; persist() }
                         InsetDivider()
-                        NumberInputRow("最大延迟", "单位 ms，不能小于最小延迟", randomMaxMs) { randomMaxMs = it }
+                        NumberInputRow("最大延迟", "单位 ms，不能小于最小延迟", randomMaxMs) { randomMaxMs = it; persist() }
+                        if (randomMinMs.toLongOrNull()?.let { min -> min in 0L..600000L && randomMaxMs.toLongOrNull()?.let { it in min..600000L } == true } != true) {
+                            InsetDivider(); InfoRow("延迟范围", "请输入有效范围，保留上次有效配置")
+                        }
                     }
                 }
             }
@@ -1355,8 +1332,8 @@ private fun RedPacketTemplatePage(
                         options = optionItems("不限关键词" to 0, "只抢含关键词" to 1, "屏蔽含关键词" to 2),
                         currentValue = keywordMode,
                         onValueChanged = {
-                            if (it == 0) keywords = ""
                             keywordMode = it
+                            persist()
                         }
                     )
                     if (keywordMode != 0) {
@@ -1366,7 +1343,8 @@ private fun RedPacketTemplatePage(
                             summary = "多个用 |、逗号或换行分隔",
                             value = keywords,
                             minLines = 2,
-                            onValueChange = { keywords = it }
+                            onEditingFinished = { if (it.isBlank()) { validKeywords = ""; persist() } },
+                            onValueChange = { keywords = it; if (it.isNotBlank()) { validKeywords = it; persist() } }
                         )
                     }
                     InsetDivider()
@@ -1374,14 +1352,13 @@ private fun RedPacketTemplatePage(
                         checked = quietEnabled,
                         title = "禁抢时段",
                         summary = "在指定时间段内不抢红包",
-                        onCheckedChange = { quietEnabled = it }
+                        onCheckedChange = { quietEnabled = it; persist() }
                     )
-                    if (quietEnabled) {
-                        InsetDivider()
-                        TimeOfDayPickerRow("开始时间", quietStart) { quietStart = it }
-                        InsetDivider()
-                        TimeOfDayPickerRow("结束时间", quietEnd) { quietEnd = it }
-                    }
+                    InsetDivider()
+                    TimeOfDayPickerRow("开始时间", quietStart) { quietStart = it; persist() }
+                    InsetDivider()
+                    TimeOfDayPickerRow("结束时间", quietEnd) { quietEnd = it; persist() }
+
                 }
             }
             item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "抢后回复") }
@@ -1407,152 +1384,145 @@ private fun RedPacketTemplatePage(
                         checked = notifySystemEnabled,
                         title = "通知栏提醒",
                         summary = "抢到红包时提醒",
-                        onCheckedChange = { notifySystemEnabled = it }
+                        onCheckedChange = { notifySystemEnabled = it; notificationsEdited = true; persist() }
                     )
-                    if (notifySystemEnabled) {
-                        InsetDivider()
-                        VariableInputRow(
-                            title = "通知栏文案",
-                            summary = "支持下方变量",
-                            value = notifyText,
-                            variables = redPacketTemplateVariables,
-                            onValueChange = { notifyText = it }
-                        )
-                    }
+                    InsetDivider()
+                    VariableInputRow(
+                        title = "通知栏文案",
+                        summary = "支持下方变量",
+                        value = notifyText,
+                        variables = redPacketTemplateVariables,
+                        onEditingFinished = { if (it.isBlank()) { validNotifyText = ""; notificationsEdited = true; persist() } },
+                        onValueChange = { notifyText = it; if (it.isNotBlank()) { validNotifyText = it; notificationsEdited = true; persist() } }
+                    )
+
                     InsetDivider()
                     SwitchRow(
                         checked = notifyToastEnabled,
                         title = "浮窗提醒",
                         summary = "抢到红包时短暂提示",
-                        onCheckedChange = { notifyToastEnabled = it }
+                        onCheckedChange = { notifyToastEnabled = it; notificationsEdited = true; persist() }
                     )
-                    if (notifyToastEnabled) {
-                        InsetDivider()
-                        VariableInputRow(
-                            title = "浮窗文案",
-                            summary = "支持下方变量",
-                            value = notifyToastText,
-                            variables = redPacketTemplateVariables,
-                            onValueChange = { notifyToastText = it }
-                        )
-                    }
+                    InsetDivider()
+                    VariableInputRow(
+                        title = "浮窗文案",
+                        summary = "支持下方变量",
+                        value = notifyToastText,
+                        variables = redPacketTemplateVariables,
+                        onEditingFinished = { if (it.isBlank()) { validNotifyToastText = ""; notificationsEdited = true; persist() } },
+                        onValueChange = { notifyToastText = it; if (it.isNotBlank()) { validNotifyToastText = it; notificationsEdited = true; persist() } }
+                    )
+
                     InsetDivider()
                     SwitchRow(
                         checked = notifySoundEnabled,
                         title = "通知铃声",
                         summary = "开启后播放通知铃声",
-                        onCheckedChange = { notifySoundEnabled = it }
+                        onCheckedChange = { notifySoundEnabled = it; notificationsEdited = true; persist() }
                     )
-                    if (notifySoundEnabled) {
-                        InsetDivider()
-                        PopupOptionRow(
-                            title = "铃声模式",
-                            summary = if (notifySoundMode == RedPacketSettings.NOTIFY_SOUND_MODE_CUSTOM) "从文件选择铃声" else "选择系统铃声",
-                            options = optionItems(
-                                "选择系统铃声" to RedPacketSettings.NOTIFY_SOUND_MODE_SYSTEM,
-                                "从文件选择铃声" to RedPacketSettings.NOTIFY_SOUND_MODE_CUSTOM
-                            ),
-                            currentValue = notifySoundMode,
-                            onValueChanged = {
-                                notifySoundMode = it
-                                notifySoundUri = ""
-                            }
-                        )
-                        InsetDivider()
-                        ActionRow("选择铃声", ringtoneDisplayName(context, notifySoundUri, notifySoundMode)) {
-                            val activity = context as? Activity
-                            if (activity == null) {
-                                Toast.makeText(context, "当前页面无法打开铃声选择器", Toast.LENGTH_SHORT).show()
-                            } else {
-                                val onPicked: (String) -> Unit = { uri ->
-                                    if (uri.isNotBlank()) {
-                                        notifySoundUri = if (notifySoundMode == RedPacketSettings.NOTIFY_SOUND_MODE_CUSTOM) {
-                                            CustomNotificationRuntime.freezeRingtoneUri(context, uri)
-                                        } else {
-                                            uri
-                                        }
+                    InsetDivider()
+                    PopupOptionRow(
+                        title = "铃声模式",
+                        summary = if (notifySoundMode == RedPacketSettings.NOTIFY_SOUND_MODE_CUSTOM) "从文件选择铃声" else "选择系统铃声",
+                        options = optionItems(
+                            "选择系统铃声" to RedPacketSettings.NOTIFY_SOUND_MODE_SYSTEM,
+                            "从文件选择铃声" to RedPacketSettings.NOTIFY_SOUND_MODE_CUSTOM
+                        ),
+                        currentValue = notifySoundMode,
+                        onValueChanged = {
+                            notifySoundMode = it
+                            notifySoundUri = ""
+                            notificationsEdited = true
+                            persist()
+                        }
+                    )
+                    InsetDivider()
+                    ActionRow("选择铃声", ringtoneDisplayName(context, notifySoundUri, notifySoundMode)) {
+                        val activity = context as? Activity
+                        if (activity == null) {
+                            Toast.makeText(context, "当前页面无法打开铃声选择器", Toast.LENGTH_SHORT).show()
+                        } else {
+                            val onPicked: (String) -> Unit = { uri ->
+                                if (uri.isNotBlank()) {
+                                    notifySoundUri = if (notifySoundMode == RedPacketSettings.NOTIFY_SOUND_MODE_CUSTOM) {
+                                        CustomNotificationRuntime.freezeRingtoneUri(context, uri)
+                                    } else {
+                                        uri
                                     }
+                                    notificationsEdited = true
+                                    persist()
                                 }
-                                if (notifySoundMode == RedPacketSettings.NOTIFY_SOUND_MODE_CUSTOM) {
-                                    RingtonePickerBridge.launchFile(activity, onPicked)
-                                } else {
-                                    RingtonePickerBridge.launchSystem(activity, notifySoundUri, onPicked)
-                                }
+                            }
+                            if (notifySoundMode == RedPacketSettings.NOTIFY_SOUND_MODE_CUSTOM) {
+                                RingtonePickerBridge.launchFile(activity, onPicked)
+                            } else {
+                                RingtonePickerBridge.launchSystem(activity, notifySoundUri, onPicked)
                             }
                         }
                     }
+
                     InsetDivider()
                     SwitchRow(
                         checked = notifyVibrateEnabled,
                         title = "通知震动",
                         summary = "开启后触发通知震动",
-                        onCheckedChange = { notifyVibrateEnabled = it }
+                        onCheckedChange = { notifyVibrateEnabled = it; notificationsEdited = true; persist() }
                     )
                     InsetDivider()
                     SwitchRow(
                         checked = announceEnabled,
                         title = "抢到红包播报",
                         summary = "抢到后用系统语音播报",
-                        onCheckedChange = { announceEnabled = it }
+                        onCheckedChange = { announceEnabled = it; notificationsEdited = true; persist() }
                     )
-                    if (announceEnabled) {
-                        InsetDivider()
-                        VariableInputRow(
-                            title = "播报文案",
-                            summary = "支持下方变量",
-                            value = announceText,
-                            variables = redPacketTemplateVariables,
-                            onValueChange = { announceText = it }
-                        )
-                    }
+                    InsetDivider()
+                    VariableInputRow(
+                        title = "播报文案",
+                        summary = "支持下方变量",
+                        value = announceText,
+                        variables = redPacketTemplateVariables,
+                        onEditingFinished = { if (it.isBlank()) { validAnnounceText = ""; notificationsEdited = true; persist() } },
+                        onValueChange = { announceText = it; if (it.isNotBlank()) { validAnnounceText = it; notificationsEdited = true; persist() } }
+                    )
+
                     InsetDivider()
                     SwitchRow(
                         checked = notifyFailedSystemEnabled,
                         title = "未抢到提醒",
                         summary = "未抢到红包时通知",
-                        onCheckedChange = { notifyFailedSystemEnabled = it }
+                        onCheckedChange = { notifyFailedSystemEnabled = it; notificationsEdited = true; persist() }
                     )
-                    if (notifyFailedSystemEnabled) {
-                        InsetDivider()
-                        VariableInputRow(
-                            title = "未抢到通知栏文案",
-                            summary = "支持下方变量",
-                            value = notifyFailedText,
-                            variables = redPacketTemplateVariables,
-                            onValueChange = { notifyFailedText = it }
-                        )
-                    }
+                    InsetDivider()
+                    VariableInputRow(
+                        title = "未抢到通知栏文案",
+                        summary = "支持下方变量",
+                        value = notifyFailedText,
+                        variables = redPacketTemplateVariables,
+                        onEditingFinished = { if (it.isBlank()) { validFailedText = ""; notificationsEdited = true; persist() } },
+                        onValueChange = { notifyFailedText = it; if (it.isNotBlank()) { validFailedText = it; notificationsEdited = true; persist() } }
+                    )
+
                     InsetDivider()
                     SwitchRow(
                         checked = notifyFailedToastEnabled,
                         title = "未抢到浮窗",
                         summary = "未抢到红包时短暂提示",
-                        onCheckedChange = { notifyFailedToastEnabled = it }
+                        onCheckedChange = { notifyFailedToastEnabled = it; notificationsEdited = true; persist() }
                     )
-                    if (notifyFailedToastEnabled) {
-                        InsetDivider()
-                        VariableInputRow(
-                            title = "未抢到浮窗文案",
-                            summary = "支持下方变量",
-                            value = notifyFailedToastText,
-                            variables = redPacketTemplateVariables,
-                            onValueChange = { notifyFailedToastText = it }
-                        )
-                    }
-                }
-            }
-            if (request.canDelete) {
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
-                item {
-                    SettingsCard {
-                        ActionRow("删除模板", "删除后使用该模板的聊天会变成未绑定模板") {
-                            onDelete()
-                            Toast.makeText(context, "模板已删除", Toast.LENGTH_SHORT).show()
-                        }
-                    }
+                    InsetDivider()
+                    VariableInputRow(
+                        title = "未抢到浮窗文案",
+                        summary = "支持下方变量",
+                        value = notifyFailedToastText,
+                        variables = redPacketTemplateVariables,
+                        onEditingFinished = { if (it.isBlank()) { validFailedToastText = ""; notificationsEdited = true; persist() } },
+                        onValueChange = { notifyFailedToastText = it; if (it.isNotBlank()) { validFailedToastText = it; notificationsEdited = true; persist() } }
+                    )
+
                 }
             }
         }
+    }
     }
 }
 
@@ -1567,31 +1537,26 @@ private fun RedPacketBindingPage(
 ) {
     var enabled by remember(request) { mutableStateOf(request.binding.enabled) }
     var templateId by remember(request) { mutableStateOf(request.binding.templateId) }
+    var customRules by remember(request) { mutableStateOf(request.binding.customRules) }
     val listState = rememberLazyListState()
     val scrollBehavior = MiuixScrollBehavior()
     val targetTitle = request.binding.label.ifBlank { request.binding.targetId }
+    fun persist(create: Boolean = false) {
+        if (request.canDelete || create) onSave(request.binding.copy(enabled = enabled, templateId = templateId, customRules = customRules))
+    }
 
     PageScaffold(
         title = targetTitle,
         largeTitle = targetTitle,
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar(
-                primaryText = "保存聊天",
-                onPrimaryClick = {
-                    onSave(
-                        request.binding.copy(
-                            enabled = enabled,
-                            templateId = templateId,
-                            customRules = false,
-                            overrideRule = null
-                        )
-                    )
-                    Toast.makeText(context, "适用聊天已保存", Toast.LENGTH_SHORT).show()
-                },
-                secondaryText = "返回",
-                onSecondaryClick = onBack
-            )
+        onBack = onBack,
+        showBackIcon = false,
+        topBarActions = {
+            if (!request.canDelete) TopBarTextAction("新增") { persist(create = true) }
+            else TopBarTextAction("移除") {
+                onDelete()
+                Toast.makeText(context, "适用聊天已移除", Toast.LENGTH_SHORT).show()
+            }
         }
     ) { padding ->
         LazyColumn(
@@ -1599,7 +1564,7 @@ private fun RedPacketBindingPage(
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "聊天") }
@@ -1611,19 +1576,23 @@ private fun RedPacketBindingPage(
                     InsetDivider()
                     SwitchRow(
                         checked = enabled,
-                        title = "启用",
+                        title = "自动抢红包",
                         summary = "关闭后这个聊天不会按模板自动抢红包",
-                        onCheckedChange = { enabled = it }
+                        onCheckedChange = { enabled = it; persist() }
                     )
                 }
             }
             item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "模板") }
             item {
                 SettingsCard {
+                    if (customRules) {
+                        InfoRow("当前规则", "沿用原有专属规则；选择下方模板后改为使用模板")
+                        InsetDivider()
+                    }
                     OptionChoiceRow(
                         item = OptionItem("跟随默认规则", -1, "启用后按默认规则或旧版全局设置抢红包"),
-                        selected = templateId.isBlank(),
-                        onClick = { templateId = "" }
+                        selected = !customRules && templateId.isBlank(),
+                        onClick = { templateId = ""; customRules = false; persist() }
                     )
                     if (templates.isNotEmpty()) InsetDivider()
                     templates.forEachIndexed { index, template ->
@@ -1633,21 +1602,10 @@ private fun RedPacketBindingPage(
                                 value = index,
                                 summary = describeRedPacketTemplate(template)
                             ),
-                            selected = templateId == template.id,
-                            onClick = { templateId = template.id }
+                            selected = !customRules && templateId == template.id,
+                            onClick = { templateId = template.id; customRules = false; persist() }
                         )
                         if (index < templates.lastIndex) InsetDivider()
-                    }
-                }
-            }
-            if (request.canDelete) {
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
-                item {
-                    SettingsCard {
-                        ActionRow("移除适用聊天", "移除后该聊天回到默认规则") {
-                            onDelete()
-                            Toast.makeText(context, "适用聊天已移除", Toast.LENGTH_SHORT).show()
-                        }
                     }
                 }
             }
@@ -1687,39 +1645,8 @@ internal fun AntiRecallMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar(
-                primaryText = "保存设置",
-                onPrimaryClick = save@{
-                    val normalizedTimeFormat = noticeTimeFormat.trim()
-                        .ifBlank { AntiRecallSettings.DEFAULT_NOTICE_TIME_FORMAT }
-                    val timeFormatValid = runCatching {
-                        SimpleDateFormat(normalizedTimeFormat, Locale.getDefault()).format(Date())
-                    }.isSuccess
-                    if (usesTimeVariable && !timeFormatValid) {
-                        Toast.makeText(context, "时间格式无效", Toast.LENGTH_SHORT).show()
-                        return@save
-                    }
-                    sp.edit()
-                        .putString(
-                            AntiRecallSettings.KEY_NOTICE_TEXT,
-                            noticeText.ifBlank { AntiRecallSettings.DEFAULT_NOTICE_TEXT }
-                        )
-                        .putString(
-                            AntiRecallSettings.KEY_NOTICE_TIME_FORMAT,
-                            if (timeFormatValid) {
-                                normalizedTimeFormat
-                            } else {
-                                AntiRecallSettings.DEFAULT_NOTICE_TIME_FORMAT
-                            }
-                        )
-                        .apply()
-                    Toast.makeText(context, "设置已保存", Toast.LENGTH_SHORT).show()
-                },
-                secondaryText = "返回",
-                onSecondaryClick = onBack
-            )
-        }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -1761,15 +1688,17 @@ internal fun AntiRecallMiuixPage(
                         summary = "点击下方变量插入到光标位置",
                         value = noticeText,
                         variables = antiRecallTemplateVariables,
-                        onValueChange = { noticeText = it }
+                        onEditingFinished = { if (it.isBlank()) sp.edit().putString(AntiRecallSettings.KEY_NOTICE_TEXT, AntiRecallSettings.DEFAULT_NOTICE_TEXT).apply() },
+                        onValueChange = { noticeText = it; if (it.isNotBlank()) sp.edit().putString(AntiRecallSettings.KEY_NOTICE_TEXT, it).apply() }
                     )
                     if (usesTimeVariable) {
                         InsetDivider()
                         InputRow(
                             "时间格式",
-                            "使用日期格式，例如 yyyy-MM-dd HH:mm:ss",
-                            noticeTimeFormat
-                        ) { noticeTimeFormat = it }
+                            if (noticeTimeFormat.isNotBlank() && runCatching { SimpleDateFormat(noticeTimeFormat, Locale.getDefault()).format(Date()) }.isFailure) "时间格式无效，保留上次有效配置" else "使用日期格式，例如 yyyy-MM-dd HH:mm:ss",
+                            noticeTimeFormat,
+                            onEditingFinished = { if (it.isBlank()) sp.edit().putString(AntiRecallSettings.KEY_NOTICE_TIME_FORMAT, AntiRecallSettings.DEFAULT_NOTICE_TIME_FORMAT).apply() }
+                        ) { noticeTimeFormat = it; if (it.isNotBlank() && runCatching { SimpleDateFormat(it, Locale.getDefault()).format(Date()) }.isSuccess) sp.edit().putString(AntiRecallSettings.KEY_NOTICE_TIME_FORMAT, it.trim()).apply() }
                     }
                 }
             }

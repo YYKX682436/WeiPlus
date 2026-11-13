@@ -37,7 +37,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
@@ -165,7 +167,9 @@ import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
 import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.nav.core.NavKey
-import top.yukonga.miuix.kmp.window.WindowDialog
+import top.yukonga.miuix.kmp.nav.core.NavDisplay
+import top.yukonga.miuix.kmp.nav.core.navBackStackOf
+import top.yukonga.miuix.kmp.nav.transition.NavTransitions
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -231,7 +235,7 @@ internal fun MainSettingsPage(
     }
     if (showMore) {
         val activity = context as? Activity
-        WindowDialog(
+        SettingsWindowDialog(
             show = true,
             title = "更多",
             onDismissRequest = ::dismissMore,
@@ -605,16 +609,15 @@ internal fun FeatureGroupSettingsPage(
         title = group.title,
         largeTitle = group.title,
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar("返回", onBack)
-        }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "功能") }
@@ -662,14 +665,15 @@ private fun CompositeSettingsPage(
         title = group.title,
         largeTitle = group.title,
         scrollBehavior = scrollBehavior,
-        bottomBar = { BottomActionBar("返回", onBack) }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item(key = "heading") { SmallTitle(text = "功能") }
@@ -1197,12 +1201,13 @@ internal sealed class AutoReplyStepsRoute {
 internal sealed class AutoReplyAiRoute {
     object Zhilia : AutoReplyAiRoute()
     object ZhiliaConfigs : AutoReplyAiRoute()
+    object ZhiliaNew : AutoReplyAiRoute()
     object ZhiliaModels : AutoReplyAiRoute()
 }
 
 internal sealed class RedPacketReplyStepsRoute {
     object Main : RedPacketReplyStepsRoute()
-    data class StepEditor(val index: Int) : RedPacketReplyStepsRoute()
+    data class StepEditor(val id: String) : RedPacketReplyStepsRoute()
     data class FavoritePicker(val request: FavoritePickerRequest) : RedPacketReplyStepsRoute()
 }
 
@@ -1334,6 +1339,7 @@ internal fun AutoReplyAiRoute.depth(): Int = when (this) {
     AutoReplyAiRoute.Zhilia -> 0
     AutoReplyAiRoute.ZhiliaConfigs,
     AutoReplyAiRoute.ZhiliaModels -> 1
+    AutoReplyAiRoute.ZhiliaNew -> 2
 }
 
 internal fun RedPacketReplyStepsRoute.depth(): Int = when (this) {
@@ -1352,7 +1358,9 @@ internal fun GroupMemberPickerRoute.depth(): Int = when (this) {
     is GroupMemberPickerRoute.Members -> 1
 }
 
-@OptIn(ExperimentalAnimationApi::class)
+private data class SettingsInnerNavKey(val route: Any?) : NavKey
+
+@Suppress("UNCHECKED_CAST")
 @Composable
 internal fun <T> SettingsRouteTransition(
     targetState: T,
@@ -1362,31 +1370,57 @@ internal fun <T> SettingsRouteTransition(
     horizontalOnSameDepth: Boolean = true,
     content: @Composable (T) -> Unit
 ) {
-    AnimatedContent(
-        targetState = targetState,
-        transitionSpec = {
-            val initialDepth = depthOf(initialState)
-            val targetDepth = depthOf(targetState)
-            if (!horizontalOnSameDepth && initialDepth == targetDepth) {
-                fadeIn(animationSpec = tween(120)) togetherWith
-                    fadeOut(animationSpec = tween(90))
-            } else {
-                val forward = targetDepth >= initialDepth
-                val enter = slideInHorizontally(
-                    animationSpec = tween(240),
-                    initialOffsetX = { width -> if (forward) width else -width / 4 }
-                ) + fadeIn(animationSpec = tween(160))
-                val exit = slideOutHorizontally(
-                    animationSpec = tween(220),
-                    targetOffsetX = { width -> if (forward) -width / 4 else width }
-                ) + fadeOut(animationSpec = tween(140))
-                enter togetherWith exit
+    val routes = remember(label) { navBackStackOf(SettingsInnerNavKey(targetState)) }
+    var returning by remember(label) { mutableStateOf(false) }
+    val parentRegistrationEnabled = LocalSettingsBackRegistrationEnabled.current
+    val dispatchBack = rememberSettingsBackDispatch()
+    SideEffect {
+        val current = (routes.last() as SettingsInnerNavKey).route as T
+        if (current != targetState) {
+            val previous = routes.indexOfLast { (it as SettingsInnerNavKey).route == targetState }
+            when {
+                returning && routes.size > 1 -> {
+                    routes.removeAt(routes.lastIndex)
+                    routes[routes.lastIndex] = SettingsInnerNavKey(targetState)
+                }
+                previous >= 0 -> {
+                    while (routes.lastIndex > previous) routes.removeAt(routes.lastIndex)
+                }
+                depthOf(targetState) < depthOf(current) -> {
+                    while (routes.size > 1 && depthOf((routes.last() as SettingsInnerNavKey).route as T) > depthOf(targetState)) {
+                        routes.removeAt(routes.lastIndex)
+                    }
+                    if (depthOf((routes.last() as SettingsInnerNavKey).route as T) == depthOf(targetState)) {
+                        routes[routes.lastIndex] = SettingsInnerNavKey(targetState)
+                    } else {
+                        routes.add(SettingsInnerNavKey(targetState))
+                    }
+                }
+                !horizontalOnSameDepth && depthOf(current) == depthOf(targetState) -> {
+                    routes[routes.lastIndex] = SettingsInnerNavKey(targetState)
+                }
+                else -> routes.add(SettingsInnerNavKey(targetState))
             }
-        },
+        }
+        if (returning) returning = false
+    }
+    NavDisplay(
+        backStack = routes,
         modifier = modifier.background(MiuixTheme.colorScheme.background),
-        label = label
-    ) { route ->
-        content(route)
+        transition = NavTransitions.MiuixDefault,
+        onBack = {
+            returning = true
+            if (!dispatchBack()) returning = false
+        }
+    ) {
+        entry<SettingsInnerNavKey> { entry ->
+            CompositionLocalProvider(
+                LocalSettingsBackRegistrationEnabled provides
+                    (parentRegistrationEnabled && entry == routes.lastOrNull())
+            ) {
+                content(entry.route as T)
+            }
+        }
     }
 }
 
@@ -1410,14 +1444,15 @@ private fun GiftMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = { BottomActionBar("返回", onBack) }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "自动领取") }
@@ -1444,15 +1479,13 @@ private fun GiftMiuixPage(
                 SettingsCard {
                     InputRow(
                         title = "延迟领取",
-                        summary = "收到礼物后延迟多少毫秒再领取，0 为立即领取",
+                        summary = if (delayText.isNotEmpty() && delayText.toIntOrNull()?.let { it in 0..999999 } != true) "请输入 0–999999，保留上次有效配置" else "收到礼物后延迟多少毫秒再领取，0 为立即领取",
                         value = delayText,
                         onValueChange = { raw ->
-                            val text = raw.filter { it.isDigit() }.take(6)
-                            delayText = text
-                            sp.edit()
-                                .putInt(GiftSettings.KEY_DELAY_VALUE, text.toIntOrNull() ?: 0)
-                                .putInt(GiftSettings.KEY_DELAY_UNIT, 0)
-                                .apply()
+                            delayText = raw
+                            raw.toIntOrNull()?.takeIf { it in 0..999999 }?.let { value ->
+                                sp.edit().putInt(GiftSettings.KEY_DELAY_VALUE, value).putInt(GiftSettings.KEY_DELAY_UNIT, 0).apply()
+                            }
                         }
                     )
                 }

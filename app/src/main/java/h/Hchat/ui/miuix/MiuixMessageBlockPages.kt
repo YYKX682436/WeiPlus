@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
@@ -20,6 +19,9 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.navigationevent.NavigationEventInfo
+import androidx.navigationevent.compose.NavigationBackHandler
+import androidx.navigationevent.compose.rememberNavigationEventState
 import h.Hchat.hooks.items.messageblock.MessageBlockBinding
 import h.Hchat.hooks.items.messageblock.MessageBlockDefaultRule
 import h.Hchat.hooks.items.messageblock.MessageBlockSettings
@@ -59,15 +61,6 @@ internal fun MessageBlockMiuixPage(
     val listState = rememberLazyListState()
     val scrollBehavior = MiuixScrollBehavior()
 
-    LaunchedEffect(Unit) {
-        if (initialState.shouldPersist) {
-            sp.edit()
-                .putString(MessageBlockSettings.KEY_TEMPLATES, MessageBlockSettings.encodeTemplates(templates))
-                .putString(MessageBlockSettings.KEY_BINDINGS, MessageBlockSettings.encodeBindings(bindings))
-                .apply()
-        }
-    }
-
     val route = when {
         templateEditor != null -> MessageBlockRoute.TemplateEditor(templateEditor!!)
         bindingEditor != null -> MessageBlockRoute.BindingEditor(bindingEditor!!)
@@ -83,7 +76,8 @@ internal fun MessageBlockMiuixPage(
     SettingsRouteTransition(
         targetState = route,
         label = "MessageBlockRouteTransition",
-        depthOf = { it.depth() }
+        depthOf = { it.depth() },
+        horizontalOnSameDepth = false
     ) { currentRoute ->
         when (currentRoute) {
             is MessageBlockRoute.TemplateEditor -> {
@@ -99,8 +93,8 @@ internal fun MessageBlockMiuixPage(
                             templates + MessageBlockSettings.clearTemplateTargets(updated)
                         }
                         templates = next
-                        sp.edit().putString(MessageBlockSettings.KEY_TEMPLATES, MessageBlockSettings.encodeTemplates(next)).apply()
-                        templateEditor = null
+                        persistMessageBlockTemplates(sp, next, bindings, initialState.shouldPersist)
+                        if (!request.canDelete) templateEditor = null
                     },
                     onDelete = {
                         if (request.index in templates.indices) {
@@ -158,21 +152,20 @@ internal fun MessageBlockMiuixPage(
                     onBack = { bindingEditor = null },
                     onSave = { updated ->
                         val normalized = normalizedMessageBlockBinding(updated)
-                        val base = if (request.index in bindings.indices) {
-                            bindings.toMutableList().also { it.removeAt(request.index) }
-                        } else {
-                            bindings
-                        }
-                        val next = upsertMessageBlockBindings(base, listOf(normalized))
+                        val existingIndex = bindings.indexOfFirst { it.id == request.binding.id }
+                        val next = if (existingIndex >= 0) {
+                            bindings.toMutableList().also { it[existingIndex] = normalized }
+                        } else bindings + normalized
                         bindings = next
-                        sp.edit().putString(MessageBlockSettings.KEY_BINDINGS, MessageBlockSettings.encodeBindings(next)).apply()
-                        bindingEditor = null
+                        persistMessageBlockBindings(sp, templates, next, initialState.shouldPersist)
+                        if (!request.canDelete) bindingEditor = null
                     },
                     onDelete = {
-                        if (request.index in bindings.indices) {
-                            val next = bindings.toMutableList().also { it.removeAt(request.index) }
+                        val index = bindings.indexOfFirst { it.id == request.binding.id }
+                        if (index >= 0) {
+                            val next = bindings.toMutableList().also { it.removeAt(index) }
                             bindings = next
-                            sp.edit().putString(MessageBlockSettings.KEY_BINDINGS, MessageBlockSettings.encodeBindings(next)).apply()
+                            persistMessageBlockBindings(sp, templates, next, initialState.shouldPersist)
                         }
                         bindingEditor = null
                     }
@@ -188,7 +181,7 @@ internal fun MessageBlockMiuixPage(
                     onSave = { updated ->
                         val next = upsertMessageBlockBindings(bindings, updated)
                         bindings = next
-                        sp.edit().putString(MessageBlockSettings.KEY_BINDINGS, MessageBlockSettings.encodeBindings(next)).apply()
+                        persistMessageBlockBindings(sp, templates, next, initialState.shouldPersist)
                         Toast.makeText(context, "已保存 ${updated.size} 个名单项", Toast.LENGTH_SHORT).show()
                         batchBindingEditor = null
                     }
@@ -225,8 +218,6 @@ internal fun MessageBlockMiuixPage(
                                 MessageBlockSettings(context).saveDefaultOfficialRule(normalized)
                             }
                         }
-                        Toast.makeText(context, "默认规则已保存", Toast.LENGTH_SHORT).show()
-                        defaultRuleEditor = null
                     }
                 )
             }
@@ -351,7 +342,7 @@ internal fun MessageBlockMiuixPage(
                                 removeKeys.contains(MessageBlockSettings.bindingKey(it.targetType, it.targetId))
                             }
                             bindings = next
-                            sp.edit().putString(MessageBlockSettings.KEY_BINDINGS, MessageBlockSettings.encodeBindings(next)).apply()
+                            persistMessageBlockBindings(sp, templates, next, initialState.shouldPersist)
                             Toast.makeText(context, "已删除 ${targets.size} 个名单项", Toast.LENGTH_SHORT).show()
                         }
                     }
@@ -361,16 +352,15 @@ internal fun MessageBlockMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar("返回", onBack)
-        }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "基础") }
@@ -379,7 +369,7 @@ internal fun MessageBlockMiuixPage(
                     SwitchRow(
                         sp,
                         MessageBlockSettings.KEY_ENABLE,
-                        "启用屏蔽消息",
+                        "屏蔽消息",
                         "总开关开启后，仅命中启用模板的新消息会被拦截",
                         MessageBlockSettings.DEFAULT_ENABLE
                     )
@@ -438,21 +428,16 @@ private fun MessageBlockTemplateListPage(
         title = "模板管理",
         largeTitle = "模板管理",
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar(
-                primaryText = "新增模板",
-                onPrimaryClick = onAddTemplate,
-                secondaryText = "返回",
-                onSecondaryClick = onBack
-            )
-        }
+        onBack = onBack,
+        showBackIcon = false,
+        topBarActions = { TopBarTextAction("新增模板", onClick = onAddTemplate) }
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "模板") }
@@ -508,49 +493,31 @@ private fun MessageBlockListManagerPage(
     val visibleIds = visibleBindings.mapTo(LinkedHashSet()) { it.second.id }
     val allVisibleSelected = visibleIds.isNotEmpty() && visibleIds.all { it in selectedIds }
     val selectedBindings = bindings.filter { it.id in selectedIds }
+    val selectionBackState = rememberNavigationEventState(currentInfo = NavigationEventInfo.None)
+    NavigationBackHandler(state = selectionBackState, isBackEnabled = batchDeleteMode && LocalSettingsBackRegistrationEnabled.current, onBackCompleted = {
+        batchDeleteMode = false
+        selectedIds = emptySet()
+    })
     PageScaffold(
         title = "名单管理",
         largeTitle = "名单管理",
         scrollBehavior = scrollBehavior,
-        bottomBar = {
+        onBack = { if (batchDeleteMode) { batchDeleteMode = false; selectedIds = emptySet() } else onBack() },
+        showBackIcon = false,
+        topBarActions = {
             if (batchDeleteMode) {
-                BottomActionBar(
-                    primaryText = "删除所选（${selectedBindings.size}）",
-                    onPrimaryClick = {
-                        if (selectedBindings.isEmpty()) {
-                            Toast.makeText(context, "请先选择名单", Toast.LENGTH_SHORT).show()
-                        } else {
-                            showDeleteConfirm = true
-                        }
-                    },
-                    secondaryText = "取消",
-                    onSecondaryClick = {
-                        batchDeleteMode = false
-                        selectedIds = emptySet()
-                    },
-                    middleText = if (visibleIds.isEmpty()) null else if (allVisibleSelected) "取消全选" else "全选",
-                    onMiddleClick = if (visibleIds.isEmpty()) null else {
-                        {
-                            selectedIds = if (allVisibleSelected) {
-                                selectedIds - visibleIds
-                            } else {
-                                selectedIds + visibleIds
-                            }
-                        }
-                    }
-                )
+                if (visibleIds.isNotEmpty()) TopBarTextAction(if (allVisibleSelected) "取消全选" else "全选") {
+                    selectedIds = if (allVisibleSelected) selectedIds - visibleIds else selectedIds + visibleIds
+                }
+                TopBarTextAction("删除（${selectedBindings.size}）") {
+                    if (selectedBindings.isEmpty()) Toast.makeText(context, "请先选择名单", Toast.LENGTH_SHORT).show()
+                    else showDeleteConfirm = true
+                }
             } else {
-                BottomActionBar(
-                    primaryText = "返回",
-                    onPrimaryClick = onBack,
-                    middleText = if (bindings.isEmpty()) null else "批量删除",
-                    onMiddleClick = if (bindings.isEmpty()) null else {
-                        {
-                            batchDeleteMode = true
-                            selectedIds = emptySet()
-                        }
-                    }
-                )
+                if (bindings.isNotEmpty()) TopBarTextAction("批量删除") {
+                    batchDeleteMode = true
+                    selectedIds = emptySet()
+                }
             }
         }
     ) { padding ->
@@ -559,7 +526,7 @@ private fun MessageBlockListManagerPage(
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item {
@@ -665,10 +632,10 @@ private fun MessageBlockBatchBindingPage(
         title = request.title,
         largeTitle = request.title,
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar(
-                primaryText = "保存名单",
-                onPrimaryClick = {
+        onBack = onBack,
+        showBackIcon = false,
+        topBarActions = {
+            TopBarTextAction("新增") {
                     if (templateIds.isEmpty()) {
                         Toast.makeText(context, "请先选择模板", Toast.LENGTH_SHORT).show()
                     } else {
@@ -686,10 +653,7 @@ private fun MessageBlockBatchBindingPage(
                             }
                         )
                     }
-                },
-                secondaryText = "返回",
-                onSecondaryClick = onBack
-            )
+            }
         }
     ) { padding ->
         LazyColumn(
@@ -697,7 +661,7 @@ private fun MessageBlockBatchBindingPage(
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "批量配置") }
@@ -711,7 +675,7 @@ private fun MessageBlockBatchBindingPage(
                     InsetDivider()
                     SwitchRow(
                         checked = enabled,
-                        title = "启用名单",
+                        title = "名单",
                         summary = "关闭后保留名单但不参与匹配",
                         onCheckedChange = { enabled = it }
                     )
@@ -779,12 +743,13 @@ private fun MessageBlockDefaultRulePage(
     onBack: () -> Unit,
     onSave: (MessageBlockDefaultRule) -> Unit
 ) {
-    var enabled by remember(rule) { mutableStateOf(rule.enabled) }
-    var templateIds by remember(rule) { mutableStateOf(rule.templateIds) }
-    var customRules by remember(rule) { mutableStateOf(rule.customRules) }
-    var typeAll by remember(rule) { mutableStateOf(rule.typeAll) }
-    var types by remember(rule) { mutableStateOf(rule.types) }
-    var textKeywords by remember(rule) { mutableStateOf(rule.textKeywords) }
+    var enabled by remember(rule.group, rule.official) { mutableStateOf(rule.enabled) }
+    var templateIds by remember(rule.group, rule.official) { mutableStateOf(rule.templateIds) }
+    var customRules by remember(rule.group, rule.official) { mutableStateOf(rule.customRules) }
+    var typeAll by remember(rule.group, rule.official) { mutableStateOf(rule.typeAll) }
+    var types by remember(rule.group, rule.official) { mutableStateOf(rule.types) }
+    var textKeywords by remember(rule.group, rule.official) { mutableStateOf(rule.textKeywords) }
+    var validKeywords by remember(rule.group, rule.official) { mutableStateOf(rule.textKeywords) }
     val listState = rememberLazyListState()
     val scrollBehavior = MiuixScrollBehavior()
     val title = when {
@@ -802,42 +767,33 @@ private fun MessageBlockDefaultRulePage(
         typeAll = rules.typeAll
         types = rules.types
         textKeywords = rules.textKeywords
+        validKeywords = rules.textKeywords
+    }
+    fun persist() {
+        if (enabled && !customRules && templateIds.isEmpty()) return
+        onSave(rule.copy(
+            enabled = enabled,
+            templateIds = templateIds,
+            customRules = customRules,
+            typeAll = typeAll,
+            types = types,
+            textKeywords = if (customRules && !typeAll && types.contains(MessageBlockSettings.TYPE_TEXT)) validKeywords else ""
+        ))
     }
 
     PageScaffold(
         title = title,
         largeTitle = title,
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar(
-                primaryText = "保存规则",
-                onPrimaryClick = {
-                    if (enabled && !customRules && templateIds.isEmpty()) {
-                        Toast.makeText(context, "请先选择模板", Toast.LENGTH_SHORT).show()
-                    } else {
-                        onSave(
-                            rule.copy(
-                                enabled = enabled,
-                                templateIds = templateIds,
-                                customRules = customRules,
-                                typeAll = typeAll,
-                                types = types,
-                                textKeywords = if (customRules && !typeAll && types.contains(MessageBlockSettings.TYPE_TEXT)) textKeywords else ""
-                            )
-                        )
-                    }
-                },
-                secondaryText = "返回",
-                onSecondaryClick = onBack
-            )
-        }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "默认规则") }
@@ -845,9 +801,9 @@ private fun MessageBlockDefaultRulePage(
                 SettingsCard {
                     SwitchRow(
                         checked = enabled,
-                        title = "启用默认规则",
-                        summary = scopeSummary,
-                        onCheckedChange = { enabled = it }
+                        title = "默认规则",
+                        summary = if (enabled && !customRules && templateIds.isEmpty()) "请选择模板或开启专属规则，保留上次有效配置" else scopeSummary,
+                        onCheckedChange = { enabled = it; persist() }
                     )
                 }
             }
@@ -869,6 +825,7 @@ private fun MessageBlockDefaultRulePage(
                                         templateIds - template.id
                                     }
                                     if (!customRules) copySelectedTemplateRules()
+                                    persist()
                                 }
                             )
                             if (index < templates.lastIndex) InsetDivider()
@@ -888,12 +845,14 @@ private fun MessageBlockDefaultRulePage(
                             if (checked && !typeAll && types.isEmpty() && textKeywords.isBlank()) {
                                 copySelectedTemplateRules()
                             }
+                            persist()
                         }
                     )
                     if (customRules) {
                         InsetDivider()
                         ActionRow("套用已选模板规则", "把上方模板的类型和关键词复制到这里") {
                             copySelectedTemplateRules()
+                            persist()
                         }
                         InsetDivider()
                         SwitchRow(
@@ -902,7 +861,8 @@ private fun MessageBlockDefaultRulePage(
                             summary = "开启后默认范围内全部类型生效",
                             onCheckedChange = {
                                 typeAll = it
-                                if (it) textKeywords = ""
+                                if (it) { textKeywords = ""; validKeywords = "" }
+                                persist()
                             }
                         )
                         if (!typeAll) {
@@ -916,9 +876,10 @@ private fun MessageBlockDefaultRulePage(
                                         types = if (checked) {
                                             types + option.key
                                         } else {
-                                            if (option.key == MessageBlockSettings.TYPE_TEXT) textKeywords = ""
+                                            if (option.key == MessageBlockSettings.TYPE_TEXT) { textKeywords = ""; validKeywords = "" }
                                             types - option.key
                                         }
+                                        persist()
                                     }
                                 )
                             }
@@ -928,8 +889,9 @@ private fun MessageBlockDefaultRulePage(
                                     "文字关键词",
                                     "文字和文字引用消息生效；多个用 |、逗号或换行分隔，留空则全部命中",
                                     textKeywords,
-                                    minLines = 2
-                                ) { textKeywords = it }
+                                    minLines = 2,
+                                    onEditingFinished = { if (it.isBlank()) { validKeywords = ""; persist() } }
+                                ) { textKeywords = it; if (it.isNotBlank()) { validKeywords = it; persist() } }
                             }
                         }
                     }
@@ -952,37 +914,40 @@ private fun MessageBlockTemplatePage(
     var typeAll by remember(request) { mutableStateOf(request.template.typeAll) }
     var types by remember(request) { mutableStateOf(request.template.types) }
     var textKeywords by remember(request) { mutableStateOf(request.template.textKeywords) }
+    var validKeywords by remember(request) { mutableStateOf(request.template.textKeywords) }
+    var savedName by remember(request) { mutableStateOf(request.template.name) }
     val listState = rememberLazyListState()
     val scrollBehavior = MiuixScrollBehavior()
+    fun persist(create: Boolean = false) {
+        if (!create && !request.canDelete) return
+        val nextName = name.trim().ifBlank { if (create) "模板 ${request.index + 1}" else savedName }
+        onSave(request.template.copy(
+            name = nextName,
+            enabled = enabled,
+            mode = MessageBlockSettings.MODE_TARGETS,
+            targets = "",
+            targetGroupMembers = "",
+            excludes = "",
+            excludeGroupMembers = "",
+            typeAll = typeAll,
+            types = types,
+            textKeywords = if (!typeAll && types.contains(MessageBlockSettings.TYPE_TEXT)) validKeywords else ""
+        ))
+        savedName = nextName
+    }
 
     PageScaffold(
         title = name.ifBlank { "模板" },
         largeTitle = name.ifBlank { "模板" },
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar(
-                primaryText = "保存模板",
-                onPrimaryClick = {
-                    onSave(
-                        MessageBlockTemplate(
-                            id = request.template.id,
-                            name = name.trim().ifBlank { "模板 ${request.index + 1}" },
-                            enabled = enabled,
-                            mode = MessageBlockSettings.MODE_TARGETS,
-                            targets = "",
-                            targetGroupMembers = "",
-                            excludes = "",
-                            excludeGroupMembers = "",
-                            typeAll = typeAll,
-                            types = types,
-                            textKeywords = if (!typeAll && types.contains(MessageBlockSettings.TYPE_TEXT)) textKeywords else ""
-                        )
-                    )
-                    Toast.makeText(context, "模板已保存", Toast.LENGTH_SHORT).show()
-                },
-                secondaryText = "返回",
-                onSecondaryClick = onBack
-            )
+        onBack = onBack,
+        showBackIcon = false,
+        topBarActions = {
+            if (!request.canDelete) TopBarTextAction("新增") { persist(create = true) }
+            else TopBarTextAction("删除") {
+                onDelete()
+                Toast.makeText(context, "模板已删除", Toast.LENGTH_SHORT).show()
+            }
         }
     ) { padding ->
         LazyColumn(
@@ -990,19 +955,19 @@ private fun MessageBlockTemplatePage(
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "模板") }
             item {
                 SettingsCard {
-                    InputRow("模板名称", "用于区分不同屏蔽模板", name) { name = it }
+                    InputRow("模板名称", if (name.isBlank() && request.canDelete) "请输入模板名称，保留上次有效配置" else "用于区分不同屏蔽模板", name) { name = it; persist() }
                     InsetDivider()
                     SwitchRow(
                         checked = enabled,
-                        title = "启用模板",
+                        title = "模板",
                         summary = "关闭后使用该模板的名单不会按此规则屏蔽",
-                        onCheckedChange = { enabled = it }
+                        onCheckedChange = { enabled = it; persist() }
                     )
                 }
             }
@@ -1015,7 +980,8 @@ private fun MessageBlockTemplatePage(
                         summary = "开启后该模板命中范围内全部类型生效",
                         onCheckedChange = {
                             typeAll = it
-                            if (it) textKeywords = ""
+                            if (it) { textKeywords = ""; validKeywords = "" }
+                            persist()
                         }
                     )
                     if (!typeAll) {
@@ -1029,9 +995,10 @@ private fun MessageBlockTemplatePage(
                                     types = if (checked) {
                                         types + option.key
                                     } else {
-                                        if (option.key == MessageBlockSettings.TYPE_TEXT) textKeywords = ""
+                                        if (option.key == MessageBlockSettings.TYPE_TEXT) { textKeywords = ""; validKeywords = "" }
                                         types - option.key
                                     }
+                                    persist()
                                 }
                             )
                         }
@@ -1041,19 +1008,9 @@ private fun MessageBlockTemplatePage(
                                 "文字关键词",
                                 "文字和文字引用消息生效；多个用 |、逗号或换行分隔，留空则全部命中",
                                 textKeywords,
-                                minLines = 2
-                            ) { textKeywords = it }
-                        }
-                    }
-                }
-            }
-            if (request.canDelete) {
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
-                item {
-                    SettingsCard {
-                        ActionRow("删除模板", "删除后立即从模板列表移除") {
-                            onDelete()
-                            Toast.makeText(context, "模板已删除", Toast.LENGTH_SHORT).show()
+                                minLines = 2,
+                                onEditingFinished = { if (it.isBlank()) { validKeywords = ""; persist() } }
+                            ) { textKeywords = it; if (it.isNotBlank()) { validKeywords = it; persist() } }
                         }
                     }
                 }
@@ -1078,6 +1035,7 @@ private fun MessageBlockBindingPage(
     var typeAll by remember(request) { mutableStateOf(request.binding.typeAll) }
     var types by remember(request) { mutableStateOf(request.binding.types) }
     var textKeywords by remember(request) { mutableStateOf(request.binding.textKeywords) }
+    var validKeywords by remember(request) { mutableStateOf(request.binding.textKeywords) }
     val listState = rememberLazyListState()
     val scrollBehavior = MiuixScrollBehavior()
     val targetTitle = request.binding.label.ifBlank { request.binding.targetId }
@@ -1086,32 +1044,33 @@ private fun MessageBlockBindingPage(
         typeAll = rules.typeAll
         types = rules.types
         textKeywords = rules.textKeywords
+        validKeywords = rules.textKeywords
+    }
+    fun persist(create: Boolean = false) {
+        if (!create && !request.canDelete) return
+        onSave(request.binding.copy(
+            enabled = enabled,
+            action = action,
+            templateIds = templateIds,
+            customRules = customRules,
+            typeAll = typeAll,
+            types = types,
+            textKeywords = if (customRules && !typeAll && types.contains(MessageBlockSettings.TYPE_TEXT)) validKeywords else ""
+        ))
     }
 
     PageScaffold(
         title = targetTitle,
         largeTitle = targetTitle,
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar(
-                primaryText = "保存名单",
-                onPrimaryClick = {
-                    onSave(
-                        request.binding.copy(
-                            enabled = enabled,
-                            action = action,
-                            templateIds = templateIds,
-                            customRules = customRules,
-                            typeAll = typeAll,
-                            types = types,
-                            textKeywords = if (customRules && !typeAll && types.contains(MessageBlockSettings.TYPE_TEXT)) textKeywords else ""
-                        )
-                    )
-                    Toast.makeText(context, "名单已保存", Toast.LENGTH_SHORT).show()
-                },
-                secondaryText = "返回",
-                onSecondaryClick = onBack
-            )
+        onBack = onBack,
+        showBackIcon = false,
+        topBarActions = {
+            if (!request.canDelete) TopBarTextAction("新增") { persist(create = true) }
+            else TopBarTextAction("删除") {
+                onDelete()
+                Toast.makeText(context, "名单已删除", Toast.LENGTH_SHORT).show()
+            }
         }
     ) { padding ->
         LazyColumn(
@@ -1119,7 +1078,7 @@ private fun MessageBlockBindingPage(
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "名单信息") }
@@ -1133,9 +1092,9 @@ private fun MessageBlockBindingPage(
                     InsetDivider()
                     SwitchRow(
                         checked = enabled,
-                        title = "启用名单",
+                        title = "名单",
                         summary = "关闭后该名单不参与屏蔽消息匹配",
-                        onCheckedChange = { enabled = it }
+                        onCheckedChange = { enabled = it; persist() }
                     )
                     InsetDivider()
                     SwitchRow(
@@ -1144,6 +1103,7 @@ private fun MessageBlockBindingPage(
                         summary = "开启后命中该名单时跳过屏蔽；关闭时按下方模板屏蔽",
                         onCheckedChange = {
                             action = if (it) MessageBlockSettings.ACTION_EXCLUDE else MessageBlockSettings.ACTION_BLOCK
+                            persist()
                         }
                     )
                 }
@@ -1166,6 +1126,7 @@ private fun MessageBlockBindingPage(
                                         templateIds - template.id
                                     }
                                     if (!customRules) copySelectedTemplateRules()
+                                    persist()
                                 }
                             )
                             if (index < templates.lastIndex) InsetDivider()
@@ -1189,12 +1150,14 @@ private fun MessageBlockBindingPage(
                             if (checked && !typeAll && types.isEmpty() && textKeywords.isBlank()) {
                                 copySelectedTemplateRules()
                             }
+                            persist()
                         }
                     )
                     if (customRules) {
                         InsetDivider()
                         ActionRow("套用已选模板规则", "把上方模板的类型和关键词复制到这里") {
                             copySelectedTemplateRules()
+                            persist()
                         }
                         InsetDivider()
                         SwitchRow(
@@ -1203,7 +1166,8 @@ private fun MessageBlockBindingPage(
                             summary = "开启后该名单命中范围内全部类型生效",
                             onCheckedChange = {
                                 typeAll = it
-                                if (it) textKeywords = ""
+                                if (it) { textKeywords = ""; validKeywords = "" }
+                                persist()
                             }
                         )
                         if (!typeAll) {
@@ -1217,9 +1181,10 @@ private fun MessageBlockBindingPage(
                                         types = if (checked) {
                                             types + option.key
                                         } else {
-                                            if (option.key == MessageBlockSettings.TYPE_TEXT) textKeywords = ""
+                                            if (option.key == MessageBlockSettings.TYPE_TEXT) { textKeywords = ""; validKeywords = "" }
                                             types - option.key
                                         }
+                                        persist()
                                     }
                                 )
                             }
@@ -1229,20 +1194,10 @@ private fun MessageBlockBindingPage(
                                     "文字关键词",
                                     "文字和文字引用消息生效；多个用 |、逗号或换行分隔，留空则全部命中",
                                     textKeywords,
-                                    minLines = 2
-                                ) { textKeywords = it }
+                                    minLines = 2,
+                                    onEditingFinished = { if (it.isBlank()) { validKeywords = ""; persist() } }
+                                ) { textKeywords = it; if (it.isNotBlank()) { validKeywords = it; persist() } }
                             }
-                        }
-                    }
-                }
-            }
-            if (request.canDelete) {
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
-                item {
-                    SettingsCard {
-                        ActionRow("删除名单", "删除后该名单不再套用模板") {
-                            onDelete()
-                            Toast.makeText(context, "名单已删除", Toast.LENGTH_SHORT).show()
                         }
                     }
                 }

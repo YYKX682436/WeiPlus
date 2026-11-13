@@ -39,7 +39,6 @@ import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-import top.yukonga.miuix.kmp.window.WindowDialog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.Locale
@@ -85,6 +84,30 @@ fun Page(
         }
         Toast.makeText(context, if (success) "聊天分组已保存" else "聊天分组保存失败", Toast.LENGTH_SHORT).show()
         if (success) reload()
+        return success
+    }
+
+    fun saveAutomaticGrouping(group: ConversationGroup) {
+        val success = ConversationGroupStore.updateGroup(context, group.id) { latest -> latest.copy(
+            automaticGroupingEnabled = group.automaticGroupingEnabled,
+            automaticAllGroups = group.automaticAllGroups,
+            automaticNewGroups = group.automaticNewGroups,
+            automaticMutedGroups = group.automaticMutedGroups,
+            automaticOwnedGroups = group.automaticOwnedGroups,
+            automaticEnterpriseGroups = group.automaticEnterpriseGroups,
+            automaticOfficialAccounts = group.automaticOfficialAccounts,
+            automaticGroupIds = group.automaticGroupIds,
+            automaticGroupLabelIds = group.automaticGroupLabelIds,
+            automaticOfficialIncludeIds = group.automaticOfficialIncludeIds,
+            automaticOfficialExcludeIds = group.automaticOfficialExcludeIds
+        ) }
+        if (success) reload()
+        else Toast.makeText(context, "分组设置保存失败", Toast.LENGTH_SHORT).show()
+    }
+
+    fun updateGroupFields(id: String, update: (ConversationGroup) -> ConversationGroup): Boolean {
+        val success = ConversationGroupStore.updateGroup(context, id, update)
+        if (success) reload() else Toast.makeText(context, "分组设置保存失败", Toast.LENGTH_SHORT).show()
         return success
     }
 
@@ -142,11 +165,14 @@ fun Page(
                     route = ConversationGroupRoute.ConversationPicker(it, currentRoute.existing)
                 },
                 onSelectPathGroup = { draft, groupId ->
-                    route = ConversationGroupRoute.Editor(
-                        draft.copy(parentId = groupId),
-                        currentRoute.existing
-                    )
+                    val duplicate = groups.any { it.id != draft.id && it.parentId == groupId && it.name.equals(draft.name.trim(), ignoreCase = true) }
+                    if (duplicate) Toast.makeText(context, "同一层级已存在同名分组", Toast.LENGTH_SHORT).show()
+                    else if (!currentRoute.existing || updateGroupFields(draft.id) { it.copy(parentId = groupId) }) {
+                        val next = if (currentRoute.existing) groups.firstOrNull { it.id == draft.id } ?: draft else draft.copy(parentId = groupId)
+                        route = ConversationGroupRoute.Editor(next, currentRoute.existing)
+                    }
                 },
+                onNameChange = { name -> updateGroupFields(currentRoute.group.id) { it.copy(name = name.trim()) } },
                 onSave = { draft ->
                     if (saveGroup(draft, currentRoute.existing)) route = ConversationGroupRoute.Main
                 },
@@ -186,14 +212,16 @@ fun Page(
                 context = context,
                 group = currentRoute.group,
                 groups = groups,
-                onBack = {
-                    route = ConversationGroupRoute.Editor(currentRoute.group, currentRoute.existing)
-                },
-                onConfirm = { selected ->
+                onBack = { selected ->
+                    val next = if (currentRoute.existing) groups.firstOrNull { it.id == currentRoute.group.id } ?: currentRoute.group
+                        else currentRoute.group.copy(conversationIds = selected)
                     route = ConversationGroupRoute.Editor(
-                        currentRoute.group.copy(conversationIds = selected),
+                        next,
                         currentRoute.existing
                     )
+                },
+                onSelectionChange = { selected ->
+                    if (currentRoute.existing) updateGroupFields(currentRoute.group.id) { it.copy(conversationIds = selected) }
                 }
             )
             is ConversationGroupRoute.ParentPicker -> ConversationGroupParentPickerPage(
@@ -203,10 +231,13 @@ fun Page(
                     route = ConversationGroupRoute.Editor(currentRoute.group, currentRoute.existing)
                 },
                 onSelected = { parentId ->
-                    route = ConversationGroupRoute.Editor(
-                        currentRoute.group.copy(parentId = parentId),
-                        currentRoute.existing
-                    )
+                    val draft = currentRoute.group
+                    val duplicate = groups.any { it.id != draft.id && it.parentId == parentId && it.name.equals(draft.name.trim(), ignoreCase = true) }
+                    if (duplicate) Toast.makeText(context, "同一层级已存在同名分组", Toast.LENGTH_SHORT).show()
+                    else if (!currentRoute.existing || updateGroupFields(draft.id) { it.copy(parentId = parentId) }) {
+                        val next = if (currentRoute.existing) groups.firstOrNull { it.id == draft.id } ?: draft else draft.copy(parentId = parentId)
+                        route = ConversationGroupRoute.Editor(next, currentRoute.existing)
+                    }
                 }
             )
             is ConversationGroupRoute.AutomaticGrouping -> ConversationGroupAutomaticGroupingPage(
@@ -220,32 +251,26 @@ fun Page(
                 onPick = { group, kind ->
                     route = ConversationGroupRoute.AutomaticPicker(group, kind)
                 },
-                onSave = { group ->
-                    if (saveGroup(group, existing = true)) {
-                        route = ConversationGroupRoute.Main
-                    }
-                }
+                onSave = ::saveAutomaticGrouping
             )
             is ConversationGroupRoute.AutomaticPicker -> ConversationGroupAutomaticPickerPage(
                 context = context,
                 group = currentRoute.group,
                 kind = currentRoute.kind,
                 onBack = {
-                    route = ConversationGroupRoute.AutomaticGrouping(currentRoute.group)
+                    route = ConversationGroupRoute.AutomaticGrouping(
+                        groups.firstOrNull { it.id == currentRoute.group.id } ?: currentRoute.group
+                    )
                 },
-                onConfirm = { selected ->
-                    val updated = when (currentRoute.kind) {
-                        ConversationGroupAutomaticPickerKind.GROUPS -> {
-                            currentRoute.group.copy(automaticGroupIds = selected)
-                        }
-                        ConversationGroupAutomaticPickerKind.OFFICIAL_INCLUDE -> {
-                            currentRoute.group.copy(automaticOfficialIncludeIds = selected)
-                        }
-                        ConversationGroupAutomaticPickerKind.OFFICIAL_EXCLUDE -> {
-                            currentRoute.group.copy(automaticOfficialExcludeIds = selected)
+                onSelectionChange = { selected ->
+                    val success = ConversationGroupStore.updateGroup(context, currentRoute.group.id) { latest ->
+                        when (currentRoute.kind) {
+                            ConversationGroupAutomaticPickerKind.GROUPS -> latest.copy(automaticGroupIds = selected)
+                            ConversationGroupAutomaticPickerKind.OFFICIAL_INCLUDE -> latest.copy(automaticOfficialIncludeIds = selected)
+                            ConversationGroupAutomaticPickerKind.OFFICIAL_EXCLUDE -> latest.copy(automaticOfficialExcludeIds = selected)
                         }
                     }
-                    route = ConversationGroupRoute.AutomaticGrouping(updated)
+                    if (success) reload() else Toast.makeText(context, "分组设置保存失败", Toast.LENGTH_SHORT).show()
                 }
             )
         }
@@ -276,21 +301,16 @@ private fun ConversationGroupListPage(
         title = title,
         largeTitle = title,
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar(
-                primaryText = "新增分组",
-                onPrimaryClick = onAdd,
-                secondaryText = "返回",
-                onSecondaryClick = onBack
-            )
-        }
+        onBack = onBack,
+        showBackIcon = false,
+        topBarActions = { TopBarTextAction("新增分组", onClick = onAdd) }
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "功能") }
@@ -350,7 +370,12 @@ private fun ConversationGroupAutomaticGroupingPage(
     onPick: (ConversationGroup, ConversationGroupAutomaticPickerKind) -> Unit,
     onSave: (ConversationGroup) -> Unit
 ) {
-    var draft by remember(group) { mutableStateOf(group) }
+    var draft by remember(group.id) { mutableStateOf(group) }
+    LaunchedEffect(group) { draft = group }
+    fun updateDraft(value: ConversationGroup) {
+        draft = value
+        onSave(value)
+    }
     val labels = remember(context) { GroupChatLabelStore.load(context) }
     val targetChoices = remember(groups) {
         groups.map { item ->
@@ -363,21 +388,15 @@ private fun ConversationGroupAutomaticGroupingPage(
         title = "群聊归拢",
         largeTitle = "群聊归拢",
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar(
-                primaryText = "保存设置",
-                onPrimaryClick = { onSave(draft) },
-                secondaryText = "返回",
-                onSecondaryClick = onBack
-            )
-        }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "归拢目标") }
@@ -395,108 +414,106 @@ private fun ConversationGroupAutomaticGroupingPage(
                     InsetDivider()
                     SwitchRow(
                         checked = draft.automaticGroupingEnabled,
-                        title = "启用群聊归拢",
+                        title = "群聊归拢",
                         summary = "关闭后自动归拢的会话立即恢复原位置",
-                        onCheckedChange = { draft = draft.copy(automaticGroupingEnabled = it) }
+                        onCheckedChange = { updateDraft(draft.copy(automaticGroupingEnabled = it)) }
                     )
                 }
             }
-            if (draft.automaticGroupingEnabled) {
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "群聊规则") }
-                item {
-                    SettingsCard {
-                        SwitchRow(
-                            checked = draft.automaticAllGroups,
-                            title = "自动归拢所有群聊",
-                            summary = "包含普通群和企业微信群"
-                        ) { draft = draft.copy(automaticAllGroups = it) }
-                        InsetDivider()
-                        SwitchRow(
-                            checked = draft.automaticNewGroups,
-                            title = "自动归拢新群聊",
-                            summary = "首次发现的新群聊自动加入目标分组"
-                        ) { draft = draft.copy(automaticNewGroups = it) }
-                        InsetDivider()
-                        ActionRow(
-                            title = "选择群聊",
-                            summary = if (draft.automaticGroupIds.isEmpty()) {
-                                "未选择群聊"
-                            } else {
-                                "已选择 ${draft.automaticGroupIds.size} 个群聊"
-                            }
-                        ) { onPick(draft, ConversationGroupAutomaticPickerKind.GROUPS) }
-                        InsetDivider()
-                        SwitchRow(
-                            checked = draft.automaticMutedGroups,
-                            title = "自动归拢免打扰群聊",
-                            summary = "仅归拢已开启微信消息免打扰的群聊"
-                        ) { draft = draft.copy(automaticMutedGroups = it) }
-                        InsetDivider()
-                        SwitchRow(
-                            checked = draft.automaticOwnedGroups,
-                            title = "自动归拢自己创建的群聊",
-                            summary = "按群资料中的群主账号识别"
-                        ) { draft = draft.copy(automaticOwnedGroups = it) }
-                        InsetDivider()
-                        SwitchRow(
-                            checked = draft.automaticEnterpriseGroups,
-                            title = "自动归拢企业微信群聊",
-                            summary = "仅归拢企业微信互通群"
-                        ) { draft = draft.copy(automaticEnterpriseGroups = it) }
-                    }
-                }
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "群聊标签") }
-                item {
-                    SettingsCard {
-                        if (labels.isEmpty()) {
-                            EmptyText("暂无群聊标签")
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "群聊规则") }
+            item {
+                SettingsCard {
+                    SwitchRow(
+                        checked = draft.automaticAllGroups,
+                        title = "自动归拢所有群聊",
+                        summary = "包含普通群和企业微信群"
+                    ) { updateDraft(draft.copy(automaticAllGroups = it)) }
+                    InsetDivider()
+                    SwitchRow(
+                        checked = draft.automaticNewGroups,
+                        title = "自动归拢新群聊",
+                        summary = "首次发现的新群聊自动加入目标分组"
+                    ) { updateDraft(draft.copy(automaticNewGroups = it)) }
+                    InsetDivider()
+                    ActionRow(
+                        title = "选择群聊",
+                        summary = if (draft.automaticGroupIds.isEmpty()) {
+                            "未选择群聊"
                         } else {
-                            labels.forEachIndexed { index, label ->
-                                SwitchRow(
-                                    checked = label.id in draft.automaticGroupLabelIds,
-                                    title = label.name,
-                                    summary = "归拢该标签中的 ${label.groupIds.size} 个群聊"
-                                ) { checked ->
-                                    draft = draft.copy(
-                                        automaticGroupLabelIds = if (checked) {
-                                            (draft.automaticGroupLabelIds + label.id).distinct()
-                                        } else {
-                                            draft.automaticGroupLabelIds.filterNot { it == label.id }
-                                        }
-                                    )
-                                }
-                                if (index < labels.lastIndex) InsetDivider()
+                            "已选择 ${draft.automaticGroupIds.size} 个群聊"
+                        }
+                    ) { onPick(draft, ConversationGroupAutomaticPickerKind.GROUPS) }
+                    InsetDivider()
+                    SwitchRow(
+                        checked = draft.automaticMutedGroups,
+                        title = "自动归拢免打扰群聊",
+                        summary = "仅归拢已开启微信消息免打扰的群聊"
+                    ) { updateDraft(draft.copy(automaticMutedGroups = it)) }
+                    InsetDivider()
+                    SwitchRow(
+                        checked = draft.automaticOwnedGroups,
+                        title = "自动归拢自己创建的群聊",
+                        summary = "按群资料中的群主账号识别"
+                    ) { updateDraft(draft.copy(automaticOwnedGroups = it)) }
+                    InsetDivider()
+                    SwitchRow(
+                        checked = draft.automaticEnterpriseGroups,
+                        title = "自动归拢企业微信群聊",
+                        summary = "仅归拢企业微信互通群"
+                    ) { updateDraft(draft.copy(automaticEnterpriseGroups = it)) }
+                }
+            }
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "群聊标签") }
+            item {
+                SettingsCard {
+                    if (labels.isEmpty()) {
+                        EmptyText("暂无群聊标签")
+                    } else {
+                        labels.forEachIndexed { index, label ->
+                            SwitchRow(
+                                checked = label.id in draft.automaticGroupLabelIds,
+                                title = label.name,
+                                summary = "归拢该标签中的 ${label.groupIds.size} 个群聊"
+                            ) { checked ->
+                                updateDraft(draft.copy(
+                                    automaticGroupLabelIds = if (checked) {
+                                        (draft.automaticGroupLabelIds + label.id).distinct()
+                                    } else {
+                                        draft.automaticGroupLabelIds.filterNot { it == label.id }
+                                    }
+                                ))
                             }
+                            if (index < labels.lastIndex) InsetDivider()
                         }
                     }
                 }
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "公众号") }
-                item {
-                    SettingsCard {
-                        SwitchRow(
-                            checked = draft.automaticOfficialAccounts,
-                            title = "自动归拢公众号",
-                            summary = "归拢当前账号可识别的公众号会话"
-                        ) { draft = draft.copy(automaticOfficialAccounts = it) }
-                        InsetDivider()
-                        ActionRow(
-                            title = "包含公众号",
-                            summary = if (draft.automaticOfficialIncludeIds.isEmpty()) {
-                                "未额外包含公众号"
-                            } else {
-                                "已包含 ${draft.automaticOfficialIncludeIds.size} 个公众号"
-                            }
-                        ) { onPick(draft, ConversationGroupAutomaticPickerKind.OFFICIAL_INCLUDE) }
-                        InsetDivider()
-                        ActionRow(
-                            title = "排除公众号",
-                            summary = if (draft.automaticOfficialExcludeIds.isEmpty()) {
-                                "未排除公众号"
-                            } else {
-                                "已排除 ${draft.automaticOfficialExcludeIds.size} 个公众号"
-                            }
-                        ) { onPick(draft, ConversationGroupAutomaticPickerKind.OFFICIAL_EXCLUDE) }
-                    }
+            }
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "公众号") }
+            item {
+                SettingsCard {
+                    SwitchRow(
+                        checked = draft.automaticOfficialAccounts,
+                        title = "自动归拢公众号",
+                        summary = "归拢当前账号可识别的公众号会话"
+                    ) { updateDraft(draft.copy(automaticOfficialAccounts = it)) }
+                    InsetDivider()
+                    ActionRow(
+                        title = "包含公众号",
+                        summary = if (draft.automaticOfficialIncludeIds.isEmpty()) {
+                            "未额外包含公众号"
+                        } else {
+                            "已包含 ${draft.automaticOfficialIncludeIds.size} 个公众号"
+                        }
+                    ) { onPick(draft, ConversationGroupAutomaticPickerKind.OFFICIAL_INCLUDE) }
+                    InsetDivider()
+                    ActionRow(
+                        title = "排除公众号",
+                        summary = if (draft.automaticOfficialExcludeIds.isEmpty()) {
+                            "未排除公众号"
+                        } else {
+                            "已排除 ${draft.automaticOfficialExcludeIds.size} 个公众号"
+                        }
+                    ) { onPick(draft, ConversationGroupAutomaticPickerKind.OFFICIAL_EXCLUDE) }
                 }
             }
         }
@@ -509,9 +526,9 @@ private fun ConversationGroupAutomaticPickerPage(
     group: ConversationGroup,
     kind: ConversationGroupAutomaticPickerKind,
     onBack: () -> Unit,
-    onConfirm: (List<String>) -> Unit
+    onSelectionChange: (List<String>) -> Unit
 ) {
-    val initialSelected = remember(group, kind) {
+    val initialSelected = remember(group.id, kind) {
         when (kind) {
             ConversationGroupAutomaticPickerKind.GROUPS -> group.automaticGroupIds.toSet()
             ConversationGroupAutomaticPickerKind.OFFICIAL_INCLUDE -> {
@@ -522,7 +539,7 @@ private fun ConversationGroupAutomaticPickerPage(
             }
         }
     }
-    var selectedIds by remember(group, kind) { mutableStateOf(initialSelected) }
+    var selectedIds by remember(group.id, kind) { mutableStateOf(initialSelected) }
     var options by remember(kind) { mutableStateOf(emptyList<ContactOption>()) }
     var loading by remember(kind) { mutableStateOf(true) }
     var error by remember(kind) { mutableStateOf("") }
@@ -547,23 +564,13 @@ private fun ConversationGroupAutomaticPickerPage(
         title = kind.title,
         largeTitle = kind.title,
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar(
-                primaryText = "保存选择",
-                onPrimaryClick = { onConfirm(selectedIds.toList()) },
-                secondaryText = "返回",
-                onSecondaryClick = onBack,
-                middleText = if (visibleIds.isEmpty()) null else if (visibleAllSelected) "取消全选" else "全选",
-                onMiddleClick = if (visibleIds.isEmpty()) null else {
-                    {
-                        selectedIds = if (visibleAllSelected) {
-                            selectedIds - visibleIds
-                        } else {
-                            selectedIds + visibleIds
-                        }
-                    }
-                }
-            )
+        onBack = onBack,
+        showBackIcon = false,
+        topBarActions = {
+            if (visibleIds.isNotEmpty()) TopBarTextAction(if (visibleAllSelected) "取消全选" else "全选") {
+                selectedIds = if (visibleAllSelected) selectedIds - visibleIds else selectedIds + visibleIds
+                onSelectionChange(selectedIds.toList())
+            }
         }
     ) { padding ->
         LazyColumn(
@@ -571,7 +578,7 @@ private fun ConversationGroupAutomaticPickerPage(
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item {
@@ -600,6 +607,7 @@ private fun ConversationGroupAutomaticPickerPage(
                                 } else {
                                     selectedIds + option.id
                                 }
+                                onSelectionChange(selectedIds.toList())
                             }
                         )
                     }
@@ -636,12 +644,13 @@ private fun ConversationGroupEditorPage(
     onPickParent: (ConversationGroup) -> Unit,
     onPickConversations: (ConversationGroup) -> Unit,
     onSelectPathGroup: (ConversationGroup, String?) -> Unit,
+    onNameChange: (String) -> Unit,
     onSave: (ConversationGroup) -> Unit,
     onReorder: (ConversationGroupStore.ReorderAction, ConversationGroup) -> Unit,
     onDelete: () -> Unit
 ) {
-    var name by remember(group) { mutableStateOf(group.name) }
-    var pinned by remember(group) { mutableStateOf(group.pinned) }
+    var name by remember(group.id) { mutableStateOf(group.name) }
+    var pinned by remember(group.id) { mutableStateOf(group.pinned) }
     var showDeleteConfirm by remember(group.id) { mutableStateOf(false) }
     var showReorderChoices by remember(group.id) { mutableStateOf(false) }
     val listState = rememberLazyListState()
@@ -655,23 +664,18 @@ private fun ConversationGroupEditorPage(
             .sortedBy { it.order }
     }
     val siblingIndex = siblings.indexOfFirst { it.id == group.id }
+    val duplicateName = groups.any { it.id != group.id && it.parentId == group.parentId && it.name.equals(name.trim(), ignoreCase = true) }
     PageScaffold(
         title = if (existing) "编辑聊天分组" else "新增聊天分组",
         largeTitle = if (existing) "编辑聊天分组" else "新增聊天分组",
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar(
-                primaryText = "保存分组",
-                onPrimaryClick = {
-                    if (draft.name.isBlank()) {
-                        Toast.makeText(context, "请输入分组名称", Toast.LENGTH_SHORT).show()
-                    } else {
-                        onSave(draft)
-                    }
-                },
-                secondaryText = "返回",
-                onSecondaryClick = onBack
-            )
+        onBack = onBack,
+        showBackIcon = false,
+        topBarActions = {
+            if (!existing) TopBarTextAction("新增") {
+                if (draft.name.isBlank()) Toast.makeText(context, "请输入分组名称", Toast.LENGTH_SHORT).show()
+                else onSave(draft)
+            }
         }
     ) { padding ->
         LazyColumn(
@@ -679,7 +683,7 @@ private fun ConversationGroupEditorPage(
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item {
@@ -698,7 +702,11 @@ private fun ConversationGroupEditorPage(
             item { SmallTitle(text = "分组内容") }
             item {
                 SettingsCard {
-                    InputRow("分组名称", "同一层级内不能重名", name) { name = it }
+                    InputRow("分组名称", if (name.isBlank() || duplicateName) "名称不能为空或与同层分组重复，保留上次有效配置" else "同一层级内不能重名", name) {
+                        name = it
+                        val duplicate = groups.any { item -> item.id != group.id && item.parentId == group.parentId && item.name.equals(it.trim(), ignoreCase = true) }
+                        if (existing && it.isNotBlank() && !duplicate) onNameChange(it)
+                    }
                     if (!existing) {
                         InsetDivider()
                         SwitchRow(
@@ -752,7 +760,7 @@ private fun ConversationGroupEditorPage(
                 add(Triple("移到底部", "设为当前层级的最后一个分组", ConversationGroupStore.ReorderAction.BOTTOM))
             }
         }
-        WindowDialog(
+        SettingsWindowDialog(
             show = true,
             title = "分组位置",
             onDismissRequest = { showReorderChoices = false },
@@ -770,7 +778,7 @@ private fun ConversationGroupEditorPage(
         )
     }
     if (showDeleteConfirm) {
-        WindowDialog(
+        SettingsWindowDialog(
             show = true,
             title = "删除聊天分组",
             onDismissRequest = { showDeleteConfirm = false },
@@ -812,8 +820,8 @@ internal fun ConversationGroupConversationPickerPage(
     context: Context,
     group: ConversationGroup,
     groups: List<ConversationGroup>,
-    onBack: () -> Unit,
-    onConfirm: (List<String>) -> Unit
+    onBack: (List<String>) -> Unit,
+    onSelectionChange: (List<String>) -> Unit
 ) {
     var loading by remember(group.id) { mutableStateOf(true) }
     var error by remember(group.id) { mutableStateOf("") }
@@ -822,8 +830,8 @@ internal fun ConversationGroupConversationPickerPage(
     var contactFilter by remember(group.id) { mutableStateOf(ContactPickerFilter.ALL) }
     var selectedLabel by remember(group.id) { mutableStateOf("") }
     var selectedConversationGroupId by remember(group.id) { mutableStateOf("") }
-    val initialSelected = remember(group) { group.conversationIds.toSet() }
-    var selectedIds by remember(group) { mutableStateOf(initialSelected) }
+    val initialSelected = remember(group.id) { group.conversationIds.toSet() }
+    var selectedIds by remember(group.id) { mutableStateOf(initialSelected) }
     val listState = rememberLazyListState()
     val scrollBehavior = MiuixScrollBehavior()
 
@@ -893,21 +901,13 @@ internal fun ConversationGroupConversationPickerPage(
         title = "选择分组会话",
         largeTitle = "选择分组会话",
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar(
-                primaryText = "保存选择",
-                onPrimaryClick = { onConfirm(selectedIds.toList()) },
-                secondaryText = "返回",
-                onSecondaryClick = onBack,
-                middleText = if (visibleIds.isNotEmpty()) {
-                    if (visibleAllSelected) "取消全选" else "全选"
-                } else null,
-                onMiddleClick = if (visibleIds.isNotEmpty()) {
-                    {
-                        selectedIds = if (visibleAllSelected) selectedIds - visibleIds else selectedIds + visibleIds
-                    }
-                } else null
-            )
+        onBack = { onBack(selectedIds.toList()) },
+        showBackIcon = false,
+        topBarActions = {
+            if (visibleIds.isNotEmpty()) TopBarTextAction(if (visibleAllSelected) "取消全选" else "全选") {
+                selectedIds = if (visibleAllSelected) selectedIds - visibleIds else selectedIds + visibleIds
+                onSelectionChange(selectedIds.toList())
+            }
         }
     ) { padding ->
         LazyColumn(
@@ -915,7 +915,7 @@ internal fun ConversationGroupConversationPickerPage(
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item {
@@ -991,6 +991,7 @@ internal fun ConversationGroupConversationPickerPage(
                                 } else {
                                     selectedIds + option.id
                                 }
+                                onSelectionChange(selectedIds.toList())
                             }
                         )
                     }
@@ -1019,21 +1020,16 @@ private fun ConversationGroupParentPickerPage(
         title = "选择上级分组",
         largeTitle = "选择上级分组",
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar(
-                primaryText = "微信首页",
-                onPrimaryClick = { onSelected(null) },
-                secondaryText = "返回",
-                onSecondaryClick = onBack
-            )
-        }
+        onBack = onBack,
+        showBackIcon = false,
+        topBarActions = { TopBarTextAction("微信首页") { onSelected(null) } }
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "可用分组") }
@@ -1224,6 +1220,7 @@ internal fun GroupChatLabelMiuixPage(
 ) {
     var labels by remember { mutableStateOf(GroupChatLabelStore.load(context)) }
     var route by remember { mutableStateOf<GroupChatLabelRoute>(GroupChatLabelRoute.Main) }
+    var pickerDraft by remember { mutableStateOf<GroupChatLabel?>(null) }
 
     fun saveLabels(next: List<GroupChatLabel>) {
         labels = next
@@ -1252,10 +1249,16 @@ internal fun GroupChatLabelMiuixPage(
             is GroupChatLabelRoute.Editor -> GroupChatLabelEditorPage(
                 context = context,
                 label = currentRoute.label,
+                labels = labels,
                 existing = currentRoute.existing,
                 onBack = { route = GroupChatLabelRoute.Main },
                 onPickGroups = { draft ->
+                    pickerDraft = draft
                     route = GroupChatLabelRoute.GroupPicker(draft, currentRoute.existing)
+                },
+                onNameChange = { name ->
+                    val latest = GroupChatLabelStore.load(context)
+                    saveLabels(latest.map { if (it.id == currentRoute.label.id) it.copy(name = name.trim()) else it })
                 },
                 onSave = { draft ->
                     if (labels.any { it.id != draft.id && it.name.equals(draft.name, ignoreCase = true) }) {
@@ -1277,26 +1280,33 @@ internal fun GroupChatLabelMiuixPage(
                     route = GroupChatLabelRoute.Main
                 }
             )
-            is GroupChatLabelRoute.GroupPicker -> ContactPickerPage(
-                context = context,
-                request = ContactPickerRequest(
+            is GroupChatLabelRoute.GroupPicker -> {
+                val request = remember(currentRoute.label.id) { ContactPickerRequest(
                     title = "选择标签群聊",
                     mode = ContactPickerMode.GROUPS,
                     multiSelect = true,
                     existingValue = formatIds(currentRoute.label.groupIds),
                     onValue = {},
                     enableGroupLabels = false
-                ),
-                onBack = {
-                    route = GroupChatLabelRoute.Editor(currentRoute.label, currentRoute.existing)
-                },
-                onConfirm = { selected ->
-                    route = GroupChatLabelRoute.Editor(
-                        currentRoute.label.copy(groupIds = selected.map { it.id }.toSet()),
-                        currentRoute.existing
-                    )
-                }
-            )
+                ) }
+                ContactPickerPage(
+                    context = context,
+                    request = request,
+                    onBack = {
+                        val next = if (currentRoute.existing) labels.firstOrNull { it.id == currentRoute.label.id } ?: currentRoute.label
+                            else pickerDraft ?: currentRoute.label
+                        pickerDraft = null
+                        route = GroupChatLabelRoute.Editor(next, currentRoute.existing)
+                    },
+                    onSelectionChange = { selected ->
+                        pickerDraft = (pickerDraft ?: currentRoute.label).copy(groupIds = selected)
+                        if (currentRoute.existing) {
+                            val latest = GroupChatLabelStore.load(context)
+                            saveLabels(latest.map { if (it.id == currentRoute.label.id) it.copy(groupIds = selected) else it })
+                        }
+                    }
+                )
+            }
         }
     }
 }
@@ -1315,21 +1325,16 @@ private fun GroupChatLabelListPage(
         title = title,
         largeTitle = title,
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar(
-                primaryText = "新增标签",
-                onPrimaryClick = onAdd,
-                secondaryText = "返回",
-                onSecondaryClick = onBack
-            )
-        }
+        onBack = onBack,
+        showBackIcon = false,
+        topBarActions = { TopBarTextAction("新增标签", onClick = onAdd) }
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "分类标签") }
@@ -1357,34 +1362,31 @@ private fun GroupChatLabelListPage(
 private fun GroupChatLabelEditorPage(
     context: Context,
     label: GroupChatLabel,
+    labels: List<GroupChatLabel>,
     existing: Boolean,
     onBack: () -> Unit,
     onPickGroups: (GroupChatLabel) -> Unit,
+    onNameChange: (String) -> Unit,
     onSave: (GroupChatLabel) -> Unit,
     onDelete: () -> Unit
 ) {
-    var name by remember(label) { mutableStateOf(label.name) }
+    var name by remember(label.id) { mutableStateOf(label.name) }
     val groupIds = label.groupIds
     val listState = rememberLazyListState()
     val scrollBehavior = MiuixScrollBehavior()
     val draft = label.copy(name = name.trim(), groupIds = groupIds)
+    val duplicateName = labels.any { it.id != label.id && it.name.equals(name.trim(), ignoreCase = true) }
     PageScaffold(
         title = if (existing) "编辑群聊标签" else "新增群聊标签",
         largeTitle = if (existing) "编辑群聊标签" else "新增群聊标签",
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar(
-                primaryText = "保存标签",
-                onPrimaryClick = {
-                    if (draft.name.isBlank()) {
-                        Toast.makeText(context, "请输入标签名称", Toast.LENGTH_SHORT).show()
-                    } else {
-                        onSave(draft)
-                    }
-                },
-                secondaryText = "返回",
-                onSecondaryClick = onBack
-            )
+        onBack = onBack,
+        showBackIcon = false,
+        topBarActions = {
+            if (!existing) TopBarTextAction("新增") {
+                if (draft.name.isBlank()) Toast.makeText(context, "请输入标签名称", Toast.LENGTH_SHORT).show()
+                else onSave(draft)
+            } else TopBarTextAction("删除", onClick = onDelete)
         }
     ) { padding ->
         LazyColumn(
@@ -1392,27 +1394,23 @@ private fun GroupChatLabelEditorPage(
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "标签") }
             item {
                 SettingsCard {
-                    InputRow("标签名称", "用于任务和名单选择器", name) { name = it }
+                    InputRow("标签名称", if (name.isBlank() || duplicateName) "名称不能为空或重复，保留上次有效配置" else "用于任务和名单选择器", name) {
+                        name = it
+                        val duplicate = labels.any { item -> item.id != label.id && item.name.equals(it.trim(), ignoreCase = true) }
+                        if (existing && it.isNotBlank() && !duplicate) onNameChange(it)
+                    }
                     InsetDivider()
                     ActionRow(
                         title = "标签群聊",
                         summary = if (groupIds.isEmpty()) "未选择群聊" else "已选择 ${groupIds.size} 个群聊"
                     ) {
                         onPickGroups(draft)
-                    }
-                }
-            }
-            if (existing) {
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
-                item {
-                    SettingsCard {
-                        ActionRow("删除标签", "删除后不会移除原功能中已经保存的群聊", onDelete)
                     }
                 }
             }

@@ -47,16 +47,15 @@ internal fun VoiceForwardMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar("返回", onBack)
-        }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "聊天语音") }
@@ -157,18 +156,12 @@ internal fun FeatureGroupRow(group: FeatureGroupEntry, onClick: () -> Unit) {
             .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(text = group.title, color = MiuixTheme.colorScheme.onSurface, fontWeight = FontWeight.Medium)
-            Text(
-                text = when {
-                    group.batchOperations -> "${batchOperationsFeatureCount()} 项功能"
-                    group.directProviderId != null -> group.providers.firstOrNull { it.featureId() == group.directProviderId }?.subtitle().orEmpty()
-                    else -> "${group.providers.size + if (group.hasFriendScenes) 2 else 0} 项功能"
-                },
-                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                fontSize = 12.sp
-            )
-        }
+        Text(
+            text = group.title,
+            modifier = Modifier.weight(1f),
+            color = MiuixTheme.colorScheme.onSurface,
+            fontWeight = FontWeight.Medium
+        )
         Text(text = "›", color = MiuixTheme.colorScheme.onSurfaceVariantSummary, fontSize = 22.sp)
     }
 }

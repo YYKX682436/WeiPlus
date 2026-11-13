@@ -319,7 +319,12 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
         }
     )
 
-    if (phase == BatchPage.MOMENTS_PICKER) {
+    SettingsRouteTransition(
+        targetState = phase,
+        label = "BatchOperationsRoute",
+        depthOf = { when (it) { BatchPage.HOME -> 0; BatchPage.PICKER -> 1; BatchPage.MOMENTS_PICKER -> 2 } }
+    ) { currentPhase ->
+    if (currentPhase == BatchPage.MOMENTS_PICKER) {
         BatchMomentsPickerPage(
             accountIdentity = accountIdentity,
             manager = manager,
@@ -332,10 +337,7 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
             },
             onSubmitted = { returnHome() }
         )
-        return
-    }
-
-    if (phase == BatchPage.PICKER) {
+    } else if (currentPhase == BatchPage.PICKER) {
         ContactPickerPage(
             context = context,
             request = if (currentFeature == BatchOperation.LIKE_FRIEND_MOMENTS) momentsFriendPicker else pickerRequest,
@@ -350,22 +352,20 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
                 } else submitSelection(picked)
             }
         )
-        return
-    }
-
+    } else {
     PageScaffold(
         title = "批量操作",
         largeTitle = "批量操作",
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        bottomBar = { BottomActionBar("返回", onBack) }
+        showBackIcon = true
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             ),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
@@ -373,7 +373,7 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
             item {
                 SettingsCard {
                     BatchOperation.entries.forEachIndexed { index, operation ->
-                        ActionRow(operation.title, operationSummary(operation)) {
+                        ActionRow(operation.pickerTitle, operationSummary(operation)) {
                             feature = operation
                             enabled = true
                             deleteFriendClearHistory = false
@@ -413,6 +413,8 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
                 else -> Unit
             }
         }
+    }
+    }
     }
 }
 

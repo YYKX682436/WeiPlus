@@ -65,6 +65,8 @@ internal fun ScheduledTaskMiuixPage(
     var tasks by remember { mutableStateOf(settings.tasks()) }
     var draft by remember { mutableStateOf(ScheduledTaskSettings.newDraft()) }
     var editingTaskId by remember { mutableStateOf<String?>(null) }
+    var lastSavedDraft by remember { mutableStateOf<ScheduledTaskItem?>(null) }
+    var draftError by remember { mutableStateOf<String?>(null) }
     val mainListState = rememberLazyListState()
     val editorListState = rememberLazyListState()
 
@@ -72,15 +74,11 @@ internal fun ScheduledTaskMiuixPage(
         tasks = settings.tasks()
     }
 
-    fun persistTasks(next: List<ScheduledTaskItem>) {
-        settings.saveTasks(next)
-        reloadTasks()
-        ScheduledTaskRuntimeCoordinator.reload()
-    }
-
-    fun saveDraft(closeAfterSave: Boolean = true): Boolean {
+    fun saveDraft(closeAfterSave: Boolean = true, showError: Boolean = true): Boolean {
         var target = ScheduledTaskSettings.normalizeForSave(draft)
         val now = System.currentTimeMillis()
+        val oldDraft = lastSavedDraft
+        val scheduleChanged = scheduledTaskScheduleChanged(oldDraft, draft)
         val momentsError = ScheduledTaskSettings.momentsValidationError(target)
         val normalizedItems = ScheduledTaskSettings.normalizedItems(target)
         val channelError = if (
@@ -106,19 +104,21 @@ internal fun ScheduledTaskMiuixPage(
         val planTimes = ScheduledTaskSettings.normalizedPlanTimes(target)
         val error = when {
             target.targetType == ScheduledTaskSettings.TARGET_CHAT && target.targetIds.isEmpty() -> "请选择发送对象"
+            scheduledTaskHasIncompleteContent(draft) -> "请填写或移除未完成的发送内容；保留上次有效配置"
             momentsError != null -> momentsError
             normalizedItems.isEmpty() -> "请配置发送内容"
             channelError != null -> channelError
             planTimes.isEmpty() -> "请添加计划时间"
             target.repeatType == ScheduledTaskSettings.REPEAT_WEEKLY && target.repeatDays.isEmpty() -> "请选择每周重复日期"
-            target.repeatType == ScheduledTaskSettings.REPEAT_NONE && planTimes.any { it <= now } -> "计划时间需要晚于当前时间"
+            scheduleChanged && target.repeatType == ScheduledTaskSettings.REPEAT_NONE && planTimes.any { it <= now } -> "计划时间需要晚于当前时间"
             else -> null
         }
         if (error != null) {
-            Toast.makeText(context, error, Toast.LENGTH_SHORT).show()
+            draftError = error
+            if (showError) Toast.makeText(context, error, Toast.LENGTH_SHORT).show()
             return false
         }
-        if (target.repeatType != ScheduledTaskSettings.REPEAT_NONE) {
+        if (scheduleChanged && target.repeatType != ScheduledTaskSettings.REPEAT_NONE) {
             val nextPlanTimes = planTimes.map { planTime ->
                 ScheduledTaskSettings.resolveNextPlanTime(
                     planTime,
@@ -128,19 +128,53 @@ internal fun ScheduledTaskMiuixPage(
                 )
             }.filter { it > 0L }
             if (nextPlanTimes.isEmpty()) {
-                Toast.makeText(context, "无法计算下次执行时间", Toast.LENGTH_SHORT).show()
+                draftError = "无法计算下次执行时间"
+                if (showError) Toast.makeText(context, draftError, Toast.LENGTH_SHORT).show()
                 return false
             }
             target = updateScheduledTaskPlanTimes(target, nextPlanTimes)
         }
-        val nextTasks = tasks.filterNot { it.id == target.id } + target
-        persistTasks(nextTasks)
-        draft = target
+        val latestTasks = settings.tasks()
+        val latest = latestTasks.firstOrNull { it.id == target.id }
+        if (editingTaskId != null && latest == null) {
+            draftError = "任务已不存在"
+            if (showError) Toast.makeText(context, draftError, Toast.LENGTH_SHORT).show()
+            return false
+        }
+        if (latest != null) {
+            target = target.copy(
+                planTime = if (scheduleChanged) target.planTime else latest.planTime,
+                planTimes = if (scheduleChanged) target.planTimes else latest.planTimes,
+                status = latest.status,
+                lastExecutedTime = latest.lastExecutedTime,
+                lastSuccessCount = latest.lastSuccessCount,
+                lastFailCount = latest.lastFailCount
+            )
+        }
+        settings.saveTasks(latestTasks.filterNot { it.id == target.id } + target)
+        reloadTasks()
+        if (scheduleChanged) ScheduledTaskRuntimeCoordinator.refreshTask(target.id)
+        lastSavedDraft = draft
+        draftError = null
         if (closeAfterSave) {
             route = ScheduledTaskRoute.Main
         }
-        Toast.makeText(context, "任务已保存", Toast.LENGTH_SHORT).show()
         return true
+    }
+
+    fun updateDraft(next: ScheduledTaskItem) {
+        draft = next
+        if (editingTaskId != null && !saveDraft(closeAfterSave = false, showError = false)) {
+            val previous = lastSavedDraft ?: return
+            val independent = scheduledTaskIndependentEdits(previous, next)
+            if (independent != previous) {
+                val error = draftError
+                draft = independent
+                saveDraft(closeAfterSave = false, showError = false)
+                draft = next
+                draftError = error
+            }
+        }
     }
 
     SettingsRouteTransition(
@@ -164,11 +198,15 @@ internal fun ScheduledTaskMiuixPage(
                     onAdd = {
                         editingTaskId = null
                         draft = ScheduledTaskSettings.newDraft()
+                        lastSavedDraft = null
+                        draftError = null
                         route = ScheduledTaskRoute.Editor
                     },
                     onEdit = { task ->
                         editingTaskId = task.id
                         draft = task
+                        lastSavedDraft = task
+                        draftError = null
                         route = ScheduledTaskRoute.Editor
                     }
                 )
@@ -180,7 +218,8 @@ internal fun ScheduledTaskMiuixPage(
                     isEditing = editingTaskId != null,
                     listState = editorListState,
                     onBack = { route = ScheduledTaskRoute.Main },
-                    onTaskChange = { draft = it },
+                    onTaskChange = ::updateDraft,
+                    validationError = draftError,
                     onPickTargets = { route = ScheduledTaskRoute.ContactPicker },
                     onPickFiles = { itemIndex, itemType ->
                         val activity = context as? Activity
@@ -188,7 +227,7 @@ internal fun ScheduledTaskMiuixPage(
                             Toast.makeText(context, "当前页面无法打开文件选择器", Toast.LENGTH_SHORT).show()
                         } else {
                             ScheduledTaskFilePickerBridge.launch(activity, itemType) { paths ->
-                                draft = updateScheduledTaskMediaItem(draft, itemIndex, itemType, paths)
+                                updateDraft(updateScheduledTaskMediaItem(draft, itemIndex, itemType, paths))
                             }
                         }
                     },
@@ -203,7 +242,7 @@ internal fun ScheduledTaskMiuixPage(
                                 } else if (itemType == ScheduledTaskSettings.TYPE_VIDEO && paths.size > 1) {
                                     Toast.makeText(context, "朋友圈只保留第 1 个视频", Toast.LENGTH_SHORT).show()
                                 }
-                                draft = updateScheduledTaskMomentsMedia(draft, itemType, paths)
+                                updateDraft(updateScheduledTaskMomentsMedia(draft, itemType, paths))
                             }
                         }
                     },
@@ -215,7 +254,7 @@ internal fun ScheduledTaskMiuixPage(
                                     title = scheduledTaskPickerTitle(item.type),
                                     existingValue = item.value,
                                     onValue = { value ->
-                                        draft = updateScheduledTaskContentItemValue(draft, itemIndex, value)
+                                        updateDraft(updateScheduledTaskContentItemValue(draft, itemIndex, value))
                                     },
                                     multiSelect = false,
                                     delimiter = "|"
@@ -228,7 +267,9 @@ internal fun ScheduledTaskMiuixPage(
                         null
                     } else {
                         {
-                            persistTasks(tasks.filterNot { it.id == draft.id })
+                            settings.saveTasks(settings.tasks().filterNot { it.id == draft.id })
+                            reloadTasks()
+                            ScheduledTaskRuntimeCoordinator.refreshTask(draft.id)
                             route = ScheduledTaskRoute.Main
                             Toast.makeText(context, "任务已删除", Toast.LENGTH_SHORT).show()
                         }
@@ -261,9 +302,8 @@ internal fun ScheduledTaskMiuixPage(
                         enableLabels = true
                     ),
                     onBack = { route = ScheduledTaskRoute.Editor },
-                    onConfirm = { selected ->
-                        draft = draft.copy(targetIds = selected.map { it.id })
-                        route = ScheduledTaskRoute.Editor
+                    onSelectionChange = { selected ->
+                        updateDraft(draft.copy(targetIds = selected.toList()))
                     }
                 )
             }
@@ -276,6 +316,22 @@ internal fun ScheduledTaskMiuixPage(
         }
     }
 }
+
+internal fun scheduledTaskScheduleChanged(previous: ScheduledTaskItem?, current: ScheduledTaskItem): Boolean =
+    previous == null ||
+        ScheduledTaskSettings.normalizedPlanTimes(previous) != ScheduledTaskSettings.normalizedPlanTimes(current) ||
+        previous.repeatType != current.repeatType || previous.repeatDays != current.repeatDays
+
+internal fun scheduledTaskHasIncompleteContent(task: ScheduledTaskItem): Boolean =
+    task.targetType == ScheduledTaskSettings.TARGET_CHAT && task.items.any { it.value.isBlank() }
+
+internal fun scheduledTaskIndependentEdits(previous: ScheduledTaskItem, current: ScheduledTaskItem): ScheduledTaskItem =
+    previous.copy(
+        remark = current.remark,
+        intervalSeconds = current.intervalSeconds,
+        mediaIntervalSeconds = current.mediaIntervalSeconds,
+        sendOnTimeout = current.sendOnTimeout
+    )
 
 @Composable
 private fun ScheduledTaskMainPage(
@@ -293,21 +349,16 @@ private fun ScheduledTaskMainPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar(
-                primaryText = "新增任务",
-                onPrimaryClick = onAdd,
-                secondaryText = "返回",
-                onSecondaryClick = onBack
-            )
-        }
+        onBack = onBack,
+        showBackIcon = false,
+        topBarActions = { TopBarTextAction("新增任务", onClick = onAdd) }
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "发送计划") }
@@ -315,7 +366,7 @@ private fun ScheduledTaskMainPage(
                 SettingsCard {
                     SwitchRow(
                         checked = enabled,
-                        title = "启用定时任务",
+                        title = "定时任务",
                         summary = "开启后按计划时间发送聊天消息或发布朋友圈"
                     ) { onEnabledChange(it) }
                     InsetDivider()
@@ -326,7 +377,7 @@ private fun ScheduledTaskMainPage(
             when {
                 tasks.isEmpty() -> item {
                     SettingsCard {
-                        EmptyText("还没有定时任务，点击底部“新增任务”。")
+                        EmptyText("还没有定时任务，点击顶部“新增任务”。")
                     }
                 }
                 else -> tasks.forEach { task ->
@@ -354,6 +405,7 @@ private fun ScheduledTaskEditorPage(
     listState: LazyListState,
     onBack: () -> Unit,
     onTaskChange: (ScheduledTaskItem) -> Unit,
+    validationError: String?,
     onPickTargets: () -> Unit,
     onPickFiles: (Int, Int) -> Unit,
     onPickMomentsMedia: (Int) -> Unit,
@@ -363,17 +415,40 @@ private fun ScheduledTaskEditorPage(
     onExecuteNow: (() -> Unit)?
 ) {
     val scrollBehavior = MiuixScrollBehavior()
+    var intervalText by remember(task.id) { mutableStateOf(task.intervalSeconds.toString()) }
+    var mediaIntervalText by remember(task.id) { mutableStateOf(task.mediaIntervalSeconds.toString()) }
+    val intervalsValid = intervalText.toIntOrNull()?.let { it in 0..3600 } == true &&
+        mediaIntervalText.toIntOrNull()?.let { it in 0..3600 } == true
+    fun addPlanTime() {
+        val activity = context as? Activity
+        if (activity == null) {
+            Toast.makeText(context, "当前页面无法打开时间选择器", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val planTimes = ScheduledTaskSettings.normalizedPlanTimes(task)
+        val initialTime = planTimes.lastOrNull()?.let { it + 5 * 60 * 1000L }
+            ?: (System.currentTimeMillis() + 5 * 60 * 1000L)
+        showScheduledTaskDateTimePicker(activity, initialTime) { picked ->
+            onTaskChange(updateScheduledTaskPlanTimes(task, planTimes + picked))
+        }
+    }
     PageScaffold(
         title = if (isEditing) "编辑任务" else "新增任务",
         largeTitle = if (isEditing) "编辑任务" else "新增任务",
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar(
-                primaryText = "保存任务",
-                onPrimaryClick = onSave,
-                secondaryText = "返回",
-                onSecondaryClick = onBack
-            )
+        onBack = onBack,
+        showBackIcon = false,
+        topBarActions = {
+            if (!isEditing) TopBarTextAction("新增", enabled = intervalsValid, onClick = onSave)
+            if (onExecuteNow != null) TopBarTextAction("立即执行", enabled = intervalsValid, onClick = onExecuteNow)
+            if (onDelete != null) TopBarTextAction("删除", onClick = onDelete)
+            TopBarMoreActions(buildList {
+                add("新增计划时间" to ::addPlanTime)
+                if (task.targetType == ScheduledTaskSettings.TARGET_CHAT &&
+                    scheduledTaskEditableItems(task).none { it.type == ScheduledTaskSettings.TYPE_SELECTED_MESSAGE }) {
+                    add("新增发送内容" to { onTaskChange(appendScheduledTaskContentItem(task)) })
+                }
+            })
         }
     ) { padding ->
         LazyColumn(
@@ -381,9 +456,12 @@ private fun ScheduledTaskEditorPage(
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
+            if (validationError != null) item {
+                SettingsCard { InfoRow("待完善", validationError) }
+            }
             item { SmallTitle(text = "备注") }
             item {
                 SettingsCard {
@@ -541,20 +619,6 @@ private fun ScheduledTaskEditorPage(
                         }
                     }
                     InsetDivider()
-                    ActionRow("新增计划时间", "同一任务可在多个时间分别执行") {
-                        val activity = context as? Activity
-                        if (activity == null) {
-                            Toast.makeText(context, "当前页面无法打开时间选择器", Toast.LENGTH_SHORT).show()
-                        } else {
-                            val initialTime = planTimes.lastOrNull()
-                                ?.let { it + 5 * 60 * 1000L }
-                                ?: (System.currentTimeMillis() + 5 * 60 * 1000L)
-                            showScheduledTaskDateTimePicker(activity, initialTime) { picked ->
-                                onTaskChange(updateScheduledTaskPlanTimes(task, planTimes + picked))
-                            }
-                        }
-                    }
-                    InsetDivider()
                     PopupChoiceRow(
                         title = "重复方式",
                         summary = scheduledTaskRepeatLabel(task.repeatType),
@@ -602,33 +666,15 @@ private fun ScheduledTaskEditorPage(
                 item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "发送节奏") }
                 item {
                     SettingsCard {
-                        NumberInputRow("聊天间隔", "单位秒，多个聊天之间的等待时间", task.intervalSeconds.toString()) {
-                            onTaskChange(task.copy(intervalSeconds = it.toIntOrNull()?.coerceIn(0, 3600) ?: 0))
+                        NumberInputRow("聊天间隔", if (intervalText.toIntOrNull()?.let { it in 0..3600 } != true) "请输入 0-3600 秒；保留上次保存的值" else "单位秒，多个聊天之间的等待时间", intervalText) {
+                            intervalText = it
+                            it.toIntOrNull()?.takeIf { value -> value in 0..3600 }?.let { value -> onTaskChange(task.copy(intervalSeconds = value)) }
                         }
                         if (scheduledTaskHasOrderedItems(task)) {
                             InsetDivider()
-                            NumberInputRow(scheduledTaskItemIntervalTitle(), "单位秒，同一聊天连续发送的等待时间", task.mediaIntervalSeconds.toString()) {
-                                onTaskChange(task.copy(mediaIntervalSeconds = it.toIntOrNull()?.coerceIn(0, 3600) ?: 0))
-                            }
-                        }
-                    }
-                }
-            }
-            if (onExecuteNow != null || onDelete != null) {
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
-                item {
-                    SettingsCard {
-                        if (onExecuteNow != null) {
-                            ActionRow("立即执行", "保存当前内容后立刻发送一次") {
-                                onExecuteNow()
-                            }
-                        }
-                        if (onExecuteNow != null && onDelete != null) {
-                            InsetDivider()
-                        }
-                        if (onDelete != null) {
-                            ActionRow("删除任务", "移除当前定时任务") {
-                                onDelete()
+                            NumberInputRow(scheduledTaskItemIntervalTitle(), if (mediaIntervalText.toIntOrNull()?.let { it in 0..3600 } != true) "请输入 0-3600 秒；保留上次保存的值" else "单位秒，同一聊天连续发送的等待时间", mediaIntervalText) {
+                                mediaIntervalText = it
+                                it.toIntOrNull()?.takeIf { value -> value in 0..3600 }?.let { value -> onTaskChange(task.copy(mediaIntervalSeconds = value)) }
                             }
                         }
                     }
@@ -748,17 +794,6 @@ internal fun ScheduledTaskChatContentRows(
             }
         }
     }
-    if (items.none { it.type == ScheduledTaskSettings.TYPE_SELECTED_MESSAGE }) {
-        InsetDivider()
-        ActionRow("新增内容", "添加一条按顺序发送的内容") {
-            onTaskChange(
-                appendScheduledTaskContentItem(
-                    task,
-                    ScheduledTaskSettings.TYPE_TEXT
-                )
-            )
-        }
-    }
 }
 
 private fun scheduledTaskUsesText(type: Int): Boolean {
@@ -828,7 +863,7 @@ internal fun updateScheduledTaskMediaItem(
     return task.copy(items = items)
 }
 
-private fun appendScheduledTaskContentItem(
+internal fun appendScheduledTaskContentItem(
     task: ScheduledTaskItem,
     defaultType: Int = ScheduledTaskSettings.TYPE_TEXT
 ): ScheduledTaskItem {
@@ -1244,16 +1279,15 @@ internal fun FakeScanCameraMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar("返回", onBack)
-        }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "扫码") }

@@ -5,6 +5,7 @@ import android.content.ClipData
 import android.content.Context
 import android.content.SharedPreferences
 import android.widget.Toast
+import java.text.SimpleDateFormat
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -39,6 +40,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.navigationevent.compose.rememberNavigationEventState
+import androidx.navigationevent.compose.NavigationBackHandler
+import androidx.navigationevent.NavigationEventInfo
 import androidx.compose.ui.unit.sp
 import h.Hchat.hooks.items.chattime.ChatTimeStyleSettings
 import h.Hchat.hooks.items.customnotify.CustomNotificationRule
@@ -85,7 +89,6 @@ import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-import top.yukonga.miuix.kmp.window.WindowDialog
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.LinkedHashSet
@@ -112,14 +115,15 @@ internal fun CustomNotificationMainPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = { BottomActionBar("返回", onBack) }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "自定义通知") }
@@ -128,7 +132,7 @@ internal fun CustomNotificationMainPage(
                     SwitchRow(
                         sp,
                         CustomNotificationSettings.KEY_ENABLE,
-                        "启用自定义通知",
+                        "自定义通知",
                         "开启后按会话专属规则或默认规则接管微信通知",
                         CustomNotificationSettings.DEFAULT_ENABLE
                     )
@@ -200,51 +204,29 @@ internal fun CustomNotificationRuleListPage(
     val visibleTalkers = visible.mapTo(LinkedHashSet()) { it.talker }
     val allVisibleSelected = visibleTalkers.isNotEmpty() && visibleTalkers.all { it in selectedTalkers }
     val selectedRules = rules.filter { it.talker in selectedTalkers }
+    val selectionBackState = rememberNavigationEventState(currentInfo = NavigationEventInfo.None)
+    NavigationBackHandler(state = selectionBackState, isBackEnabled = batchDeleteMode && LocalSettingsBackRegistrationEnabled.current, onBackCompleted = {
+        batchDeleteMode = false
+        selectedTalkers = emptySet()
+    })
     PageScaffold(
         title = "会话规则",
         largeTitle = "会话规则",
         scrollBehavior = scrollBehavior,
-        bottomBar = {
+        onBack = { if (batchDeleteMode) { batchDeleteMode = false; selectedTalkers = emptySet() } else onBack() },
+        showBackIcon = false,
+        topBarActions = {
             if (batchDeleteMode) {
-                BottomActionBar(
-                    primaryText = "删除所选（${selectedRules.size}）",
-                    onPrimaryClick = {
-                        if (selectedRules.isEmpty()) {
-                            Toast.makeText(context, "请先选择会话规则", Toast.LENGTH_SHORT).show()
-                        } else {
-                            showDeleteConfirm = true
-                        }
-                    },
-                    secondaryText = "取消",
-                    onSecondaryClick = {
-                        batchDeleteMode = false
-                        selectedTalkers = emptySet()
-                    },
-                    middleText = if (visibleTalkers.isEmpty()) null else if (allVisibleSelected) "取消全选" else "全选",
-                    onMiddleClick = if (visibleTalkers.isEmpty()) null else {
-                        {
-                            selectedTalkers = if (allVisibleSelected) {
-                                selectedTalkers - visibleTalkers
-                            } else {
-                                selectedTalkers + visibleTalkers
-                            }
-                        }
-                    }
-                )
+                if (visibleTalkers.isNotEmpty()) TopBarTextAction(if (allVisibleSelected) "取消全选" else "全选") {
+                    selectedTalkers = if (allVisibleSelected) selectedTalkers - visibleTalkers else selectedTalkers + visibleTalkers
+                }
+                TopBarTextAction("删除（${selectedRules.size}）") {
+                    if (selectedRules.isEmpty()) Toast.makeText(context, "请先选择会话规则", Toast.LENGTH_SHORT).show()
+                    else showDeleteConfirm = true
+                }
             } else {
-                BottomActionBar(
-                    primaryText = "添加会话",
-                    onPrimaryClick = onAddRules,
-                    secondaryText = "返回",
-                    onSecondaryClick = onBack,
-                    middleText = if (rules.isEmpty()) null else "批量删除",
-                    onMiddleClick = if (rules.isEmpty()) null else {
-                        {
-                            batchDeleteMode = true
-                            selectedTalkers = emptySet()
-                        }
-                    }
-                )
+                if (rules.isNotEmpty()) TopBarTextAction("批量删除") { batchDeleteMode = true; selectedTalkers = emptySet() }
+                TopBarTextAction("添加会话", onClick = onAddRules)
             }
         }
     ) { padding ->
@@ -253,7 +235,7 @@ internal fun CustomNotificationRuleListPage(
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item {
@@ -309,7 +291,7 @@ internal fun CustomNotificationRuleListPage(
                                 InsetDivider()
                                 SwitchRow(
                                     checked = rule.enabled,
-                                    title = "启用此规则",
+                                    title = "会话规则",
                                     summary = if (rule.enabled) "当前会话已接管通知" else "当前会话不接管通知"
                                 ) {
                                     onToggleRule(rule, it)
@@ -375,10 +357,10 @@ internal fun CustomNotificationBatchEditorPage(
         title = "批量配置",
         largeTitle = "批量配置",
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar(
-                primaryText = "应用到 $ruleCount 项",
-                onPrimaryClick = {
+        onBack = onBack,
+        showBackIcon = false,
+        topBarActions = {
+            TopBarTextAction("应用到 $ruleCount 项") {
                     onApply(
                         CustomNotificationBatchUpdate(
                             applyEnabled = applyEnabled,
@@ -409,17 +391,14 @@ internal fun CustomNotificationBatchEditorPage(
                             blockAtMe = blockAtMe
                         )
                     )
-                },
-                secondaryText = "返回",
-                onSecondaryClick = onBack
-            )
+            }
         }
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "应用范围") }
@@ -430,7 +409,7 @@ internal fun CustomNotificationBatchEditorPage(
                     SwitchRow(applyEnabled, "应用启用状态", "批量开关会话规则") { applyEnabled = it }
                     if (applyEnabled) {
                         InsetDivider()
-                        SwitchRow(enabled, "启用规则", "关闭后不再接管对应会话通知") { enabled = it }
+                        SwitchRow(enabled, "会话规则", "关闭后不再接管对应会话通知") { enabled = it }
                     }
                     InsetDivider()
                     SwitchRow(applyMode, "应用免打扰", "批量设置是否弹自定义通知") { applyMode = it }
@@ -509,12 +488,10 @@ internal fun CustomNotificationBatchEditorPage(
                     if (applyMute) {
                         InsetDivider()
                         SwitchRow(muteEnable, "开启时段静默", "指定时间内不弹通知") { muteEnable = it }
-                        if (muteEnable) {
-                            InsetDivider()
-                            TimeOfDayPickerRow("开始时间", muteStart) { muteStart = it }
-                            InsetDivider()
-                            TimeOfDayPickerRow("结束时间", muteEnd) { muteEnd = it }
-                        }
+                        InsetDivider()
+                        TimeOfDayPickerRow("开始时间", muteStart) { muteStart = it }
+                        InsetDivider()
+                        TimeOfDayPickerRow("结束时间", muteEnd) { muteEnd = it }
                     }
                     InsetDivider()
                     SwitchRow(applyAtRules, "应用群聊 @ 规则", "只对群聊规则生效") { applyAtRules = it }
@@ -535,13 +512,14 @@ internal fun CustomNotificationMissingRulePage(onBack: () -> Unit) {
         title = "会话规则",
         largeTitle = "会话规则",
         scrollBehavior = scrollBehavior,
-        bottomBar = { BottomActionBar("返回", onBack) }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SettingsCard { EmptyText("该规则已不存在") } }
@@ -561,24 +539,34 @@ internal fun CustomNotificationRuleEditorPage(
     onPickOnlyMembers: (String) -> Unit,
     onPickBlockMembers: (String) -> Unit
 ) {
-    var enabled by remember(initialRule) { mutableStateOf(initialRule.enabled) }
-    var dnd by remember(initialRule) { mutableStateOf(initialRule.mode == CustomNotificationSettings.MODE_DND) }
-    var vibrate by remember(initialRule) { mutableStateOf(initialRule.vibrate) }
-    var sound by remember(initialRule) { mutableStateOf(initialRule.sound) }
-    var markRead by remember(initialRule) { mutableStateOf(initialRule.markRead) }
-    var quickReply by remember(initialRule) { mutableStateOf(initialRule.quickReply) }
-    var quoteQuickReply by remember(initialRule) { mutableStateOf(initialRule.quoteQuickReply) }
-    var mergeByTalker by remember(initialRule) { mutableStateOf(initialRule.mergeByTalker) }
-    var showDetail by remember(initialRule) { mutableStateOf(initialRule.showDetail) }
-    var ignoreWechatDnd by remember(initialRule) { mutableStateOf(initialRule.ignoreWechatDnd) }
-    var muteEnable by remember(initialRule) { mutableStateOf(initialRule.muteEnable) }
-    var muteStart by remember(initialRule) { mutableStateOf(initialRule.muteStart) }
-    var muteEnd by remember(initialRule) { mutableStateOf(initialRule.muteEnd) }
-    var ringtone by remember(initialRule) { mutableStateOf(initialRule.ringtone) }
-    var blockAtMe by remember(initialRule) { mutableStateOf(initialRule.blockAtMe) }
-    var onlyMembers by remember(initialRule) { mutableStateOf(initialRule.onlyMembers) }
-    var blockMembers by remember(initialRule) { mutableStateOf(initialRule.blockMembers) }
+    var enabled by remember(initialRule.talker, initialRule.group, initialRule.official, isDefault) { mutableStateOf(initialRule.enabled) }
+    var dnd by remember(initialRule.talker, initialRule.group, initialRule.official, isDefault) { mutableStateOf(initialRule.mode == CustomNotificationSettings.MODE_DND) }
+    var vibrate by remember(initialRule.talker, initialRule.group, initialRule.official, isDefault) { mutableStateOf(initialRule.vibrate) }
+    var sound by remember(initialRule.talker, initialRule.group, initialRule.official, isDefault) { mutableStateOf(initialRule.sound) }
+    var markRead by remember(initialRule.talker, initialRule.group, initialRule.official, isDefault) { mutableStateOf(initialRule.markRead) }
+    var quickReply by remember(initialRule.talker, initialRule.group, initialRule.official, isDefault) { mutableStateOf(initialRule.quickReply) }
+    var quoteQuickReply by remember(initialRule.talker, initialRule.group, initialRule.official, isDefault) { mutableStateOf(initialRule.quoteQuickReply) }
+    var mergeByTalker by remember(initialRule.talker, initialRule.group, initialRule.official, isDefault) { mutableStateOf(initialRule.mergeByTalker) }
+    var showDetail by remember(initialRule.talker, initialRule.group, initialRule.official, isDefault) { mutableStateOf(initialRule.showDetail) }
+    var ignoreWechatDnd by remember(initialRule.talker, initialRule.group, initialRule.official, isDefault) { mutableStateOf(initialRule.ignoreWechatDnd) }
+    var muteEnable by remember(initialRule.talker, initialRule.group, initialRule.official, isDefault) { mutableStateOf(initialRule.muteEnable) }
+    var muteStart by remember(initialRule.talker, initialRule.group, initialRule.official, isDefault) { mutableStateOf(initialRule.muteStart) }
+    var muteEnd by remember(initialRule.talker, initialRule.group, initialRule.official, isDefault) { mutableStateOf(initialRule.muteEnd) }
+    var ringtone by remember(initialRule.talker, initialRule.group, initialRule.official, isDefault) { mutableStateOf(initialRule.ringtone) }
+    var blockAtMe by remember(initialRule.talker, initialRule.group, initialRule.official, isDefault) { mutableStateOf(initialRule.blockAtMe) }
+    var onlyMembers by remember(initialRule.talker, initialRule.group, initialRule.official, isDefault) { mutableStateOf(initialRule.onlyMembers) }
+    var blockMembers by remember(initialRule.talker, initialRule.group, initialRule.official, isDefault) { mutableStateOf(initialRule.blockMembers) }
     val scrollBehavior = MiuixScrollBehavior()
+    var persisted by remember(initialRule.talker, initialRule.group, initialRule.official, isDefault) { mutableStateOf(initialRule) }
+    LaunchedEffect(initialRule) {
+        persisted = initialRule
+        onlyMembers = initialRule.onlyMembers
+        blockMembers = initialRule.blockMembers
+    }
+    fun persist(change: (CustomNotificationRule) -> CustomNotificationRule) {
+        persisted = change(persisted)
+        onSave(persisted)
+    }
 
     PageScaffold(
         title = when {
@@ -591,43 +579,16 @@ internal fun CustomNotificationRuleEditorPage(
         },
         largeTitle = initialRule.label.ifBlank { initialRule.talker },
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar(
-                primaryText = "保存",
-                onPrimaryClick = {
-                    onSave(
-                        initialRule.copy(
-                            enabled = enabled,
-                            mode = if (dnd) CustomNotificationSettings.MODE_DND else CustomNotificationSettings.MODE_NOTIFY,
-                            vibrate = vibrate,
-                            sound = sound,
-                            markRead = markRead,
-                            quickReply = quickReply,
-                            quoteQuickReply = quoteQuickReply,
-                            mergeByTalker = mergeByTalker,
-                            showDetail = showDetail,
-                            ignoreWechatDnd = ignoreWechatDnd,
-                            muteEnable = muteEnable,
-                            muteStart = CustomNotificationSettings.normalizeTime(muteStart, CustomNotificationSettings.DEFAULT_MUTE_START),
-                            muteEnd = CustomNotificationSettings.normalizeTime(muteEnd, CustomNotificationSettings.DEFAULT_MUTE_END),
-                            ringtone = ringtone,
-                            blockAtMe = blockAtMe,
-                            onlyMembers = if (isDefault) "" else CustomNotificationSettings.normalizeMemberRules(onlyMembers),
-                            blockMembers = if (isDefault) "" else CustomNotificationSettings.normalizeMemberRules(blockMembers)
-                        )
-                    )
-                },
-                secondaryText = "返回",
-                onSecondaryClick = onBack
-            )
-        }
+        onBack = onBack,
+        showBackIcon = false,
+        topBarActions = { if (!isDefault) TopBarTextAction("删除", onClick = onDelete) }
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "会话") }
@@ -654,35 +615,35 @@ internal fun CustomNotificationRuleEditorPage(
                 SettingsCard {
                     SwitchRow(
                         enabled,
-                        if (isDefault) "启用默认规则" else "启用此会话规则",
+                        if (isDefault) "默认规则" else "会话规则",
                         if (isDefault) "开启后接管未单独配置的对应会话通知" else "关闭后不再接管该会话通知"
-                    ) { enabled = it }
+                    ) { enabled = it; persist { rule -> rule.copy(enabled = it) } }
                     InsetDivider()
-                    SwitchRow(dnd, "免打扰", "开启后不弹自定义通知，也会拦截原生通知") { dnd = it }
+                    SwitchRow(dnd, "免打扰", "开启后不弹自定义通知，也会拦截原生通知") { dnd = it; persist { rule -> rule.copy(mode = if (it) CustomNotificationSettings.MODE_DND else CustomNotificationSettings.MODE_NOTIFY) } }
                     InsetDivider()
                     SwitchRow(
                         ignoreWechatDnd,
                         "忽略微信自带的消息免打扰",
                         "开启后，该会话在微信中设置免打扰仍会弹出自定义通知"
-                    ) { ignoreWechatDnd = it }
+                    ) { ignoreWechatDnd = it; persist { rule -> rule.copy(ignoreWechatDnd = it) } }
                     InsetDivider()
-                    SwitchRow(vibrate, "震动", "通知时震动") { vibrate = it }
+                    SwitchRow(vibrate, "震动", "通知时震动") { vibrate = it; persist { rule -> rule.copy(vibrate = it) } }
                     InsetDivider()
-                    SwitchRow(sound, "铃声", "通知时播放系统或自定义铃声") { sound = it }
+                    SwitchRow(sound, "铃声", "通知时播放系统或自定义铃声") { sound = it; persist { rule -> rule.copy(sound = it) } }
                     InsetDivider()
-                    SwitchRow(markRead, "已读按钮", "通知栏直接标记当前会话已读") { markRead = it }
+                    SwitchRow(markRead, "已读按钮", "通知栏直接标记当前会话已读") { markRead = it; persist { rule -> rule.copy(markRead = it) } }
                     InsetDivider()
-                    SwitchRow(quickReply, "快捷回复", "通知栏直接回复文本消息") { quickReply = it }
-                    if (quickReply) {
-                        InsetDivider()
-                        SwitchRow(quoteQuickReply, "引用消息回复", "快捷回复时引用触发通知的原消息") {
-                            quoteQuickReply = it
-                        }
+                    SwitchRow(quickReply, "快捷回复", "通知栏直接回复文本消息") { quickReply = it; persist { rule -> rule.copy(quickReply = it) } }
+                    InsetDivider()
+                    SwitchRow(quoteQuickReply, "引用消息回复", "快捷回复时引用触发通知的原消息") {
+                        quoteQuickReply = it
+                        persist { rule -> rule.copy(quoteQuickReply = it) }
                     }
+
                     InsetDivider()
-                    SwitchRow(mergeByTalker, "合并同会话通知", "同一 wxid 的新消息更新到一条通知") { mergeByTalker = it }
+                    SwitchRow(mergeByTalker, "合并同会话通知", "同一 wxid 的新消息更新到一条通知") { mergeByTalker = it; persist { rule -> rule.copy(mergeByTalker = it) } }
                     InsetDivider()
-                    SwitchRow(showDetail, "通知显示消息详情", "关闭后只显示收到一条新消息") { showDetail = it }
+                    SwitchRow(showDetail, "通知显示消息详情", "关闭后只显示收到一条新消息") { showDetail = it; persist { rule -> rule.copy(showDetail = it) } }
                 }
             }
             item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "铃声") }
@@ -695,7 +656,7 @@ internal fun CustomNotificationRuleEditorPage(
                         } else {
                             RingtonePickerBridge.launchSystem(activity, ringtone) { picked ->
                                 ringtone = CustomNotificationRuntime.freezeRingtoneUri(context, picked)
-                                Toast.makeText(context, "铃声已选择，保存后生效", Toast.LENGTH_SHORT).show()
+                                persist { it.copy(ringtone = ringtone) }
                             }
                         }
                     }
@@ -707,7 +668,7 @@ internal fun CustomNotificationRuleEditorPage(
                         } else {
                             RingtonePickerBridge.launchFile(activity) { picked ->
                                 ringtone = CustomNotificationRuntime.freezeRingtoneUri(context, picked)
-                                Toast.makeText(context, "铃声已选择，保存后生效", Toast.LENGTH_SHORT).show()
+                                persist { it.copy(ringtone = ringtone) }
                             }
                         }
                     }
@@ -715,7 +676,7 @@ internal fun CustomNotificationRuleEditorPage(
                         InsetDivider()
                         ActionRow("清空铃声", "恢复跟随系统") {
                             ringtone = ""
-                            Toast.makeText(context, "铃声已清空，保存后生效", Toast.LENGTH_SHORT).show()
+                            persist { it.copy(ringtone = "") }
                         }
                     }
                 }
@@ -723,13 +684,12 @@ internal fun CustomNotificationRuleEditorPage(
             item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "静默时段") }
             item {
                 SettingsCard {
-                    SwitchRow(muteEnable, "开启时段静默", "指定时间内不弹通知") { muteEnable = it }
-                    if (muteEnable) {
-                        InsetDivider()
-                        TimeOfDayPickerRow("开始时间", muteStart) { muteStart = it }
-                        InsetDivider()
-                        TimeOfDayPickerRow("结束时间", muteEnd) { muteEnd = it }
-                    }
+                    SwitchRow(muteEnable, "开启时段静默", "指定时间内不弹通知") { muteEnable = it; persist { rule -> rule.copy(muteEnable = it) } }
+                    InsetDivider()
+                    TimeOfDayPickerRow("开始时间", muteStart) { muteStart = it; persist { rule -> rule.copy(muteStart = CustomNotificationSettings.normalizeTime(muteStart, CustomNotificationSettings.DEFAULT_MUTE_START), muteEnd = CustomNotificationSettings.normalizeTime(muteEnd, CustomNotificationSettings.DEFAULT_MUTE_END)) } }
+                    InsetDivider()
+                    TimeOfDayPickerRow("结束时间", muteEnd) { muteEnd = it; persist { rule -> rule.copy(muteStart = CustomNotificationSettings.normalizeTime(muteStart, CustomNotificationSettings.DEFAULT_MUTE_START), muteEnd = CustomNotificationSettings.normalizeTime(muteEnd, CustomNotificationSettings.DEFAULT_MUTE_END)) } }
+
                 }
             }
             if (initialRule.group) {
@@ -746,17 +706,7 @@ internal fun CustomNotificationRuleEditorPage(
                             }
                             InsetDivider()
                         }
-                        SwitchRow(blockAtMe, "屏蔽@我", "命中 @我 时不弹通知") { blockAtMe = it }
-                    }
-                }
-            }
-            if (!isDefault) {
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
-                item {
-                    SettingsCard {
-                        ActionRow("删除规则", "移除该会话自定义通知配置") {
-                            onDelete()
-                        }
+                        SwitchRow(blockAtMe, "屏蔽@我", "命中 @我 时不弹通知") { blockAtMe = it; persist { rule -> rule.copy(blockAtMe = it) } }
                     }
                 }
             }
@@ -903,6 +853,7 @@ internal fun KeywordNotificationMiuixPage(
     val keywordMainListState = rememberLazyListState()
     val keywordListState = rememberLazyListState()
     var keywordQuery by remember { mutableStateOf("") }
+    var editingKeywordKey by remember { mutableStateOf<String?>(null) }
 
     fun saveKeywords(next: List<KeywordRule>) {
         val clean = next.map { it.copy(keyword = it.keyword.trim()) }
@@ -964,32 +915,34 @@ internal fun KeywordNotificationMiuixPage(
                 onQueryChange = { keywordQuery = it },
                 listState = keywordListState,
                 onBack = { route = KeywordNotificationRoute.Main },
-                onAdd = { route = KeywordNotificationRoute.KeywordEditor(null) },
-                onEdit = { route = KeywordNotificationRoute.KeywordEditor(it.keyword) },
+                onAdd = { editingKeywordKey = null; route = KeywordNotificationRoute.KeywordEditor(null) },
+                onEdit = { editingKeywordKey = it.keyword; route = KeywordNotificationRoute.KeywordEditor(it.keyword) },
                 onClear = {
                     saveKeywords(emptyList())
                     Toast.makeText(context, "已清空关键词", Toast.LENGTH_SHORT).show()
                 }
             )
             is KeywordNotificationRoute.KeywordEditor -> {
-                val old = currentRoute.oldKeyword?.let { oldKeyword -> keywords.firstOrNull { it.keyword == oldKeyword } }
+                val old = editingKeywordKey?.let { oldKeyword -> keywords.firstOrNull { it.keyword == oldKeyword } }
                 KeywordNotificationKeywordEditorPage(
                     initial = old,
+                    isNew = currentRoute.oldKeyword == null,
+                    keywords = keywords,
                     onBack = { route = KeywordNotificationRoute.KeywordList },
                     onSave = { saved ->
                         if (saved.keyword.isBlank()) {
                             Toast.makeText(context, "关键词不能为空", Toast.LENGTH_SHORT).show()
-                        } else if (currentRoute.oldKeyword != saved.keyword && keywords.any { it.keyword == saved.keyword }) {
+                        } else if (editingKeywordKey != saved.keyword && keywords.any { it.keyword == saved.keyword }) {
                             Toast.makeText(context, "该关键词已存在", Toast.LENGTH_SHORT).show()
                         } else {
                             val next = if (currentRoute.oldKeyword == null) {
                                 keywords + saved
                             } else {
-                                keywords.map { if (it.keyword == currentRoute.oldKeyword) saved else it }
+                                keywords.map { if (it.keyword == editingKeywordKey) saved else it }
                             }
                             saveKeywords(next)
-                            Toast.makeText(context, "关键词已保存", Toast.LENGTH_SHORT).show()
-                            route = KeywordNotificationRoute.KeywordList
+                            editingKeywordKey = saved.keyword
+                            if (currentRoute.oldKeyword == null) route = KeywordNotificationRoute.KeywordList
                         }
                     },
                     onDelete = if (old == null) {
@@ -1012,11 +965,9 @@ internal fun KeywordNotificationMiuixPage(
                 context = context,
                 request = currentRoute.request,
                 onBack = { route = KeywordNotificationRoute.Main },
-                onConfirm = { picked ->
-                    val ids = picked.map { it.id }.filter { it.isNotBlank() }.toSet()
+                onSelectionChange = { selected ->
+                    val ids = selected.filter { it.isNotBlank() }.toSet()
                     saveContacts(currentRoute.includeMode, ids)
-                    Toast.makeText(context, "名单已保存", Toast.LENGTH_SHORT).show()
-                    route = KeywordNotificationRoute.Main
                 }
             )
         }
@@ -1140,6 +1091,13 @@ internal fun ZombieCheckMiuixPage(
                         }
                     }
                     route = ZombieCheckRoute.Main
+                },
+                onSelectionChange = if (currentRoute.selection == ZombieCheckSelection.DELETE) null else { ids ->
+                    when (currentRoute.selection) {
+                        ZombieCheckSelection.TARGETS -> { targetIds = ids; settings.saveTargetIds(ids) }
+                        ZombieCheckSelection.EXCLUDED -> { excludedIds = ids; settings.saveExcludedIds(ids) }
+                        ZombieCheckSelection.DELETE -> Unit
+                    }
                 }
             )
         }
@@ -1185,9 +1143,15 @@ private fun ZombieCheckMainPage(
     }
 
     fun saveInt(key: String, value: String, range: IntRange) {
-        value.toIntOrNull()?.coerceIn(range.first, range.last)?.let {
+        value.toIntOrNull()?.takeIf { it in range }?.let {
             sp.edit().putInt(key, it).apply()
         }
+    }
+
+    fun saveIntervalRange() {
+        val min = minDelay.toIntOrNull()?.takeIf { it in 0..60 } ?: return
+        val max = maxDelay.toIntOrNull()?.takeIf { it in min..120 } ?: return
+        sp.edit().putInt(ZombieCheckSettings.KEY_MIN_DELAY_SECONDS, min).putInt(ZombieCheckSettings.KEY_MAX_DELAY_SECONDS, max).apply()
     }
 
     fun toastResult(result: ZombieCheckActionResult) {
@@ -1201,14 +1165,21 @@ private fun ZombieCheckMainPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = { BottomActionBar("返回", onBack) }
+        onBack = onBack,
+        showBackIcon = false,
+        topBarActions = {
+            TopBarTextAction(if (snapshot.running || snapshot.deleting) "停止" else "开始") {
+                toastResult(if (snapshot.running || snapshot.deleting) ZombieCheckController.pause() else ZombieCheckController.start())
+            }
+            TopBarTextAction("重置") { toastResult(ZombieCheckController.reset()) }
+        }
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "检测") }
@@ -1216,7 +1187,7 @@ private fun ZombieCheckMainPage(
                 SettingsCard {
                     SwitchRow(
                         checked = enabled,
-                        title = "启用僵尸粉检测",
+                        title = "僵尸粉检测",
                         summary = "使用微信转账下单接口核验好友关系，不会确认付款",
                         onCheckedChange = {
                             enabled = it
@@ -1248,27 +1219,6 @@ private fun ZombieCheckMainPage(
                     ActionRow("检测范围", if (targetIds.isEmpty()) "全部好友" else "已选择 ${targetIds.size} 位好友", onPickTargets)
                     InsetDivider()
                     ActionRow("排除好友", if (excludedIds.isEmpty()) "未排除" else "已排除 ${excludedIds.size} 位好友", onPickExcluded)
-                    InsetDivider()
-                    ActionRow(
-                        if (snapshot.running || snapshot.deleting) "停止当前任务" else "开始 / 继续检测",
-                        when {
-                            snapshot.deleting -> "停止后不再删除剩余好友"
-                            snapshot.running -> "暂停后保留当前队列"
-                            else -> "按当前范围继续未完成进度"
-                        }
-                    ) {
-                        toastResult(
-                            if (snapshot.running || snapshot.deleting) {
-                                ZombieCheckController.pause()
-                            } else {
-                                ZombieCheckController.start()
-                            }
-                        )
-                    }
-                    InsetDivider()
-                    ActionRow("重置检测进度", "清空断点、结果和运行日志") {
-                        toastResult(ZombieCheckController.reset())
-                    }
                 }
             }
 
@@ -1284,12 +1234,10 @@ private fun ZombieCheckMainPage(
                             sp.edit().putBoolean(ZombieCheckSettings.KEY_AUTO_TAG, it).apply()
                         }
                     )
-                    if (autoTag) {
-                        InsetDivider()
-                        InputRow("标签名称", "检测到好友关系异常时追加", labelName) {
-                            labelName = it
-                            sp.edit().putString(ZombieCheckSettings.KEY_LABEL_NAME, it.trim()).apply()
-                        }
+                    InsetDivider()
+                    InputRow("标签名称", "检测到好友关系异常时追加", labelName, onEditingFinished = { if (it.isBlank()) sp.edit().putString(ZombieCheckSettings.KEY_LABEL_NAME, "").apply() }) {
+                        labelName = it
+                        if (it.isNotBlank()) sp.edit().putString(ZombieCheckSettings.KEY_LABEL_NAME, it.trim()).apply()
                     }
                     InsetDivider()
                     SwitchRow(
@@ -1353,12 +1301,15 @@ private fun ZombieCheckMainPage(
                 SettingsCard {
                     NumberInputRow("最小间隔", "单位秒，0-60", minDelay) {
                         minDelay = it
-                        saveInt(ZombieCheckSettings.KEY_MIN_DELAY_SECONDS, it, 0..60)
+                        saveIntervalRange()
                     }
                     InsetDivider()
                     NumberInputRow("最大间隔", "单位秒，0-120", maxDelay) {
                         maxDelay = it
-                        saveInt(ZombieCheckSettings.KEY_MAX_DELAY_SECONDS, it, 0..120)
+                        saveIntervalRange()
+                    }
+                    if (minDelay.toIntOrNull()?.let { min -> min in 0..60 && maxDelay.toIntOrNull()?.let { it in min..120 } == true } != true) {
+                        InsetDivider(); InfoRow("间隔范围", "请输入有效范围，保留上次有效配置")
                     }
                     InsetDivider()
                     NumberInputRow("请求超时", "单位秒，5-60", timeout) {
@@ -1407,9 +1358,9 @@ private fun ZombieCheckMainPage(
     }
 
     if (confirmAutoDelete) {
-        WindowDialog(
+        SettingsWindowDialog(
             show = true,
-            title = "启用自动删除",
+            title = "自动删除",
             onDismissRequest = { confirmAutoDelete = false },
             content = {
                 Column {
@@ -1440,7 +1391,7 @@ private fun ZombieCheckMainPage(
     }
 
     if (pendingDeleteTargets.isNotEmpty()) {
-        WindowDialog(
+        SettingsWindowDialog(
             show = true,
             title = "确认批量删除",
             onDismissRequest = onDismissDelete,
@@ -1463,8 +1414,8 @@ private fun ZombieCheckMainPage(
                         onClick = {
                             val result = onConfirmDelete(
                                 clearRecord,
-                                deleteDelay.toIntOrNull()?.coerceIn(0, 300)
-                                    ?: ZombieCheckSettings.DEFAULT_DELETE_DELAY_SECONDS
+                                deleteDelay.toIntOrNull()?.takeIf { it in 0..300 }
+                                    ?: sp.getInt(ZombieCheckSettings.KEY_DELETE_DELAY_SECONDS, ZombieCheckSettings.DEFAULT_DELETE_DELAY_SECONDS)
                             )
                             toastResult(result)
                         },
@@ -1549,11 +1500,9 @@ internal fun QQMusicOrderMiuixPage(
                 context = context,
                 request = currentRoute.request,
                 onBack = { route = QQMusicOrderRoute.Main },
-                onConfirm = { picked ->
-                    allowedTalkers = picked.map { it.id }.filter { it.isNotBlank() }.toSet()
+                onSelectionChange = { selected ->
+                    allowedTalkers = selected.filter { it.isNotBlank() }.toSet()
                     settings.saveAllowedTalkers(allowedTalkers)
-                    Toast.makeText(context, "点歌范围已保存", Toast.LENGTH_SHORT).show()
-                    route = QQMusicOrderRoute.Main
                 }
             )
         }
@@ -1587,14 +1536,15 @@ private fun QQMusicOrderMainPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = { BottomActionBar("返回", onBack) }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "点歌") }
@@ -1603,7 +1553,7 @@ private fun QQMusicOrderMainPage(
                     SwitchRow(
                         sp,
                         QQMusicOrderSettings.KEY_ENABLE,
-                        "启用 QQ 点歌",
+                        "QQ 点歌",
                         "在聊天中响应点歌指令",
                         QQMusicOrderSettings.DEFAULT_ENABLE
                     )
@@ -1676,13 +1626,12 @@ private fun QQMusicOrderMainPage(
                             sp.edit().putBoolean(QQMusicOrderSettings.KEY_CUSTOM_SINGER, it).commit()
                         }
                     )
-                    if (customSingerEnabled) {
-                        InsetDivider()
-                        InputRow("默认 singer", "留空时使用原歌手或点歌人昵称", defaultSinger) {
-                            defaultSinger = it
-                            sp.edit().putString(QQMusicOrderSettings.KEY_DEFAULT_SINGER, it).commit()
-                        }
+                    InsetDivider()
+                    InputRow("默认 singer", "留空时使用原歌手或点歌人昵称", defaultSinger) {
+                        defaultSinger = it
+                        sp.edit().putString(QQMusicOrderSettings.KEY_DEFAULT_SINGER, it).commit()
                     }
+
                     InsetDivider()
                     InputRow("AppID", "留空时使用 QQ 音乐默认 AppID", appId) {
                         appId = it
@@ -1723,20 +1672,24 @@ private fun KeywordNotificationMainPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = { BottomActionBar("返回", onBack) }
+        onBack = onBack,
+        showBackIcon = false,
+        topBarActions = {
+            if (activeContacts.isNotEmpty()) TopBarTextAction("清空名单") { onClearContacts(filterMode) }
+        }
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "监控") }
             item {
                 SettingsCard {
-                    SwitchRow(sp, KeywordNotificationSettings.KEY_ENABLE, "启用关键词通知", "收到匹配消息时提醒", KeywordNotificationSettings.DEFAULT_ENABLE)
+                    SwitchRow(sp, KeywordNotificationSettings.KEY_ENABLE, "关键词通知", "收到匹配消息时提醒", KeywordNotificationSettings.DEFAULT_ENABLE)
                     InsetDivider()
                     InfoRow("关键词", "${keywords.size} 个")
                     InsetDivider()
@@ -1819,33 +1772,26 @@ private fun KeywordNotificationMainPage(
                     ) {
                         onPickContacts(filterMode)
                     }
-                    if (activeContacts.isNotEmpty()) {
-                        InsetDivider()
-                        ActionRow("清空当前名单", if (filterMode) "清空仅生效名单" else "清空排除名单") {
-                            onClearContacts(filterMode)
-                        }
-                    }
                 }
             }
             item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "免打扰") }
             item {
                 SettingsCard {
-                    SwitchRow(quietEnabled, "启用免打扰", "指定时间内不提醒") {
+                    SwitchRow(quietEnabled, "免打扰", "指定时间内不提醒") {
                         quietEnabled = it
                         sp.edit().putBoolean(KeywordNotificationSettings.KEY_QUIET, it).apply()
                     }
-                    if (quietEnabled) {
-                        InsetDivider()
-                        TimeOfDayPickerRow("开始时间", quietStart) {
-                            quietStart = it
-                            sp.edit().putString(KeywordNotificationSettings.KEY_QUIET_START, quietStart).apply()
-                        }
-                        InsetDivider()
-                        TimeOfDayPickerRow("结束时间", quietEnd) {
-                            quietEnd = it
-                            sp.edit().putString(KeywordNotificationSettings.KEY_QUIET_END, quietEnd).apply()
-                        }
+                    InsetDivider()
+                    TimeOfDayPickerRow("开始时间", quietStart) {
+                        quietStart = it
+                        sp.edit().putString(KeywordNotificationSettings.KEY_QUIET_START, quietStart).putString(KeywordNotificationSettings.KEY_QUIET_END, quietEnd).apply()
                     }
+                    InsetDivider()
+                    TimeOfDayPickerRow("结束时间", quietEnd) {
+                        quietEnd = it
+                        sp.edit().putString(KeywordNotificationSettings.KEY_QUIET_START, quietStart).putString(KeywordNotificationSettings.KEY_QUIET_END, quietEnd).apply()
+                    }
+
                 }
             }
         }
@@ -1887,40 +1833,36 @@ private fun KeywordNotificationAlertCard(
             notifySound = it
             sp.edit().putBoolean(soundKey, it).apply()
         }
-        if (notifySound) {
-            InsetDivider()
-            ActionRow("选择系统铃声", ringtoneDisplayName(context, notifyRingtone, RedPacketSettings.NOTIFY_SOUND_MODE_SYSTEM)) {
-                val activity = context as? Activity
-                if (activity == null) {
-                    Toast.makeText(context, "当前页面无法打开铃声选择器", Toast.LENGTH_SHORT).show()
-                } else {
-                    RingtonePickerBridge.launchSystem(activity, notifyRingtone) { picked ->
-                        notifyRingtone = CustomNotificationRuntime.freezeRingtoneUri(context, picked)
-                        sp.edit().putString(ringtoneKey, notifyRingtone).apply()
-                        Toast.makeText(context, "铃声已保存", Toast.LENGTH_SHORT).show()
-                    }
+        InsetDivider()
+        ActionRow("选择系统铃声", ringtoneDisplayName(context, notifyRingtone, RedPacketSettings.NOTIFY_SOUND_MODE_SYSTEM)) {
+            val activity = context as? Activity
+            if (activity == null) {
+                Toast.makeText(context, "当前页面无法打开铃声选择器", Toast.LENGTH_SHORT).show()
+            } else {
+                RingtonePickerBridge.launchSystem(activity, notifyRingtone) { picked ->
+                    notifyRingtone = CustomNotificationRuntime.freezeRingtoneUri(context, picked)
+                    sp.edit().putString(ringtoneKey, notifyRingtone).apply()
                 }
             }
-            InsetDivider()
-            ActionRow("从文件选择铃声", if (notifyRingtone.isBlank()) "未选择" else ringtoneDisplayName(context, notifyRingtone, RedPacketSettings.NOTIFY_SOUND_MODE_CUSTOM)) {
-                val activity = context as? Activity
-                if (activity == null) {
-                    Toast.makeText(context, "当前页面无法打开文件选择器", Toast.LENGTH_SHORT).show()
-                } else {
-                    RingtonePickerBridge.launchFile(activity) { picked ->
-                        notifyRingtone = CustomNotificationRuntime.freezeRingtoneUri(context, picked)
-                        sp.edit().putString(ringtoneKey, notifyRingtone).apply()
-                        Toast.makeText(context, "铃声已保存", Toast.LENGTH_SHORT).show()
-                    }
+        }
+        InsetDivider()
+        ActionRow("从文件选择铃声", if (notifyRingtone.isBlank()) "未选择" else ringtoneDisplayName(context, notifyRingtone, RedPacketSettings.NOTIFY_SOUND_MODE_CUSTOM)) {
+            val activity = context as? Activity
+            if (activity == null) {
+                Toast.makeText(context, "当前页面无法打开文件选择器", Toast.LENGTH_SHORT).show()
+            } else {
+                RingtonePickerBridge.launchFile(activity) { picked ->
+                    notifyRingtone = CustomNotificationRuntime.freezeRingtoneUri(context, picked)
+                    sp.edit().putString(ringtoneKey, notifyRingtone).apply()
                 }
             }
-            if (notifyRingtone.isNotBlank()) {
-                InsetDivider()
-                ActionRow("清空铃声", "恢复跟随系统") {
-                    notifyRingtone = ""
-                    sp.edit().putString(ringtoneKey, "").apply()
-                    Toast.makeText(context, "铃声已清空", Toast.LENGTH_SHORT).show()
-                }
+        }
+        if (notifyRingtone.isNotBlank()) {
+            InsetDivider()
+            ActionRow("清空铃声", "恢复跟随系统") {
+                notifyRingtone = ""
+                sp.edit().putString(ringtoneKey, "").apply()
+                Toast.makeText(context, "铃声已清空", Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -1946,13 +1888,11 @@ private fun KeywordNotificationKeywordListPage(
         title = "关键词管理",
         largeTitle = "关键词管理",
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar(
-                primaryText = "添加关键词",
-                onPrimaryClick = onAdd,
-                secondaryText = "返回",
-                onSecondaryClick = onBack
-            )
+        onBack = onBack,
+        showBackIcon = false,
+        topBarActions = {
+            if (keywords.isNotEmpty()) TopBarTextAction("清空", onClick = onClear)
+            TopBarTextAction("添加", onClick = onAdd)
         }
     ) { padding ->
         LazyColumn(
@@ -1960,7 +1900,7 @@ private fun KeywordNotificationKeywordListPage(
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item {
@@ -1970,7 +1910,7 @@ private fun KeywordNotificationKeywordListPage(
             }
             item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = if (visible.isEmpty()) "关键词" else "关键词 · ${visible.size} 个") }
             when {
-                keywords.isEmpty() -> item { SettingsCard { EmptyText("暂无关键词，点击底部“添加关键词”。") } }
+                keywords.isEmpty() -> item { SettingsCard { EmptyText("暂无关键词，点击顶部“添加”。") } }
                 visible.isEmpty() -> item { SettingsCard { EmptyText("没有匹配结果") } }
                 else -> visible.forEach { rule ->
                     item {
@@ -1982,15 +1922,6 @@ private fun KeywordNotificationKeywordListPage(
                     }
                 }
             }
-            if (keywords.isNotEmpty()) {
-                item {
-                    SettingsCard {
-                        ActionRow("清空所有关键词", "移除全部关键词") {
-                            onClear()
-                        }
-                    }
-                }
-            }
         }
     }
 }
@@ -1998,48 +1929,50 @@ private fun KeywordNotificationKeywordListPage(
 @Composable
 private fun KeywordNotificationKeywordEditorPage(
     initial: KeywordRule?,
+    isNew: Boolean,
+    keywords: List<KeywordRule>,
     onBack: () -> Unit,
     onSave: (KeywordRule) -> Unit,
     onDelete: (() -> Unit)?
 ) {
-    var keyword by remember(initial) { mutableStateOf(initial?.keyword.orEmpty()) }
-    var wholeWord by remember(initial) { mutableStateOf(initial?.wholeWord ?: false) }
+    var keyword by remember(isNew) { mutableStateOf(initial?.keyword.orEmpty()) }
+    var validKeyword by remember(isNew) { mutableStateOf(initial?.keyword.orEmpty()) }
+    var wholeWord by remember(isNew) { mutableStateOf(initial?.wholeWord ?: false) }
+    val duplicate = keywords.any { it.keyword == keyword.trim() && it.keyword != initial?.keyword }
     val scrollBehavior = MiuixScrollBehavior()
     PageScaffold(
-        title = if (initial == null) "添加关键词" else "编辑关键词",
-        largeTitle = if (initial == null) "添加关键词" else "编辑关键词",
+        title = if (isNew) "添加关键词" else "编辑关键词",
+        largeTitle = if (isNew) "添加关键词" else "编辑关键词",
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar(
-                primaryText = "保存",
-                onPrimaryClick = { onSave(KeywordRule(keyword.trim(), wholeWord)) },
-                secondaryText = "返回",
-                onSecondaryClick = onBack
-            )
+        onBack = onBack,
+        showBackIcon = false,
+        topBarActions = {
+            if (isNew) TopBarTextAction("新增") { onSave(KeywordRule(keyword.trim(), wholeWord)) }
+            else if (onDelete != null) TopBarTextAction("删除", onClick = onDelete)
         }
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "关键词") }
             item {
                 SettingsCard {
-                    InputRow("关键词", "输入要监控的关键词", keyword) { keyword = it }
-                    InsetDivider()
-                    SwitchRow(wholeWord, "全字匹配", "关闭为模糊匹配，包含关键词即可触发") { wholeWord = it }
-                }
-            }
-            if (onDelete != null) {
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
-                item {
-                    SettingsCard {
-                        ActionRow("删除关键词", "移除该关键词") {
-                            onDelete()
+                    InputRow("关键词", if (keyword.isBlank() || duplicate) "关键词不能为空或重复，保留上次有效配置" else "输入要监控的关键词", keyword) {
+                        keyword = it
+                        val clean = it.trim()
+                        if (!isNew && clean.isNotEmpty() && keywords.none { item -> item.keyword == clean && item.keyword != initial?.keyword }) {
+                            validKeyword = clean
+                            onSave(KeywordRule(clean, wholeWord))
                         }
+                    }
+                    InsetDivider()
+                    SwitchRow(wholeWord, "全字匹配", "关闭为模糊匹配，包含关键词即可触发") {
+                        wholeWord = it
+                        if (!isNew && validKeyword.isNotEmpty()) onSave(KeywordRule(validKeyword, it))
                     }
                 }
             }
@@ -2063,81 +1996,74 @@ private fun KeywordNotificationTemplatePage(
     var atAllContent by remember { mutableStateOf(sp.getString(KeywordNotificationSettings.KEY_AT_ALL_CONTENT, "").orEmpty()) }
     var atAllToast by remember { mutableStateOf(sp.getString(KeywordNotificationSettings.KEY_AT_ALL_TOAST, "").orEmpty()) }
     val scrollBehavior = MiuixScrollBehavior()
-    fun save() {
+    fun reset() {
+        keywordTitle = ""
+        keywordContent = ""
+        keywordToast = ""
+        atMeTitle = ""
+        atMeContent = ""
+        atMeToast = ""
+        atAllTitle = ""
+        atAllContent = ""
+        atAllToast = ""
         sp.edit()
-            .putString(KeywordNotificationSettings.KEY_KEYWORD_TITLE, keywordTitle)
-            .putString(KeywordNotificationSettings.KEY_KEYWORD_CONTENT, keywordContent)
-            .putString(KeywordNotificationSettings.KEY_KEYWORD_TOAST, keywordToast)
-            .putString(KeywordNotificationSettings.KEY_AT_ME_TITLE, atMeTitle)
-            .putString(KeywordNotificationSettings.KEY_AT_ME_CONTENT, atMeContent)
-            .putString(KeywordNotificationSettings.KEY_AT_ME_TOAST, atMeToast)
-            .putString(KeywordNotificationSettings.KEY_AT_ALL_TITLE, atAllTitle)
-            .putString(KeywordNotificationSettings.KEY_AT_ALL_CONTENT, atAllContent)
-            .putString(KeywordNotificationSettings.KEY_AT_ALL_TOAST, atAllToast)
+            .putString(KeywordNotificationSettings.KEY_KEYWORD_TITLE, "")
+            .putString(KeywordNotificationSettings.KEY_KEYWORD_CONTENT, "")
+            .putString(KeywordNotificationSettings.KEY_KEYWORD_TOAST, "")
+            .putString(KeywordNotificationSettings.KEY_AT_ME_TITLE, "")
+            .putString(KeywordNotificationSettings.KEY_AT_ME_CONTENT, "")
+            .putString(KeywordNotificationSettings.KEY_AT_ME_TOAST, "")
+            .putString(KeywordNotificationSettings.KEY_AT_ALL_TITLE, "")
+            .putString(KeywordNotificationSettings.KEY_AT_ALL_CONTENT, "")
+            .putString(KeywordNotificationSettings.KEY_AT_ALL_TOAST, "")
             .apply()
-        Toast.makeText(context, "模板已保存", Toast.LENGTH_SHORT).show()
-        onBack()
+    }
+    fun saveText(key: String, value: String, finished: Boolean = false) {
+        if (value.isNotBlank() || finished) sp.edit().putString(key, value).apply()
     }
     PageScaffold(
         title = "自定义文字",
         largeTitle = "自定义文字",
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar(
-                primaryText = "保存",
-                onPrimaryClick = ::save,
-                secondaryText = "返回",
-                onSecondaryClick = onBack,
-                middleText = "恢复默认",
-                onMiddleClick = {
-                    keywordTitle = ""
-                    keywordContent = ""
-                    keywordToast = ""
-                    atMeTitle = ""
-                    atMeContent = ""
-                    atMeToast = ""
-                    atAllTitle = ""
-                    atAllContent = ""
-                    atAllToast = ""
-                }
-            )
-        }
+        onBack = onBack,
+        showBackIcon = false,
+        topBarActions = { TopBarTextAction("恢复默认", onClick = ::reset) }
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "关键词通知") }
             item {
                 SettingsCard {
-                    VariableInputRow("通知标题模板", "默认：${KeywordNotificationSettings.DEFAULT_KEYWORD_TITLE}", keywordTitle, keywordNotificationTemplateVariables) { keywordTitle = it }
+                    VariableInputRow("通知标题模板", "默认：${KeywordNotificationSettings.DEFAULT_KEYWORD_TITLE}", keywordTitle, keywordNotificationTemplateVariables, onEditingFinished = { saveText(KeywordNotificationSettings.KEY_KEYWORD_TITLE, it, true) }) { keywordTitle = it; saveText(KeywordNotificationSettings.KEY_KEYWORD_TITLE, it) }
                     InsetDivider()
-                    VariableInputRow("通知内容模板", "默认：${KeywordNotificationSettings.DEFAULT_KEYWORD_CONTENT}", keywordContent, keywordNotificationTemplateVariables, minLines = 3) { keywordContent = it }
+                    VariableInputRow("通知内容模板", "默认：${KeywordNotificationSettings.DEFAULT_KEYWORD_CONTENT}", keywordContent, keywordNotificationTemplateVariables, minLines = 3, onEditingFinished = { saveText(KeywordNotificationSettings.KEY_KEYWORD_CONTENT, it, true) }) { keywordContent = it; saveText(KeywordNotificationSettings.KEY_KEYWORD_CONTENT, it) }
                     InsetDivider()
-                    VariableInputRow("Toast 文字模板", "默认：${KeywordNotificationSettings.DEFAULT_KEYWORD_TOAST}", keywordToast, keywordNotificationTemplateVariables) { keywordToast = it }
+                    VariableInputRow("Toast 文字模板", "默认：${KeywordNotificationSettings.DEFAULT_KEYWORD_TOAST}", keywordToast, keywordNotificationTemplateVariables, onEditingFinished = { saveText(KeywordNotificationSettings.KEY_KEYWORD_TOAST, it, true) }) { keywordToast = it; saveText(KeywordNotificationSettings.KEY_KEYWORD_TOAST, it) }
                 }
             }
             item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "@我通知") }
             item {
                 SettingsCard {
-                    VariableInputRow("通知标题模板", "默认：${KeywordNotificationSettings.DEFAULT_AT_ME_TITLE}", atMeTitle, keywordNotificationTemplateVariables) { atMeTitle = it }
+                    VariableInputRow("通知标题模板", "默认：${KeywordNotificationSettings.DEFAULT_AT_ME_TITLE}", atMeTitle, keywordNotificationTemplateVariables, onEditingFinished = { saveText(KeywordNotificationSettings.KEY_AT_ME_TITLE, it, true) }) { atMeTitle = it; saveText(KeywordNotificationSettings.KEY_AT_ME_TITLE, it) }
                     InsetDivider()
-                    VariableInputRow("通知内容模板", "默认：${KeywordNotificationSettings.DEFAULT_AT_ME_CONTENT}", atMeContent, keywordNotificationTemplateVariables, minLines = 3) { atMeContent = it }
+                    VariableInputRow("通知内容模板", "默认：${KeywordNotificationSettings.DEFAULT_AT_ME_CONTENT}", atMeContent, keywordNotificationTemplateVariables, minLines = 3, onEditingFinished = { saveText(KeywordNotificationSettings.KEY_AT_ME_CONTENT, it, true) }) { atMeContent = it; saveText(KeywordNotificationSettings.KEY_AT_ME_CONTENT, it) }
                     InsetDivider()
-                    VariableInputRow("Toast 文字模板", "默认：${KeywordNotificationSettings.DEFAULT_AT_ME_TOAST}", atMeToast, keywordNotificationTemplateVariables) { atMeToast = it }
+                    VariableInputRow("Toast 文字模板", "默认：${KeywordNotificationSettings.DEFAULT_AT_ME_TOAST}", atMeToast, keywordNotificationTemplateVariables, onEditingFinished = { saveText(KeywordNotificationSettings.KEY_AT_ME_TOAST, it, true) }) { atMeToast = it; saveText(KeywordNotificationSettings.KEY_AT_ME_TOAST, it) }
                 }
             }
             item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "@所有人/群公告通知") }
             item {
                 SettingsCard {
-                    VariableInputRow("通知标题模板", "默认：${KeywordNotificationSettings.DEFAULT_AT_ALL_TITLE}", atAllTitle, keywordNotificationTemplateVariables) { atAllTitle = it }
+                    VariableInputRow("通知标题模板", "默认：${KeywordNotificationSettings.DEFAULT_AT_ALL_TITLE}", atAllTitle, keywordNotificationTemplateVariables, onEditingFinished = { saveText(KeywordNotificationSettings.KEY_AT_ALL_TITLE, it, true) }) { atAllTitle = it; saveText(KeywordNotificationSettings.KEY_AT_ALL_TITLE, it) }
                     InsetDivider()
-                    VariableInputRow("通知内容模板", "默认：${KeywordNotificationSettings.DEFAULT_AT_ALL_CONTENT}", atAllContent, keywordNotificationTemplateVariables, minLines = 3) { atAllContent = it }
+                    VariableInputRow("通知内容模板", "默认：${KeywordNotificationSettings.DEFAULT_AT_ALL_CONTENT}", atAllContent, keywordNotificationTemplateVariables, minLines = 3, onEditingFinished = { saveText(KeywordNotificationSettings.KEY_AT_ALL_CONTENT, it, true) }) { atAllContent = it; saveText(KeywordNotificationSettings.KEY_AT_ALL_CONTENT, it) }
                     InsetDivider()
-                    VariableInputRow("Toast 文字模板", "默认：${KeywordNotificationSettings.DEFAULT_AT_ALL_TOAST}", atAllToast, keywordNotificationTemplateVariables) { atAllToast = it }
+                    VariableInputRow("Toast 文字模板", "默认：${KeywordNotificationSettings.DEFAULT_AT_ALL_TOAST}", atAllToast, keywordNotificationTemplateVariables, onEditingFinished = { saveText(KeywordNotificationSettings.KEY_AT_ALL_TOAST, it, true) }) { atAllToast = it; saveText(KeywordNotificationSettings.KEY_AT_ALL_TOAST, it) }
                 }
             }
         }
@@ -2158,16 +2084,15 @@ internal fun QuoteDeleteClearMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar("返回", onBack)
-        }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "聊天输入框") }
@@ -2200,14 +2125,15 @@ internal fun EmojiSaveMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = { BottomActionBar("返回", onBack) }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "聊天表情") }
@@ -2239,13 +2165,14 @@ internal fun EmojiCollectionLimitMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = { BottomActionBar("返回", onBack) }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item {
@@ -2277,16 +2204,15 @@ internal fun SwipeQuoteMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar("返回", onBack)
-        }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "引用") }
@@ -2355,16 +2281,15 @@ internal fun FakeVoiceDurationMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar("返回", onBack)
-        }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "聊天语音") }
@@ -2379,23 +2304,16 @@ internal fun FakeVoiceDurationMiuixPage(
                             sp.edit().putBoolean(FakeVoiceDurationSettings.KEY_ENABLE, it).apply()
                         }
                     )
-                    if (enabled) {
-                        InsetDivider()
-                        NumberInputRow("显示时长", "单位秒，1-60", durationSeconds) { next ->
-                            val value = next.toIntOrNull()
-                            durationSeconds = value?.coerceIn(
-                                FakeVoiceDurationSettings.MIN_DURATION_SECONDS,
-                                FakeVoiceDurationSettings.MAX_DURATION_SECONDS
-                            )?.toString() ?: next
-                            if (value == null) return@NumberInputRow
-                            sp.edit().putInt(
-                                FakeVoiceDurationSettings.KEY_DURATION_SECONDS,
-                                value.coerceIn(
-                                    FakeVoiceDurationSettings.MIN_DURATION_SECONDS,
-                                    FakeVoiceDurationSettings.MAX_DURATION_SECONDS
-                                )
-                            ).apply()
-                        }
+                    InsetDivider()
+                    NumberInputRow("显示时长", if (durationSeconds.toIntOrNull()?.let { it in FakeVoiceDurationSettings.MIN_DURATION_SECONDS..FakeVoiceDurationSettings.MAX_DURATION_SECONDS } != true)
+                        "请输入 1-60 秒；保留上次保存的值" else "单位秒，1-60", durationSeconds) { next ->
+                        val value = next.toIntOrNull()
+                        durationSeconds = next
+                        if (value == null || value !in FakeVoiceDurationSettings.MIN_DURATION_SECONDS..FakeVoiceDurationSettings.MAX_DURATION_SECONDS) return@NumberInputRow
+                        sp.edit().putInt(
+                            FakeVoiceDurationSettings.KEY_DURATION_SECONDS,
+                            value
+                        ).apply()
                     }
                 }
             }
@@ -2424,16 +2342,15 @@ internal fun FakeMiniProgramBaseLibMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar("返回", onBack)
-        }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "小程序") }
@@ -2477,16 +2394,15 @@ internal fun SkipMiniProgramVideoAdsMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar("返回", onBack)
-        }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "小程序") }
@@ -2533,16 +2449,15 @@ internal fun SkipGlobalMiniProgramSplashAdsMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar("返回", onBack)
-        }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "小程序") }
@@ -2599,14 +2514,15 @@ internal fun FakeLocationMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = { BottomActionBar("返回", onBack) }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "定位") }
@@ -2614,7 +2530,7 @@ internal fun FakeLocationMiuixPage(
                 SettingsCard {
                     SwitchRow(
                         checked = enabled,
-                        title = "启用虚拟定位",
+                        title = "虚拟定位",
                         summary = "微信主进程即时生效；小程序进程需重启微信后生效",
                         onCheckedChange = {
                             enabled = it
@@ -2661,11 +2577,7 @@ internal fun FakeLocationMiuixPage(
             initialLatitude = latitude,
             initialLongitude = longitude,
             onDismiss = { showManualInput = false },
-            onConfirm = { lat, lon ->
-                saveLocation(lat, lon)
-                showManualInput = false
-                Toast.makeText(context, "已保存虚拟定位", Toast.LENGTH_SHORT).show()
-            }
+            onValueChange = ::saveLocation
         )
     }
 }
@@ -2712,14 +2624,15 @@ internal fun GameEmojiMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = { BottomActionBar("返回", onBack) }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "发送方式") }
@@ -2760,36 +2673,34 @@ internal fun GameEmojiMiuixPage(
                     )
                 }
             }
-            if (fixedResult) {
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "固定结果") }
-                item {
-                    SettingsCard {
-                        PopupOptionRow(
-                            title = "骰子点数",
-                            summary = "$diceResult 点",
-                            options = (1..6).map { OptionItem("$it 点", it, "") },
-                            currentValue = diceResult,
-                            onValueChanged = { value ->
-                                diceResult = value
-                                sp.edit().putInt(GameEmojiSettings.KEY_DICE_RESULT, value).apply()
-                            }
-                        )
-                        InsetDivider()
-                        PopupOptionRow(
-                            title = "猜拳结果",
-                            summary = GameEmojiSettings.rpsLabel(rpsResult),
-                            options = listOf(
-                                OptionItem("剪刀", GameEmojiSettings.RPS_SCISSORS, ""),
-                                OptionItem("石头", GameEmojiSettings.RPS_ROCK, ""),
-                                OptionItem("布", GameEmojiSettings.RPS_PAPER, "")
-                            ),
-                            currentValue = rpsResult,
-                            onValueChanged = { value ->
-                                rpsResult = value
-                                sp.edit().putInt(GameEmojiSettings.KEY_RPS_RESULT, value).apply()
-                            }
-                        )
-                    }
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "固定结果") }
+            item {
+                SettingsCard {
+                    PopupOptionRow(
+                        title = "骰子点数",
+                        summary = "$diceResult 点",
+                        options = (1..6).map { OptionItem("$it 点", it, "") },
+                        currentValue = diceResult,
+                        onValueChanged = { value ->
+                            diceResult = value
+                            sp.edit().putInt(GameEmojiSettings.KEY_DICE_RESULT, value).apply()
+                        }
+                    )
+                    InsetDivider()
+                    PopupOptionRow(
+                        title = "猜拳结果",
+                        summary = GameEmojiSettings.rpsLabel(rpsResult),
+                        options = listOf(
+                            OptionItem("剪刀", GameEmojiSettings.RPS_SCISSORS, ""),
+                            OptionItem("石头", GameEmojiSettings.RPS_ROCK, ""),
+                            OptionItem("布", GameEmojiSettings.RPS_PAPER, "")
+                        ),
+                        currentValue = rpsResult,
+                        onValueChanged = { value ->
+                            rpsResult = value
+                            sp.edit().putInt(GameEmojiSettings.KEY_RPS_RESULT, value).apply()
+                        }
+                    )
                 }
             }
         }
@@ -2801,19 +2712,23 @@ private fun FakeLocationManualInputDialog(
     initialLatitude: String,
     initialLongitude: String,
     onDismiss: () -> Unit,
-    onConfirm: (Double, Double) -> Unit
+    onValueChange: (Double, Double) -> Unit
 ) {
-    var latitude by remember(initialLatitude) { mutableStateOf(initialLatitude) }
-    var longitude by remember(initialLongitude) { mutableStateOf(initialLongitude) }
-    val parsed = validFakeLocation(latitude.toDoubleOrNull(), longitude.toDoubleOrNull())
-    WindowDialog(
+    var latitude by remember { mutableStateOf(initialLatitude) }
+    var longitude by remember { mutableStateOf(initialLongitude) }
+    fun complete(value: String): Boolean = value.matches(Regex("-?[0-9]+(?:\\.[0-9]+)?"))
+    fun commitIfValid(lat: String, lon: String) {
+        if (complete(lat) && complete(lon)) validFakeLocation(lat.toDoubleOrNull(), lon.toDoubleOrNull())?.let { onValueChange(it.first, it.second) }
+    }
+    val parsed = if (complete(latitude) && complete(longitude)) validFakeLocation(latitude.toDoubleOrNull(), longitude.toDoubleOrNull()) else null
+    SettingsWindowDialog(
         show = true,
         title = "手动输入经纬度",
         onDismissRequest = onDismiss,
         content = {
             Column(modifier = Modifier.fillMaxWidth()) {
-                InputRow("纬度", "范围 -90 到 90", latitude) { latitude = cleanCoordinateInput(it) }
-                InputRow("经度", "范围 -180 到 180", longitude) { longitude = cleanCoordinateInput(it) }
+                InputRow("纬度", "范围 -90 到 90", latitude) { latitude = it; commitIfValid(it, longitude) }
+                InputRow("经度", "范围 -180 到 180", longitude) { longitude = it; commitIfValid(latitude, it) }
                 if (parsed == null) {
                     Text(
                         text = "请输入有效的纬度和经度",
@@ -2828,14 +2743,8 @@ private fun FakeLocationManualInputDialog(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     TextButton(
-                        text = "取消",
+                        text = "完成",
                         onClick = onDismiss,
-                        modifier = Modifier.weight(1f),
-                        colors = ButtonDefaults.textButtonColorsPrimary()
-                    )
-                    TextButton(
-                        text = "保存",
-                        onClick = { parsed?.let { onConfirm(it.first, it.second) } },
                         modifier = Modifier.weight(1f),
                         colors = ButtonDefaults.textButtonColorsPrimary()
                     )
@@ -2843,12 +2752,6 @@ private fun FakeLocationManualInputDialog(
             }
         }
     )
-}
-
-private fun cleanCoordinateInput(value: String): String {
-    return value.filterIndexed { index, char ->
-        char.isDigit() || char == '.' || (char == '-' && index == 0)
-    }
 }
 
 internal fun validFakeLocation(latitude: Double?, longitude: Double?): Pair<Double, Double>? {
@@ -2901,14 +2804,15 @@ internal fun MessageBubbleMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = { BottomActionBar("返回", onBack) }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "基础") }
@@ -2916,104 +2820,96 @@ internal fun MessageBubbleMiuixPage(
                 SettingsCard {
                     SwitchRow(
                         checked = enabled,
-                        title = "启用消息气泡",
+                        title = "消息气泡",
                         summary = "使用本地图片替换微信原生消息气泡",
                         onCheckedChange = {
                             enabled = it
                             sp.edit().putBoolean(MessageBubbleSettings.KEY_ENABLE, it).apply()
                         }
                     )
-                    if (enabled) {
-                        InsetDivider()
-                        SwitchRow(
-                            checked = separateDarkMode,
-                            title = "深色模式单独设置",
-                            summary = "未设置深色气泡时自动沿用对应浅色气泡",
-                            onCheckedChange = {
-                                separateDarkMode = it
-                                sp.edit()
-                                    .putBoolean(MessageBubbleSettings.KEY_SEPARATE_DARK_MODE, it)
-                                    .apply()
-                            }
-                        )
-                    }
+                    InsetDivider()
+                    SwitchRow(
+                        checked = separateDarkMode,
+                        title = "深色模式单独设置",
+                        summary = "未设置深色气泡时自动沿用对应浅色气泡",
+                        onCheckedChange = {
+                            separateDarkMode = it
+                            sp.edit()
+                                .putBoolean(MessageBubbleSettings.KEY_SEPARATE_DARK_MODE, it)
+                                .apply()
+                        }
+                    )
                 }
             }
-            if (enabled) {
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "浅色模式") }
-                item {
-                    SettingsCard {
-                        MessageBubbleAssetRow(context, MessageBubbleSlot.LEFT_LIGHT, revision) { revision++ }
-                        InsetDivider()
-                        MessageBubbleAssetRow(context, MessageBubbleSlot.RIGHT_LIGHT, revision) { revision++ }
-                    }
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "浅色模式") }
+            item {
+                SettingsCard {
+                    MessageBubbleAssetRow(context, MessageBubbleSlot.LEFT_LIGHT, revision) { revision++ }
+                    InsetDivider()
+                    MessageBubbleAssetRow(context, MessageBubbleSlot.RIGHT_LIGHT, revision) { revision++ }
                 }
-                if (separateDarkMode) {
-                    item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "深色模式") }
+            }
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "深色模式") }
+            item {
+                SettingsCard {
+                    MessageBubbleAssetRow(context, MessageBubbleSlot.LEFT_DARK, revision) { revision++ }
+                    InsetDivider()
+                    MessageBubbleAssetRow(context, MessageBubbleSlot.RIGHT_DARK, revision) { revision++ }
+                }
+            }
+            MessageBubbleKind.values()
+                .filter { it != MessageBubbleKind.GENERAL }
+                .forEach { kind ->
+                    item {
+                        SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "${kind.displayName}气泡")
+                    }
                     item {
                         SettingsCard {
-                            MessageBubbleAssetRow(context, MessageBubbleSlot.LEFT_DARK, revision) { revision++ }
-                            InsetDivider()
-                            MessageBubbleAssetRow(context, MessageBubbleSlot.RIGHT_DARK, revision) { revision++ }
+                            if (kind == MessageBubbleKind.SYSTEM) {
+                                MessageBubbleAssetRow(
+                                    context,
+                                    MessageBubbleSlot.resolve(kind, false, false),
+                                    revision
+                                ) { revision++ }
+                            } else {
+                                MessageBubbleAssetRow(
+                                    context,
+                                    MessageBubbleSlot.resolve(kind, false, false),
+                                    revision
+                                ) { revision++ }
+                                InsetDivider()
+                                MessageBubbleAssetRow(
+                                    context,
+                                    MessageBubbleSlot.resolve(kind, true, false),
+                                    revision
+                                ) { revision++ }
+                            }
+                        }
+                    }
+                    item {
+                        SettingsCard {
+                            if (kind == MessageBubbleKind.SYSTEM) {
+                                MessageBubbleAssetRow(
+                                    context,
+                                    MessageBubbleSlot.resolve(kind, false, true),
+                                    revision
+                                ) { revision++ }
+                            } else {
+                                MessageBubbleAssetRow(
+                                    context,
+                                    MessageBubbleSlot.resolve(kind, false, true),
+                                    revision
+                                ) { revision++ }
+                                InsetDivider()
+                                MessageBubbleAssetRow(
+                                    context,
+                                    MessageBubbleSlot.resolve(kind, true, true),
+                                    revision
+                                ) { revision++ }
+                            }
                         }
                     }
                 }
-                MessageBubbleKind.values()
-                    .filter { it != MessageBubbleKind.GENERAL }
-                    .forEach { kind ->
-                        item {
-                            SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "${kind.displayName}气泡")
-                        }
-                        item {
-                            SettingsCard {
-                                if (kind == MessageBubbleKind.SYSTEM) {
-                                    MessageBubbleAssetRow(
-                                        context,
-                                        MessageBubbleSlot.resolve(kind, false, false),
-                                        revision
-                                    ) { revision++ }
-                                } else {
-                                    MessageBubbleAssetRow(
-                                        context,
-                                        MessageBubbleSlot.resolve(kind, false, false),
-                                        revision
-                                    ) { revision++ }
-                                    InsetDivider()
-                                    MessageBubbleAssetRow(
-                                        context,
-                                        MessageBubbleSlot.resolve(kind, true, false),
-                                        revision
-                                    ) { revision++ }
-                                }
-                            }
-                        }
-                        if (separateDarkMode) {
-                            item {
-                                SettingsCard {
-                                    if (kind == MessageBubbleKind.SYSTEM) {
-                                        MessageBubbleAssetRow(
-                                            context,
-                                            MessageBubbleSlot.resolve(kind, false, true),
-                                            revision
-                                        ) { revision++ }
-                                    } else {
-                                        MessageBubbleAssetRow(
-                                            context,
-                                            MessageBubbleSlot.resolve(kind, false, true),
-                                            revision
-                                        ) { revision++ }
-                                        InsetDivider()
-                                        MessageBubbleAssetRow(
-                                            context,
-                                            MessageBubbleSlot.resolve(kind, true, true),
-                                            revision
-                                        ) { revision++ }
-                                    }
-                                }
-                            }
-                        }
-                    }
-            }
         }
     }
 }
@@ -3122,41 +3018,15 @@ internal fun MessageTextColorMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar(
-                primaryText = "保存设置",
-                onPrimaryClick = {
-                    val leftLight = MessageTextColorSettings.cleanColorSpec(leftLightColor)
-                        .ifEmpty { MessageTextColorSettings.DEFAULT_LEFT_LIGHT_COLOR }
-                    val rightLight = MessageTextColorSettings.cleanColorSpec(rightLightColor)
-                        .ifEmpty { MessageTextColorSettings.DEFAULT_RIGHT_LIGHT_COLOR }
-                    val leftDark = MessageTextColorSettings.cleanColorSpec(leftDarkColor)
-                        .ifEmpty { MessageTextColorSettings.DEFAULT_LEFT_DARK_COLOR }
-                    val rightDark = MessageTextColorSettings.cleanColorSpec(rightDarkColor)
-                        .ifEmpty { MessageTextColorSettings.DEFAULT_RIGHT_DARK_COLOR }
-                    sp.edit()
-                        .putString(MessageTextColorSettings.KEY_LEFT_LIGHT_COLOR, leftLight)
-                        .putString(MessageTextColorSettings.KEY_RIGHT_LIGHT_COLOR, rightLight)
-                        .putString(MessageTextColorSettings.KEY_LEFT_DARK_COLOR, leftDark)
-                        .putString(MessageTextColorSettings.KEY_RIGHT_DARK_COLOR, rightDark)
-                        .apply()
-                    leftLightColor = leftLight
-                    rightLightColor = rightLight
-                    leftDarkColor = leftDark
-                    rightDarkColor = rightDark
-                    Toast.makeText(context, "设置已保存", Toast.LENGTH_SHORT).show()
-                },
-                secondaryText = "返回",
-                onSecondaryClick = onBack
-            )
-        }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "基础") }
@@ -3165,7 +3035,7 @@ internal fun MessageTextColorMiuixPage(
                     SwitchRow(
                         sp,
                         MessageTextColorSettings.KEY_ENABLE,
-                        "启用消息文本颜色",
+                        "消息文本颜色",
                         "处理聊天里的文本消息和引用消息正文",
                         MessageTextColorSettings.DEFAULT_ENABLE
                     )
@@ -3178,29 +3048,57 @@ internal fun MessageTextColorMiuixPage(
                         "左侧浅色",
                         "对方文本消息，浅色模式",
                         leftLightColor,
-                        onReset = { leftLightColor = MessageTextColorSettings.DEFAULT_LEFT_LIGHT_COLOR }
-                    ) { leftLightColor = it.take(19) }
+                        onReset = {
+                            leftLightColor = MessageTextColorSettings.DEFAULT_LEFT_LIGHT_COLOR
+                            sp.edit().putString(MessageTextColorSettings.KEY_LEFT_LIGHT_COLOR, leftLightColor).apply()
+                        },
+                        error = if (!isCompleteColorSpec(leftLightColor)) "颜色不完整，保留上次保存的值" else null
+                    ) {
+                        leftLightColor = it
+                        if (isCompleteColorSpec(it)) sp.edit().putString(MessageTextColorSettings.KEY_LEFT_LIGHT_COLOR, MessageTextColorSettings.cleanColorSpec(it)).apply()
+                    }
                     InsetDivider()
                     ColorPickerRow(
                         "右侧浅色",
                         "自己发送文本消息，浅色模式",
                         rightLightColor,
-                        onReset = { rightLightColor = MessageTextColorSettings.DEFAULT_RIGHT_LIGHT_COLOR }
-                    ) { rightLightColor = it.take(19) }
+                        onReset = {
+                            rightLightColor = MessageTextColorSettings.DEFAULT_RIGHT_LIGHT_COLOR
+                            sp.edit().putString(MessageTextColorSettings.KEY_RIGHT_LIGHT_COLOR, rightLightColor).apply()
+                        },
+                        error = if (!isCompleteColorSpec(rightLightColor)) "颜色不完整，保留上次保存的值" else null
+                    ) {
+                        rightLightColor = it
+                        if (isCompleteColorSpec(it)) sp.edit().putString(MessageTextColorSettings.KEY_RIGHT_LIGHT_COLOR, MessageTextColorSettings.cleanColorSpec(it)).apply()
+                    }
                     InsetDivider()
                     ColorPickerRow(
                         "左侧深色",
                         "对方文本消息，深色模式",
                         leftDarkColor,
-                        onReset = { leftDarkColor = MessageTextColorSettings.DEFAULT_LEFT_DARK_COLOR }
-                    ) { leftDarkColor = it.take(19) }
+                        onReset = {
+                            leftDarkColor = MessageTextColorSettings.DEFAULT_LEFT_DARK_COLOR
+                            sp.edit().putString(MessageTextColorSettings.KEY_LEFT_DARK_COLOR, leftDarkColor).apply()
+                        },
+                        error = if (!isCompleteColorSpec(leftDarkColor)) "颜色不完整，保留上次保存的值" else null
+                    ) {
+                        leftDarkColor = it
+                        if (isCompleteColorSpec(it)) sp.edit().putString(MessageTextColorSettings.KEY_LEFT_DARK_COLOR, MessageTextColorSettings.cleanColorSpec(it)).apply()
+                    }
                     InsetDivider()
                     ColorPickerRow(
                         "右侧深色",
                         "自己发送文本消息，深色模式",
                         rightDarkColor,
-                        onReset = { rightDarkColor = MessageTextColorSettings.DEFAULT_RIGHT_DARK_COLOR }
-                    ) { rightDarkColor = it.take(19) }
+                        onReset = {
+                            rightDarkColor = MessageTextColorSettings.DEFAULT_RIGHT_DARK_COLOR
+                            sp.edit().putString(MessageTextColorSettings.KEY_RIGHT_DARK_COLOR, rightDarkColor).apply()
+                        },
+                        error = if (!isCompleteColorSpec(rightDarkColor)) "颜色不完整，保留上次保存的值" else null
+                    ) {
+                        rightDarkColor = it
+                        if (isCompleteColorSpec(it)) sp.edit().putString(MessageTextColorSettings.KEY_RIGHT_DARK_COLOR, MessageTextColorSettings.cleanColorSpec(it)).apply()
+                    }
                 }
             }
         }
@@ -3244,14 +3142,15 @@ internal fun ChatTimeStyleMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = { BottomActionBar("返回", onBack) }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "聊天时间") }
@@ -3259,41 +3158,43 @@ internal fun ChatTimeStyleMiuixPage(
                 SettingsCard {
                     SwitchRow(
                         checked = enabled,
-                        title = "启用会话时间样式",
+                        title = "会话时间样式",
                         summary = "关闭后完全交给微信原生处理",
                         onCheckedChange = {
                             enabled = it
                             sp.edit().putBoolean(ChatTimeStyleSettings.KEY_ENABLE, it).apply()
                         }
                     )
-                    if (enabled) {
+                    InsetDivider()
+                    PopupChoiceRow(
+                        title = "显示方式",
+                        summary = chatTimeModeLabel(mode),
+                        options = chatTimeModeChoices(),
+                        currentValue = mode,
+                        onValueChanged = {
+                            mode = ChatTimeStyleSettings.normalizeMode(it)
+                            sp.edit().putString(ChatTimeStyleSettings.KEY_MODE, mode).apply()
+                        }
+                    )
+                    if (mode == ChatTimeStyleSettings.MODE_CUSTOM ||
+                        mode == ChatTimeStyleSettings.MODE_EVERY
+                    ) {
                         InsetDivider()
-                        PopupChoiceRow(
-                            title = "显示方式",
-                            summary = chatTimeModeLabel(mode),
-                            options = chatTimeModeChoices(),
-                            currentValue = mode,
-                            onValueChanged = {
-                                mode = ChatTimeStyleSettings.normalizeMode(it)
-                                sp.edit().putString(ChatTimeStyleSettings.KEY_MODE, mode).apply()
+                        InputRow(
+                            title = "时间格式",
+                            summary = if (timeFormat.isNotBlank() && runCatching { SimpleDateFormat(timeFormat, Locale.getDefault()) }.isFailure)
+                                "时间格式无效；保留上次保存的值" else "例如 yyyy-MM-dd HH:mm:ss",
+                            value = timeFormat,
+                            onEditingFinished = {
+                                if (it.isBlank()) sp.edit().putString(ChatTimeStyleSettings.KEY_TIME_FORMAT, ChatTimeStyleSettings.DEFAULT_TIME_FORMAT).apply()
+                            },
+                            onValueChange = {
+                                timeFormat = it
+                                if (it.isNotBlank() && runCatching { SimpleDateFormat(it, Locale.getDefault()) }.isSuccess) {
+                                    sp.edit().putString(ChatTimeStyleSettings.KEY_TIME_FORMAT, it).apply()
+                                }
                             }
                         )
-                        if (mode == ChatTimeStyleSettings.MODE_CUSTOM ||
-                            mode == ChatTimeStyleSettings.MODE_EVERY
-                        ) {
-                            InsetDivider()
-                            InputRow(
-                                title = "时间格式",
-                                summary = "例如 yyyy-MM-dd HH:mm:ss",
-                                value = timeFormat,
-                                onValueChange = {
-                                    timeFormat = it
-                                    sp.edit()
-                                        .putString(ChatTimeStyleSettings.KEY_TIME_FORMAT, it)
-                                        .apply()
-                                }
-                            )
-                        }
                     }
                 }
             }
@@ -3329,16 +3230,15 @@ internal fun HideChatAvatarMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar("返回", onBack)
-        }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "聊天头像") }
@@ -3389,16 +3289,15 @@ internal fun RoundAvatarMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        bottomBar = {
-            BottomActionBar("返回", onBack)
-        }
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 84.dp
+                bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
             item { SmallTitle(text = "全局头像") }
@@ -3406,41 +3305,39 @@ internal fun RoundAvatarMiuixPage(
                 SettingsCard {
                     SwitchRow(
                         checked = enabled,
-                        title = "启用圆角头像",
+                        title = "圆角头像",
                         summary = "统一应用到微信界面和通知头像",
                         onCheckedChange = {
                             enabled = it
                             sp.edit().putBoolean(RoundAvatarSettings.KEY_ENABLE, it).apply()
                         }
                     )
-                    if (enabled) {
-                        InsetDivider()
-                        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp)) {
-                            Text(
-                                text = "圆角弧度 ${RoundAvatarSettings.displayPercent(radiusFactor)}%",
-                                color = MiuixTheme.colorScheme.onSurface,
-                                fontWeight = FontWeight.Medium
-                            )
-                            Slider(
-                                value = radiusFactor,
-                                onValueChange = {
-                                    radiusFactor = RoundAvatarSettings.normalizeRadiusFactor(it)
-                                },
-                                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                                valueRange = RoundAvatarSettings.MIN_RADIUS_FACTOR..RoundAvatarSettings.MAX_RADIUS_FACTOR,
-                                steps = 39,
-                                onValueChangeFinished = {
-                                    sp.edit()
-                                        .putFloat(
-                                            RoundAvatarSettings.KEY_RADIUS_FACTOR,
-                                            RoundAvatarSettings.normalizeRadiusFactor(radiusFactor)
-                                        )
-                                        .apply()
-                                },
-                                showKeyPoints = true,
-                                keyPoints = listOf(0.1f, 0.2f, 0.3f, 0.4f, 0.5f)
-                            )
-                        }
+                    InsetDivider()
+                    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp)) {
+                        Text(
+                            text = "圆角弧度 ${RoundAvatarSettings.displayPercent(radiusFactor)}%",
+                            color = MiuixTheme.colorScheme.onSurface,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Slider(
+                            value = radiusFactor,
+                            onValueChange = {
+                                radiusFactor = RoundAvatarSettings.normalizeRadiusFactor(it)
+                            },
+                            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                            valueRange = RoundAvatarSettings.MIN_RADIUS_FACTOR..RoundAvatarSettings.MAX_RADIUS_FACTOR,
+                            steps = 39,
+                            onValueChangeFinished = {
+                                sp.edit()
+                                    .putFloat(
+                                        RoundAvatarSettings.KEY_RADIUS_FACTOR,
+                                        RoundAvatarSettings.normalizeRadiusFactor(radiusFactor)
+                                    )
+                                    .apply()
+                            },
+                            showKeyPoints = true,
+                            keyPoints = listOf(0.1f, 0.2f, 0.3f, 0.4f, 0.5f)
+                        )
                     }
                 }
             }
@@ -3488,14 +3385,15 @@ internal fun CustomFriendAvatarMiuixPage(
                     title = provider.title(),
                     largeTitle = provider.title(),
                     scrollBehavior = scrollBehavior,
-                    bottomBar = { BottomActionBar("返回", onBack) }
+                    onBack = onBack,
+                    showBackIcon = false
                 ) { padding ->
                     LazyColumn(
                         modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
                         state = listState,
                         contentPadding = PaddingValues(
                             top = padding.calculateTopPadding() + 8.dp,
-                            bottom = padding.calculateBottomPadding() + 84.dp
+                            bottom = padding.calculateBottomPadding() + 16.dp
                         )
                     ) {
                         item { SmallTitle(text = "自定义头像") }
@@ -3503,107 +3401,103 @@ internal fun CustomFriendAvatarMiuixPage(
                             SettingsCard {
                                 SwitchRow(
                                     checked = enabled,
-                                    title = "启用自定义头像",
+                                    title = "自定义头像",
                                     summary = "仅修改本机显示，不会更改微信中的原头像",
                                     onCheckedChange = {
                                         enabled = it
                                         sp.edit().putBoolean(CustomFriendAvatarSettings.KEY_ENABLE, it).apply()
                                     }
                                 )
-                                if (enabled) {
+                                InsetDivider()
+                                ActionRow(
+                                    title = "选择好友或群聊",
+                                    summary = selected?.label ?: "选择要设置头像的好友或群聊",
+                                    onClick = { route = CustomFriendAvatarRoute.CONTACT_PICKER }
+                                )
+                                if (selected != null) {
                                     InsetDivider()
                                     ActionRow(
-                                        title = "选择好友或群聊",
-                                        summary = selected?.label ?: "选择要设置头像的好友或群聊",
-                                        onClick = { route = CustomFriendAvatarRoute.CONTACT_PICKER }
-                                    )
-                                    if (selected != null) {
-                                        InsetDivider()
-                                        ActionRow(
-                                            title = if (CustomFriendAvatarStore.hasAvatar(context, selected.id)) "更换头像" else "设置头像",
-                                            summary = "从系统相册或文件中选择图片",
-                                            onClick = {
-                                                val activity = context as? Activity
-                                                if (activity == null) {
-                                                    Toast.makeText(context, "当前页面无法打开图片选择器", Toast.LENGTH_SHORT).show()
-                                                } else {
-                                                    CustomFriendAvatarPicker.launch(activity, selected.id) { success ->
-                                                        Toast.makeText(
-                                                            context,
-                                                            if (success) "自定义头像已保存" else "头像设置失败",
-                                                            Toast.LENGTH_SHORT
-                                                        ).show()
-                                                        if (success) revision++
-                                                    }
+                                        title = if (CustomFriendAvatarStore.hasAvatar(context, selected.id)) "更换头像" else "设置头像",
+                                        summary = "从系统相册或文件中选择图片",
+                                        onClick = {
+                                            val activity = context as? Activity
+                                            if (activity == null) {
+                                                Toast.makeText(context, "当前页面无法打开图片选择器", Toast.LENGTH_SHORT).show()
+                                            } else {
+                                                CustomFriendAvatarPicker.launch(activity, selected.id) { success ->
+                                                    Toast.makeText(
+                                                        context,
+                                                        if (success) "自定义头像已保存" else "头像设置失败",
+                                                        Toast.LENGTH_SHORT
+                                                    ).show()
+                                                    if (success) revision++
                                                 }
                                             }
-                                        )
-                                    }
+                                        }
+                                    )
                                 }
                             }
                         }
-                        if (enabled) {
-                            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "应用范围") }
+                        item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "应用范围") }
+                        item {
+                            SettingsCard {
+                                SwitchRow(sp, CustomFriendAvatarSettings.KEY_CHAT, "聊天消息", "替换群聊和私聊消息头像", true)
+                                InsetDivider()
+                                SwitchRow(sp, CustomFriendAvatarSettings.KEY_CONVERSATION, "会话列表", "替换微信首页的好友和群聊头像", true)
+                                InsetDivider()
+                                SwitchRow(sp, CustomFriendAvatarSettings.KEY_CONTACTS, "通讯录", "替换通讯录中的好友和群聊头像", true)
+                                InsetDivider()
+                                SwitchRow(sp, CustomFriendAvatarSettings.KEY_PROFILE, "资料页", "替换好友和群聊资料页中的头像", true)
+                                InsetDivider()
+                                SwitchRow(sp, CustomFriendAvatarSettings.KEY_MOMENTS, "朋友圈", "替换朋友圈中的好友头像", true)
+                                InsetDivider()
+                                SwitchRow(sp, CustomFriendAvatarSettings.KEY_OTHER_UI, "其他微信界面", "替换收藏、搜索等界面中的好友和群聊头像", true)
+                                InsetDivider()
+                                SwitchRow(sp, CustomFriendAvatarSettings.KEY_DESKTOP_SHORTCUT, "桌面快捷方式", "替换添加到桌面的好友和群聊头像", true)
+                                InsetDivider()
+                                SwitchRow(sp, CustomFriendAvatarSettings.KEY_NOTIFICATIONS, "消息通知", "替换微信原生通知和 Hchat 通知中的好友和群聊头像", true)
+                                InsetDivider()
+                                SwitchRow(sp, CustomFriendAvatarSettings.KEY_MOMENTS_NOTIFICATIONS, "朋友圈通知", "替换朋友圈发布通知中的好友头像", true)
+                            }
+                        }
+                        item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "快捷入口") }
+                        item {
+                            SettingsCard {
+                                SwitchRow(sp, CustomFriendAvatarSettings.KEY_CONVERSATION_MENU, "会话列表长按菜单", "长按好友或群聊会话时显示设置头像入口，聊天分组内同样生效", true)
+                            }
+                        }
+                        if (configured.isNotEmpty()) {
+                            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "已设置头像") }
                             item {
                                 SettingsCard {
-                                    SwitchRow(sp, CustomFriendAvatarSettings.KEY_CHAT, "聊天消息", "替换群聊和私聊消息头像", true)
-                                    InsetDivider()
-                                    SwitchRow(sp, CustomFriendAvatarSettings.KEY_CONVERSATION, "会话列表", "替换微信首页的好友和群聊头像", true)
-                                    InsetDivider()
-                                    SwitchRow(sp, CustomFriendAvatarSettings.KEY_CONTACTS, "通讯录", "替换通讯录中的好友和群聊头像", true)
-                                    InsetDivider()
-                                    SwitchRow(sp, CustomFriendAvatarSettings.KEY_PROFILE, "资料页", "替换好友和群聊资料页中的头像", true)
-                                    InsetDivider()
-                                    SwitchRow(sp, CustomFriendAvatarSettings.KEY_MOMENTS, "朋友圈", "替换朋友圈中的好友头像", true)
-                                    InsetDivider()
-                                    SwitchRow(sp, CustomFriendAvatarSettings.KEY_OTHER_UI, "其他微信界面", "替换收藏、搜索等界面中的好友和群聊头像", true)
-                                    InsetDivider()
-                                    SwitchRow(sp, CustomFriendAvatarSettings.KEY_DESKTOP_SHORTCUT, "桌面快捷方式", "替换添加到桌面的好友和群聊头像", true)
-                                    InsetDivider()
-                                    SwitchRow(sp, CustomFriendAvatarSettings.KEY_NOTIFICATIONS, "消息通知", "替换微信原生通知和 Hchat 通知中的好友和群聊头像", true)
-                                    InsetDivider()
-                                    SwitchRow(sp, CustomFriendAvatarSettings.KEY_MOMENTS_NOTIFICATIONS, "朋友圈通知", "替换朋友圈发布通知中的好友头像", true)
-                                }
-                            }
-                            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "快捷入口") }
-                            item {
-                                SettingsCard {
-                                    SwitchRow(sp, CustomFriendAvatarSettings.KEY_CONVERSATION_MENU, "会话列表长按菜单", "长按好友或群聊会话时显示设置头像入口，聊天分组内同样生效", true)
-                                }
-                            }
-                            if (configured.isNotEmpty()) {
-                                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "已设置头像") }
-                                item {
-                                    SettingsCard {
-                                        configured.forEachIndexed { index, option ->
-                                            CustomFriendAvatarRow(context, option, revision) {
-                                                selectedWxid = option.id
-                                                val activity = context as? Activity
-                                                if (activity != null) {
-                                                    VoiceForwardMiuixDialog.showChoices(
-                                                        activity = activity,
-                                                        title = option.label,
-                                                        summary = "管理自定义头像",
-                                                        choices = listOf(
-                                                            "更换头像" to "重新选择一张本地图片",
-                                                            "恢复微信头像" to "删除当前自定义头像"
-                                                        ),
-                                                        onSelected = { choice ->
-                                                            if (choice == 0) {
-                                                                CustomFriendAvatarPicker.launch(activity, option.id) { success ->
-                                                                    if (success) revision++
-                                                                }
-                                                            } else {
-                                                                CustomFriendAvatarStore.remove(context, option.id)
-                                                                revision++
+                                    configured.forEachIndexed { index, option ->
+                                        CustomFriendAvatarRow(context, option, revision) {
+                                            selectedWxid = option.id
+                                            val activity = context as? Activity
+                                            if (activity != null) {
+                                                VoiceForwardMiuixDialog.showChoices(
+                                                    activity = activity,
+                                                    title = option.label,
+                                                    summary = "管理自定义头像",
+                                                    choices = listOf(
+                                                        "更换头像" to "重新选择一张本地图片",
+                                                        "恢复微信头像" to "删除当前自定义头像"
+                                                    ),
+                                                    onSelected = { choice ->
+                                                        if (choice == 0) {
+                                                            CustomFriendAvatarPicker.launch(activity, option.id) { success ->
+                                                                if (success) revision++
                                                             }
-                                                        },
-                                                        onDismiss = {}
-                                                    )
-                                                }
+                                                        } else {
+                                                            CustomFriendAvatarStore.remove(context, option.id)
+                                                            revision++
+                                                        }
+                                                    },
+                                                    onDismiss = {}
+                                                )
                                             }
-                                            if (index != configured.lastIndex) InsetDivider()
                                         }
+                                        if (index != configured.lastIndex) InsetDivider()
                                     }
                                 }
                             }
