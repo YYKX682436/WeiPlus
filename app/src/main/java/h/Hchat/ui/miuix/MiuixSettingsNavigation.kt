@@ -17,6 +17,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyListState
@@ -52,7 +53,14 @@ import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -142,6 +150,7 @@ import h.Hchat.hooks.items.roundavatar.RoundAvatarFeature
 import h.Hchat.hooks.items.scheduledtask.ScheduledTaskFeature
 import h.Hchat.hooks.items.selectedmessages.SelectedMessagesFeature
 import h.Hchat.hooks.items.settings.SettingsFeature
+import h.Hchat.hooks.items.settings.SettingsEntrySettings
 import h.Hchat.hooks.items.shortvideo.FinderMediaDownloadFeature
 import h.Hchat.hooks.items.statuslimit.StatusTextLimitFeature
 import h.Hchat.hooks.items.swipequote.SwipeQuoteFeature
@@ -159,20 +168,17 @@ import h.Hchat.hooks.items.voicepreview.VoicePreviewFeature
 import h.Hchat.preferences.HchatStorage
 import h.Hchat.ui.FeatureSettingsProvider
 import org.json.JSONArray
-import top.yukonga.miuix.kmp.basic.DropdownEntry
-import top.yukonga.miuix.kmp.basic.DropdownItem
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
 import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.nav.core.NavKey
-import top.yukonga.miuix.kmp.menu.WindowIconDropdownMenu
+import top.yukonga.miuix.kmp.window.WindowDialog
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.LinkedHashSet
 import java.util.Locale
 
-@OptIn(ExperimentalAnimationApi::class)
 @Composable
 internal fun MainSettingsPage(
     context: Context,
@@ -182,39 +188,26 @@ internal fun MainSettingsPage(
     onOpenSearch: () -> Unit,
     onOpenProvider: (FeatureSettingsProvider) -> Unit,
     onOpenGroup: (FeatureGroupEntry) -> Unit,
-    onConfigImported: () -> Unit
+    onConfigImported: () -> Unit,
+    initiallyShowMore: Boolean = false,
+    onDismissInitialMore: () -> Unit = {}
 ) {
-    val practicalProviders = providers.filter { it.category() == FeatureSettingsProvider.CATEGORY_PRACTICAL }
-    val enhanceProviders = providers.filter { it.category() == FeatureSettingsProvider.CATEGORY_ENHANCE }
-    val groups = remember(practicalProviders, enhanceProviders) {
-        featureGroups(practicalProviders, enhanceProviders)
-    }
+    val groups = remember(providers) { featureGroups(providers) }
     val scrollBehavior = MiuixScrollBehavior()
+    var showMore by remember { mutableStateOf(initiallyShowMore) }
+    fun dismissMore() {
+        showMore = false
+        if (initiallyShowMore) onDismissInitialMore()
+    }
+    RegisterSettingsBackHandler(if (showMore) ::dismissMore else null)
     PageScaffold(
         title = "Hchat",
         largeTitle = "Hchat",
         scrollBehavior = scrollBehavior,
         topBarActions = {
-            val activity = context as? Activity
-            WindowIconDropdownMenu(
-                entry = DropdownEntry(
-                    items = listOf(
-                        DropdownItem(
-                            text = "导出配置",
-                            onClick = { activity?.let(ConfigImportExportBridge::launchExport) }
-                        ),
-                        DropdownItem(
-                            text = "导入配置",
-                            onClick = {
-                                activity?.let { host ->
-                                    ConfigImportExportBridge.launchImport(host, onConfigImported)
-                                }
-                            }
-                        )
-                    ),
-                    enabled = activity != null
-                ),
-                collapseOnSelection = true
+            Box(
+                modifier = Modifier.size(40.dp).responsiveTap(onClick = { showMore = true }),
+                contentAlignment = Alignment.Center
             ) {
                 Image(
                     imageVector = NavIcons.More,
@@ -234,12 +227,8 @@ internal fun MainSettingsPage(
                     bottom = padding.calculateBottomPadding() + 16.dp
                 )
             ) {
-                item { SettingsSearchEntry(onClick = onOpenSearch) }
-                featureGroupMenu(
-                    title = "功能",
-                    groups = groups,
-                    onOpenGroup = onOpenGroup
-                )
+                item(key = "search") { SettingsSearchEntry(onClick = onOpenSearch) }
+                featureGroupMenu(title = "功能", groups = groups, onOpenGroup = onOpenGroup)
                 if (groups.isEmpty()) {
                     item { SmallTitle(text = "功能") }
                     item { FeatureListCard(emptyList(), "暂无功能", onOpenProvider) }
@@ -247,150 +236,62 @@ internal fun MainSettingsPage(
             }
         }
     }
-}
-
-private fun List<FeatureSettingsProvider>.filterByIds(vararg ids: String): List<FeatureSettingsProvider> {
-    val order = ids.toList()
-    return filter { it.featureId() in order }
-        .sortedBy { order.indexOf(it.featureId()) }
-}
-
-private fun featureGroups(
-    practicalProviders: List<FeatureSettingsProvider>,
-    enhanceProviders: List<FeatureSettingsProvider>
-): List<FeatureGroupEntry> {
-    return listOf(
-        FeatureGroupEntry(
-            title = "聊天",
-            providers = practicalProviders.filterByIds(
-                AntiRecallFeature.ID,
-                MultiRecallFeature.ID,
-                AutoReplyFeature.ID,
-                MessageAffixFeature.ID,
-                TypingReportBlockFeature.ID,
-                PatBlockFeature.ID,
-                AutoOriginalImageFeature.ID,
-                AutoViewOriginalFeature.ID,
-                RemoveForwardLimitFeature.ID,
-                MessageBlockFeature.ID,
-                QuickMarkReadFeature.ID,
-                MessageDetailsSettingsProvider.FEATURE_ID,
-                QuoteDeleteClearFeature.ID,
-                SwipeQuoteFeature.ID,
-                EmojiSaveFeature.ID,
-                EmojiCollectionLimitFeature.ID,
-                CallMediaLimitFeature.ID,
-                CallRingtoneBlockFeature.ID,
-                EditMessageFeature.ID
-            )
-        ),
-        FeatureGroupEntry(
-            title = "批量操作",
-            providers = emptyList(),
-            batchOperations = true
-        ),
-        FeatureGroupEntry(
-            title = "语音",
-            providers = practicalProviders.filterByIds(
-                AudioTransformFeature.ID,
-                TextVoiceFeature.ID,
-                FakeVoiceDurationFeature.ID,
-                VoicePreviewFeature.ID,
-                VoiceForwardFeature.ID
-            )
-        ),
-        FeatureGroupEntry(
-            title = "红包转账",
-            providers = practicalProviders.filterByIds(
-                AutoRedPacketFeature.ID,
-                AutoGiftFeature.ID,
-                AutoTransferFeature.ID,
-                FakeWalletBalanceFeature.ID,
-                RedPacketDetailsSettingsProvider.FEATURE_ID
-            )
-        ),
-        FeatureGroupEntry(title = "增强", providers = enhanceProviders),
-        FeatureGroupEntry(
-            title = "群组",
-            providers = practicalProviders.filterByIds(
-                GroupChatLabelFeature.ID,
-                GroupLeaveMonitorFeature.ID,
-                GroupRenameMonitorFeature.ID,
-                RealNameTailFeature.ID,
-                GroupNicknameColorSettings.FEATURE_ID,
-                MemberTitleFeature.ID
-            )
-        ),
-        FeatureGroupEntry(
-            title = "朋友圈",
-            providers = practicalProviders.filterByIds(
-                MomentsAutoLikeFeature.ID,
-                MomentsAutoCommentFeature.ID,
-                MomentsAutoForwardFeature.ID,
-                MomentsAutoRefreshFeature.ID,
-                MomentsContactFilterFeature.ID,
-                MomentsKeywordBlockFeature.ID,
-                MomentsBottomDetailFeature.ID,
-                MomentsPostNotificationFeature.ID,
-                OriginalMomentsUploadFeature.ID,
-                MomentsUploadTailFeature.ID,
-                SnsAntiRecallFeature.ID,
-                MomentsFakeLikeSettingsProvider.ID,
-                MomentsFakeCommentSettingsProvider.ID,
-                MomentsFakeForwardSettingsProvider.ID,
-                RemoveMomentsAdsFeature.ID
-            )
-        ),
-        FeatureGroupEntry(
-            title = "美化",
-            providers = practicalProviders.filterByIds(
-                MessageBubbleFeature.ID,
-                MessageTextColorFeature.ID,
-                HomeTextColorFeature.ID,
-                ChatTimeStyleFeature.ID,
-                InputHintFeature.ID,
-                HideChatAvatarFeature.ID,
-                RoundAvatarFeature.ID,
-                CustomFriendAvatarFeature.ID,
-                CustomBottomBarFeature.ID,
-                FloatingBottomBarSettings.FEATURE_ID
-            )
-        ),
-        FeatureGroupEntry(
-            title = "界面",
-            providers = practicalProviders.filterByIds(
-                SettingsFeature.ID,
-                FloatingShortcutFeature.ID,
-                ProfileIdFeature.ID,
-                GroupMemberHistorySettingsProvider.FEATURE_ID,
-                QuickContactEditFeature.ID,
-                QuickGroupChatLabelFeature.ID,
-                QuickMomentsFeature.ID,
-                QuickTerminateFeature.ID,
-                HideChatMenuFeature.ID
-            )
-        ),
-        FeatureGroupEntry(
-            title = "杂项",
-            providers = practicalProviders.filterByIds(
-                BackgroundRunAssistFeature.ID,
-                WeChatTabletFeature.ID,
-                DisableHotUpdateFeature.ID,
-                FakeMiniProgramBaseLibFeature.ID,
-                SkipMiniProgramVideoAdsFeature.ID,
-                SkipGlobalMiniProgramSplashAdsFeature.ID,
-                FakeLocationFeature.ID,
-                GameEmojiFeature.ID,
-                FakeScanCameraFeature.ID,
-                FinderMediaDownloadFeature.ID,
-                SkipWebRiskSettingsProvider.FEATURE_ID,
-                StatusTextLimitFeature.ID,
-                QQMusicOrderFeature.ID,
-                LinkParseFeature.ID,
-                SportStepFeature.ID
-            )
+    if (showMore) {
+        val activity = context as? Activity
+        WindowDialog(
+            show = true,
+            title = "更多",
+            onDismissRequest = ::dismissMore,
+            content = {
+                RegisterSettingsBackHandler(::dismissMore)
+                val dialogFocus = remember { FocusRequester() }
+                LaunchedEffect(Unit) { dialogFocus.requestFocus() }
+                Column(
+                    modifier = Modifier
+                        .onPreviewKeyEvent { event ->
+                            if (event.key == Key.Back) {
+                                if (event.type == KeyEventType.KeyUp) dismissMore()
+                                true
+                            } else false
+                        }
+                        .focusRequester(dialogFocus)
+                        .focusable()
+                ) {
+                    ActionRow("导出配置", "", onClick = {
+                        dismissMore()
+                        activity?.let(ConfigImportExportBridge::launchExport)
+                    })
+                    InsetDivider()
+                    ActionRow("导入配置", "", onClick = {
+                        dismissMore()
+                        activity?.let { ConfigImportExportBridge.launchImport(it, onConfigImported) }
+                    })
+                    if (providers.any { it.featureId() == SettingsFeature.ID }) {
+                        InsetDivider()
+                        val sp = remember { HchatStorage.preferences(context, SettingsEntrySettings.PREFS_NAME) }
+                        SettingsEntryControls(sp)
+                    }
+                }
+            }
         )
-    ).filter { it.providers.isNotEmpty() || it.batchOperations }
+    }
+}
+
+internal fun featureGroups(providers: List<FeatureSettingsProvider>): List<FeatureGroupEntry> {
+    val byId = providers.associateBy { it.featureId() }
+    val known = SettingsLayout.groups.flatMap { it.providerIds }.toSet() + SettingsFeature.ID
+    val orphans = providers.filter { provider ->
+        provider.featureId() !in known ||
+            (provider.featureId() in listOf("qq_music_order", "link_parse") && "auto_reply" !in byId) ||
+            (provider.featureId() in listOf("keyword_notification", "text_speech") && "custom_notification" !in byId)
+    }
+    return SettingsLayout.groups.mapNotNull { spec ->
+        if (spec.directProviderId != null && spec.directProviderId !in byId) return@mapNotNull null
+        val members = spec.providerIds.mapNotNull(byId::get) + if (spec.id == "other") orphans else emptyList()
+        val hasFriendScenes = spec.id == "contacts" && "auto_reply" in byId
+        if (members.isEmpty() && !spec.batchOperations && !hasFriendScenes) return@mapNotNull null
+        FeatureGroupEntry(spec.id, spec.title, members, spec.batchOperations, spec.directProviderId, hasFriendScenes)
+    }
 }
 
 @Composable
@@ -410,21 +311,19 @@ internal fun SettingsSearchPage(
     context: Context,
     providers: List<FeatureSettingsProvider>,
     onBack: () -> Unit,
-    onOpenProvider: (FeatureSettingsProvider, FeatureGroupEntry?) -> Unit
+    onOpenProvider: (FeatureSettingsProvider, AutoReplyInitialScene?, String?) -> Unit
 ) {
     var query by rememberSaveable { mutableStateOf("") }
     val uiPrefs = remember { HchatStorage.preferences(context, UI_PREFS_NAME) }
     var searchHistory by remember { mutableStateOf(readSearchHistory(uiPrefs)) }
-    val practicalProviders = providers.filter { it.category() == FeatureSettingsProvider.CATEGORY_PRACTICAL }
-    val enhanceProviders = providers.filter { it.category() == FeatureSettingsProvider.CATEGORY_ENHANCE }
-    val groups = remember(practicalProviders, enhanceProviders) {
-        featureGroups(practicalProviders, enhanceProviders)
-    }
+    val groups = remember(providers) { featureGroups(providers) }
     val featureResults = remember(query, groups, providers) {
         filterFeatureSearchResults(query, groups, providers)
     }
     val listState = rememberLazyListState()
     val focusRequester = remember { FocusRequester() }
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     fun recordSearch() {
         searchHistory = rememberSearchKeyword(uiPrefs, query)
     }
@@ -454,9 +353,11 @@ internal fun SettingsSearchPage(
                 item {
                     FeatureSearchResultCard(
                         results = featureResults,
-                        onOpenProvider = { provider, group ->
+                        onOpenResult = { result ->
                             recordSearch()
-                            onOpenProvider(provider, group)
+                            keyboardController?.hide()
+                            focusManager.clearFocus(force = true)
+                            onOpenProvider(result.provider, result.scene, result.focusId)
                         }
                     )
                 }
@@ -621,7 +522,7 @@ private fun SearchHistorySection(
 @Composable
 private fun FeatureSearchResultCard(
     results: List<FeatureSearchResult>,
-    onOpenProvider: (FeatureSettingsProvider, FeatureGroupEntry?) -> Unit
+    onOpenResult: (FeatureSearchResult) -> Unit
 ) {
     SettingsCard {
         if (results.isEmpty()) {
@@ -630,7 +531,7 @@ private fun FeatureSearchResultCard(
             results.forEachIndexed { index, result ->
                 FeatureSearchResultRow(
                     result = result,
-                    onClick = { onOpenProvider(result.provider, result.group) }
+                    onClick = { onOpenResult(result) }
                 )
                 if (index < results.lastIndex) {
                     InsetDivider()
@@ -656,7 +557,7 @@ private fun FeatureSearchResultRow(result: FeatureSearchResult, onClick: () -> U
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(modifier = Modifier.weight(1f)) {
-            Text(text = result.provider.title(), color = MiuixTheme.colorScheme.onSurface, fontWeight = FontWeight.Medium)
+            Text(text = result.title ?: result.provider.title(), color = MiuixTheme.colorScheme.onSurface, fontWeight = FontWeight.Medium)
             Text(
                 text = result.summary,
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
@@ -677,10 +578,9 @@ private fun LazyListScope.featureGroupMenu(
     item {
         SettingsCard {
             groups.forEachIndexed { index, group ->
-                FeatureGroupRow(
-                    group = group,
-                    onClick = { onOpenGroup(group) }
-                )
+                key(group.id) {
+                    FeatureGroupRow(group = group, onClick = { onOpenGroup(group) })
+                }
                 if (index < groups.lastIndex) {
                     InsetDivider()
                 }
@@ -691,13 +591,20 @@ private fun LazyListScope.featureGroupMenu(
 
 @Composable
 internal fun FeatureGroupSettingsPage(
+    context: Context,
     group: FeatureGroupEntry,
     listState: LazyListState,
     onBack: () -> Unit,
-    onOpenProvider: (FeatureSettingsProvider) -> Unit
+    onOpenProvider: (FeatureSettingsProvider) -> Unit,
+    onOpenFriendScene: (AutoReplyInitialScene) -> Unit,
+    focusId: String? = null
 ) {
     if (group.batchOperations) {
         BatchOperationsPage(onBack = onBack)
+        return
+    }
+    if (group.id == "forward" || group.id == "quick") {
+        CompositeSettingsPage(context, group, listState, onBack, onOpenProvider, focusId)
         return
     }
     val scrollBehavior = MiuixScrollBehavior()
@@ -718,21 +625,88 @@ internal fun FeatureGroupSettingsPage(
             )
         ) {
             item { SmallTitle(text = "功能") }
-            item { FeatureListCard(group.providers, "暂无功能", onOpenProvider) }
+            if (group.hasFriendScenes) {
+                item(key = "friend-scenes") {
+                    SettingsCard {
+                        ActionRow("收到好友申请", "自动处理好友申请") { onOpenFriendScene(AutoReplyInitialScene.AUTO_ACCEPT) }
+                        InsetDivider()
+                        ActionRow("对方通过验证", "欢迎语、标签和备注设置") { onOpenFriendScene(AutoReplyInitialScene.GREET_ACCEPTED) }
+                    }
+                }
+            }
+            if (group.providers.isNotEmpty()) {
+                item(key = "providers") { FeatureListCard(group.providers, "暂无功能", onOpenProvider) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CompositeSettingsPage(
+    context: Context,
+    group: FeatureGroupEntry,
+    listState: LazyListState,
+    onBack: () -> Unit,
+    onOpenProvider: (FeatureSettingsProvider) -> Unit,
+    focusId: String?
+) {
+    val byId = remember(group.providers) { group.providers.associateBy { it.featureId() } }
+    val rows = remember(group.id, byId) {
+        if (group.id == "forward") {
+            (if ("message_forward" in byId) listOf("forward.menu", "forward.multi", "forward.favorite", "forward.moments") else emptyList()) +
+                listOf("remove_forward_limit", "auto_message_forward", "selected_messages").filter { it in byId }
+        } else {
+            listOf("quick_moments", "quick_terminate", "quick_group_chat_label", "quick_contact_edit", "floating_shortcut_menu")
+                .filter { it in byId }
+        }
+    }
+    LaunchedEffect(group.id, focusId, rows) {
+        val index = rows.indexOf(focusId)
+        if (index >= 0) listState.scrollToItem(index + 1)
+    }
+    val scrollBehavior = MiuixScrollBehavior()
+    PageScaffold(
+        title = group.title,
+        largeTitle = group.title,
+        scrollBehavior = scrollBehavior,
+        bottomBar = { BottomActionBar("返回", onBack) }
+    ) { padding ->
+        LazyColumn(
+            modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
+            state = listState,
+            contentPadding = PaddingValues(
+                top = padding.calculateTopPadding() + 8.dp,
+                bottom = padding.calculateBottomPadding() + 84.dp
+            )
+        ) {
+            item(key = "heading") { SmallTitle(text = "功能") }
+            items(rows, key = { it }) { id ->
+                if (id.startsWith("forward.") || SettingsLayout.compositeGroupFor(id) != null) {
+                    SettingsCard { InlineSettingSwitch(context, id) }
+                } else {
+                    byId[id]?.let { FeatureListCard(listOf(it), "", onOpenProvider) }
+                }
+            }
         }
     }
 }
 
 internal data class FeatureGroupEntry(
+    val id: String,
     val title: String,
     val providers: List<FeatureSettingsProvider>,
-    val batchOperations: Boolean = false
+    val batchOperations: Boolean = false,
+    val directProviderId: String? = null,
+    val hasFriendScenes: Boolean = false
 )
 
-private data class FeatureSearchResult(
+internal data class FeatureSearchResult(
     val provider: FeatureSettingsProvider,
     val group: FeatureGroupEntry?,
-    val summary: String
+    val summary: String,
+    val title: String? = null,
+    val scene: AutoReplyInitialScene? = null,
+    val focusId: String? = null
 )
 
 internal data class TemplateVariable(
@@ -742,18 +716,37 @@ internal data class TemplateVariable(
 
 internal sealed class DetailPage {
     object Search : DetailPage()
-    data class FeatureGroup(val group: FeatureGroupEntry) : DetailPage()
+    object More : DetailPage()
+    data class FeatureGroup(val group: FeatureGroupEntry, val focusId: String? = null) : DetailPage()
     data class Feature(
         val provider: FeatureSettingsProvider,
-        val sourceGroup: FeatureGroupEntry? = null,
-        val returnToSearch: Boolean = false
+        val initialScene: AutoReplyInitialScene = AutoReplyInitialScene.MAIN
     ) : DetailPage()
 }
 
 internal data class SettingsNavKey(val page: DetailPage?) : NavKey
 
+internal fun resolveFeatureTarget(
+    provider: FeatureSettingsProvider,
+    providers: List<FeatureSettingsProvider>,
+    focusId: String? = null,
+    scene: AutoReplyInitialScene? = null
+): DetailPage {
+    if (scene != null && provider.featureId() == AutoReplyFeature.ID) return DetailPage.Feature(provider, scene)
+    if (provider.featureId() == SettingsFeature.ID) return DetailPage.More
+    val groupId = SettingsLayout.compositeGroupFor(provider.featureId())
+    if (groupId != null) {
+        val group = featureGroups(providers).firstOrNull { it.id == groupId }
+        if (group != null) {
+            val target = focusId ?: if (provider.featureId() == MessageForwardFeature.ID) "forward.menu" else provider.featureId()
+            return DetailPage.FeatureGroup(group, target)
+        }
+    }
+    return DetailPage.Feature(provider)
+}
 
-private fun filterFeatureSearchResults(
+
+internal fun filterFeatureSearchResults(
     query: String,
     groups: List<FeatureGroupEntry>,
     allProviders: List<FeatureSettingsProvider>
@@ -762,15 +755,28 @@ private fun filterFeatureSearchResults(
     if (keyword.isEmpty()) return emptyList()
     val grouped = LinkedHashSet<String>()
     val results = ArrayList<FeatureSearchResult>()
+    allProviders.firstOrNull { it.featureId() == AutoReplyFeature.ID }?.let { provider ->
+        val contacts = groups.firstOrNull { it.id == "contacts" }
+        listOf(
+            Triple(AutoReplyInitialScene.AUTO_ACCEPT, "收到好友申请", listOf("收到好友申请", "对方加我好友", "好友请求处理")),
+            Triple(AutoReplyInitialScene.GREET_ACCEPTED, "对方通过验证", listOf("对方通过验证", "对方通过验证后", "我加对方好友", "通过后欢迎语"))
+        ).forEach { (scene, title, aliases) ->
+            if (aliases.any { containsSearchText(it, keyword) }) {
+                results += FeatureSearchResult(provider, contacts, "通讯录 / $title", title, scene)
+            }
+        }
+    }
     groups.forEach { group ->
-        group.providers.forEach { provider ->
+        group.providers.forEach providerLoop@ { provider ->
+            if (provider.featureId() in grouped) return@providerLoop
             val matchedTerms = matchedFeatureSubTerms(keyword, provider)
             if (matchesFeature(keyword, provider, group.title) || matchedTerms.isNotEmpty()) {
                 grouped.add(provider.featureId())
                 results += FeatureSearchResult(
                     provider = provider,
                     group = group,
-                    summary = featureSearchSummary(group.title, provider, matchedTerms)
+                    summary = featureSearchSummary(group.title, provider, matchedTerms),
+                    focusId = searchFocusId(provider.featureId(), keyword)
                 )
             }
         }
@@ -781,11 +787,22 @@ private fun filterFeatureSearchResults(
             results += FeatureSearchResult(
                 provider = provider,
                 group = null,
-                summary = featureSearchSummary(null, provider, matchedTerms)
+                summary = featureSearchSummary(null, provider, matchedTerms),
+                focusId = searchFocusId(provider.featureId(), keyword)
             )
         }
     }
     return results
+}
+
+private fun searchFocusId(providerId: String, keyword: String): String? {
+    if (providerId != MessageForwardFeature.ID) return null
+    return listOf(
+        "转发菜单" to "forward.menu",
+        "多选转发到朋友圈" to "forward.multi",
+        "转发收藏" to "forward.favorite",
+        "朋友圈转发" to "forward.moments"
+    ).firstOrNull { (title, _) -> containsSearchText(title, keyword) }?.second
 }
 
 private fun featureSearchSummary(
@@ -830,7 +847,7 @@ private fun featureSubSearchTerms(featureId: String): List<String> {
             "私聊防撤回", "群聊防撤回", "公众号防撤回", "撤回提示", "自定义撤回提示", "发送时间", "撤回时间", "时间格式", "语音防撤回", "图片防撤回", "视频防撤回"
         )
         MultiRecallFeature.ID -> listOf("多选撤回", "批量撤回", "多选消息", "分享菜单", "撤回自己消息")
-        MessageForwardFeature.ID -> listOf("转发", "转发[H]", "朋友圈", "好友", "分享", "群发助手", "好友标签", "朋友圈转发", "个人主页朋友圈")
+        MessageForwardFeature.ID -> listOf("转发菜单", "多选转发到朋友圈", "转发收藏", "朋友圈转发", "转发", "转发[H]", "朋友圈", "好友", "分享", "群发助手", "好友标签", "个人主页朋友圈")
         SelectedMessagesFeature.ID -> listOf("群发助手", "群发助手[H]", "定时转发[H]", "多选消息", "定时转发", "模块群发", "微信原生群发助手", "群发助手间隔延迟", "群发间隔延迟")
         AutoReplyFeature.ID -> listOf(
             "自动回复规则", "任意消息", "关键词", "正则", "艾特我", "@我", "艾特全体", "@所有人", "回复步骤", "延迟回复",
@@ -1529,6 +1546,9 @@ internal fun FeatureSettingsPage(
     context: Context,
     provider: FeatureSettingsProvider,
     onBack: () -> Unit,
+    providers: List<FeatureSettingsProvider>,
+    onOpenProvider: (FeatureSettingsProvider) -> Unit,
+    initialScene: AutoReplyInitialScene = AutoReplyInitialScene.MAIN
 ) {
     when (provider.featureId()) {
         AutoRedPacketFeature.ID -> RedPacketMiuixPage(context, provider, onBack)
@@ -1589,11 +1609,19 @@ internal fun FeatureSettingsPage(
             onBack = onBack
         )
         QuickMarkReadFeature.ID -> QuickMarkReadMiuixPage(context, provider, onBack)
-        AutoReplyFeature.ID -> AutoReplyMiuixPage(context, provider, onBack)
+        AutoReplyFeature.ID -> AutoReplyMiuixPage(
+            context, provider, onBack, initialScene,
+            listOfNotNull(providers.firstOrNull { it.featureId() == QQMusicOrderFeature.ID }, providers.firstOrNull { it.featureId() == LinkParseFeature.ID }),
+            onOpenProvider
+        )
         AutoMessageForwardFeature.ID -> AutoMessageForwardMiuixPage(context, provider, onBack)
         ConversationGroupFeature.ID -> ConversationGroupMiuixPage(context, provider, onBack)
         ConversationTabsFeature.ID -> ConversationTabsMiuixPage(context, onBack)
-        CustomNotificationFeature.ID -> CustomNotificationMiuixPage(context, provider, onBack)
+        CustomNotificationFeature.ID -> CustomNotificationMiuixPage(
+            context, provider, onBack,
+            listOfNotNull(providers.firstOrNull { it.featureId() == KeywordNotificationFeature.ID }, providers.firstOrNull { it.featureId() == TextSpeechFeature.ID }),
+            onOpenProvider
+        )
         KeywordNotificationFeature.ID -> KeywordNotificationMiuixPage(context, provider, onBack)
         TextSpeechFeature.ID -> TextSpeechMiuixPage(context, provider, onBack)
         ZombieCheckFeature.ID -> ZombieCheckMiuixPage(context, provider, onBack)

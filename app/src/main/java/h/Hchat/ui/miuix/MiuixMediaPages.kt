@@ -1404,7 +1404,11 @@ internal fun FeatureGroupRow(group: FeatureGroupEntry, onClick: () -> Unit) {
         Column(modifier = Modifier.weight(1f)) {
             Text(text = group.title, color = MiuixTheme.colorScheme.onSurface, fontWeight = FontWeight.Medium)
             Text(
-                text = if (group.batchOperations) "${batchOperationsFeatureCount()} 项功能" else "${group.providers.size} 项功能",
+                text = when {
+                    group.batchOperations -> "${batchOperationsFeatureCount()} 项功能"
+                    group.directProviderId != null -> group.providers.firstOrNull { it.featureId() == group.directProviderId }?.subtitle().orEmpty()
+                    else -> "${group.providers.size + if (group.hasFriendScenes) 2 else 0} 项功能"
+                },
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 fontSize = 12.sp
             )

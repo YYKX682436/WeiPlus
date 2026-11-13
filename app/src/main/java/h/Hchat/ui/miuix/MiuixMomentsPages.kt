@@ -3702,6 +3702,25 @@ internal fun HideChatMenuMiuixPage(
 }
 
 @Composable
+internal fun SettingsEntryControls(sp: SharedPreferences) {
+    SwitchRow(
+        sp,
+        SettingsEntrySettings.KEY_PLUS_MENU_ENABLE,
+        "注入加号菜单",
+        "在微信右上角加号菜单中显示 Hchat 入口，重启微信后生效",
+        SettingsEntrySettings.DEFAULT_PLUS_MENU_ENABLE
+    )
+    InsetDivider()
+    SwitchRow(
+        sp,
+        SettingsEntrySettings.KEY_PLUS_LONG_PRESS_ENABLE,
+        "长按加号入口",
+        "长按微信右上角加号打开 Hchat 设置，重启微信后生效",
+        SettingsEntrySettings.DEFAULT_PLUS_LONG_PRESS_ENABLE
+    )
+}
+
+@Composable
 internal fun SettingsEntryMiuixPage(
     context: Context,
     provider: FeatureSettingsProvider,
@@ -3730,21 +3749,7 @@ internal fun SettingsEntryMiuixPage(
             item { SmallTitle(text = "入口") }
             item {
                 SettingsCard {
-                    SwitchRow(
-                        sp,
-                        SettingsEntrySettings.KEY_PLUS_MENU_ENABLE,
-                        "注入加号菜单",
-                        "在微信右上角加号菜单中显示 Hchat 入口，重启微信后生效",
-                        SettingsEntrySettings.DEFAULT_PLUS_MENU_ENABLE
-                    )
-                    InsetDivider()
-                    SwitchRow(
-                        sp,
-                        SettingsEntrySettings.KEY_PLUS_LONG_PRESS_ENABLE,
-                        "长按加号入口",
-                        "长按微信右上角加号打开 Hchat 设置，重启微信后生效",
-                        SettingsEntrySettings.DEFAULT_PLUS_LONG_PRESS_ENABLE
-                    )
+                    SettingsEntryControls(sp)
                 }
             }
         }

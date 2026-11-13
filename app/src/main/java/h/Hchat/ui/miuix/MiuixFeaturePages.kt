@@ -460,13 +460,109 @@ private fun selectedMessagesChannelLabel(channel: Int): String {
     }
 }
 
+/** The same storage bindings are used by legacy pages and the composite pages. */
+@Composable
+internal fun InlineSettingSwitch(context: Context, id: String) {
+    when (id) {
+        "forward.menu" -> {
+            val sp = remember { HchatStorage.preferences(context, MessageForwardSettings.PREFS_NAME) }
+            SwitchRow(
+                sp,
+                MessageForwardSettings.KEY_ENABLE,
+                "转发菜单",
+                "在消息长按菜单中显示转发[H]",
+                MessageForwardSettings.DEFAULT_ENABLE
+            )
+        }
+        "forward.multi" -> {
+            val sp = remember { HchatStorage.preferences(context, MessageForwardSettings.PREFS_NAME) }
+            SwitchRow(
+                sp,
+                MessageForwardSettings.KEY_MULTI_MOMENTS_ENABLE,
+                "多选转发到朋友圈",
+                "在多选消息菜单中显示转发到朋友圈[H]",
+                MessageForwardSettings.DEFAULT_ENABLE
+            )
+        }
+        "forward.favorite" -> {
+            val sp = remember { HchatStorage.preferences(context, MessageForwardSettings.PREFS_NAME) }
+            SwitchRow(
+                sp,
+                MessageForwardSettings.KEY_FAVORITE_FORWARD_ENABLE,
+                "转发收藏",
+                "长按收藏后显示转发[H]",
+                MessageForwardSettings.DEFAULT_ENABLE
+            )
+        }
+        "forward.moments" -> {
+            val sp = remember { HchatStorage.preferences(context, MessageForwardSettings.PREFS_NAME) }
+            SwitchRow(
+                sp,
+                MessageForwardSettings.KEY_SNS_FORWARD_ENABLE,
+                "朋友圈转发",
+                "在发现页或好友个人主页长按朋友圈后显示转发[H]",
+                MessageForwardSettings.DEFAULT_ENABLE
+            )
+        }
+        "remove_forward_limit" -> {
+            val sp = remember { HchatStorage.preferences(context, RemoveForwardLimitSettings.PREFS_NAME) }
+            SwitchRow(
+                sp,
+                RemoveForwardLimitSettings.KEY_ENABLE,
+                "移除转发限制",
+                "允许微信原生转发选择超过 9 个会话；大量目标仍受微信发送能力限制",
+                RemoveForwardLimitSettings.DEFAULT_ENABLE
+            )
+        }
+        "quick_moments" -> {
+            val sp = remember { HchatStorage.preferences(context, QuickMomentsSettings.PREFS_NAME) }
+            SwitchRow(
+                sp,
+                QuickMomentsSettings.KEY_ENABLE,
+                "快捷查看朋友圈",
+                "长按本人、好友或企业微信联系人会话时显示朋友圈入口，聊天分组内同样生效",
+                QuickMomentsSettings.DEFAULT_ENABLE
+            )
+        }
+        "quick_terminate" -> {
+            val sp = remember { HchatStorage.preferences(context, QuickTerminateSettings.PREFS_NAME) }
+            SwitchRow(
+                sp,
+                QuickTerminateSettings.KEY_ENABLE,
+                "快捷终止",
+                "在微信右上角加号菜单中添加快捷终止，重启微信后生效",
+                QuickTerminateSettings.DEFAULT_ENABLE
+            )
+        }
+        "quick_group_chat_label" -> {
+            val sp = remember { HchatStorage.preferences(context, QuickGroupChatLabelSettings.PREFS_NAME) }
+            SwitchRow(
+                sp,
+                QuickGroupChatLabelSettings.KEY_ENABLE,
+                "快捷设置群聊标签",
+                "长按群聊会话时显示群聊标签入口，聊天分组内同样生效",
+                QuickGroupChatLabelSettings.DEFAULT_ENABLE
+            )
+        }
+        "quick_contact_edit" -> {
+            val sp = remember { HchatStorage.preferences(context, QuickContactEditSettings.PREFS_NAME) }
+            SwitchRow(
+                sp,
+                QuickContactEditSettings.KEY_ENABLE,
+                "快捷设置备注和标签",
+                "长按好友、群聊会话或朋友圈头像时显示设置入口，聊天分组内同样生效",
+                QuickContactEditSettings.DEFAULT_ENABLE
+            )
+        }
+    }
+}
+
 @Composable
 internal fun MessageForwardMiuixPage(
     context: Context,
     provider: FeatureSettingsProvider,
     onBack: () -> Unit
 ) {
-    val sp = remember { HchatStorage.preferences(context, MessageForwardSettings.PREFS_NAME) }
     val listState = rememberLazyListState()
     val scrollBehavior = MiuixScrollBehavior()
     PageScaffold(
@@ -486,45 +582,21 @@ internal fun MessageForwardMiuixPage(
             item { SmallTitle(text = "聊天消息") }
             item {
                 SettingsCard {
-                    SwitchRow(
-                        sp,
-                        MessageForwardSettings.KEY_ENABLE,
-                        "转发菜单",
-                        "在消息长按菜单中显示转发[H]",
-                        MessageForwardSettings.DEFAULT_ENABLE
-                    )
+                    InlineSettingSwitch(context, "forward.menu")
                     InsetDivider()
-                    SwitchRow(
-                        sp,
-                        MessageForwardSettings.KEY_MULTI_MOMENTS_ENABLE,
-                        "多选转发到朋友圈",
-                        "在多选消息菜单中显示转发到朋友圈[H]",
-                        MessageForwardSettings.DEFAULT_ENABLE
-                    )
+                    InlineSettingSwitch(context, "forward.multi")
                 }
             }
             item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "收藏") }
             item {
                 SettingsCard {
-                    SwitchRow(
-                        sp,
-                        MessageForwardSettings.KEY_FAVORITE_FORWARD_ENABLE,
-                        "转发收藏",
-                        "长按收藏后显示转发[H]",
-                        MessageForwardSettings.DEFAULT_ENABLE
-                    )
+                    InlineSettingSwitch(context, "forward.favorite")
                 }
             }
             item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "朋友圈") }
             item {
                 SettingsCard {
-                    SwitchRow(
-                        sp,
-                        MessageForwardSettings.KEY_SNS_FORWARD_ENABLE,
-                        "朋友圈转发",
-                        "在发现页或好友个人主页长按朋友圈后显示转发[H]",
-                        MessageForwardSettings.DEFAULT_ENABLE
-                    )
+                    InlineSettingSwitch(context, "forward.moments")
                 }
             }
         }
@@ -711,7 +783,6 @@ internal fun QuickContactEditMiuixPage(
     provider: FeatureSettingsProvider,
     onBack: () -> Unit
 ) {
-    val sp = remember { HchatStorage.preferences(context, QuickContactEditSettings.PREFS_NAME) }
     val listState = rememberLazyListState()
     val scrollBehavior = MiuixScrollBehavior()
 
@@ -732,13 +803,7 @@ internal fun QuickContactEditMiuixPage(
             item { SmallTitle(text = "会话列表") }
             item {
                 SettingsCard {
-                    SwitchRow(
-                        sp,
-                        QuickContactEditSettings.KEY_ENABLE,
-                        "快捷设置备注和标签",
-                        "长按好友、群聊会话或朋友圈头像时显示设置入口，聊天分组内同样生效",
-                        QuickContactEditSettings.DEFAULT_ENABLE
-                    )
+                    InlineSettingSwitch(context, "quick_contact_edit")
                 }
             }
         }
@@ -751,7 +816,6 @@ internal fun QuickGroupChatLabelMiuixPage(
     provider: FeatureSettingsProvider,
     onBack: () -> Unit
 ) {
-    val sp = remember { HchatStorage.preferences(context, QuickGroupChatLabelSettings.PREFS_NAME) }
     val listState = rememberLazyListState()
     val scrollBehavior = MiuixScrollBehavior()
 
@@ -772,13 +836,7 @@ internal fun QuickGroupChatLabelMiuixPage(
             item { SmallTitle(text = "会话列表") }
             item {
                 SettingsCard {
-                    SwitchRow(
-                        sp,
-                        QuickGroupChatLabelSettings.KEY_ENABLE,
-                        "快捷设置群聊标签",
-                        "长按群聊会话时显示群聊标签入口，聊天分组内同样生效",
-                        QuickGroupChatLabelSettings.DEFAULT_ENABLE
-                    )
+                    InlineSettingSwitch(context, "quick_group_chat_label")
                 }
             }
         }
@@ -791,7 +849,6 @@ internal fun QuickMomentsMiuixPage(
     provider: FeatureSettingsProvider,
     onBack: () -> Unit
 ) {
-    val sp = remember { HchatStorage.preferences(context, QuickMomentsSettings.PREFS_NAME) }
     val listState = rememberLazyListState()
     val scrollBehavior = MiuixScrollBehavior()
 
@@ -812,13 +869,7 @@ internal fun QuickMomentsMiuixPage(
             item { SmallTitle(text = "会话列表") }
             item {
                 SettingsCard {
-                    SwitchRow(
-                        sp,
-                        QuickMomentsSettings.KEY_ENABLE,
-                        "快捷查看朋友圈",
-                        "长按本人、好友或企业微信联系人会话时显示朋友圈入口，聊天分组内同样生效",
-                        QuickMomentsSettings.DEFAULT_ENABLE
-                    )
+                    InlineSettingSwitch(context, "quick_moments")
                 }
             }
         }
@@ -831,7 +882,6 @@ internal fun QuickTerminateMiuixPage(
     provider: FeatureSettingsProvider,
     onBack: () -> Unit
 ) {
-    val sp = remember { HchatStorage.preferences(context, QuickTerminateSettings.PREFS_NAME) }
     val listState = rememberLazyListState()
     val scrollBehavior = MiuixScrollBehavior()
 
@@ -852,13 +902,7 @@ internal fun QuickTerminateMiuixPage(
             item { SmallTitle(text = "加号菜单") }
             item {
                 SettingsCard {
-                    SwitchRow(
-                        sp,
-                        QuickTerminateSettings.KEY_ENABLE,
-                        "快捷终止",
-                        "在微信右上角加号菜单中添加快捷终止，重启微信后生效",
-                        QuickTerminateSettings.DEFAULT_ENABLE
-                    )
+                    InlineSettingSwitch(context, "quick_terminate")
                 }
             }
         }
@@ -1269,7 +1313,6 @@ internal fun RemoveForwardLimitMiuixPage(
     provider: FeatureSettingsProvider,
     onBack: () -> Unit
 ) {
-    val sp = remember { HchatStorage.preferences(context, RemoveForwardLimitSettings.PREFS_NAME) }
     val listState = rememberLazyListState()
     val scrollBehavior = MiuixScrollBehavior()
 
@@ -1290,13 +1333,7 @@ internal fun RemoveForwardLimitMiuixPage(
             item { SmallTitle(text = "消息转发") }
             item {
                 SettingsCard {
-                    SwitchRow(
-                        sp,
-                        RemoveForwardLimitSettings.KEY_ENABLE,
-                        "移除转发限制",
-                        "允许微信原生转发选择超过 9 个会话；大量目标仍受微信发送能力限制",
-                        RemoveForwardLimitSettings.DEFAULT_ENABLE
-                    )
+                    InlineSettingSwitch(context, "remove_forward_limit")
                 }
             }
         }

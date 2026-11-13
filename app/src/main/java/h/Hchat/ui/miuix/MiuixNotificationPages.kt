@@ -108,7 +108,9 @@ internal fun CustomNotificationMainPage(
     defaultOfficialRule: CustomNotificationRule,
     onBack: () -> Unit,
     onOpenRules: () -> Unit,
-    onEditDefault: (CustomNotificationDefaultKind) -> Unit
+    onEditDefault: (CustomNotificationDefaultKind) -> Unit,
+    relatedProviders: List<FeatureSettingsProvider>,
+    onOpenProvider: (FeatureSettingsProvider) -> Unit
 ) {
     val listState = rememberLazyListState()
     val scrollBehavior = MiuixScrollBehavior()
@@ -165,6 +167,10 @@ internal fun CustomNotificationMainPage(
                         onOpenRules()
                     }
                 }
+            }
+            if (relatedProviders.isNotEmpty()) {
+                item { SmallTitle(text = "独立功能") }
+                item { FeatureListCard(relatedProviders, "", onOpenProvider) }
             }
         }
     }

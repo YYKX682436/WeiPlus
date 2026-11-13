@@ -32,6 +32,9 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
+import androidx.compose.runtime.saveable.SaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -83,7 +86,9 @@ import java.util.Locale
 internal fun CustomNotificationMiuixPage(
     context: Context,
     provider: FeatureSettingsProvider,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    relatedProviders: List<FeatureSettingsProvider>,
+    onOpenProvider: (FeatureSettingsProvider) -> Unit
 ) {
     val settings = remember { CustomNotificationSettings(context) }
     val sp = remember { HchatStorage.preferences(context, CustomNotificationSettings.PREFS_NAME) }
@@ -136,7 +141,9 @@ internal fun CustomNotificationMiuixPage(
                 defaultOfficialRule = defaultOfficialRule,
                 onBack = onBack,
                 onOpenRules = { route = CustomNotificationRoute.RuleList },
-                onEditDefault = { route = CustomNotificationRoute.DefaultEditor(it) }
+                onEditDefault = { route = CustomNotificationRoute.DefaultEditor(it) },
+                relatedProviders = relatedProviders,
+                onOpenProvider = onOpenProvider
             )
             is CustomNotificationRoute.DefaultEditor -> {
                 val rule = when (currentRoute.kind) {
@@ -310,12 +317,16 @@ internal fun CustomNotificationMiuixPage(
 internal fun AutoReplyMiuixPage(
     context: Context,
     provider: FeatureSettingsProvider,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    initialScene: AutoReplyInitialScene,
+    relatedProviders: List<FeatureSettingsProvider>,
+    onOpenProvider: (FeatureSettingsProvider) -> Unit
 ) {
     val sp = remember { HchatStorage.preferences(context, AutoReplySettings.PREFS_NAME) }
     val settings = remember { AutoReplySettings(context) }
     var rules by remember { mutableStateOf(settings.rules()) }
-    var route by remember { mutableStateOf("main") }
+    var route by remember(initialScene) { mutableStateOf(initialScene.route) }
+    val sceneStateHolder = rememberSaveableStateHolder()
     var editingRuleId by remember { mutableStateOf<String?>(null) }
     var editingRuleDraft by remember { mutableStateOf<AutoReplyRule?>(null) }
     var editingSteps by remember { mutableStateOf<Pair<String, List<AutoReplyStep>>?>(null) }
@@ -368,9 +379,10 @@ internal fun AutoReplyMiuixPage(
         label = "AutoReplyRouteTransition",
         depthOf = { autoReplyRouteDepth(it) }
     ) { currentRoute ->
+        RetainFriendDraft(sceneStateHolder, currentRoute) {
         when (currentRoute) {
             "steps" -> {
-                val request = editingSteps ?: return@SettingsRouteTransition
+                val request = editingSteps ?: return@RetainFriendDraft
             AutoReplyStepsPage(
                 title = request.first,
                 initialSteps = request.second,
@@ -457,7 +469,7 @@ internal fun AutoReplyMiuixPage(
         }
         "autoAccept" -> AutoReplyFriendPage(
             context = context,
-            title = "好友请求处理",
+            title = "收到好友申请",
             sp = sp,
             enabledKey = AutoReplySettings.KEY_AUTO_ACCEPT_ENABLE,
             delayKey = AutoReplySettings.KEY_AUTO_ACCEPT_DELAY_MS,
@@ -465,7 +477,7 @@ internal fun AutoReplyMiuixPage(
             tagNameKey = AutoReplySettings.KEY_AUTO_ACCEPT_TAG_NAME,
             steps = settings.autoAcceptSteps(),
             listState = autoAcceptListState,
-            onBack = { route = "main" },
+            onBack = { if (initialScene == AutoReplyInitialScene.MAIN) route = "main" else onBack() },
             automationKeys = autoAcceptAutomationKeys,
             onSelectLabels = { route = "autoAcceptLabels" },
             onEditSteps = { editingSteps = "好友请求回复" to settings.autoAcceptSteps() }
@@ -479,7 +491,7 @@ internal fun AutoReplyMiuixPage(
         )
         "greetAccepted" -> AutoReplyFriendPage(
             context = context,
-            title = "通过后欢迎语",
+            title = "对方通过验证",
             sp = sp,
             enabledKey = AutoReplySettings.KEY_GREET_ACCEPTED_ENABLE,
             delayKey = AutoReplySettings.KEY_GREET_ACCEPTED_DELAY_MS,
@@ -487,10 +499,11 @@ internal fun AutoReplyMiuixPage(
             tagNameKey = AutoReplySettings.KEY_GREET_ACCEPTED_TAG_NAME,
             steps = settings.greetAcceptedSteps(),
             listState = greetAcceptedListState,
-            onBack = { route = "main" },
+            onBack = { if (initialScene == AutoReplyInitialScene.MAIN) route = "main" else onBack() },
             automationKeys = greetAcceptedAutomationKeys,
+            dependencyHint = "沿用自动回复总开关及排除名单",
             onSelectLabels = { route = "greetAcceptedLabels" },
-            onEditSteps = { editingSteps = "通过后欢迎语" to settings.greetAcceptedSteps() }
+            onEditSteps = { editingSteps = "对方通过验证" to settings.greetAcceptedSteps() }
         )
         "greetAcceptedLabels" -> AutoReplyLabelPickerPage(
             context = context,
@@ -506,11 +519,21 @@ internal fun AutoReplyMiuixPage(
             rules = rules,
             onBack = onBack,
             onOpenRules = { route = "rules" },
-            onOpenAutoAccept = { route = "autoAccept" },
-            onOpenGreetAccepted = { route = "greetAccepted" },
-            onOpenAi = { route = "ai" }
+            onOpenAi = { route = "ai" },
+            relatedProviders = relatedProviders,
+            onOpenProvider = onOpenProvider
         )
         }
+        }
+    }
+}
+
+@Composable
+private fun RetainFriendDraft(holder: SaveableStateHolder, route: String, content: @Composable () -> Unit) {
+    if (route == "autoAccept" || route == "greetAccepted") {
+        holder.SaveableStateProvider(route, content)
+    } else {
+        content()
     }
 }
 
@@ -1192,9 +1215,9 @@ private fun AutoReplyMainPage(
     rules: List<AutoReplyRule>,
     onBack: () -> Unit,
     onOpenRules: () -> Unit,
-    onOpenAutoAccept: () -> Unit,
-    onOpenGreetAccepted: () -> Unit,
-    onOpenAi: () -> Unit
+    onOpenAi: () -> Unit,
+    relatedProviders: List<FeatureSettingsProvider>,
+    onOpenProvider: (FeatureSettingsProvider) -> Unit
 ) {
     var excludedTalkersEnabled by remember {
         mutableStateOf(sp.getBoolean(AutoReplySettings.KEY_EXCLUDED_TALKERS_ENABLE, false))
@@ -1237,12 +1260,12 @@ private fun AutoReplyMainPage(
                     InsetDivider()
                     ActionRow("回复规则", if (rules.isEmpty()) "暂无规则" else "${rules.size} 条规则，${rules.count { it.enabled }} 条启用", onOpenRules)
                     InsetDivider()
-                    ActionRow("好友请求处理", "自动同意好友申请并按步骤发送欢迎内容", onOpenAutoAccept)
-                    InsetDivider()
-                    ActionRow("通过后欢迎语", "对方通过你的好友请求后发送欢迎内容", onOpenGreetAccepted)
-                    InsetDivider()
                     ActionRow("AI 配置", "配置小智AI和智聊AI，多智聊模型可切换", onOpenAi)
                 }
+            }
+            if (relatedProviders.isNotEmpty()) {
+                item { SmallTitle(text = "独立功能") }
+                item { FeatureListCard(relatedProviders, "", onOpenProvider) }
             }
         }
     }
@@ -1673,19 +1696,20 @@ private fun AutoReplyFriendPage(
     listState: LazyListState,
     onBack: () -> Unit,
     automationKeys: AutoReplyFriendAutomationKeys?,
+    dependencyHint: String? = null,
     onSelectLabels: (() -> Unit)?,
     onEditSteps: () -> Unit
 ) {
-    var delayMs by remember { mutableStateOf(sp.getLong(delayKey, 2000L).coerceAtLeast(0L).toString()) }
-    var tagName by remember { mutableStateOf(sp.getString(tagNameKey, "") ?: "") }
-    var labelDateFormat by remember {
+    var delayMs by rememberSaveable { mutableStateOf(sp.getLong(delayKey, 2000L).coerceAtLeast(0L).toString()) }
+    var tagName by rememberSaveable { mutableStateOf(sp.getString(tagNameKey, "") ?: "") }
+    var labelDateFormat by rememberSaveable {
         mutableStateOf(sp.getString(automationKeys?.labelDateFormat ?: "", "yyyy-MM-dd") ?: "yyyy-MM-dd")
     }
     val selectedLabelNames = sp.getString(automationKeys?.labelSelectedNames ?: "", "") ?: ""
-    var remarkDateFormat by remember {
+    var remarkDateFormat by rememberSaveable {
         mutableStateOf(sp.getString(automationKeys?.remarkDateFormat ?: "", "yyMMdd") ?: "yyMMdd")
     }
-    var remarkCustomText by remember {
+    var remarkCustomText by rememberSaveable {
         mutableStateOf(sp.getString(automationKeys?.remarkCustomText ?: "", "") ?: "")
     }
     val hasAutomation = automationKeys != null && onSelectLabels != null
@@ -1728,7 +1752,7 @@ private fun AutoReplyFriendPage(
         ) {
             item {
                 SettingsCard {
-                    SwitchRow(sp, enabledKey, "启用", "开启后自动处理这个场景", false)
+                    SwitchRow(sp, enabledKey, "启用", listOfNotNull("开启后自动处理这个场景", dependencyHint).joinToString("；"), false)
                     InsetDivider()
                     NumberInputRow("延迟发送", "单位 ms，通过好友后等待再发欢迎内容", delayMs) { delayMs = it }
                     if (hasAutomation) {

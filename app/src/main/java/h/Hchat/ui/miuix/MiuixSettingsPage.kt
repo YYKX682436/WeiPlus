@@ -119,6 +119,7 @@ import h.Hchat.hooks.items.hchatextra.HchatExtraSettings
 import h.Hchat.preferences.HchatStorage
 import h.Hchat.preferences.TermsGate
 import h.Hchat.ui.UIRegistry
+import h.Hchat.ui.FeatureSettingsProvider
 import h.Hchat.utils.KavaReflector
 import io.github.libxposed.api.XposedInterface
 import h.Hchat.hooks.core.XposedRuntime
@@ -571,10 +572,11 @@ object MiuixSettingsPage {
 
     @JvmStatic
     fun showFeature(context: Context, featureId: String): Boolean {
-        val provider = UIRegistry.get().getAllProviders()
+        val providers = UIRegistry.get().getAllProviders()
+        val provider = providers
             .firstOrNull { it.featureId() == featureId }
             ?: return false
-        show(context, DetailPage.Feature(provider))
+        show(context, resolveFeatureTarget(provider, providers))
         return true
     }
 
@@ -589,7 +591,6 @@ object MiuixSettingsPage {
     private fun show(context: Context, initialPage: DetailPage?) {
         val activity = context as? Activity ?: return
         val decor = activity.window?.decorView as? ViewGroup ?: return
-        HchatConfigBackup.removeDeprecatedPreferenceKeys(activity)
         removeExistingPage(decor)
 
         val hostTag = SettingsPageHostTag()
@@ -642,6 +643,9 @@ object MiuixSettingsPage {
             runCatching { owner.destroy() }.onFailure {
                 h.Hchat.utils.HLog.e("[Hchat:MiuixSettings] 销毁页面 Owner 失败: ${it.message}", it)
             }
+        }
+        fun backOrClose() {
+            if (detailBackStack.size > 1) popDetail() else closePage()
         }
         fun handleBack() {
             if (consumingBack) return
@@ -739,7 +743,7 @@ object MiuixSettingsPage {
                 setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
                 setContent {
                 val mainListState = rememberLazyListState()
-                val featureGroupListStates = remember { mutableMapOf<FeatureGroupEntry, LazyListState>() }
+                val featureGroupListStates = remember { mutableMapOf<String, LazyListState>() }
                 CompositionLocalProvider(
                     LocalNavigationEventDispatcherOwner provides owner,
                     LocalSettingsBackHandlerRegistry provides settingsBackHandlers
@@ -769,46 +773,56 @@ object MiuixSettingsPage {
                         ) {
                             entry<SettingsNavKey> { route ->
                                 val targetPage = route.page
-                            if (targetPage == null) {
+                                val providers = UIRegistry.get().getAllProviders()
+                                fun openProvider(provider: FeatureSettingsProvider, scene: AutoReplyInitialScene? = null, focusId: String? = null) {
+                                    openDetail(resolveFeatureTarget(provider, providers, focusId, scene))
+                                }
+                                fun openGroup(group: FeatureGroupEntry) {
+                                    val direct = group.directProviderId?.let { id -> providers.firstOrNull { it.featureId() == id } }
+                                    if (direct != null) openProvider(direct) else openDetail(DetailPage.FeatureGroup(group))
+                                }
+                            if (targetPage == null || targetPage is DetailPage.More) {
                                 MainSettingsPage(
                                     context = activity,
-                                    providers = UIRegistry.get().getAllProviders(),
+                                    providers = providers,
                                     listState = mainListState,
                                     configVersion = configVersion.value,
                                     onOpenSearch = { openDetail(DetailPage.Search) },
-                                    onOpenProvider = { openDetail(DetailPage.Feature(it)) },
-                                    onOpenGroup = { openDetail(DetailPage.FeatureGroup(it)) },
-                                    onConfigImported = { configVersion.value += 1 }
+                                    onOpenProvider = { openProvider(it) },
+                                    onOpenGroup = ::openGroup,
+                                    onConfigImported = { configVersion.value += 1 },
+                                    initiallyShowMore = targetPage is DetailPage.More,
+                                    onDismissInitialMore = ::backOrClose
                                 )
                             } else if (targetPage is DetailPage.Search) {
                                 SettingsSearchPage(
                                     context = activity,
-                                    providers = UIRegistry.get().getAllProviders(),
-                                    onBack = { popDetail() },
-                                    onOpenProvider = { provider, group ->
-                                        openDetail(DetailPage.Feature(
-                                            provider = provider,
-                                            sourceGroup = group,
-                                            returnToSearch = true
-                                        ))
+                                    providers = providers,
+                                    onBack = ::backOrClose,
+                                    onOpenProvider = { provider, scene, focusId ->
+                                        openProvider(provider, scene, focusId)
                                     },
                                 )
                             } else if (targetPage is DetailPage.FeatureGroup) {
                                 FeatureGroupSettingsPage(
+                                    context = activity,
                                     group = targetPage.group,
-                                    listState = featureGroupListStates.getOrPut(targetPage.group) { LazyListState() },
-                                    onBack = { popDetail() },
-                                    onOpenProvider = {
-                                        openDetail(DetailPage.Feature(it, targetPage.group))
-                                    }
+                                    listState = featureGroupListStates.getOrPut(targetPage.group.id) { LazyListState() },
+                                    onBack = ::backOrClose,
+                                    onOpenProvider = { openProvider(it) },
+                                    onOpenFriendScene = { scene ->
+                                        providers.firstOrNull { it.featureId() == "auto_reply" }?.let { openProvider(it, scene) }
+                                    },
+                                    focusId = targetPage.focusId
                                 )
                             } else if (targetPage is DetailPage.Feature) {
                                 FeatureSettingsPage(
                                     context = activity,
                                     provider = targetPage.provider,
-                                    onBack = {
-                                        popDetail()
-                                    }
+                                    onBack = ::backOrClose,
+                                    providers = providers,
+                                    onOpenProvider = { openProvider(it) },
+                                    initialScene = targetPage.initialScene
                                 )
                             }
                             }
