@@ -47,7 +47,6 @@ import h.Hchat.preferences.HchatStorage
 import h.Hchat.ui.FeatureSettingsProvider
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
-import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -81,6 +80,8 @@ internal fun RedPacketMiuixPage(
     var whitelist by remember { mutableStateOf(sp.getString(RedPacketSettings.KEY_WHITELIST, "") ?: "") }
     var blacklist by remember { mutableStateOf(sp.getString(RedPacketSettings.KEY_BLACKLIST, "") ?: "") }
     var listMode by remember { mutableStateOf(sp.getInt(RedPacketSettings.KEY_MODE, 0)) }
+    var filterExpanded by remember { mutableStateOf(false) }
+    var processingExpanded by remember { mutableStateOf(false) }
     var wishText by remember { mutableStateOf(sp.getString(RedPacketSettings.KEY_WISH_TEXT, "谢谢老板") ?: "谢谢老板") }
     var privateReplySteps by remember { mutableStateOf(loadGlobalRedPacketReplySteps(sp, includeDisabledLegacy = true)) }
     var groupReplySteps by remember { mutableStateOf(loadGlobalGroupRedPacketReplySteps(sp, includeDisabledLegacy = true)) }
@@ -408,7 +409,7 @@ internal fun RedPacketMiuixPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "核心功能") }
+            item { SettingsSectionTitle(text = "核心功能") }
             item {
                 SettingsCard {
                     SwitchRow(sp, RedPacketSettings.KEY_ENABLE, "自动抢红包", "开启后自动识别并抢红包", false)
@@ -432,33 +433,10 @@ internal fun RedPacketMiuixPage(
                     )
                     InsetDivider()
                     SwitchRow(sp, RedPacketSettings.KEY_AUTO_CLOSE, "自动关闭页面", "抢完或失败后自动收起红包页", false)
-                    InsetDivider()
-                    PopupOptionRow(
-                        title = "抢包延迟",
-                        summary = redPacketDelayModeLabel(grabDelayMode),
-                        options = redPacketDelayModeOptions(includeRandom = true),
-                        currentValue = grabDelayMode,
-                        onValueChanged = { mode ->
-                            grabDelayMode = mode
-                            if (mode == RedPacketRuleConfig.DELAY_FIXED) grabDelay = "0"
-                            persistDelay()
-                        }
-                    )
-                    if (grabDelayMode == RedPacketRuleConfig.DELAY_CUSTOM) {
-                        InsetDivider()
-                        NumberInputRow("自定义延迟", if (grabDelay.toIntOrNull()?.let { it in 0..10000 } != true) "请输入 0–10000，保留上次有效配置" else "单位 ms", grabDelay) { grabDelay = it; persistDelay() }
-                    } else if (grabDelayMode == RedPacketRuleConfig.DELAY_RANDOM) {
-                        InsetDivider()
-                        NumberInputRow("最小延迟", "单位 ms，不能大于最大延迟", grabRandomMinDelay) { grabRandomMinDelay = it; persistDelay() }
-                        InsetDivider()
-                        NumberInputRow("最大延迟", "单位 ms，不能小于最小延迟", grabRandomMaxDelay) { grabRandomMaxDelay = it; persistDelay() }
-                        if (grabRandomMinDelay.toIntOrNull()?.let { min -> min in 0..600000 && grabRandomMaxDelay.toIntOrNull()?.let { it in min..600000 } == true } != true) {
-                            InsetDivider(); InfoRow("延迟范围", "请输入有效范围，保留上次有效配置")
-                        }
-                    }
+
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "规则管理") }
+            item { SettingsSectionTitle(text = "规则管理") }
             item {
                 SettingsCard {
                     SelectRow(
@@ -510,9 +488,46 @@ internal fun RedPacketMiuixPage(
                     )
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "过滤规则") }
             item {
-                SettingsCard {
+                SequenceItemCard(
+                    title = "过滤与延迟",
+                    summary = "${if (listMode == 1) "白名单" else if (listMode == 2) "黑名单" else "全部红包"} · ${redPacketDelayModeLabel(grabDelayMode)}",
+                    expanded = filterExpanded,
+                    modifier = Modifier.padding(top = 24.dp),
+                    onToggle = {
+                        val invalidDelay = when (grabDelayMode) {
+                            RedPacketRuleConfig.DELAY_CUSTOM -> grabDelay.toIntOrNull()?.let { it in 0..10000 } != true
+                            RedPacketRuleConfig.DELAY_RANDOM -> grabRandomMinDelay.toIntOrNull()?.let { min -> min in 0..600000 && grabRandomMaxDelay.toIntOrNull()?.let { it in min..600000 } == true } != true
+                            else -> false
+                        }
+                        if (filterExpanded && invalidDelay) Toast.makeText(context, "请先修正延迟", Toast.LENGTH_SHORT).show()
+                        else filterExpanded = !filterExpanded
+                    }
+                ) {
+                    PopupOptionRow(
+                        title = "抢包延迟",
+                        summary = redPacketDelayModeLabel(grabDelayMode),
+                        options = redPacketDelayModeOptions(includeRandom = true),
+                        currentValue = grabDelayMode,
+                        onValueChanged = { mode ->
+                            grabDelayMode = mode
+                            if (mode == RedPacketRuleConfig.DELAY_FIXED) grabDelay = "0"
+                            persistDelay()
+                        }
+                    )
+                    if (grabDelayMode == RedPacketRuleConfig.DELAY_CUSTOM) {
+                        InsetDivider()
+                        NumberInputRow("自定义延迟", if (grabDelay.toIntOrNull()?.let { it in 0..10000 } != true) "请输入 0–10000，保留上次有效配置" else "单位 ms", grabDelay) { grabDelay = it; persistDelay() }
+                    } else if (grabDelayMode == RedPacketRuleConfig.DELAY_RANDOM) {
+                        InsetDivider()
+                        NumberInputRow("最小延迟", "单位 ms，不能大于最大延迟", grabRandomMinDelay) { grabRandomMinDelay = it; persistDelay() }
+                        InsetDivider()
+                        NumberInputRow("最大延迟", "单位 ms，不能小于最小延迟", grabRandomMaxDelay) { grabRandomMaxDelay = it; persistDelay() }
+                        if (grabRandomMinDelay.toIntOrNull()?.let { min -> min in 0..600000 && grabRandomMaxDelay.toIntOrNull()?.let { it in min..600000 } == true } != true) {
+                            InsetDivider(); InfoRow("延迟范围", "请输入有效范围，保留上次有效配置")
+                        }
+                    }
+                    InsetDivider()
                     OptionRow(
                         sp = sp,
                         key = RedPacketSettings.KEY_MODE,
@@ -533,7 +548,7 @@ internal fun RedPacketMiuixPage(
                     if (keywordMode != 0) {
                         InsetDivider()
                         InputRow("关键词列表", "多个关键词用 | 分隔", keywords,
-                            onEditingFinished = { persistText(RedPacketSettings.KEY_KEYWORDS, it, true) }) { keywords = it; persistText(RedPacketSettings.KEY_KEYWORDS, it) }
+                            onEditingFinished = { if (filterExpanded) persistText(RedPacketSettings.KEY_KEYWORDS, it, true) }) { keywords = it; persistText(RedPacketSettings.KEY_KEYWORDS, it) }
                     }
                     if (listMode == 1) {
                         InsetDivider()
@@ -562,18 +577,31 @@ internal fun RedPacketMiuixPage(
                     }
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "模板变量") }
+            item {
+                SettingsDisclosure(
+                    title = "抢到后处理",
+                    summary = "${if (replyEnabled) "自动回复已开" else "自动回复关闭"} · ${if (notifySystemEnabled || notifyToastEnabled || notifySoundEnabled || announceEnabled || notifyFailedSystemEnabled || notifyFailedToastEnabled) "提醒已开" else "提醒关闭"}",
+                    expanded = processingExpanded,
+                    onToggle = {
+                        if (processingExpanded && timeFormat.isNotBlank() && !PaymentTemplateTimeFormatter.isValidPattern(timeFormat))
+                            Toast.makeText(context, "请先修正时间格式", Toast.LENGTH_SHORT).show()
+                        else processingExpanded = !processingExpanded
+                    }
+                )
+            }
+            if (processingExpanded) {
+            item { SettingsSectionTitle(text = "模板变量") }
             item {
                 SettingsCard {
                     InputRow(
                         "时间变量格式",
                         if (timeFormat.isNotBlank() && !PaymentTemplateTimeFormatter.isValidPattern(timeFormat)) "时间格式无效，保留上次有效配置" else "用于 {time}，例如 yyyy-MM-dd HH:mm:ss",
                         timeFormat,
-                        onEditingFinished = { if (it.isBlank()) sp.edit().putString(RedPacketSettings.KEY_TIME_FORMAT, PaymentTemplateTimeFormatter.normalizePattern(it)).apply() }
+                        onEditingFinished = { if (processingExpanded && it.isBlank()) sp.edit().putString(RedPacketSettings.KEY_TIME_FORMAT, PaymentTemplateTimeFormatter.normalizePattern(it)).apply() }
                     ) { timeFormat = it; if (it.isNotBlank() && PaymentTemplateTimeFormatter.isValidPattern(it)) sp.edit().putString(RedPacketSettings.KEY_TIME_FORMAT, PaymentTemplateTimeFormatter.normalizePattern(it)).apply() }
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "自动祝福") }
+            item { SettingsSectionTitle(text = "自动祝福") }
             item {
                 SettingsCard {
                     SwitchRow(wishEnabled, "自动发送祝福语", "抢到红包后发送祝福语") {
@@ -581,13 +609,13 @@ internal fun RedPacketMiuixPage(
                         sp.edit().putBoolean(RedPacketSettings.KEY_WISH_ENABLE, it).apply()
                     }
                     InsetDivider()
-                    InputRow("祝福语内容", "抢到红包后发送的文字", wishText, onEditingFinished = { persistText(RedPacketSettings.KEY_WISH_TEXT, it, true) }) { wishText = it; persistText(RedPacketSettings.KEY_WISH_TEXT, it) }
+                    InputRow("祝福语内容", "抢到红包后发送的文字", wishText, onEditingFinished = { if (processingExpanded) persistText(RedPacketSettings.KEY_WISH_TEXT, it, true) }) { wishText = it; persistText(RedPacketSettings.KEY_WISH_TEXT, it) }
                     InsetDivider()
                     SwitchRow(sp, RedPacketSettings.KEY_WISH_RANDOM, "随机祝福语", "从模板中随机选择", false)
 
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "自动回复") }
+            item { SettingsSectionTitle(text = "自动回复") }
             item {
                 SettingsCard {
                     SwitchRow(replyEnabled, "抢到后自动回复", "发送到红包所在会话") {
@@ -609,7 +637,7 @@ internal fun RedPacketMiuixPage(
 
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "通知提醒") }
+            item { SettingsSectionTitle(text = "通知提醒") }
             item {
                 SettingsCard {
                     SwitchRow(notifySystemEnabled, "通知栏提醒", "抢到红包时提醒") {
@@ -622,7 +650,7 @@ internal fun RedPacketMiuixPage(
                         summary = "支持下方变量",
                         value = notifyText,
                         variables = redPacketTemplateVariables,
-                        onEditingFinished = { persistText(RedPacketSettings.KEY_NOTIFY_TEXT, it, true) },
+                        onEditingFinished = { if (processingExpanded) persistText(RedPacketSettings.KEY_NOTIFY_TEXT, it, true) },
                         onValueChange = { notifyText = it; persistText(RedPacketSettings.KEY_NOTIFY_TEXT, it) }
                     )
 
@@ -637,7 +665,7 @@ internal fun RedPacketMiuixPage(
                         summary = "支持下方变量",
                         value = notifyToastText,
                         variables = redPacketTemplateVariables,
-                        onEditingFinished = { persistText(RedPacketSettings.KEY_NOTIFY_TOAST_TEXT, it, true) },
+                        onEditingFinished = { if (processingExpanded) persistText(RedPacketSettings.KEY_NOTIFY_TOAST_TEXT, it, true) },
                         onValueChange = { notifyToastText = it; persistText(RedPacketSettings.KEY_NOTIFY_TOAST_TEXT, it) }
                     )
 
@@ -706,7 +734,7 @@ internal fun RedPacketMiuixPage(
                         summary = "支持下方变量",
                         value = announceText,
                         variables = redPacketTemplateVariables,
-                        onEditingFinished = { persistText(RedPacketSettings.KEY_ANNOUNCE_TEXT, it, true) },
+                        onEditingFinished = { if (processingExpanded) persistText(RedPacketSettings.KEY_ANNOUNCE_TEXT, it, true) },
                         onValueChange = { announceText = it; persistText(RedPacketSettings.KEY_ANNOUNCE_TEXT, it) }
                     )
 
@@ -721,7 +749,7 @@ internal fun RedPacketMiuixPage(
                         summary = "支持下方变量",
                         value = failText,
                         variables = redPacketTemplateVariables,
-                        onEditingFinished = { persistText(RedPacketSettings.KEY_NOTIFY_FAILED_TEXT, it, true) },
+                        onEditingFinished = { if (processingExpanded) persistText(RedPacketSettings.KEY_NOTIFY_FAILED_TEXT, it, true) },
                         onValueChange = { failText = it; persistText(RedPacketSettings.KEY_NOTIFY_FAILED_TEXT, it) }
                     )
 
@@ -736,13 +764,14 @@ internal fun RedPacketMiuixPage(
                         summary = "支持下方变量",
                         value = failToastText,
                         variables = redPacketTemplateVariables,
-                        onEditingFinished = { persistText(RedPacketSettings.KEY_NOTIFY_FAILED_TOAST_TEXT, it, true) },
+                        onEditingFinished = { if (processingExpanded) persistText(RedPacketSettings.KEY_NOTIFY_FAILED_TOAST_TEXT, it, true) },
                         onValueChange = { failToastText = it; persistText(RedPacketSettings.KEY_NOTIFY_FAILED_TOAST_TEXT, it) }
                     )
 
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "假红包兼容") }
+            }
+            item { SettingsSectionTitle(text = "假红包兼容") }
             item {
                 SettingsCard {
                     SwitchRow(sp, RedPacketSettings.KEY_FAKE_PACKET_ENABLE, "开启假红包", "发送假红包时修正请求和响应", false)
@@ -781,7 +810,7 @@ private fun RedPacketTemplateListPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "模板") }
+            item { SettingsSectionTitle(text = "模板") }
             item {
                 SettingsCard {
                     if (templates.isEmpty()) {
@@ -798,7 +827,7 @@ private fun RedPacketTemplateListPage(
                     }
 
                     InsetDivider()
-                    ContentActionRow("新增模板", onClick = onAddTemplate)
+                    AddActionRow("新增模板", onClick = onAddTemplate)
                 }
             }
         }
@@ -875,7 +904,7 @@ private fun RedPacketBindingListPage(
                     )
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = listTitle) }
+            item { SettingsSectionTitle(text = listTitle) }
 
 
             item {
@@ -890,7 +919,7 @@ private fun RedPacketBindingListPage(
                         }
                     } else {
                         if (bindings.isNotEmpty()) ContentActionRow("批量删除") { batchDeleteMode = true; selectedIds = emptySet() }
-                        ContentActionRow("添加聊天", onClick = onAddBinding)
+                        AddActionRow("添加聊天", onClick = onAddBinding)
                     }
 
                     InsetDivider()
@@ -1167,6 +1196,10 @@ private fun RedPacketTemplatePage(
 
     fun persist(create: Boolean = false) {
         if (!create && !request.canDelete) return
+        if (create && (privateReplySteps + groupReplySteps).any { it.content.isBlank() }) {
+            Toast.makeText(context, "请完善或移除未完成的回复", Toast.LENGTH_SHORT).show()
+            return
+        }
         val parsedDelay = delayMs.toLongOrNull()?.takeIf { it in 0L..600000L }
         val minDelay = randomMinMs.toLongOrNull()?.takeIf { it in 0L..600000L }
         val maxDelay = randomMaxMs.toLongOrNull()?.takeIf { minDelay != null && it in minDelay..600000L }
@@ -1232,6 +1265,7 @@ private fun RedPacketTemplatePage(
             context = context,
             title = if (group) "群红包回复" else "私聊红包回复",
             initialSteps = if (group) groupReplySteps else privateReplySteps,
+            draftOnly = !request.canDelete,
             onBack = { editingReplyStepsForGroup = null },
             onSave = { steps ->
                 if (group) {
@@ -1260,7 +1294,7 @@ private fun RedPacketTemplatePage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "模板") }
+            item { SettingsSectionTitle(text = "模板") }
             item {
                 SettingsCard {
                     InputRow("模板名称", if (name.isBlank() && request.canDelete) "请输入名称，保留上次有效配置" else "例如：慢抢红包群、只抢口令红包", name) { name = it; persist() }
@@ -1273,7 +1307,7 @@ private fun RedPacketTemplatePage(
                     )
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "抢包") }
+            item { SettingsSectionTitle(text = "抢包") }
             item {
                 SettingsCard {
                     PopupOptionRow(
@@ -1292,7 +1326,7 @@ private fun RedPacketTemplatePage(
                     )
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "延迟") }
+            item { SettingsSectionTitle(text = "延迟") }
             item {
                 SettingsCard {
                     PopupOptionRow(
@@ -1316,7 +1350,7 @@ private fun RedPacketTemplatePage(
                     }
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "过滤") }
+            item { SettingsSectionTitle(text = "过滤") }
             item {
                 SettingsCard {
                     PopupOptionRow(
@@ -1358,7 +1392,7 @@ private fun RedPacketTemplatePage(
 
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "抢后回复") }
+            item { SettingsSectionTitle(text = "抢后回复") }
             item {
                 SettingsCard {
                     SelectRow(
@@ -1374,7 +1408,7 @@ private fun RedPacketTemplatePage(
                     )
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "通知提醒") }
+            item { SettingsSectionTitle(text = "通知提醒") }
             item {
                 SettingsCard {
                     SwitchRow(
@@ -1519,7 +1553,7 @@ private fun RedPacketTemplatePage(
                 }
             }
 
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
+            item { SettingsSectionTitle(text = "操作") }
             item {
                 SettingsCard {
                     if (!request.canDelete) ContentActionRow("创建") { persist(create = true) }
@@ -1568,7 +1602,7 @@ private fun RedPacketBindingPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "聊天") }
+            item { SettingsSectionTitle(text = "聊天") }
             item {
                 SettingsCard {
                     InfoRow("名称", targetTitle)
@@ -1583,7 +1617,7 @@ private fun RedPacketBindingPage(
                     )
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "模板") }
+            item { SettingsSectionTitle(text = "模板") }
             item {
                 SettingsCard {
                     if (customRules) {
@@ -1611,7 +1645,7 @@ private fun RedPacketBindingPage(
                 }
             }
 
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
+            item { SettingsSectionTitle(text = "操作") }
             item {
                 SettingsCard {
                     if (!request.canDelete) ContentActionRow("创建") { persist(create = true) }
@@ -1668,7 +1702,7 @@ internal fun AntiRecallMiuixPage(
                 bottom = padding.calculateBottomPadding() + 20.dp
             )
         ) {
-            item { SmallTitle(text = "防撤回") }
+            item { SettingsSectionTitle(text = "防撤回") }
             item {
                 SettingsCard {
                     SwitchRow(

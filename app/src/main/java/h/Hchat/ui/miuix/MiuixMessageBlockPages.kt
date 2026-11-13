@@ -29,7 +29,6 @@ import h.Hchat.hooks.items.messageblock.MessageBlockTemplate
 import h.Hchat.preferences.HchatStorage
 import h.Hchat.ui.FeatureSettingsProvider
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
-import top.yukonga.miuix.kmp.basic.SmallTitle
 import java.util.LinkedHashSet
 import java.util.Locale
 
@@ -363,7 +362,7 @@ internal fun MessageBlockMiuixPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "基础") }
+            item { SettingsSectionTitle(text = "基础") }
             item {
                 SettingsCard {
                     SwitchRow(
@@ -375,7 +374,7 @@ internal fun MessageBlockMiuixPage(
                     )
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "管理") }
+            item { SettingsSectionTitle(text = "管理") }
             item {
                 SettingsCard {
                     SelectRow(
@@ -439,7 +438,7 @@ private fun MessageBlockTemplateListPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "模板") }
+            item { SettingsSectionTitle(text = "模板") }
             item {
                 SettingsCard {
                     if (templates.isEmpty()) {
@@ -456,7 +455,7 @@ private fun MessageBlockTemplateListPage(
                     }
 
                     InsetDivider()
-                    ContentActionRow("新增模板", onClick = onAddTemplate)
+                    AddActionRow("新增模板", onClick = onAddTemplate)
                 }
             }
         }
@@ -552,7 +551,7 @@ private fun MessageBlockListManagerPage(
                 }
             }
             if (!batchDeleteMode) {
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "添加") }
+                item { SettingsSectionTitle(text = "添加") }
 
 
                 item {
@@ -567,7 +566,7 @@ private fun MessageBlockListManagerPage(
                     }
                 }
             }
-            item { SmallTitle(text = listTitle) }
+            item { SettingsSectionTitle(text = listTitle) }
             item {
                 SettingsCard {
                     if (bindings.isEmpty()) {
@@ -649,7 +648,7 @@ private fun MessageBlockBatchBindingPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "批量配置") }
+            item { SettingsSectionTitle(text = "批量配置") }
             item {
                 SettingsCard {
                     SelectRow(
@@ -675,7 +674,7 @@ private fun MessageBlockBatchBindingPage(
                     )
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "模板") }
+            item { SettingsSectionTitle(text = "模板") }
             item {
                 SettingsCard {
                     if (templates.isEmpty()) {
@@ -699,7 +698,7 @@ private fun MessageBlockBatchBindingPage(
                     }
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "名单") }
+            item { SettingsSectionTitle(text = "名单") }
             item {
                 SettingsCard {
                     request.bindings.take(30).forEachIndexed { index, binding ->
@@ -717,10 +716,10 @@ private fun MessageBlockBatchBindingPage(
                 }
             }
 
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
+            item { SettingsSectionTitle(text = "操作") }
             item {
                 SettingsCard {
-                    ContentActionRow("新增") {
+                    AddActionRow("新增") {
                             if (templateIds.isEmpty()) {
                                 Toast.makeText(context, "请先选择模板", Toast.LENGTH_SHORT).show()
                             } else {
@@ -806,7 +805,7 @@ private fun MessageBlockDefaultRulePage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "默认规则") }
+            item { SettingsSectionTitle(text = "默认规则") }
             item {
                 SettingsCard {
                     SwitchRow(
@@ -817,7 +816,7 @@ private fun MessageBlockDefaultRulePage(
                     )
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "模板") }
+            item { SettingsSectionTitle(text = "模板") }
             item {
                 SettingsCard {
                     if (templates.isEmpty()) {
@@ -843,7 +842,7 @@ private fun MessageBlockDefaultRulePage(
                     }
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "规则") }
+            item { SettingsSectionTitle(text = "规则") }
             item {
                 SettingsCard {
                     SwitchRow(
@@ -961,7 +960,7 @@ private fun MessageBlockTemplatePage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "模板") }
+            item { SettingsSectionTitle(text = "模板") }
             item {
                 SettingsCard {
                     InputRow("模板名称", if (name.isBlank() && request.canDelete) "请输入模板名称，保留上次有效配置" else "用于区分不同屏蔽模板", name) { name = it; persist() }
@@ -974,7 +973,7 @@ private fun MessageBlockTemplatePage(
                     )
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "类型") }
+            item { SettingsSectionTitle(text = "类型") }
             item {
                 SettingsCard {
                     SwitchRow(
@@ -1019,7 +1018,7 @@ private fun MessageBlockTemplatePage(
                 }
             }
 
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
+            item { SettingsSectionTitle(text = "操作") }
             item {
                 SettingsCard {
                     if (!request.canDelete) ContentActionRow("创建") { persist(create = true) }
@@ -1088,7 +1087,7 @@ private fun MessageBlockBindingPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "名单信息") }
+            item { SettingsSectionTitle(text = "名单信息") }
             item {
                 SettingsCard {
                     SelectRow(
@@ -1115,7 +1114,7 @@ private fun MessageBlockBindingPage(
                     )
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "模板") }
+            item { SettingsSectionTitle(text = "模板") }
             item {
                 SettingsCard {
                     if (templates.isEmpty()) {
@@ -1141,7 +1140,7 @@ private fun MessageBlockBindingPage(
                     }
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "规则") }
+            item { SettingsSectionTitle(text = "规则") }
             item {
                 SettingsCard {
                     SwitchRow(
@@ -1210,7 +1209,7 @@ private fun MessageBlockBindingPage(
                 }
             }
 
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
+            item { SettingsSectionTitle(text = "操作") }
             item {
                 SettingsCard {
                     if (!request.canDelete) ContentActionRow("创建") { persist(create = true) }

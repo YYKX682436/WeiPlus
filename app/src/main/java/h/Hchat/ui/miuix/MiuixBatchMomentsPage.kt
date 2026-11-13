@@ -31,6 +31,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -63,7 +64,6 @@ import h.Hchat.hooks.items.batch.BatchTaskSubmitResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
-import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import java.text.SimpleDateFormat
@@ -221,17 +221,18 @@ internal fun BatchMomentsPickerPage(
         title = operation.pickerTitle,
         largeTitle = friend?.label ?: operation.pickerTitle,
         scrollBehavior = scrollBehavior,
-        onBack = onBack
+        onBack = onBack,
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
                 bottom = padding.calculateBottomPadding() + 16.dp
             ),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            item { SmallTitle(text = "筛选") }
+            item { SettingsSectionTitle(text = "筛选") }
             item {
                 SettingsCard {
                     MomentDateFilterRow("开始日期", filter.startDate, onDate = { filter = filter.copy(startDate = it) }, onClear = { filter = filter.copy(startDate = "") })
@@ -260,7 +261,7 @@ internal fun BatchMomentsPickerPage(
             if (!BatchMomentsSelection.isValidDateRange(filter)) {
                 item { SettingsCard { InfoRow("日期范围无效", "开始日期必须早于或等于结束日期") } }
             }
-            item { SmallTitle(text = "动态 · 已选 ${selectedIds.size}") }
+            item { SettingsSectionTitle(text = "动态 · 已选 ${selectedIds.size}") }
             item {
                 SettingsCard {
                     ActionRow(
@@ -299,7 +300,7 @@ internal fun BatchMomentsPickerPage(
                         if (error.isNotEmpty()) append(" · $error")
                     })
                     when {
-                        loading && !stopped -> ActionRow("停止读取", "当前已提交的请求会自然结束") {
+                        loading && !stopped -> SecondaryActionRow("停止读取", "当前已提交的请求会自然结束") {
                             stop.set(true)
                             stopped = true
                         }

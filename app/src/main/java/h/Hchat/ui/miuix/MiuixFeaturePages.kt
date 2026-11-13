@@ -14,18 +14,23 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import h.Hchat.hooks.items.autooriginal.AutoOriginalImageSettings
 import h.Hchat.hooks.items.autovieworiginal.AutoViewOriginalSettings
 import h.Hchat.hooks.items.callmedialimit.CallMediaLimitSettings
 import h.Hchat.hooks.items.editmsg.EditMessageSettings
+import h.Hchat.hooks.items.emojisave.EmojiSaveSettings
+import h.Hchat.hooks.items.emojilimit.EmojiCollectionLimitFeature
 import h.Hchat.hooks.items.forwardlimit.RemoveForwardLimitSettings
 import h.Hchat.hooks.items.grouplabel.QuickGroupChatLabelSettings
 import h.Hchat.hooks.items.hotupdate.DisableHotUpdateSettings
@@ -34,64 +39,34 @@ import h.Hchat.hooks.items.inputhint.InputHintStats
 import h.Hchat.hooks.items.inputhint.OutgoingMessageStatsRepository
 import h.Hchat.hooks.items.messageaffix.MessageAffixSettings
 import h.Hchat.hooks.items.messageforward.MessageForwardSettings
+import h.Hchat.hooks.items.hchatextra.HchatExtraSettings
+import h.Hchat.hooks.items.miniprogrambaselib.FakeMiniProgramBaseLibSettings
+import h.Hchat.hooks.items.miniprogramvideoad.SkipMiniProgramVideoAdsSettings
+import h.Hchat.hooks.items.miniprogramsplashad.SkipGlobalMiniProgramSplashAdsSettings
+import h.Hchat.hooks.items.moments.OriginalMomentsUploadSettings
+import h.Hchat.hooks.items.moments.RemoveMomentsAdsSettings
 import h.Hchat.hooks.items.multirecall.MultiRecallSettings
 import h.Hchat.hooks.items.patblock.PatBlockSettings
+import h.Hchat.hooks.items.profileid.ProfileIdSettings
 import h.Hchat.hooks.items.quickcontactedit.QuickContactEditSettings
 import h.Hchat.hooks.items.quickmoments.QuickMomentsSettings
 import h.Hchat.hooks.items.quickterminate.QuickTerminateSettings
+import h.Hchat.hooks.items.quoteclear.QuoteDeleteClearSettings
 import h.Hchat.hooks.items.scheduledtask.ScheduledTaskContentItem
 import h.Hchat.hooks.items.scheduledtask.ScheduledTaskItem
 import h.Hchat.hooks.items.scheduledtask.ScheduledTaskSettings
 import h.Hchat.hooks.items.selectedmessages.SelectedMessagesRuntimeCoordinator
 import h.Hchat.hooks.items.selectedmessages.SelectedMessagesSettings
 import h.Hchat.hooks.items.statuslimit.StatusTextLimitSettings
+import h.Hchat.hooks.items.shortvideo.FinderMediaDownloadSettings
+import h.Hchat.hooks.items.tablet.WeChatTabletSettings
 import h.Hchat.hooks.items.typingreport.TypingReportBlockSettings
 import h.Hchat.preferences.HchatStorage
+import h.Hchat.preferences.ConfigStore
 import h.Hchat.ui.FeatureSettingsProvider
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
-import top.yukonga.miuix.kmp.basic.SmallTitle
 import kotlinx.coroutines.launch
 
-@Composable
-internal fun MultiRecallMiuixPage(
-    context: Context,
-    provider: FeatureSettingsProvider,
-    onBack: () -> Unit
-) {
-    val sp = remember { HchatStorage.preferences(context, MultiRecallSettings.PREFS_NAME) }
-    val listState = rememberLazyListState()
-    val scrollBehavior = MiuixScrollBehavior()
-
-    PageScaffold(
-        title = provider.title(),
-        largeTitle = provider.title(),
-        scrollBehavior = scrollBehavior,
-        onBack = onBack,
-        showBackIcon = false
-    ) { padding ->
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
-            state = listState,
-            contentPadding = PaddingValues(
-                top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 16.dp
-            )
-        ) {
-            item { SmallTitle(text = "聊天消息") }
-            item {
-                SettingsCard {
-                    SwitchRow(
-                        sp,
-                        MultiRecallSettings.KEY_ENABLE,
-                        "多选撤回",
-                        "在多选消息的分享菜单中显示批量撤回",
-                        MultiRecallSettings.DEFAULT_ENABLE
-                    )
-                }
-            }
-        }
-    }
-}
 
 @Composable
 internal fun SelectedMessagesMiuixPage(
@@ -105,17 +80,18 @@ internal fun SelectedMessagesMiuixPage(
         mutableStateOf(
             ScheduledTaskSettings.newDraft().copy(
                 type = ScheduledTaskSettings.TYPE_IMAGE,
-                items = listOf(ScheduledTaskContentItem(ScheduledTaskSettings.TYPE_IMAGE, "")),
                 intervalSeconds = SelectedMessagesSettings.sendIntervalSeconds(context),
                 mediaIntervalSeconds = SelectedMessagesSettings.sendIntervalSeconds(context)
             )
         )
     }
+    val contentSession = remember { ScheduledContentSession(emptyList(), false) }
     var channel by remember { mutableStateOf(SelectedMessagesRuntimeCoordinator.CHANNEL_MODULE) }
     val mainListState = rememberLazyListState()
     val editorListState = rememberLazyListState()
 
     fun validationError(): String? {
+        if (contentSession.entries.any { it.item.value.isBlank() }) return "请完善或移除未完成的发送内容"
         return SelectedMessagesRuntimeCoordinator.validationError(
             channel,
             scheduledTaskEditableItems(draft)
@@ -169,10 +145,21 @@ internal fun SelectedMessagesMiuixPage(
             SelectedMessagesRoute.Editor -> {
                 SelectedMessagesCustomEditorPage(
                     draft = draft,
+                    contentSession = contentSession,
                     channel = channel,
                     listState = editorListState,
                     onBack = { route = SelectedMessagesRoute.Main },
                     onDraftChange = { draft = it },
+                    onAddContent = { type -> contentSession.add(type); draft = contentSession.applyTo(draft) },
+                    onContentChange = { key, item ->
+                        if (contentSession.update(key, item)) draft = contentSession.applyTo(draft)
+                    },
+                    onMoveContent = { key, offset ->
+                        if (contentSession.move(key, offset)) draft = contentSession.applyTo(draft)
+                    },
+                    onRemoveContent = { key ->
+                        if (contentSession.remove(key)) draft = contentSession.applyTo(draft)
+                    },
                     onChannelChange = { next ->
                         if (next != channel) {
                             channel = next
@@ -180,24 +167,26 @@ internal fun SelectedMessagesMiuixPage(
                         }
                     },
                     onPickTargets = ::openContactPicker,
-                    onPickFiles = { itemIndex, itemType ->
+                    onPickFiles = { itemKey, itemType ->
                         val activity = context as? Activity
                         if (activity == null) {
                             Toast.makeText(context, "当前页面无法打开文件选择器", Toast.LENGTH_SHORT).show()
                         } else {
                             ScheduledTaskFilePickerBridge.launch(activity, itemType) { paths ->
-                                draft = updateScheduledTaskMediaItem(draft, itemIndex, itemType, paths)
+                                if (contentSession.setFiles(itemKey, itemType, paths)) draft = contentSession.applyTo(draft)
                             }
                         }
                     },
-                    onPickFavorite = { itemIndex ->
-                        scheduledTaskEditableItems(draft).getOrNull(itemIndex)?.let { item ->
+                    onPickFavorite = { itemKey ->
+                        contentSession.find(itemKey)?.item?.let { item ->
                             route = SelectedMessagesRoute.FavoritePicker(
                                 FavoritePickerRequest(
                                     title = scheduledTaskPickerTitle(item.type),
                                     existingValue = item.value,
                                     onValue = { value ->
-                                        draft = updateScheduledTaskContentItemValue(draft, itemIndex, value)
+                                        contentSession.find(itemKey)?.takeIf { it.item.type == item.type }?.let { current ->
+                                            if (contentSession.update(itemKey, current.item.copy(value = value))) draft = contentSession.applyTo(draft)
+                                        }
                                     },
                                     multiSelect = false,
                                     delimiter = "|"
@@ -205,6 +194,7 @@ internal fun SelectedMessagesMiuixPage(
                             )
                         }
                     },
+                    validationError = validationError(),
                     onSend = ::startSend
                 )
             }
@@ -277,7 +267,7 @@ private fun SelectedMessagesMainPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "多选消息") }
+            item { SettingsSectionTitle(text = "多选消息") }
             item {
                 SettingsCard {
                     SwitchRow(
@@ -296,7 +286,7 @@ private fun SelectedMessagesMainPage(
                     )
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "发送节奏") }
+            item { SettingsSectionTitle(text = "发送节奏") }
             item {
                 SettingsCard {
                     NumberInputRow(
@@ -328,7 +318,7 @@ private fun SelectedMessagesMainPage(
                     }
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "内容群发") }
+            item { SettingsSectionTitle(text = "内容群发") }
             item {
                 SettingsCard {
                     ActionRow("自定义群发", "编辑内容并选择模块或微信原生通道") {
@@ -343,14 +333,20 @@ private fun SelectedMessagesMainPage(
 @Composable
 private fun SelectedMessagesCustomEditorPage(
     draft: ScheduledTaskItem,
+    contentSession: ScheduledContentSession,
     channel: Int,
     listState: LazyListState,
     onBack: () -> Unit,
     onDraftChange: (ScheduledTaskItem) -> Unit,
+    onAddContent: (Int) -> Unit,
+    onContentChange: (String, ScheduledTaskContentItem) -> Unit,
+    onMoveContent: (String, Int) -> Unit,
+    onRemoveContent: (String) -> Unit,
     onChannelChange: (Int) -> Unit,
     onPickTargets: () -> Unit,
-    onPickFiles: (Int, Int) -> Unit,
-    onPickFavorite: (Int) -> Unit,
+    onPickFiles: (String, Int) -> Unit,
+    onPickFavorite: (String) -> Unit,
+    validationError: String?,
     onSend: () -> Unit
 ) {
     val scrollBehavior = MiuixScrollBehavior()
@@ -360,6 +356,17 @@ private fun SelectedMessagesCustomEditorPage(
     var mediaIntervalText by remember(draft.id) { mutableStateOf(draft.mediaIntervalSeconds.toString()) }
     val intervalValid = intervalText.toIntOrNull()?.let { it in 0..3600 } == true
     val mediaIntervalValid = mediaIntervalText.toIntOrNull()?.let { it in 0..3600 } == true
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val scrollOffset = with(LocalDensity.current) { 120.dp.roundToPx() }
+    LaunchedEffect(contentSession.scrollRequest) {
+        val key = contentSession.scrollRequest ?: return@LaunchedEffect
+        val index = contentSession.entries.indexOfFirst { it.key == key }
+        if (index >= 0) {
+            withFrameNanos { }
+            listState.animateScrollToItem(3 + index, -scrollOffset)
+        }
+        contentSession.consumeScrollRequest(key)
+    }
     PageScaffold(
         title = "自定义群发",
         largeTitle = "自定义群发",
@@ -375,7 +382,7 @@ private fun SelectedMessagesCustomEditorPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "发送目标") }
+            item { SettingsSectionTitle(text = "发送目标") }
             item {
                 SettingsCard {
                     PopupChoiceRow(
@@ -399,24 +406,20 @@ private fun SelectedMessagesCustomEditorPage(
                     }
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "发送内容") }
-            item {
-                SettingsCard {
-                    ScheduledTaskChatContentRows(
-                        task = draft,
-                        onTaskChange = onDraftChange,
-                        onPickFiles = onPickFiles,
-                        onPickFavorite = onPickFavorite,
-                        massSendOnly = official
-                    )
-                    if (items.none { it.type == ScheduledTaskSettings.TYPE_SELECTED_MESSAGE }) {
-                        InsetDivider()
-                        AddActionRow("新增内容") { onDraftChange(appendScheduledTaskContentItem(draft)) }
-                    }
-                }
-            }
+            scheduledContentSection(
+                context = context,
+                session = contentSession,
+                massSendOnly = official,
+                onAdd = onAddContent,
+                onChange = onContentChange,
+                onCommit = {},
+                onMove = onMoveContent,
+                onRemove = onRemoveContent,
+                onPickFiles = onPickFiles,
+                onPickFavorite = onPickFavorite
+            )
             if (!official) {
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "发送节奏") }
+                item { SettingsSectionTitle(text = "发送节奏") }
                 item {
                     SettingsCard {
                         NumberInputRow(
@@ -442,11 +445,14 @@ private fun SelectedMessagesCustomEditorPage(
                 }
             }
 
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
             item {
-                SettingsCard {
-                    ContentActionRow("开始群发", enabled = official || (intervalValid && (items.size <= 1 || mediaIntervalValid)), onClick = onSend)
+                val error = when {
+                    !official && (!intervalValid || (items.size > 1 && !mediaIntervalValid)) -> "请填写有效的发送间隔"
+                    validationError != null -> validationError
+                    draft.targetIds.isEmpty() -> "请选择群发对象"
+                    else -> null
                 }
+                PrimaryFormAction("开始群发", error, onSend)
             }
         }
     }
@@ -469,6 +475,26 @@ private fun selectedMessagesChannelLabel(channel: Int): String {
 @Composable
 internal fun InlineSettingSwitch(context: Context, id: String) {
     when (id) {
+        "block_typing_report" -> SwitchRow(remember { HchatStorage.preferences(context, TypingReportBlockSettings.PREFS_NAME) }, TypingReportBlockSettings.KEY_ENABLE, "拦截正在输入上报", "输入文字时不向对方显示正在输入状态", TypingReportBlockSettings.DEFAULT_ENABLE)
+        "disable_pat" -> SwitchRow(remember { HchatStorage.preferences(context, PatBlockSettings.PREFS_NAME) }, PatBlockSettings.KEY_ENABLE, "禁止拍一拍", "双击聊天头像时不发送拍一拍", PatBlockSettings.DEFAULT_ENABLE)
+        "auto_original_image" -> SwitchRow(remember { HchatStorage.preferences(context, AutoOriginalImageSettings.PREFS_NAME) }, AutoOriginalImageSettings.KEY_ENABLE, "自动勾选原图", "进入聊天图片发送界面时自动选择原图", AutoOriginalImageSettings.DEFAULT_ENABLE)
+        "auto_view_original" -> SwitchRow(remember { HchatStorage.preferences(context, AutoViewOriginalSettings.PREFS_NAME) }, AutoViewOriginalSettings.KEY_ENABLE, "自动查看原图", "打开聊天图片或视频时自动查看原图或原视频", AutoViewOriginalSettings.DEFAULT_ENABLE)
+        "quote_delete_clear" -> SwitchRow(remember { HchatStorage.preferences(context, QuoteDeleteClearSettings.PREFS_NAME) }, QuoteDeleteClearSettings.KEY_ENABLE, "删除键清引用", "输入框为空且已引用消息时，按输入法删除键直接取消引用", QuoteDeleteClearSettings.DEFAULT_ENABLE)
+        "emoji_save" -> SwitchRow(remember { HchatStorage.preferences(context, EmojiSaveSettings.PREFS_NAME) }, EmojiSaveSettings.KEY_ENABLE, "保存表情", "长按聊天表情后显示保存入口", EmojiSaveSettings.DEFAULT_ENABLE)
+        "multi_recall" -> SwitchRow(remember { HchatStorage.preferences(context, MultiRecallSettings.PREFS_NAME) }, MultiRecallSettings.KEY_ENABLE, "多选撤回", "在多选消息的分享菜单中显示批量撤回", MultiRecallSettings.DEFAULT_ENABLE)
+        "original_moments_upload" -> SwitchRow(remember { HchatStorage.preferences(context, OriginalMomentsUploadSettings.PREFS_NAME) }, OriginalMomentsUploadSettings.KEY_ENABLE, "原图上传", "发布朋友圈图片和视频时尽量跳过微信压缩", OriginalMomentsUploadSettings.DEFAULT_ENABLE)
+        "remove_moments_ads" -> SwitchRow(remember { HchatStorage.preferences(context, RemoveMomentsAdsSettings.PREFS_NAME) }, RemoveMomentsAdsSettings.KEY_ENABLE, "去除朋友圈广告", "阻止朋友圈广告信息解析和展示", RemoveMomentsAdsSettings.DEFAULT_ENABLE)
+        "wechat_tablet" -> SwitchRow(remember { HchatStorage.preferences(context, WeChatTabletSettings.PREFS_NAME) }, WeChatTabletSettings.KEY_ENABLE, "平板模式", "启动时安装设备识别 Hook；开启后需重启微信并重新登录", WeChatTabletSettings.DEFAULT_ENABLE)
+        "disable_hot_update" -> SwitchRow(remember { HchatStorage.preferences(context, DisableHotUpdateSettings.PREFS_NAME) }, DisableHotUpdateSettings.KEY_ENABLE, "屏蔽热更新", "阻止微信加载和应用热更新补丁，重启微信后生效", DisableHotUpdateSettings.DEFAULT_ENABLE)
+        "fake_mini_program_base_lib" -> SwitchRow(remember { HchatStorage.preferences(context, FakeMiniProgramBaseLibSettings.PREFS_NAME) }, FakeMiniProgramBaseLibSettings.KEY_ENABLE, "兼容低版本小程序", "主进程即时生效；小程序进程需重启微信后生效", FakeMiniProgramBaseLibSettings.DEFAULT_ENABLE)
+        "skip_mini_program_video_ads" -> SwitchRow(remember { HchatStorage.preferences(context, SkipMiniProgramVideoAdsSettings.PREFS_NAME) }, SkipMiniProgramVideoAdsSettings.KEY_ENABLE, "跳过小程序视频广告", "修改后重启微信，使小程序进程重新加载设置", SkipMiniProgramVideoAdsSettings.DEFAULT_ENABLE)
+        "skip_global_mini_program_splash_ads" -> SwitchRow(remember { HchatStorage.preferences(context, SkipGlobalMiniProgramSplashAdsSettings.PREFS_NAME) }, SkipGlobalMiniProgramSplashAdsSettings.KEY_ENABLE, "跳过全局小程序开屏广告", "阻止所有小程序展示启动开屏广告，修改后需重启微信", SkipGlobalMiniProgramSplashAdsSettings.DEFAULT_ENABLE)
+        "finder_media_download" -> SwitchRow(remember { HchatStorage.preferences(context, FinderMediaDownloadSettings.PREFS_NAME) }, FinderMediaDownloadSettings.KEY_ENABLE, "视频号媒体下载", "在视频号分享菜单增加复制链接和下载入口，媒体保存到 Hchat/Finder", FinderMediaDownloadSettings.DEFAULT_ENABLE)
+        "profile_id" -> SwitchRow(remember { HchatStorage.preferences(context, ProfileIdSettings.PREFS_NAME) }, ProfileIdSettings.KEY_ENABLE, "显示好友/群聊ID", "在好友和群聊资料页显示可点击复制的 ID", ProfileIdSettings.DEFAULT_ENABLE)
+        "emoji_collection_limit" -> SwitchRow(remember { ConfigStore(context).getFeaturePrefs(EmojiCollectionLimitFeature.ID) }, EmojiCollectionLimitFeature.KEY_ENABLED, "扩展表情收藏上限", "将本机收藏上限提高到 5000。仅支持微信 8.0.80（3220），云同步仍受微信限制。", EmojiCollectionLimitFeature.DEFAULT_ENABLED)
+        "hchat_group_member_history" -> SwitchRow(remember { HchatStorage.preferences(context, HchatExtraSettings.PREFS_NAME) }, HchatExtraSettings.KEY_GROUP_MEMBER_HISTORY, "历史发言记录", "在群成员资料页添加历史发言记录入口", HchatExtraSettings.DEFAULT_GROUP_MEMBER_HISTORY)
+        "hchat_red_packet_details" -> SwitchRow(remember { HchatStorage.preferences(context, HchatExtraSettings.PREFS_NAME) }, HchatExtraSettings.KEY_RED_PACKET_DETAILS, "红包显示详情", "红包详情页显示金额、个数和领取时间", HchatExtraSettings.DEFAULT_RED_PACKET_DETAILS)
+        "hchat_skip_web_risk" -> SwitchRow(remember { HchatStorage.preferences(context, HchatExtraSettings.PREFS_NAME) }, HchatExtraSettings.KEY_SKIP_WEB_RISK, "跳过网页风险", "跳过微信 WebView 高风险网页拦截提示", HchatExtraSettings.DEFAULT_SKIP_WEB_RISK)
         "forward.menu" -> {
             val sp = remember { HchatStorage.preferences(context, MessageForwardSettings.PREFS_NAME) }
             SwitchRow(
@@ -562,52 +588,6 @@ internal fun InlineSettingSwitch(context: Context, id: String) {
     }
 }
 
-@Composable
-internal fun MessageForwardMiuixPage(
-    context: Context,
-    provider: FeatureSettingsProvider,
-    onBack: () -> Unit
-) {
-    val listState = rememberLazyListState()
-    val scrollBehavior = MiuixScrollBehavior()
-    PageScaffold(
-        title = provider.title(),
-        largeTitle = provider.title(),
-        scrollBehavior = scrollBehavior,
-        onBack = onBack,
-        showBackIcon = false
-    ) { padding ->
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
-            state = listState,
-            contentPadding = PaddingValues(
-                top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 16.dp
-            )
-        ) {
-            item { SmallTitle(text = "聊天消息") }
-            item {
-                SettingsCard {
-                    InlineSettingSwitch(context, "forward.menu")
-                    InsetDivider()
-                    InlineSettingSwitch(context, "forward.multi")
-                }
-            }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "收藏") }
-            item {
-                SettingsCard {
-                    InlineSettingSwitch(context, "forward.favorite")
-                }
-            }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "朋友圈") }
-            item {
-                SettingsCard {
-                    InlineSettingSwitch(context, "forward.moments")
-                }
-            }
-        }
-    }
-}
 
 @Composable
 internal fun CallMediaLimitMiuixPage(
@@ -634,7 +614,7 @@ internal fun CallMediaLimitMiuixPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "音视频通话") }
+            item { SettingsSectionTitle(text = "音视频通话") }
             item {
                 SettingsCard {
                     SwitchRow(
@@ -675,7 +655,7 @@ internal fun CallRingtoneBlockMiuixPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "通话铃声") }
+            item { SettingsSectionTitle(text = "通话铃声") }
             item {
                 SettingsCard {
                     SwitchRow(
@@ -724,7 +704,7 @@ internal fun StatusTextLimitMiuixPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "个人状态") }
+            item { SettingsSectionTitle(text = "个人状态") }
             item {
                 SettingsCard {
                     SwitchRow(
@@ -765,7 +745,7 @@ internal fun EditMessageMiuixPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "聊天记录") }
+            item { SettingsSectionTitle(text = "聊天记录") }
             item {
                 SettingsCard {
                     SwitchRow(
@@ -781,182 +761,10 @@ internal fun EditMessageMiuixPage(
     }
 }
 
-@Composable
-internal fun QuickContactEditMiuixPage(
-    context: Context,
-    provider: FeatureSettingsProvider,
-    onBack: () -> Unit
-) {
-    val listState = rememberLazyListState()
-    val scrollBehavior = MiuixScrollBehavior()
 
-    PageScaffold(
-        title = provider.title(),
-        largeTitle = provider.title(),
-        scrollBehavior = scrollBehavior,
-        onBack = onBack,
-        showBackIcon = false
-    ) { padding ->
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
-            state = listState,
-            contentPadding = PaddingValues(
-                top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 16.dp
-            )
-        ) {
-            item { SmallTitle(text = "会话列表") }
-            item {
-                SettingsCard {
-                    InlineSettingSwitch(context, "quick_contact_edit")
-                }
-            }
-        }
-    }
-}
 
-@Composable
-internal fun QuickGroupChatLabelMiuixPage(
-    context: Context,
-    provider: FeatureSettingsProvider,
-    onBack: () -> Unit
-) {
-    val listState = rememberLazyListState()
-    val scrollBehavior = MiuixScrollBehavior()
 
-    PageScaffold(
-        title = provider.title(),
-        largeTitle = provider.title(),
-        scrollBehavior = scrollBehavior,
-        onBack = onBack,
-        showBackIcon = false
-    ) { padding ->
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
-            state = listState,
-            contentPadding = PaddingValues(
-                top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 16.dp
-            )
-        ) {
-            item { SmallTitle(text = "会话列表") }
-            item {
-                SettingsCard {
-                    InlineSettingSwitch(context, "quick_group_chat_label")
-                }
-            }
-        }
-    }
-}
 
-@Composable
-internal fun QuickMomentsMiuixPage(
-    context: Context,
-    provider: FeatureSettingsProvider,
-    onBack: () -> Unit
-) {
-    val listState = rememberLazyListState()
-    val scrollBehavior = MiuixScrollBehavior()
-
-    PageScaffold(
-        title = provider.title(),
-        largeTitle = provider.title(),
-        scrollBehavior = scrollBehavior,
-        onBack = onBack,
-        showBackIcon = false
-    ) { padding ->
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
-            state = listState,
-            contentPadding = PaddingValues(
-                top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 16.dp
-            )
-        ) {
-            item { SmallTitle(text = "会话列表") }
-            item {
-                SettingsCard {
-                    InlineSettingSwitch(context, "quick_moments")
-                }
-            }
-        }
-    }
-}
-
-@Composable
-internal fun QuickTerminateMiuixPage(
-    context: Context,
-    provider: FeatureSettingsProvider,
-    onBack: () -> Unit
-) {
-    val listState = rememberLazyListState()
-    val scrollBehavior = MiuixScrollBehavior()
-
-    PageScaffold(
-        title = provider.title(),
-        largeTitle = provider.title(),
-        scrollBehavior = scrollBehavior,
-        onBack = onBack,
-        showBackIcon = false
-    ) { padding ->
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
-            state = listState,
-            contentPadding = PaddingValues(
-                top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 16.dp
-            )
-        ) {
-            item { SmallTitle(text = "加号菜单") }
-            item {
-                SettingsCard {
-                    InlineSettingSwitch(context, "quick_terminate")
-                }
-            }
-        }
-    }
-}
-
-@Composable
-internal fun TypingReportBlockMiuixPage(
-    context: Context,
-    provider: FeatureSettingsProvider,
-    onBack: () -> Unit
-) {
-    val sp = remember { HchatStorage.preferences(context, TypingReportBlockSettings.PREFS_NAME) }
-    val listState = rememberLazyListState()
-    val scrollBehavior = MiuixScrollBehavior()
-
-    PageScaffold(
-        title = provider.title(),
-        largeTitle = provider.title(),
-        scrollBehavior = scrollBehavior,
-        onBack = onBack,
-        showBackIcon = false
-    ) { padding ->
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
-            state = listState,
-            contentPadding = PaddingValues(
-                top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 16.dp
-            )
-        ) {
-            item { SmallTitle(text = "输入状态") }
-            item {
-                SettingsCard {
-                    SwitchRow(
-                        sp,
-                        TypingReportBlockSettings.KEY_ENABLE,
-                        "拦截正在输入上报",
-                        "输入文字时不向对方显示正在输入状态",
-                        TypingReportBlockSettings.DEFAULT_ENABLE
-                    )
-                }
-            }
-        }
-    }
-}
 
 @Composable
 internal fun MessageAffixMiuixPage(
@@ -997,7 +805,7 @@ internal fun MessageAffixMiuixPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "聊天消息") }
+            item { SettingsSectionTitle(text = "聊天消息") }
             item {
                 SettingsCard {
                     SwitchRow(
@@ -1039,7 +847,7 @@ internal fun MessageAffixMiuixPage(
                 }
             }
 
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
+            item { SettingsSectionTitle(text = "操作") }
             item {
                 SettingsCard {
                     ContentActionRow("重置") {
@@ -1115,7 +923,7 @@ internal fun InputHintMiuixPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "聊天输入框") }
+            item { SettingsSectionTitle(text = "聊天输入框") }
             item {
                 SettingsCard {
                     SwitchRow(
@@ -1167,7 +975,7 @@ internal fun InputHintMiuixPage(
                 }
             }
 
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
+            item { SettingsSectionTitle(text = "操作") }
             item {
                 SettingsCard {
                     ContentActionRow("重置") {
@@ -1182,204 +990,6 @@ internal fun InputHintMiuixPage(
                             .putString(InputHintSettings.KEY_TEMPLATE, template)
                             .apply()
                     }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-internal fun PatBlockMiuixPage(
-    context: Context,
-    provider: FeatureSettingsProvider,
-    onBack: () -> Unit
-) {
-    val sp = remember { HchatStorage.preferences(context, PatBlockSettings.PREFS_NAME) }
-    val listState = rememberLazyListState()
-    val scrollBehavior = MiuixScrollBehavior()
-
-    PageScaffold(
-        title = provider.title(),
-        largeTitle = provider.title(),
-        scrollBehavior = scrollBehavior,
-        onBack = onBack,
-        showBackIcon = false
-    ) { padding ->
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
-            state = listState,
-            contentPadding = PaddingValues(
-                top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 16.dp
-            )
-        ) {
-            item { SmallTitle(text = "聊天头像") }
-            item {
-                SettingsCard {
-                    SwitchRow(
-                        sp,
-                        PatBlockSettings.KEY_ENABLE,
-                        "禁止拍一拍",
-                        "双击聊天头像时不发送拍一拍",
-                        PatBlockSettings.DEFAULT_ENABLE
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-internal fun AutoOriginalImageMiuixPage(
-    context: Context,
-    provider: FeatureSettingsProvider,
-    onBack: () -> Unit
-) {
-    val sp = remember { HchatStorage.preferences(context, AutoOriginalImageSettings.PREFS_NAME) }
-    val listState = rememberLazyListState()
-    val scrollBehavior = MiuixScrollBehavior()
-
-    PageScaffold(
-        title = provider.title(),
-        largeTitle = provider.title(),
-        scrollBehavior = scrollBehavior,
-        onBack = onBack,
-        showBackIcon = false
-    ) { padding ->
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
-            state = listState,
-            contentPadding = PaddingValues(
-                top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 16.dp
-            )
-        ) {
-            item { SmallTitle(text = "聊天图片") }
-            item {
-                SettingsCard {
-                    SwitchRow(
-                        sp,
-                        AutoOriginalImageSettings.KEY_ENABLE,
-                        "自动勾选原图",
-                        "进入聊天图片发送界面时自动选择原图",
-                        AutoOriginalImageSettings.DEFAULT_ENABLE
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-internal fun AutoViewOriginalMiuixPage(
-    context: Context,
-    provider: FeatureSettingsProvider,
-    onBack: () -> Unit
-) {
-    val sp = remember { HchatStorage.preferences(context, AutoViewOriginalSettings.PREFS_NAME) }
-    val listState = rememberLazyListState()
-    val scrollBehavior = MiuixScrollBehavior()
-
-    PageScaffold(
-        title = provider.title(),
-        largeTitle = provider.title(),
-        scrollBehavior = scrollBehavior,
-        onBack = onBack,
-        showBackIcon = false
-    ) { padding ->
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
-            state = listState,
-            contentPadding = PaddingValues(
-                top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 16.dp
-            )
-        ) {
-            item { SmallTitle(text = "聊天媒体") }
-            item {
-                SettingsCard {
-                    SwitchRow(
-                        sp,
-                        AutoViewOriginalSettings.KEY_ENABLE,
-                        "自动查看原图",
-                        "打开聊天图片或视频时自动查看原图或原视频",
-                        AutoViewOriginalSettings.DEFAULT_ENABLE
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-internal fun RemoveForwardLimitMiuixPage(
-    context: Context,
-    provider: FeatureSettingsProvider,
-    onBack: () -> Unit
-) {
-    val listState = rememberLazyListState()
-    val scrollBehavior = MiuixScrollBehavior()
-
-    PageScaffold(
-        title = provider.title(),
-        largeTitle = provider.title(),
-        scrollBehavior = scrollBehavior,
-        onBack = onBack,
-        showBackIcon = false
-    ) { padding ->
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
-            state = listState,
-            contentPadding = PaddingValues(
-                top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 16.dp
-            )
-        ) {
-            item { SmallTitle(text = "消息转发") }
-            item {
-                SettingsCard {
-                    InlineSettingSwitch(context, "remove_forward_limit")
-                }
-            }
-        }
-    }
-}
-
-@Composable
-internal fun DisableHotUpdateMiuixPage(
-    context: Context,
-    provider: FeatureSettingsProvider,
-    onBack: () -> Unit
-) {
-    val sp = remember { HchatStorage.preferences(context, DisableHotUpdateSettings.PREFS_NAME) }
-    val listState = rememberLazyListState()
-    val scrollBehavior = MiuixScrollBehavior()
-
-    PageScaffold(
-        title = provider.title(),
-        largeTitle = provider.title(),
-        scrollBehavior = scrollBehavior,
-        onBack = onBack,
-        showBackIcon = false
-    ) { padding ->
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
-            state = listState,
-            contentPadding = PaddingValues(
-                top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 16.dp
-            )
-        ) {
-            item { SmallTitle(text = "热更新") }
-            item {
-                SettingsCard {
-                    SwitchRow(
-                        sp,
-                        DisableHotUpdateSettings.KEY_ENABLE,
-                        "屏蔽热更新",
-                        "阻止微信加载和应用热更新补丁，重启微信后生效",
-                        DisableHotUpdateSettings.DEFAULT_ENABLE
-                    )
                 }
             }
         }

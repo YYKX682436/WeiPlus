@@ -62,6 +62,18 @@ internal object SettingsLayout {
         "quick_moments", "quick_terminate", "quick_group_chat_label", "quick_contact_edit" -> "quick"
         else -> null
     }
+
+    fun inlineGroupFor(providerId: String): String? = when (providerId) {
+        "block_typing_report", "disable_pat", "auto_original_image", "auto_view_original",
+        "quote_delete_clear", "emoji_save", "multi_recall" -> "chat"
+        "original_moments_upload", "remove_moments_ads" -> "moments"
+        "hchat_red_packet_details" -> "payments"
+        "hchat_group_member_history" -> "groups"
+        "wechat_tablet", "disable_hot_update", "fake_mini_program_base_lib", "skip_mini_program_video_ads",
+        "skip_global_mini_program_splash_ads", "finder_media_download", "hchat_skip_web_risk",
+        "emoji_collection_limit", "profile_id" -> "other"
+        else -> null
+    }
 }
 
 internal enum class AutoReplyInitialScene(val route: String) {

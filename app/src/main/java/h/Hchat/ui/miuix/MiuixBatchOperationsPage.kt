@@ -18,6 +18,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import h.Hchat.hooks.api.core.WeChatApis
@@ -34,7 +35,6 @@ import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
-import top.yukonga.miuix.kmp.basic.SmallTitle
 
 internal enum class BatchScope(val label: String) {
     CURRENT("当前聊天"),
@@ -59,6 +59,14 @@ private fun BatchOperation?.destructiveActionLabel(): String? = when (this) {
 }
 
 internal fun batchOperationsFeatureCount(): Int = BatchOperation.entries.size
+
+internal val batchOperationSections = listOf(
+    "聊天" to listOf(BatchOperation.HIDE, BatchOperation.DO_NOT_DISTURB, BatchOperation.PIN, BatchOperation.DELETE_CHATS),
+    "好友" to listOf(BatchOperation.FRIEND_LABEL, BatchOperation.STAR_FRIEND, BatchOperation.FRIEND_PERMISSION, BatchOperation.DELETE_FRIENDS),
+    "群聊" to listOf(BatchOperation.GROUP_SAVE_TO_CONTACTS, BatchOperation.GROUP_NICKNAME, BatchOperation.GROUP_LEAVE, BatchOperation.DELETE_INVALID_GROUPS),
+    "公众号" to listOf(BatchOperation.UNFOLLOW_OFFICIAL_ACCOUNTS),
+    "朋友圈" to listOf(BatchOperation.DELETE_OWN_MOMENTS, BatchOperation.LIKE_FRIEND_MOMENTS)
+)
 
 @Composable
 internal fun BatchOperationsPage(onBack: () -> Unit) {
@@ -358,52 +366,22 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
         largeTitle = "批量操作",
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = true
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(
                 top = padding.calculateTopPadding() + 8.dp,
                 bottom = padding.calculateBottomPadding() + 16.dp
-            ),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            )
         ) {
-            item { SmallTitle(text = "功能") }
-            item {
-                SettingsCard {
-                    BatchOperation.entries.forEachIndexed { index, operation ->
-                        ActionRow(operation.pickerTitle, operationSummary(operation)) {
-                            feature = operation
-                            enabled = true
-                            deleteFriendClearHistory = false
-                            scope = BatchScope.CURRENT
-                            friendPermissionSelection = BatchFriendPermissionSelection()
-                            groupNickname = ""
-                            if (operation == BatchOperation.FRIEND_LABEL && labelsLoaded) {
-                                selectedLabelId = labelChoices.firstOrNull()?.labelId.orEmpty()
-                            }
-                            phase = if (operation == BatchOperation.DELETE_OWN_MOMENTS) {
-                                BatchPage.MOMENTS_PICKER
-                            } else {
-                                BatchPage.PICKER
-                            }
-                        }
-                        if (index < BatchOperation.entries.lastIndex) InsetDivider()
-                    }
-                }
-            }
             when (taskSnapshot.status) {
                 BatchTaskStatus.RUNNING, BatchTaskStatus.STOPPING -> item {
                     SettingsCard {
-                        ActionRow(
-                            title = "停止后续任务",
-                            summary = if (taskSnapshot.status == BatchTaskStatus.STOPPING) {
-                                "已请求停止；已提交操作会完成"
-                            } else {
-                                "已提交操作会完成，之后停止"
-                            }
-                        ) {
+                        InfoRow("进行中", taskSnapshot.operation?.title ?: "批量任务")
+                        InsetDivider()
+                        ContentActionRow(if (taskSnapshot.status == BatchTaskStatus.STOPPING) "已请求停止" else "停止后续任务") {
                             if (!manager.stopLaterTasks()) {
                                 Toast.makeText(context, "没有可停止的后续任务", Toast.LENGTH_SHORT).show()
                             }
@@ -411,6 +389,26 @@ internal fun BatchOperationsPage(onBack: () -> Unit) {
                     }
                 }
                 else -> Unit
+            }
+            batchOperationSections.forEach { (title, operations) ->
+                item { SettingsSectionTitle(text = title) }
+                item {
+                    SettingsCard {
+                        operations.forEachIndexed { index, operation ->
+                            if (index > 0) InsetDivider()
+                            ActionRow(operation.pickerTitle, operationSummary(operation)) {
+                                feature = operation
+                                enabled = true
+                                deleteFriendClearHistory = false
+                                scope = BatchScope.CURRENT
+                                friendPermissionSelection = BatchFriendPermissionSelection()
+                                groupNickname = ""
+                                if (operation == BatchOperation.FRIEND_LABEL && labelsLoaded) selectedLabelId = labelChoices.firstOrNull()?.labelId.orEmpty()
+                                phase = if (operation == BatchOperation.DELETE_OWN_MOMENTS) BatchPage.MOMENTS_PICKER else BatchPage.PICKER
+                            }
+                        }
+                    }
+                }
             }
         }
     }

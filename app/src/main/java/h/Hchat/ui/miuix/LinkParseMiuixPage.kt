@@ -18,7 +18,6 @@ import h.Hchat.hooks.items.linkparse.LinkParseSettings
 import h.Hchat.preferences.HchatStorage
 import h.Hchat.ui.FeatureSettingsProvider
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
-import top.yukonga.miuix.kmp.basic.SmallTitle
 
 private sealed class LinkParseRoute {
     data object Main : LinkParseRoute()
@@ -93,7 +92,7 @@ private fun LinkParseMainPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "链接解析") }
+            item { SettingsSectionTitle(text = "链接解析") }
             item {
                 SettingsCard {
                     SwitchRow(

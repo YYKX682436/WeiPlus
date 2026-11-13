@@ -28,7 +28,6 @@ import h.Hchat.hooks.items.voiceforward.VoiceForwardSettings
 import h.Hchat.preferences.HchatStorage
 import h.Hchat.ui.FeatureSettingsProvider
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
-import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
@@ -58,7 +57,7 @@ internal fun VoiceForwardMiuixPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "聊天语音") }
+            item { SettingsSectionTitle(text = "聊天语音") }
             item {
                 SettingsCard {
                     SwitchRow(
@@ -94,7 +93,7 @@ internal fun VoiceForwardMiuixPage(
                     )
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "收藏语音") }
+            item { SettingsSectionTitle(text = "收藏语音") }
             item {
                 SettingsCard {
                     SwitchRow(

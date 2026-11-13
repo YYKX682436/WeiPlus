@@ -57,11 +57,11 @@ class RemovedFeaturesUpgradeTest {
     @Test fun deletingLegacyStepsNeverCreatesAnUnrequestedTextReply() {
         val removed = AutoReplyStep(id = "legacy", mode = 11, content = "")
         val text = AutoReplyStep(id = "keep", mode = AutoReplySettings.REPLY_TEXT, content = "keep")
-        assertEquals(listOf(text), autoReplyStepsAfterDelete(listOf(removed, text), 0))
-        val empty = autoReplyStepsAfterDelete(listOf(removed), 0)
-        assertTrue(empty.isEmpty())
-        assertTrue(autoReplyStepsAfterDelete(listOf(text), 0, removedLegacyStep = true).isEmpty())
-        assertEquals(AutoReplySettings.REPLY_TEXT, autoReplyStepsAfterDelete(listOf(text), 0).single().mode)
+        val session = AutoReplySequenceSession(listOf(removed, text), true)
+        assertTrue(session.remove(removed.id))
+        assertEquals(listOf(text), session.stepsForDraft())
+        assertTrue(session.remove(text.id))
+        assertTrue(session.stepsForDraft().isEmpty())
     }
 
     @Test fun intentionallyEmptyLegacyRepliesPersistWithoutChangingNormalDefaults() {

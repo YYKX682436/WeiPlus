@@ -31,7 +31,6 @@ import h.Hchat.ui.FeatureSettingsProvider
 import java.util.concurrent.atomic.AtomicBoolean
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
 import top.yukonga.miuix.kmp.basic.Slider
-import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
@@ -192,7 +191,7 @@ internal fun CustomBottomBarMiuixPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "底部导航") }
+            item { SettingsSectionTitle(text = "底部导航") }
             item {
                 SettingsCard {
                     SwitchRow(
@@ -259,7 +258,7 @@ internal fun CustomBottomBarMiuixPage(
                 }
             }
 
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
+            item { SettingsSectionTitle(text = "操作") }
             item {
                 SettingsCard {
                     ContentActionRow("重置", onClick = ::resetDraft)
@@ -343,7 +342,7 @@ internal fun FloatingBottomBarMiuixPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "悬浮样式") }
+            item { SettingsSectionTitle(text = "悬浮样式") }
             item {
                 SettingsCard {
                     SwitchRow(

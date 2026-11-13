@@ -16,6 +16,8 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyListState
@@ -46,6 +48,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -164,7 +167,6 @@ import h.Hchat.preferences.HchatStorage
 import h.Hchat.ui.FeatureSettingsProvider
 import org.json.JSONArray
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
-import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.nav.core.NavKey
 import top.yukonga.miuix.kmp.nav.core.NavDisplay
@@ -202,7 +204,7 @@ internal fun MainSettingsPage(
         scrollBehavior = scrollBehavior,
         topBarActions = {
             Box(
-                modifier = Modifier.size(40.dp).responsiveTap(onClick = { showMore = true }),
+                modifier = Modifier.size(48.dp).responsiveTap(onClick = { showMore = true }),
                 contentAlignment = Alignment.Center
             ) {
                 Image(
@@ -226,7 +228,7 @@ internal fun MainSettingsPage(
                 item(key = "search") { SettingsSearchEntry(onClick = onOpenSearch) }
                 featureGroupMenu(title = "功能", groups = groups, onOpenGroup = onOpenGroup)
                 if (groups.isEmpty()) {
-                    item { SmallTitle(text = "功能") }
+                    item { SettingsSectionTitle(text = "功能") }
                     item { FeatureListCard(emptyList(), "暂无功能", onOpenProvider) }
                 }
             }
@@ -253,12 +255,12 @@ internal fun MainSettingsPage(
                         .focusRequester(dialogFocus)
                         .focusable()
                 ) {
-                    ActionRow("导出配置", "", onClick = {
+                    SecondaryActionRow("导出配置", "", onClick = {
                         dismissMore()
                         activity?.let(ConfigImportExportBridge::launchExport)
                     })
                     InsetDivider()
-                    ActionRow("导入配置", "", onClick = {
+                    SecondaryActionRow("导入配置", "", onClick = {
                         dismissMore()
                         activity?.let { ConfigImportExportBridge.launchImport(it, onConfigImported) }
                     })
@@ -296,7 +298,7 @@ private fun SettingsSearchEntry(onClick: () -> Unit) {
         query = "",
         placeholder = "搜索功能",
         readOnly = true,
-        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+        modifier = Modifier.padding(vertical = 6.dp),
         onClick = onClick,
         onQueryChange = {}
     )
@@ -345,7 +347,7 @@ internal fun SettingsSearchPage(
                     )
                 }
             } else {
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "功能(${featureResults.size})") }
+                item { SettingsSectionTitle(text = "功能(${featureResults.size})") }
                 item {
                     FeatureSearchResultCard(
                         results = featureResults,
@@ -479,10 +481,10 @@ private fun SearchHistorySection(
         EmptyText("暂无搜索记录")
         return
     }
-    SmallTitle(text = "搜索记录")
+    SettingsSectionTitle(text = "搜索记录")
     Column(
         modifier = Modifier.fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 6.dp),
+            .padding(horizontal = 16.dp, vertical = 6.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         history.chunked(3).forEach { row ->
@@ -520,7 +522,7 @@ private fun FeatureSearchResultCard(
     results: List<FeatureSearchResult>,
     onOpenResult: (FeatureSearchResult) -> Unit
 ) {
-    SettingsCard {
+    SettingsCard(modifier = Modifier.padding(horizontal = 16.dp)) {
         if (results.isEmpty()) {
             EmptyText("没有匹配功能")
         } else {
@@ -570,7 +572,7 @@ private fun LazyListScope.featureGroupMenu(
     onOpenGroup: (FeatureGroupEntry) -> Unit
 ) {
     if (groups.isEmpty()) return
-    item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = title) }
+    item { SettingsSectionTitle(text = title) }
     item {
         SettingsCard {
             groups.forEachIndexed { index, group ->
@@ -603,6 +605,13 @@ internal fun FeatureGroupSettingsPage(
         CompositeSettingsPage(context, group, listState, onBack, onOpenProvider, focusId)
         return
     }
+    val inline = group.providers.filter { SettingsLayout.inlineGroupFor(it.featureId()) == group.id }
+    val other = group.providers.filterNot { SettingsLayout.inlineGroupFor(it.featureId()) == group.id }
+    LaunchedEffect(group.id, focusId) {
+        if (focusId != null && inline.any { it.featureId() == focusId }) {
+            listState.scrollToItem(if (group.hasFriendScenes) 2 else 1)
+        }
+    }
     val scrollBehavior = MiuixScrollBehavior()
     PageScaffold(
         title = group.title,
@@ -619,7 +628,7 @@ internal fun FeatureGroupSettingsPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "功能") }
+            item { SettingsSectionTitle(text = "功能") }
             if (group.hasFriendScenes) {
                 item(key = "friend-scenes") {
                     SettingsCard {
@@ -629,8 +638,19 @@ internal fun FeatureGroupSettingsPage(
                     }
                 }
             }
-            if (group.providers.isNotEmpty()) {
-                item(key = "providers") { FeatureListCard(group.providers, "暂无功能", onOpenProvider) }
+            if (inline.isNotEmpty()) {
+                item(key = "inline-settings") {
+                    SettingsCard(modifier = Modifier.padding(top = if (group.hasFriendScenes) 12.dp else 0.dp)) {
+                        inline.forEachIndexed { index, provider ->
+                            if (index > 0) InsetDivider()
+                            FocusedInlineSetting(context, provider.featureId(), focusId)
+                        }
+                    }
+                }
+            }
+            if (other.isNotEmpty()) {
+                if (inline.isNotEmpty()) item { SettingsSectionTitle(text = "更多设置") }
+                item(key = "providers") { FeatureListCard(other, "暂无功能", onOpenProvider) }
             }
         }
     }
@@ -655,9 +675,10 @@ private fun CompositeSettingsPage(
                 .filter { it in byId }
         }
     }
+    val switches = rows.filter { it.startsWith("forward.") || SettingsLayout.compositeGroupFor(it) != null }
+    val details = rows.filterNot { it in switches }
     LaunchedEffect(group.id, focusId, rows) {
-        val index = rows.indexOf(focusId)
-        if (index >= 0) listState.scrollToItem(index + 1)
+        if (focusId in switches) listState.scrollToItem(1)
     }
     val scrollBehavior = MiuixScrollBehavior()
     PageScaffold(
@@ -675,16 +696,32 @@ private fun CompositeSettingsPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item(key = "heading") { SmallTitle(text = "功能") }
-            items(rows, key = { it }) { id ->
-                if (id.startsWith("forward.") || SettingsLayout.compositeGroupFor(id) != null) {
-                    SettingsCard { InlineSettingSwitch(context, id) }
-                } else {
-                    byId[id]?.let { FeatureListCard(listOf(it), "", onOpenProvider) }
+            item(key = "heading") { SettingsSectionTitle(text = "功能") }
+            if (switches.isNotEmpty()) item(key = "switches") {
+                SettingsCard {
+                    switches.forEachIndexed { index, id ->
+                        if (index > 0) InsetDivider()
+                        FocusedInlineSetting(context, id, focusId)
+                    }
                 }
+            }
+            items(details, key = { it }) { id ->
+                Box(Modifier.padding(top = 12.dp)) { byId[id]?.let { FeatureListCard(listOf(it), "", onOpenProvider) } }
             }
         }
     }
+}
+
+@Composable
+private fun FocusedInlineSetting(context: Context, id: String, focusId: String?) {
+    val requester = remember(id) { BringIntoViewRequester() }
+    LaunchedEffect(id, focusId) {
+        if (id == focusId) { withFrameNanos { }; requester.bringIntoView() }
+    }
+    Box(
+        Modifier.fillMaxWidth().bringIntoViewRequester(requester)
+            .background(if (id == focusId) MiuixTheme.colorScheme.primary.copy(alpha = 0.10f) else androidx.compose.ui.graphics.Color.Transparent)
+    ) { InlineSettingSwitch(context, id) }
 }
 
 internal data class FeatureGroupEntry(
@@ -730,7 +767,7 @@ internal fun resolveFeatureTarget(
 ): DetailPage {
     if (scene != null && provider.featureId() == AutoReplyFeature.ID) return DetailPage.Feature(provider, scene)
     if (provider.featureId() == SettingsFeature.ID) return DetailPage.More
-    val groupId = SettingsLayout.compositeGroupFor(provider.featureId())
+    val groupId = SettingsLayout.inlineGroupFor(provider.featureId()) ?: SettingsLayout.compositeGroupFor(provider.featureId())
     if (groupId != null) {
         val group = featureGroups(providers).firstOrNull { it.id == groupId }
         if (group != null) {
@@ -1188,6 +1225,7 @@ internal sealed class AutoReplyEditorRoute {
     data class OptionPicker(val request: OptionPickerRequest) : AutoReplyEditorRoute()
     data class ContactPicker(val request: ContactPickerRequest) : AutoReplyEditorRoute()
     data class GroupMemberPicker(val request: GroupMemberPickerRequest) : AutoReplyEditorRoute()
+    data class FavoritePicker(val request: FavoritePickerRequest) : AutoReplyEditorRoute()
 }
 
 internal sealed class AutoReplyStepsRoute {
@@ -1309,11 +1347,11 @@ internal fun KeywordNotificationRoute.depth(): Int = when (this) {
 
 internal fun autoReplyRouteDepth(route: String): Int = when (route) {
     "main" -> 0
-    "rules",
     "autoAccept",
     "greetAccepted",
-    "ai" -> 1
-    "ruleEditor",
+    "ai",
+    "ruleEditor" -> 1
+    "rules" -> 0
     "steps",
     "autoAcceptLabels",
     "greetAcceptedLabels" -> 2
@@ -1324,7 +1362,8 @@ internal fun AutoReplyEditorRoute.depth(): Int = when (this) {
     AutoReplyEditorRoute.Main -> 0
     is AutoReplyEditorRoute.OptionPicker,
     is AutoReplyEditorRoute.ContactPicker,
-    is AutoReplyEditorRoute.GroupMemberPicker -> 1
+    is AutoReplyEditorRoute.GroupMemberPicker,
+    is AutoReplyEditorRoute.FavoritePicker -> 1
 }
 
 internal fun AutoReplyStepsRoute.depth(): Int = when (this) {
@@ -1455,7 +1494,7 @@ private fun GiftMiuixPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "自动领取") }
+            item { SettingsSectionTitle(text = "自动领取") }
             item {
                 SettingsCard {
                     SwitchRow(
@@ -1474,7 +1513,7 @@ private fun GiftMiuixPage(
                     )
                 }
             }
-            item { SmallTitle(text = "领取设置") }
+            item { SettingsSectionTitle(text = "领取设置") }
             item {
                 SettingsCard {
                     InputRow(
@@ -1490,7 +1529,7 @@ private fun GiftMiuixPage(
                     )
                 }
             }
-            item { SmallTitle(text = "领取统计") }
+            item { SettingsSectionTitle(text = "领取统计") }
             item {
                 SettingsCard {
                     InfoRow("成功", successCount.toString())
@@ -1518,6 +1557,18 @@ internal fun FeatureSettingsPage(
     onOpenProvider: (FeatureSettingsProvider) -> Unit,
     initialScene: AutoReplyInitialScene = AutoReplyInitialScene.MAIN
 ) {
+    val inlineGroup = SettingsLayout.inlineGroupFor(provider.featureId()) ?: SettingsLayout.compositeGroupFor(provider.featureId())
+    if (inlineGroup != null) {
+        val group = featureGroups(providers).firstOrNull { it.id == inlineGroup }
+        if (group != null) {
+            FeatureGroupSettingsPage(
+                context, group, rememberLazyListState(), onBack, onOpenProvider,
+                onOpenFriendScene = {},
+                focusId = if (provider.featureId() == MessageForwardFeature.ID) "forward.menu" else provider.featureId()
+            )
+            return
+        }
+    }
     when (provider.featureId()) {
         AutoRedPacketFeature.ID -> RedPacketMiuixPage(context, provider, onBack)
         AutoGiftFeature.ID -> GiftMiuixPage(context, provider, onBack)
@@ -1527,52 +1578,15 @@ internal fun FeatureSettingsPage(
         GroupNicknameColorSettings.FEATURE_ID -> GroupNicknameColorMiuixPage(context, provider, onBack)
         MemberTitleFeature.ID -> MemberTitleMiuixPage(context, provider, onBack)
         AntiRecallFeature.ID -> AntiRecallMiuixPage(context, provider, onBack)
-        MultiRecallFeature.ID -> MultiRecallMiuixPage(context, provider, onBack)
-        MessageForwardFeature.ID -> MessageForwardMiuixPage(context, provider, onBack)
         SelectedMessagesFeature.ID -> SelectedMessagesMiuixPage(context, provider, onBack)
         CallMediaLimitFeature.ID -> CallMediaLimitMiuixPage(context, provider, onBack)
         CallRingtoneBlockFeature.ID -> CallRingtoneBlockMiuixPage(context, provider, onBack)
-        DisableHotUpdateFeature.ID -> DisableHotUpdateMiuixPage(context, provider, onBack)
-        ProfileIdFeature.ID -> ProfileIdMiuixPage(context, provider, onBack)
-        QuickContactEditFeature.ID -> QuickContactEditMiuixPage(context, provider, onBack)
-        QuickGroupChatLabelFeature.ID -> QuickGroupChatLabelMiuixPage(context, provider, onBack)
-        QuickMomentsFeature.ID -> QuickMomentsMiuixPage(context, provider, onBack)
-        QuickTerminateFeature.ID -> QuickTerminateMiuixPage(context, provider, onBack)
         HideChatMenuFeature.ID -> HideChatMenuMiuixPage(context, provider, onBack)
         MessageAffixFeature.ID -> MessageAffixMiuixPage(context, provider, onBack)
-        TypingReportBlockFeature.ID -> TypingReportBlockMiuixPage(context, provider, onBack)
-        PatBlockFeature.ID -> PatBlockMiuixPage(context, provider, onBack)
-        AutoOriginalImageFeature.ID -> AutoOriginalImageMiuixPage(context, provider, onBack)
-        AutoViewOriginalFeature.ID -> AutoViewOriginalMiuixPage(context, provider, onBack)
-        RemoveForwardLimitFeature.ID -> RemoveForwardLimitMiuixPage(context, provider, onBack)
         SettingsFeature.ID -> SettingsEntryMiuixPage(context, provider, onBack)
         MessageDetailsSettingsProvider.FEATURE_ID -> MessageDetailsConfigPage(
             context = context,
             sp = HchatStorage.preferences(context, HchatExtraSettings.PREFS_NAME),
-            onBack = onBack
-        )
-        GroupMemberHistorySettingsProvider.FEATURE_ID -> HchatExtraToggleMiuixPage(
-            context = context,
-            provider = provider,
-            key = HchatExtraSettings.KEY_GROUP_MEMBER_HISTORY,
-            defaultValue = HchatExtraSettings.DEFAULT_GROUP_MEMBER_HISTORY,
-            summary = "在群成员资料页添加历史发言记录入口",
-            onBack = onBack
-        )
-        RedPacketDetailsSettingsProvider.FEATURE_ID -> HchatExtraToggleMiuixPage(
-            context = context,
-            provider = provider,
-            key = HchatExtraSettings.KEY_RED_PACKET_DETAILS,
-            defaultValue = HchatExtraSettings.DEFAULT_RED_PACKET_DETAILS,
-            summary = "红包详情页显示金额、个数和领取时间",
-            onBack = onBack
-        )
-        SkipWebRiskSettingsProvider.FEATURE_ID -> HchatExtraToggleMiuixPage(
-            context = context,
-            provider = provider,
-            key = HchatExtraSettings.KEY_SKIP_WEB_RISK,
-            defaultValue = HchatExtraSettings.DEFAULT_SKIP_WEB_RISK,
-            summary = "跳过微信 WebView 高风险网页拦截提示",
             onBack = onBack
         )
         QuickMarkReadFeature.ID -> QuickMarkReadMiuixPage(context, provider, onBack)
@@ -1594,14 +1608,8 @@ internal fun FeatureSettingsPage(
         LinkParseFeature.ID -> LinkParseMiuixPage(context, provider, onBack)
         SportStepFeature.ID -> SportStepMiuixPage(context, provider, onBack)
         BackgroundRunAssistFeature.ID -> BackgroundRunAssistMiuixPage(context, provider, onBack)
-        QuoteDeleteClearFeature.ID -> QuoteDeleteClearMiuixPage(context, provider, onBack)
-        EmojiSaveFeature.ID -> EmojiSaveMiuixPage(context, provider, onBack)
-        EmojiCollectionLimitFeature.ID -> EmojiCollectionLimitMiuixPage(context, provider, onBack)
         SwipeQuoteFeature.ID -> SwipeQuoteMiuixPage(context, provider, onBack)
         FakeVoiceDurationFeature.ID -> FakeVoiceDurationMiuixPage(context, provider, onBack)
-        FakeMiniProgramBaseLibFeature.ID -> FakeMiniProgramBaseLibMiuixPage(context, provider, onBack)
-        SkipMiniProgramVideoAdsFeature.ID -> SkipMiniProgramVideoAdsMiuixPage(context, provider, onBack)
-        SkipGlobalMiniProgramSplashAdsFeature.ID -> SkipGlobalMiniProgramSplashAdsMiuixPage(context, provider, onBack)
         FakeLocationFeature.ID -> FakeLocationMiuixPage(context, provider, onBack)
         GameEmojiFeature.ID -> GameEmojiMiuixPage(context, provider, onBack)
         MessageBubbleFeature.ID -> MessageBubbleMiuixPage(context, provider, onBack)
@@ -1626,20 +1634,16 @@ internal fun FeatureSettingsPage(
         MomentsKeywordBlockFeature.ID -> MomentsKeywordBlockMiuixPage(context, provider, onBack)
         MomentsBottomDetailFeature.ID -> MomentsBottomDetailMiuixPage(context, provider, onBack)
         MomentsPostNotificationFeature.ID -> MomentsPostNotificationMiuixPage(context, provider, onBack)
-        OriginalMomentsUploadFeature.ID -> OriginalMomentsUploadMiuixPage(context, provider, onBack)
         MomentsUploadTailFeature.ID -> MomentsUploadTailMiuixPage(context, provider, onBack)
         SnsAntiRecallFeature.ID -> SnsAntiRecallMiuixPage(context, provider, onBack)
         MomentsFakeLikeSettingsProvider.ID,
         MomentsFakeCommentSettingsProvider.ID,
         MomentsFakeForwardSettingsProvider.ID -> MomentsFakeInteractionMiuixPage(context, provider, onBack)
-        RemoveMomentsAdsFeature.ID -> RemoveMomentsAdsMiuixPage(context, provider, onBack)
         EditMessageFeature.ID -> EditMessageMiuixPage(context, provider, onBack)
         VoiceForwardFeature.ID -> VoiceForwardMiuixPage(context, provider, onBack)
         ScheduledTaskFeature.ID -> ScheduledTaskMiuixPage(context, provider, onBack)
         FakeScanCameraFeature.ID -> FakeScanCameraMiuixPage(context, provider, onBack)
-        FinderMediaDownloadFeature.ID -> FinderMediaDownloadMiuixPage(context, provider, onBack)
         StatusTextLimitFeature.ID -> StatusTextLimitMiuixPage(context, provider, onBack)
-        WeChatTabletFeature.ID -> WeChatTabletMiuixPage(context, provider, onBack)
         else -> UnsupportedFeaturePage(provider, onBack)
     }
 }

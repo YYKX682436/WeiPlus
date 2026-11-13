@@ -9,6 +9,7 @@ import android.widget.TimePicker
 import android.widget.Toast
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.layout.Arrangement
@@ -19,12 +20,16 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import h.Hchat.hooks.items.fakescancamera.FakeScanCameraSettings
@@ -37,7 +42,6 @@ import h.Hchat.hooks.items.selectedmessages.SelectedMessagesRuntimeCoordinator
 import h.Hchat.preferences.HchatStorage
 import h.Hchat.ui.FeatureSettingsProvider
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
-import top.yukonga.miuix.kmp.basic.SmallTitle
 import kotlinx.coroutines.launch
 import java.io.File
 import java.text.SimpleDateFormat
@@ -64,11 +68,14 @@ internal fun ScheduledTaskMiuixPage(
     }
     var tasks by remember { mutableStateOf(settings.tasks()) }
     var draft by remember { mutableStateOf(ScheduledTaskSettings.newDraft()) }
+    var contentSession by remember { mutableStateOf(ScheduledContentSession(emptyList(), false)) }
     var editingTaskId by remember { mutableStateOf<String?>(null) }
     var lastSavedDraft by remember { mutableStateOf<ScheduledTaskItem?>(null) }
     var draftError by remember { mutableStateOf<String?>(null) }
+    var showDiscardPending by remember { mutableStateOf(false) }
     val mainListState = rememberLazyListState()
     val editorListState = rememberLazyListState()
+    val editorScope = rememberCoroutineScope()
 
     fun reloadTasks() {
         tasks = settings.tasks()
@@ -79,40 +86,8 @@ internal fun ScheduledTaskMiuixPage(
         val now = System.currentTimeMillis()
         val oldDraft = lastSavedDraft
         val scheduleChanged = scheduledTaskScheduleChanged(oldDraft, draft)
-        val momentsError = ScheduledTaskSettings.momentsValidationError(target)
-        val normalizedItems = ScheduledTaskSettings.normalizedItems(target)
-        val channelError = if (
-            target.targetType == ScheduledTaskSettings.TARGET_CHAT &&
-            target.sendChannel == ScheduledTaskSettings.SEND_CHANNEL_OFFICIAL
-        ) {
-            if (normalizedItems.all { it.type == ScheduledTaskSettings.TYPE_SELECTED_MESSAGE }) {
-                val snapshots = normalizedItems.mapNotNull { SelectedMessageSnapshot.decode(it.value) }
-                if (snapshots.size != normalizedItems.size) {
-                    "定时转发消息快照无效"
-                } else {
-                    SelectedMessagesRuntimeCoordinator.snapshotValidationError(
-                        target.sendChannel,
-                        snapshots
-                    )
-                }
-            } else {
-                SelectedMessagesRuntimeCoordinator.validationError(target.sendChannel, normalizedItems)
-            }
-        } else {
-            null
-        }
         val planTimes = ScheduledTaskSettings.normalizedPlanTimes(target)
-        val error = when {
-            target.targetType == ScheduledTaskSettings.TARGET_CHAT && target.targetIds.isEmpty() -> "请选择发送对象"
-            scheduledTaskHasIncompleteContent(draft) -> "请填写或移除未完成的发送内容；保留上次有效配置"
-            momentsError != null -> momentsError
-            normalizedItems.isEmpty() -> "请配置发送内容"
-            channelError != null -> channelError
-            planTimes.isEmpty() -> "请添加计划时间"
-            target.repeatType == ScheduledTaskSettings.REPEAT_WEEKLY && target.repeatDays.isEmpty() -> "请选择每周重复日期"
-            scheduleChanged && target.repeatType == ScheduledTaskSettings.REPEAT_NONE && planTimes.any { it <= now } -> "计划时间需要晚于当前时间"
-            else -> null
-        }
+        val error = scheduledTaskValidationError(draft, oldDraft, now)
         if (error != null) {
             draftError = error
             if (showError) Toast.makeText(context, error, Toast.LENGTH_SHORT).show()
@@ -177,6 +152,26 @@ internal fun ScheduledTaskMiuixPage(
         }
     }
 
+    fun updateContent(key: String, item: ScheduledTaskContentItem) {
+        if (!contentSession.update(key, item)) return
+        if (contentSession.find(key)?.pending == false) updateDraft(contentSession.applyTo(draft))
+    }
+
+    fun commitContent(key: String) {
+        val entry = contentSession.find(key) ?: return
+        if (entry.item.value.isBlank()) {
+            Toast.makeText(context, "请先填写或选择内容", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val previous = draft
+        draft = contentSession.applyTo(draft, includePendingKey = key)
+        if (saveDraft(closeAfterSave = false, showError = true)) {
+            contentSession.markCommitted(key)
+        } else {
+            draft = previous
+        }
+    }
+
     SettingsRouteTransition(
         targetState = route,
         label = "ScheduledTaskRoute",
@@ -196,15 +191,19 @@ internal fun ScheduledTaskMiuixPage(
                         ScheduledTaskRuntimeCoordinator.reload()
                     },
                     onAdd = {
+                        editorScope.launch { editorListState.scrollToItem(0) }
                         editingTaskId = null
                         draft = ScheduledTaskSettings.newDraft()
+                        contentSession = ScheduledContentSession(emptyList(), false)
                         lastSavedDraft = null
                         draftError = null
                         route = ScheduledTaskRoute.Editor
                     },
                     onEdit = { task ->
+                        editorScope.launch { editorListState.scrollToItem(0) }
                         editingTaskId = task.id
                         draft = task
+                        contentSession = ScheduledContentSession(scheduledTaskEditableItems(task), true)
                         lastSavedDraft = task
                         draftError = null
                         route = ScheduledTaskRoute.Editor
@@ -215,19 +214,63 @@ internal fun ScheduledTaskMiuixPage(
                 ScheduledTaskEditorPage(
                     context = context,
                     task = draft,
+                    contentSession = contentSession,
                     isEditing = editingTaskId != null,
                     listState = editorListState,
-                    onBack = { route = ScheduledTaskRoute.Main },
-                    onTaskChange = ::updateDraft,
+                    onBack = {
+                        if (contentSession.entries.any { it.pending }) showDiscardPending = true
+                        else route = ScheduledTaskRoute.Main
+                    },
+                    onTaskChange = { next ->
+                        if (next.targetType != draft.targetType && next.targetType == ScheduledTaskSettings.TARGET_CHAT) {
+                            contentSession = ScheduledContentSession(scheduledTaskEditableItems(next), editingTaskId != null)
+                        }
+                        updateDraft(next)
+                    },
+                    onAddContent = { type ->
+                        contentSession.add(type)
+                        if (editingTaskId == null) updateDraft(contentSession.applyTo(draft))
+                    },
+                    onContentChange = ::updateContent,
+                    onCommitContent = ::commitContent,
+                    onMoveContent = { key, offset ->
+                        if (contentSession.move(key, offset)) {
+                            if (editingTaskId == null) {
+                                updateDraft(contentSession.applyTo(draft))
+                            } else {
+                                val previous = draft
+                                draft = contentSession.applyTo(draft)
+                                if (!saveDraft(closeAfterSave = false, showError = true)) {
+                                    contentSession.move(key, -offset)
+                                    draft = previous
+                                }
+                            }
+                        }
+                    },
+                    onRemoveContent = { key ->
+                        val entry = contentSession.find(key)
+                        if (entry != null && !entry.pending && editingTaskId != null && contentSession.entries.count { !it.pending } <= 1) {
+                            Toast.makeText(context, "已有任务需要保留至少一条内容；可删除整个任务", Toast.LENGTH_LONG).show()
+                        } else if (entry != null && !entry.pending && editingTaskId != null) {
+                            val previous = draft
+                            draft = contentSession.applyTo(draft, excludeKey = key)
+                            if (saveDraft(closeAfterSave = false, showError = true)) contentSession.remove(key) else draft = previous
+                        } else if (contentSession.remove(key) && entry?.pending == false) {
+                            updateDraft(contentSession.applyTo(draft))
+                        }
+                    },
                     validationError = draftError,
                     onPickTargets = { route = ScheduledTaskRoute.ContactPicker },
-                    onPickFiles = { itemIndex, itemType ->
+                    onPickFiles = { itemKey, itemType ->
                         val activity = context as? Activity
                         if (activity == null) {
                             Toast.makeText(context, "当前页面无法打开文件选择器", Toast.LENGTH_SHORT).show()
                         } else {
                             ScheduledTaskFilePickerBridge.launch(activity, itemType) { paths ->
-                                updateDraft(updateScheduledTaskMediaItem(draft, itemIndex, itemType, paths))
+                                val wasPending = contentSession.find(itemKey)?.pending
+                                if (contentSession.setFiles(itemKey, itemType, paths) && wasPending == false) {
+                                    updateDraft(contentSession.applyTo(draft))
+                                }
                             }
                         }
                     },
@@ -246,15 +289,17 @@ internal fun ScheduledTaskMiuixPage(
                             }
                         }
                     },
-                    onPickFavorite = { itemIndex ->
-                        scheduledTaskEditableItems(draft).getOrNull(itemIndex)?.let { item ->
+                    onPickFavorite = { itemKey ->
+                        contentSession.find(itemKey)?.item?.let { item ->
                             route = ScheduledTaskRoute.FavoritePicker(
-                                itemIndex,
+                                0,
                                 FavoritePickerRequest(
                                     title = scheduledTaskPickerTitle(item.type),
                                     existingValue = item.value,
                                     onValue = { value ->
-                                        updateDraft(updateScheduledTaskContentItemValue(draft, itemIndex, value))
+                                        contentSession.find(itemKey)?.takeIf { it.item.type == item.type }?.let { current ->
+                                            updateContent(itemKey, current.item.copy(value = value))
+                                        }
                                     },
                                     multiSelect = false,
                                     delimiter = "|"
@@ -315,12 +360,47 @@ internal fun ScheduledTaskMiuixPage(
             }
         }
     }
+    BatchDeleteConfirmDialog(
+        show = showDiscardPending,
+        title = "放弃尚未加入的内容？",
+        message = "返回会放弃尚未加入的内容草稿。",
+        labels = emptyList(),
+        confirmText = "放弃并返回",
+        onDismiss = { showDiscardPending = false },
+        onConfirm = { showDiscardPending = false; route = ScheduledTaskRoute.Main }
+    )
 }
 
 internal fun scheduledTaskScheduleChanged(previous: ScheduledTaskItem?, current: ScheduledTaskItem): Boolean =
     previous == null ||
         ScheduledTaskSettings.normalizedPlanTimes(previous) != ScheduledTaskSettings.normalizedPlanTimes(current) ||
         previous.repeatType != current.repeatType || previous.repeatDays != current.repeatDays
+
+internal fun scheduledTaskValidationError(draft: ScheduledTaskItem, previous: ScheduledTaskItem?, now: Long): String? {
+    val target = ScheduledTaskSettings.normalizeForSave(draft)
+    val items = ScheduledTaskSettings.normalizedItems(target)
+    val channelError = if (target.targetType == ScheduledTaskSettings.TARGET_CHAT &&
+        target.sendChannel == ScheduledTaskSettings.SEND_CHANNEL_OFFICIAL
+    ) {
+        if (items.all { it.type == ScheduledTaskSettings.TYPE_SELECTED_MESSAGE }) {
+            val snapshots = items.mapNotNull { SelectedMessageSnapshot.decode(it.value) }
+            if (snapshots.size != items.size) "定时转发消息快照无效"
+            else SelectedMessagesRuntimeCoordinator.snapshotValidationError(target.sendChannel, snapshots)
+        } else SelectedMessagesRuntimeCoordinator.validationError(target.sendChannel, items)
+    } else null
+    val planTimes = ScheduledTaskSettings.normalizedPlanTimes(target)
+    return when {
+        target.targetType == ScheduledTaskSettings.TARGET_CHAT && target.targetIds.isEmpty() -> "请选择发送对象"
+        scheduledTaskHasIncompleteContent(draft) -> "请填写或移除未完成的发送内容；保留上次有效配置"
+        ScheduledTaskSettings.momentsValidationError(target) != null -> ScheduledTaskSettings.momentsValidationError(target)
+        items.isEmpty() -> "请配置发送内容"
+        channelError != null -> channelError
+        planTimes.isEmpty() -> "请添加计划时间"
+        target.repeatType == ScheduledTaskSettings.REPEAT_WEEKLY && target.repeatDays.isEmpty() -> "请选择每周重复日期"
+        scheduledTaskScheduleChanged(previous, draft) && target.repeatType == ScheduledTaskSettings.REPEAT_NONE && planTimes.any { it <= now } -> "计划时间需要晚于当前时间"
+        else -> null
+    }
+}
 
 internal fun scheduledTaskHasIncompleteContent(task: ScheduledTaskItem): Boolean =
     task.targetType == ScheduledTaskSettings.TARGET_CHAT && task.items.any { it.value.isBlank() }
@@ -360,7 +440,7 @@ private fun ScheduledTaskMainPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "发送计划") }
+            item { SettingsSectionTitle(text = "发送计划") }
             item {
                 SettingsCard {
                     SwitchRow(
@@ -370,7 +450,7 @@ private fun ScheduledTaskMainPage(
                     ) { onEnabledChange(it) }
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "任务列表") }
+            item { SettingsSectionTitle(text = "任务列表") }
             item {
                 SettingsCard {
                     tasks.forEach { task ->
@@ -388,15 +468,21 @@ private fun ScheduledTaskMainPage(
 private fun ScheduledTaskEditorPage(
     context: Context,
     task: ScheduledTaskItem,
+    contentSession: ScheduledContentSession,
     isEditing: Boolean,
     listState: LazyListState,
     onBack: () -> Unit,
     onTaskChange: (ScheduledTaskItem) -> Unit,
+    onAddContent: (Int) -> Unit,
+    onContentChange: (String, ScheduledTaskContentItem) -> Unit,
+    onCommitContent: (String) -> Unit,
+    onMoveContent: (String, Int) -> Unit,
+    onRemoveContent: (String) -> Unit,
     validationError: String?,
     onPickTargets: () -> Unit,
-    onPickFiles: (Int, Int) -> Unit,
+    onPickFiles: (String, Int) -> Unit,
     onPickMomentsMedia: (Int) -> Unit,
-    onPickFavorite: (Int) -> Unit,
+    onPickFavorite: (String) -> Unit,
     onSave: () -> Unit,
     onDelete: (() -> Unit)?,
     onExecuteNow: (() -> Unit)?
@@ -406,6 +492,16 @@ private fun ScheduledTaskEditorPage(
     var mediaIntervalText by remember(task.id) { mutableStateOf(task.mediaIntervalSeconds.toString()) }
     val intervalsValid = intervalText.toIntOrNull()?.let { it in 0..3600 } == true &&
         mediaIntervalText.toIntOrNull()?.let { it in 0..3600 } == true
+    val scrollOffset = with(LocalDensity.current) { 120.dp.roundToPx() }
+    LaunchedEffect(contentSession.scrollRequest) {
+        val key = contentSession.scrollRequest ?: return@LaunchedEffect
+        val index = contentSession.entries.indexOfFirst { it.key == key }
+        if (index >= 0 && task.targetType == ScheduledTaskSettings.TARGET_CHAT) {
+            withFrameNanos { }
+            listState.animateScrollToItem((if (validationError == null) 0 else 1) + 3 + index, -scrollOffset)
+        }
+        contentSession.consumeScrollRequest(key)
+    }
     fun addPlanTime() {
         val activity = context as? Activity
         if (activity == null) {
@@ -437,7 +533,7 @@ private fun ScheduledTaskEditorPage(
             if (validationError != null) item {
                 SettingsCard { InfoRow("待完善", validationError) }
             }
-            item { SmallTitle(text = "备注") }
+            item { SettingsSectionTitle(text = "发送对象") }
             item {
                 SettingsCard {
                     InputRow(
@@ -446,11 +542,7 @@ private fun ScheduledTaskEditorPage(
                         value = task.remark,
                         onValueChange = { onTaskChange(task.copy(remark = it)) }
                     )
-                }
-            }
-            item { SmallTitle(text = "任务目标") }
-            item {
-                SettingsCard {
+                    InsetDivider()
                     if (scheduledTaskEditableItems(task).any { it.type == ScheduledTaskSettings.TYPE_SELECTED_MESSAGE }) {
                         InfoRow(label = "发送到", value = "聊天")
                     } else {
@@ -502,15 +594,9 @@ private fun ScheduledTaskEditorPage(
                     }
                 }
             }
-            item {
-                SmallTitle(
-                    modifier = Modifier.padding(top = 10.dp),
-                    text = if (task.targetType == ScheduledTaskSettings.TARGET_MOMENTS) "朋友圈内容" else "发送内容"
-                )
-            }
-            item {
-                SettingsCard {
-                    if (task.targetType == ScheduledTaskSettings.TARGET_MOMENTS) {
+            if (task.targetType == ScheduledTaskSettings.TARGET_MOMENTS) {
+                item { SettingsSectionTitle(text = "朋友圈内容") }
+                item { SettingsCard {
                         PopupChoiceRow(
                             title = "朋友圈类型",
                             summary = scheduledTaskMomentsTypeLabel(task.momentsType),
@@ -545,27 +631,27 @@ private fun ScheduledTaskEditorPage(
                             }
                             if (paths.isNotEmpty()) {
                                 InsetDivider()
-                                ActionRow("清空媒体", "移除已选择的朋友圈媒体") {
+                                SecondaryActionRow("清空媒体", "移除已选择的朋友圈媒体") {
                                     onTaskChange(updateScheduledTaskMomentsMedia(task, mediaType, emptyList()))
                                 }
                             }
                         }
-                    } else {
-                        ScheduledTaskChatContentRows(
-                            task = task,
-                            onTaskChange = onTaskChange,
-                            onPickFiles = onPickFiles,
-                            onPickFavorite = onPickFavorite,
-                            massSendOnly = task.sendChannel == ScheduledTaskSettings.SEND_CHANNEL_OFFICIAL
-                        )
-                        if (scheduledTaskEditableItems(task).none { it.type == ScheduledTaskSettings.TYPE_SELECTED_MESSAGE }) {
-                            InsetDivider()
-                            AddActionRow("新增发送内容") { onTaskChange(appendScheduledTaskContentItem(task)) }
-                        }
-                    }
-                }
+                } }
+            } else {
+                scheduledContentSection(
+                    context = context,
+                    session = contentSession,
+                    massSendOnly = task.sendChannel == ScheduledTaskSettings.SEND_CHANNEL_OFFICIAL,
+                    onAdd = onAddContent,
+                    onChange = onContentChange,
+                    onCommit = onCommitContent,
+                    onMove = onMoveContent,
+                    onRemove = onRemoveContent,
+                    onPickFiles = onPickFiles,
+                    onPickFavorite = onPickFavorite
+                )
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "执行计划") }
+            item { SettingsSectionTitle(text = "执行计划") }
             item {
                 SettingsCard {
                     val planTimes = ScheduledTaskSettings.normalizedPlanTimes(task)
@@ -644,7 +730,7 @@ private fun ScheduledTaskEditorPage(
                 task.targetType == ScheduledTaskSettings.TARGET_CHAT &&
                 task.sendChannel == ScheduledTaskSettings.SEND_CHANNEL_MODULE
             ) {
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "发送节奏") }
+                item { SettingsSectionTitle(text = "发送节奏") }
                 item {
                     SettingsCard {
                         NumberInputRow("聊天间隔", if (intervalText.toIntOrNull()?.let { it in 0..3600 } != true) "请输入 0-3600 秒；保留上次保存的值" else "单位秒，多个聊天之间的等待时间", intervalText) {
@@ -661,19 +747,20 @@ private fun ScheduledTaskEditorPage(
                     }
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
-            item {
-                SettingsCard {
-                    if (!isEditing) {
-                        if (intervalsValid) ActionRow("创建任务", "", onSave)
-                        else InfoRow("创建任务", "请先填写有效的发送间隔")
-                    }
-                    if (onExecuteNow != null) {
-                        if (intervalsValid) ActionRow("立即执行", "", onExecuteNow)
-                        else InfoRow("立即执行", "请先填写有效的发送间隔")
-                    }
+            if (!isEditing) item {
+                val error = when {
+                    !intervalsValid -> "请填写有效的发送间隔"
+                    task.targetType == ScheduledTaskSettings.TARGET_CHAT && task.targetIds.isEmpty() -> "请选择发送对象"
+                    task.targetType == ScheduledTaskSettings.TARGET_CHAT && contentSession.entries.isEmpty() -> "请添加发送内容"
+                    else -> scheduledTaskValidationError(task, previous = null, now = System.currentTimeMillis())
+                }
+                PrimaryFormAction("创建任务", error, onSave)
+            }
+            if (isEditing) item {
+                SettingsCard(modifier = Modifier.padding(top = 24.dp)) {
+                    if (onExecuteNow != null) ContentActionRow("立即执行", enabled = intervalsValid, onClick = onExecuteNow)
                     if (onExecuteNow != null && onDelete != null) InsetDivider()
-                    if (onDelete != null) ActionRow("删除任务", "", onDelete)
+                    if (onDelete != null) ContentActionRow("删除任务", onClick = onDelete)
                 }
             }
         }
@@ -701,92 +788,128 @@ private fun ScheduledTaskWeekdayRow(
 }
 
 @Composable
-internal fun ScheduledTaskChatContentRows(
-    task: ScheduledTaskItem,
-    onTaskChange: (ScheduledTaskItem) -> Unit,
-    onPickFiles: (Int, Int) -> Unit,
-    onPickFavorite: (Int) -> Unit,
-    massSendOnly: Boolean = false
+internal fun ScheduledContentCard(
+    entry: ScheduledContentEntry,
+    index: Int,
+    count: Int,
+    session: ScheduledContentSession,
+    massSendOnly: Boolean,
+    onChange: (String, ScheduledTaskContentItem) -> Unit,
+    onCommit: (String) -> Unit,
+    onMove: (String, Int) -> Unit,
+    onRemove: (String) -> Unit,
+    onPickFiles: (String, Int) -> Unit,
+    onPickFavorite: (String) -> Unit
 ) {
-    val items = scheduledTaskEditableItems(task)
-    items.forEachIndexed { index, item ->
-        if (index > 0) InsetDivider()
+    val item = entry.item
+    val label = if (massSendOnly) selectedMessagesContentTypeLabel(item.type) else scheduledTaskTypeLabel(item.type)
+    val preview = when {
+        item.value.isBlank() -> "未完成"
+        item.type == ScheduledTaskSettings.TYPE_SELECTED_MESSAGE -> SelectedMessageSnapshot.decode(item.value)?.label() ?: "消息不可用"
+        scheduledTaskUsesText(item.type) -> item.value
+        item.type == ScheduledTaskSettings.TYPE_FAVORITE -> favoriteSummary(item.value)
+        else -> scheduledTaskMediaSummary(item.type, listOf(item.value))
+    }
+    SequenceItemCard(
+        title = "第 ${index + 1} 条 · $label",
+        summary = if (entry.pending) "$preview · 尚未加入" else preview,
+        expanded = session.expandedKey == entry.key,
+        modifier = Modifier.padding(top = if (index == 0) 0.dp else 12.dp),
+        onToggle = { session.expandedKey = if (session.expandedKey == entry.key) null else entry.key }
+    ) {
         if (item.type == ScheduledTaskSettings.TYPE_SELECTED_MESSAGE) {
-            InfoRow(
-                label = if (items.size == 1) "发送类型" else "发送类型 ${index + 1}",
-                value = scheduledTaskTypeLabel(item.type)
-            )
-            InsetDivider()
-            InfoRow(
-                label = "消息",
-                value = SelectedMessageSnapshot.decode(item.value)?.label() ?: "不可用"
-            )
+            InfoRow("消息", SelectedMessageSnapshot.decode(item.value)?.label() ?: "不可用")
         } else {
             PopupChoiceRow(
-                title = if (items.size == 1) "发送类型" else "发送类型 ${index + 1}",
-                summary = if (massSendOnly) {
-                    selectedMessagesContentTypeLabel(item.type)
-                } else {
-                    scheduledTaskTypeLabel(item.type)
-                },
+                title = "内容类型",
+                summary = label,
                 options = if (massSendOnly) selectedMessagesContentTypeChoices() else scheduledTaskTypeChoices(),
                 currentValue = item.type.toString(),
                 onValueChanged = { value ->
-                    val type = value.toIntOrNull() ?: if (massSendOnly) {
-                        ScheduledTaskSettings.TYPE_TEXT
-                    } else {
-                        ScheduledTaskSettings.TYPE_TEXT
-                    }
-                    onTaskChange(updateScheduledTaskContentItemType(task, index, type))
+                    val type = value.toIntOrNull() ?: ScheduledTaskSettings.TYPE_TEXT
+                    val keepValue = item.type == type || (
+                        scheduledTaskUsesText(item.type) == scheduledTaskUsesText(type) &&
+                            item.type != ScheduledTaskSettings.TYPE_FAVORITE && type != ScheduledTaskSettings.TYPE_FAVORITE
+                        )
+                    onChange(entry.key, ScheduledTaskContentItem(type, if (keepValue) item.value else ""))
                 }
             )
             InsetDivider()
-        }
-        if (item.type != ScheduledTaskSettings.TYPE_SELECTED_MESSAGE && scheduledTaskUsesText(item.type)) {
-            VariableInputRow(
-                title = if (massSendOnly && item.type == ScheduledTaskSettings.TYPE_XML) {
-                    "视频号内容"
-                } else {
-                    scheduledTaskContentTitle(item.type)
-                },
-                summary = if (item.type == ScheduledTaskSettings.TYPE_XML) {
-                    if (massSendOnly) "输入视频号分享消息 XML" else "输入 <msg><appmsg>...</appmsg></msg>"
-                } else {
-                    "输入要发送的内容"
-                },
-                value = item.value,
-                variables = if (massSendOnly) emptyList() else scheduledTaskTemplateVariables,
-                minLines = if (item.type == ScheduledTaskSettings.TYPE_XML) 4 else 2
-            ) {
-                onTaskChange(updateScheduledTaskContentItemValue(task, index, it))
-            }
-        } else if (item.type != ScheduledTaskSettings.TYPE_SELECTED_MESSAGE &&
-            item.type == ScheduledTaskSettings.TYPE_FAVORITE
-        ) {
-            ActionRow(scheduledTaskPickerTitle(item.type), favoriteSummary(item.value)) {
-                onPickFavorite(index)
-            }
-            if (item.value.isNotBlank()) {
-                InsetDivider()
-                ActionRow("清空收藏", "移除当前收藏") {
-                    onTaskChange(updateScheduledTaskContentItemValue(task, index, ""))
+            when {
+                scheduledTaskUsesText(item.type) -> VariableInputRow(
+                    title = if (massSendOnly && item.type == ScheduledTaskSettings.TYPE_XML) "视频号内容" else scheduledTaskContentTitle(item.type),
+                    summary = if (item.type == ScheduledTaskSettings.TYPE_XML) "输入分享消息 XML" else "输入要发送的内容",
+                    value = item.value,
+                    variables = if (massSendOnly) emptyList() else scheduledTaskTemplateVariables,
+                    minLines = if (item.type == ScheduledTaskSettings.TYPE_XML) 4 else 2,
+                    fieldState = session.textState(entry.key)
+                ) { value ->
+                    session.find(entry.key)?.let { onChange(entry.key, it.item.copy(value = value)) }
                 }
-            }
-        } else if (item.type != ScheduledTaskSettings.TYPE_SELECTED_MESSAGE) {
-            ActionRow("选择文件", scheduledTaskMediaSummary(item.type, listOf(item.value))) {
-                onPickFiles(index, item.type)
-            }
-            if (item.value.isNotBlank()) {
-                InsetDivider()
-                ActionRow("清空文件", "移除当前文件") {
-                    onTaskChange(updateScheduledTaskContentItemValue(task, index, ""))
+                item.type == ScheduledTaskSettings.TYPE_FAVORITE -> {
+                    ActionRow(scheduledTaskPickerTitle(item.type), favoriteSummary(item.value)) { onPickFavorite(entry.key) }
+                    if (item.value.isNotBlank()) {
+                        InsetDivider()
+                        ContentActionRow("清空收藏") { onChange(entry.key, item.copy(value = "")) }
+                    }
+                }
+                else -> {
+                    ActionRow("选择文件", scheduledTaskMediaSummary(item.type, listOf(item.value))) { onPickFiles(entry.key, item.type) }
+                    if (item.value.isNotBlank()) {
+                        InsetDivider()
+                        ContentActionRow("清空文件") { onChange(entry.key, item.copy(value = "")) }
+                    }
                 }
             }
         }
-        if (items.size > 1) {
-            InsetDivider()
-            ActionRow("删除本条", "移除第 ${index + 1} 条内容") {
-                onTaskChange(removeScheduledTaskContentItem(task, index))
+        InsetDivider()
+        if (entry.pending) {
+            ContentActionRow("添加此条") { onCommit(entry.key) }
+            ContentActionRow("放弃新增") { onRemove(entry.key) }
+        } else {
+            SequenceItemActions(
+                canMoveUp = index > 0,
+                canMoveDown = index < count - 1,
+                onMoveUp = { onMove(entry.key, -1) },
+                onMoveDown = { onMove(entry.key, 1) },
+                onDelete = { onRemove(entry.key) }
+            )
+        }
+    }
+}
+
+internal fun LazyListScope.scheduledContentSection(
+    context: Context,
+    session: ScheduledContentSession,
+    massSendOnly: Boolean,
+    onAdd: (Int) -> Unit,
+    onChange: (String, ScheduledTaskContentItem) -> Unit,
+    onCommit: (String) -> Unit,
+    onMove: (String, Int) -> Unit,
+    onRemove: (String) -> Unit,
+    onPickFiles: (String, Int) -> Unit,
+    onPickFavorite: (String) -> Unit
+) {
+    val entries = session.entries
+    val canAdd = entries.none { it.item.type == ScheduledTaskSettings.TYPE_SELECTED_MESSAGE }
+    item(key = "scheduled-content-heading") {
+        var showPicker by remember { mutableStateOf(false) }
+        val add = { showPicker = true }
+        SequenceSectionHeader("发送内容", entries.size, if (entries.isNotEmpty() && canAdd) add else null)
+        if (entries.isEmpty()) SequenceEmptyCard("尚未添加内容", "添加第一条内容", add)
+        val options = if (massSendOnly) selectedMessagesContentTypeChoices() else scheduledTaskTypeChoices()
+        SequenceTypePickerDialog(
+            show = showPicker,
+            title = "选择内容类型",
+            options = options.mapNotNull { choice -> choice.value.toIntOrNull()?.let { it to choice.label } },
+            onDismiss = { showPicker = false },
+            onSelect = onAdd
+        )
+    }
+    if (entries.isNotEmpty()) {
+        entries.forEachIndexed { index, entry ->
+            item(key = "scheduled-content-${entry.key}") {
+                ScheduledContentCard(entry, index, entries.size, session, massSendOnly, onChange, onCommit, onMove, onRemove, onPickFiles, onPickFavorite)
             }
         }
     }
@@ -799,36 +922,16 @@ private fun scheduledTaskUsesText(type: Int): Boolean {
 internal fun scheduledTaskEditableItems(task: ScheduledTaskItem): List<ScheduledTaskContentItem> {
     return task.items.ifEmpty {
         if (scheduledTaskUsesText(task.type)) {
-            val contents = task.contentItems.ifEmpty { listOf(task.content) }
+            val contents = task.contentItems.ifEmpty { listOfNotNull(task.content.takeIf { it.isNotBlank() }) }
             contents.map { ScheduledTaskContentItem(task.type, it) }
         } else {
             task.mediaPaths.map { ScheduledTaskContentItem(task.type, it) }
         }
-    }.ifEmpty {
-        listOf(ScheduledTaskContentItem(ScheduledTaskSettings.TYPE_TEXT, ""))
     }.map {
         val type = it.type.takeIf { value -> ScheduledTaskSettings.scheduledTypeIsValid(value) }
             ?: ScheduledTaskSettings.TYPE_TEXT
         ScheduledTaskContentItem(type, it.value)
     }
-}
-
-private fun updateScheduledTaskContentItemType(
-    task: ScheduledTaskItem,
-    index: Int,
-    type: Int
-): ScheduledTaskItem {
-    val items = scheduledTaskEditableItems(task).toMutableList()
-    if (index !in items.indices) return task
-    val previous = items[index]
-    val keepValue = previous.type == type ||
-        (
-            scheduledTaskUsesText(previous.type) == scheduledTaskUsesText(type) &&
-                previous.type != ScheduledTaskSettings.TYPE_FAVORITE &&
-                type != ScheduledTaskSettings.TYPE_FAVORITE
-            )
-    items[index] = ScheduledTaskContentItem(type, if (keepValue) previous.value else "")
-    return task.copy(items = items)
 }
 
 internal fun updateScheduledTaskContentItemValue(
@@ -839,38 +942,6 @@ internal fun updateScheduledTaskContentItemValue(
     val items = scheduledTaskEditableItems(task).toMutableList()
     if (index !in items.indices) return task
     items[index] = items[index].copy(value = value)
-    return task.copy(items = items)
-}
-
-internal fun updateScheduledTaskMediaItem(
-    task: ScheduledTaskItem,
-    index: Int,
-    type: Int,
-    paths: List<String>
-): ScheduledTaskItem {
-    val nextPaths = paths.map { it.trim() }.filter { it.isNotBlank() }.distinct()
-    if (nextPaths.isEmpty()) return task
-    val items = scheduledTaskEditableItems(task).toMutableList()
-    if (index !in items.indices) return task
-    items[index] = ScheduledTaskContentItem(type, nextPaths.first())
-    nextPaths.drop(1).forEachIndexed { offset, path ->
-        items.add(index + 1 + offset, ScheduledTaskContentItem(type, path))
-    }
-    return task.copy(items = items)
-}
-
-internal fun appendScheduledTaskContentItem(
-    task: ScheduledTaskItem,
-    defaultType: Int = ScheduledTaskSettings.TYPE_TEXT
-): ScheduledTaskItem {
-    val items = scheduledTaskEditableItems(task) + ScheduledTaskContentItem(defaultType, "")
-    return task.copy(items = items)
-}
-
-private fun removeScheduledTaskContentItem(task: ScheduledTaskItem, index: Int): ScheduledTaskItem {
-    val items = scheduledTaskEditableItems(task).toMutableList()
-    if (items.size <= 1 || index !in items.indices) return task
-    items.removeAt(index)
     return task.copy(items = items)
 }
 
@@ -1286,7 +1357,7 @@ internal fun FakeScanCameraMiuixPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "扫码") }
+            item { SettingsSectionTitle(text = "扫码") }
             item {
                 SettingsCard {
                     SwitchRow(

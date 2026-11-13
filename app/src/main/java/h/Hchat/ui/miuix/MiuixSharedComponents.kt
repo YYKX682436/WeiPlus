@@ -61,6 +61,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
@@ -141,7 +142,6 @@ import top.yukonga.miuix.kmp.basic.ScrollBehavior
 import top.yukonga.miuix.kmp.basic.DropdownEntry
 import top.yukonga.miuix.kmp.basic.DropdownItem
 import top.yukonga.miuix.kmp.menu.WindowDropdownMenu
-import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Switch
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
@@ -224,7 +224,7 @@ internal fun PageScaffold(
                         navigationIcon = {
                             onBack?.takeIf { showBackIcon }?.let { back ->
                                 Box(
-                                    modifier = Modifier.size(40.dp).responsiveTap(onClick = back),
+                                    modifier = Modifier.size(48.dp).responsiveTap(onClick = back),
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Image(
@@ -243,16 +243,27 @@ internal fun PageScaffold(
                 bottomBar = {},
                 contentWindowInsets = WindowInsets(0, 0, 0, 0),
                 content = { padding ->
-                    content(
-                        PaddingValues(
-                            top = padding.calculateTopPadding(),
-                            bottom = padding.calculateBottomPadding() + bottomAvoidance
+                    Box(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+                        content(
+                            PaddingValues(
+                                top = padding.calculateTopPadding(),
+                                bottom = padding.calculateBottomPadding() + bottomAvoidance
+                            )
                         )
-                    )
+                    }
                 }
             )
         }
     }
+}
+
+/** A section owns the 16 dp before its heading and 8 dp after it. */
+@Composable
+internal fun SettingsSectionTitle(text: String) {
+    top.yukonga.miuix.kmp.basic.SmallTitle(
+        text = text,
+        insideMargin = PaddingValues(start = 4.dp, top = 16.dp, end = 4.dp, bottom = 8.dp)
+    )
 }
 
 @Composable
@@ -261,7 +272,7 @@ internal fun SettingsCard(
     content: @Composable () -> Unit
 ) {
     Card(
-        modifier = modifier.fillMaxWidth().padding(horizontal = 12.dp),
+        modifier = modifier.fillMaxWidth(),
         cornerRadius = 18.dp
     ) {
         content()
@@ -281,7 +292,7 @@ internal fun SwitchRow(
         modifier = Modifier.fillMaxWidth().clickable {
             checked = !checked
             sp.edit().putBoolean(key, checked).apply()
-        }.padding(horizontal = 16.dp, vertical = 14.dp),
+        }.defaultMinSize(minHeight = 56.dp).padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(modifier = Modifier.weight(1f)) {
@@ -315,12 +326,14 @@ internal fun SwitchRow(
             } else {
                 Modifier
             }
-        ).padding(horizontal = 16.dp, vertical = 14.dp),
+        ).defaultMinSize(minHeight = 56.dp).padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(modifier = Modifier.weight(1f)) {
             Text(text = title, color = MiuixTheme.colorScheme.onSurface, fontWeight = FontWeight.Medium)
-            Text(text = summary, color = MiuixTheme.colorScheme.onSurfaceVariantSummary, fontSize = 12.sp)
+            if (summary.isNotBlank()) {
+                Text(text = summary, color = MiuixTheme.colorScheme.onSurfaceVariantSummary, fontSize = 12.sp)
+            }
         }
         Switch(
             checked = checked,
@@ -401,7 +414,9 @@ internal fun InputRow(
     }
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp)) {
         Text(text = title, color = MiuixTheme.colorScheme.onSurface, fontWeight = FontWeight.Medium)
-        Text(text = summary, color = MiuixTheme.colorScheme.onSurfaceVariantSummary, fontSize = 12.sp)
+        if (summary.isNotBlank()) {
+            Text(text = summary, color = MiuixTheme.colorScheme.onSurfaceVariantSummary, fontSize = 12.sp)
+        }
         BasicTextField(
             value = value,
             onValueChange = { textEdited = true; onValueChange(it) },
@@ -873,11 +888,13 @@ internal fun VariableInputRow(
     variables: List<TemplateVariable>,
     minLines: Int = 1,
     onEditingFinished: ((String) -> Unit)? = null,
+    fieldState: MutableState<TextFieldValue>? = null,
     onValueChange: (String) -> Unit
 ) {
-    var fieldValue by remember {
+    val localFieldState = remember {
         mutableStateOf(TextFieldValue(value, TextRange(value.length)))
     }
+    var fieldValue by (fieldState ?: localFieldState)
     val currentValue by rememberUpdatedState(value)
     val currentFinished by rememberUpdatedState(onEditingFinished)
     var textEdited by remember { mutableStateOf(false) }
@@ -931,14 +948,15 @@ internal fun VariableInputRow(
 }
 
 @Composable
-private fun RedPacketReplyContentEditor(
+internal fun RedPacketReplyContentEditor(
     context: Context,
     replyMode: Int,
     value: String,
     onValueChange: (String) -> Unit,
     onClear: () -> Unit,
     onFavoritePicker: (FavoritePickerRequest) -> Unit,
-    templateVariables: List<TemplateVariable> = redPacketReplyTemplateVariables
+    templateVariables: List<TemplateVariable> = redPacketReplyTemplateVariables,
+    fieldState: MutableState<TextFieldValue>? = null
 ) {
     when {
         redPacketReplyUsesText(replyMode) -> {
@@ -948,6 +966,7 @@ private fun RedPacketReplyContentEditor(
                 value = value,
                 variables = templateVariables,
                 minLines = 2,
+                fieldState = fieldState,
                 onValueChange = onValueChange
             )
         }
@@ -958,6 +977,7 @@ private fun RedPacketReplyContentEditor(
                 value = value,
                 variables = templateVariables,
                 minLines = 4,
+                fieldState = fieldState,
                 onValueChange = onValueChange
             )
         }
@@ -978,7 +998,7 @@ private fun RedPacketReplyContentEditor(
             }
             if (value.isNotBlank()) {
                 InsetDivider()
-                ActionRow("清空已选收藏", "当前会从该回复类型移除已选收藏") {
+                SecondaryActionRow("清空已选收藏", "当前会从该回复类型移除已选收藏") {
                     onClear()
                 }
             }
@@ -1002,393 +1022,11 @@ private fun RedPacketReplyContentEditor(
             }
             if (value.isNotBlank()) {
                 InsetDivider()
-                ActionRow("清空已选文件", "当前会从该回复类型移除已选文件") {
+                SecondaryActionRow("清空已选文件", "当前会从该回复类型移除已选文件") {
                     onClear()
                 }
             }
         }
-    }
-}
-
-@Composable
-internal fun RedPacketReplyStepsPage(
-    context: Context,
-    title: String,
-    initialSteps: List<RedPacketReplyStep>,
-    onBack: () -> Unit,
-    onSave: (List<RedPacketReplyStep>) -> Unit,
-    templateVariables: List<TemplateVariable> = redPacketReplyTemplateVariables
-) {
-    var steps by remember {
-        mutableStateOf(initialSteps.map { normalizeRedPacketReplyStepForUi(it) })
-    }
-    var savedSteps by remember { mutableStateOf(steps) }
-    var newStep by remember { mutableStateOf<RedPacketReplyStep?>(null) }
-    var editingIndex by remember { mutableStateOf<Int?>(null) }
-    var favoritePicker by remember { mutableStateOf<FavoritePickerRequest?>(null) }
-    val listState = rememberLazyListState()
-
-    fun updateStep(index: Int, step: RedPacketReplyStep) {
-        if (index !in steps.indices) return
-        steps = steps.toMutableList().also { it[index] = normalizeRedPacketReplyStepForUi(step) }
-        if (step.content.isNotBlank()) {
-            val normalized = normalizeRedPacketReplyStepForUi(step)
-            savedSteps = if (savedSteps.any { it.id == step.id }) {
-                savedSteps.map { if (it.id == step.id) normalized else it }
-            } else {
-                val order = steps.mapIndexed { position, item -> item.id to position }.toMap()
-                (savedSteps + normalized).sortedBy { order[it.id] ?: Int.MAX_VALUE }
-            }
-            onSave(savedSteps)
-        }
-    }
-    fun clearStep(index: Int, step: RedPacketReplyStep) {
-        if (index !in steps.indices) return
-        steps = steps.toMutableList().also { it[index] = step.copy(content = "") }
-        savedSteps = savedSteps.filterNot { it.id == step.id }
-        onSave(savedSteps)
-    }
-    fun saveOrder() {
-        val order = steps.mapIndexed { index, step -> step.id to index }.toMap()
-        savedSteps = savedSteps.sortedBy { order[it.id] ?: Int.MAX_VALUE }
-        onSave(savedSteps)
-    }
-    fun deleteStep(index: Int) {
-        if (index !in steps.indices) return
-        val removed = steps[index].id
-        steps = steps.toMutableList().also { it.removeAt(index) }
-        savedSteps = savedSteps.filterNot { it.id == removed }
-        onSave(savedSteps)
-    }
-
-    val currentEditingIndex = editingIndex?.takeIf { it in steps.indices || (it == steps.size && newStep != null) }
-    val editingStep = currentEditingIndex?.let { if (it == steps.size) newStep else steps[it] }
-    val route = when {
-        favoritePicker != null -> RedPacketReplyStepsRoute.FavoritePicker(favoritePicker!!)
-        editingStep != null -> RedPacketReplyStepsRoute.StepEditor(editingStep.id)
-        else -> RedPacketReplyStepsRoute.Main
-    }
-
-    SettingsRouteTransition(
-        targetState = route,
-        label = "RedPacketReplyStepsRoute",
-        depthOf = { it.depth() },
-        horizontalOnSameDepth = false
-    ) { currentRoute ->
-        when (currentRoute) {
-            is RedPacketReplyStepsRoute.FavoritePicker -> {
-                FavoritePickerPage(
-                    request = currentRoute.request,
-                    onBack = { favoritePicker = null }
-                )
-            }
-            is RedPacketReplyStepsRoute.StepEditor -> {
-                val isNew = currentEditingIndex == steps.size && newStep?.id == currentRoute.id
-                val index = if (isNew) steps.size else {
-                    currentEditingIndex?.takeIf { it in steps.indices && steps[it].id == currentRoute.id }
-                        ?: steps.indexOfFirst { it.id == currentRoute.id }
-                }
-                val step = if (isNew) newStep ?: return@SettingsRouteTransition else steps.getOrNull(index) ?: return@SettingsRouteTransition
-                RedPacketReplyStepEditorPage(
-                    context = context,
-                    title = "第 ${index + 1} 条回复",
-                    step = step,
-                    isNew = isNew,
-                    canMoveUp = index > 0,
-                    canMoveDown = index < steps.lastIndex,
-                    onBack = { editingIndex = null; newStep = null },
-                    onStepChange = { if (isNew) newStep = it else updateStep(index, it) },
-                    onClear = { if (isNew) newStep = step.copy(content = "") else clearStep(index, step) },
-                    onCreate = {
-                        val pending = newStep
-                        if (pending == null || pending.content.isBlank()) {
-                            Toast.makeText(context, "请先填写或选择回复内容", Toast.LENGTH_SHORT).show()
-                        } else {
-                            steps = steps + pending
-                            savedSteps = savedSteps + normalizeRedPacketReplyStepForUi(pending)
-                            onSave(savedSteps)
-                            newStep = null
-                            editingIndex = null
-                        }
-                    },
-                    templateVariables = templateVariables,
-                    onFavoritePicker = { favoritePicker = it },
-                    onMoveUp = {
-                        if (index > 0) {
-                            steps = steps.toMutableList().also {
-                                val current = it.removeAt(index)
-                                it.add(index - 1, current)
-                            }
-                            editingIndex = index - 1
-                            saveOrder()
-                        }
-                    },
-                    onMoveDown = {
-                        if (index < steps.lastIndex) {
-                            steps = steps.toMutableList().also {
-                                val current = it.removeAt(index)
-                                it.add(index + 1, current)
-                            }
-                            editingIndex = index + 1
-                            saveOrder()
-                        }
-                    },
-                    onDelete = {
-                        deleteStep(index)
-                        editingIndex = null
-                    }
-                )
-            }
-            RedPacketReplyStepsRoute.Main -> RedPacketReplyStepsListPage(
-                title = title,
-                steps = steps,
-                listState = listState,
-                onBack = onBack,
-                onOpenStep = { editingIndex = it },
-                onAddStep = {
-                    val index = steps.size
-                    newStep = newRedPacketReplyStep(index + 1)
-                    editingIndex = index
-                },
-                onMoveUp = { index ->
-                    if (index > 0) {
-                        steps = steps.toMutableList().also {
-                            val current = it.removeAt(index)
-                            it.add(index - 1, current)
-                        }
-                        saveOrder()
-                    }
-                },
-                onMoveDown = { index ->
-                    if (index < steps.lastIndex) {
-                        steps = steps.toMutableList().also {
-                            val current = it.removeAt(index)
-                            it.add(index + 1, current)
-                        }
-                        saveOrder()
-                    }
-                },
-                onDelete = { index ->
-                    deleteStep(index)
-                }
-            )
-        }
-    }
-}
-
-@Composable
-private fun RedPacketReplyStepsListPage(
-    title: String,
-    steps: List<RedPacketReplyStep>,
-    listState: LazyListState,
-    onBack: () -> Unit,
-    onOpenStep: (Int) -> Unit,
-    onAddStep: () -> Unit,
-    onMoveUp: (Int) -> Unit,
-    onMoveDown: (Int) -> Unit,
-    onDelete: (Int) -> Unit
-) {
-    val scrollBehavior = MiuixScrollBehavior()
-    PageScaffold(
-        title = title,
-        largeTitle = title,
-        scrollBehavior = scrollBehavior,
-        onBack = onBack,
-        showBackIcon = false
-    ) { padding ->
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
-            state = listState,
-            contentPadding = PaddingValues(
-                top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 16.dp
-            )
-        ) {
-            item { SmallTitle(text = "按顺序发送") }
-            if (steps.isEmpty()) {
-                item {
-                    SettingsCard {
-                        EmptyText("暂无回复步骤。添加后会按列表顺序依次发送。")
-                        InsetDivider()
-                        AddActionRow("新增回复", onAddStep)
-                    }
-                }
-            } else {
-                steps.forEachIndexed { index, step ->
-                    item { SmallTitle(modifier = Modifier.padding(top = if (index == 0) 0.dp else 10.dp), text = "第 ${index + 1} 条") }
-                    item {
-                        SettingsCard {
-                            SelectRow(
-                                title = redPacketReplyModeLabel(step.mode),
-                                summary = redPacketReplyStepSummary(step),
-                                onClick = { onOpenStep(index) }
-                            )
-                            InsetDivider()
-                            RedPacketReplyStepActions(
-                                canMoveUp = index > 0,
-                                canMoveDown = index < steps.lastIndex,
-                                onMoveUp = { onMoveUp(index) },
-                                onMoveDown = { onMoveDown(index) },
-                                onDelete = { onDelete(index) }
-                            )
-                        }
-                    }
-                }
-                item {
-                    SettingsCard { AddActionRow("新增回复", onAddStep) }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun RedPacketReplyStepEditorPage(
-    context: Context,
-    title: String,
-    step: RedPacketReplyStep,
-    isNew: Boolean,
-    canMoveUp: Boolean,
-    canMoveDown: Boolean,
-    onBack: () -> Unit,
-    onStepChange: (RedPacketReplyStep) -> Unit,
-    onClear: () -> Unit,
-    onCreate: () -> Unit,
-    templateVariables: List<TemplateVariable>,
-    onFavoritePicker: (FavoritePickerRequest) -> Unit,
-    onMoveUp: () -> Unit,
-    onMoveDown: () -> Unit,
-    onDelete: () -> Unit
-) {
-    val scrollBehavior = MiuixScrollBehavior()
-    var delayInput by remember(step.id) { mutableStateOf(step.delayMs.toString()) }
-    PageScaffold(
-        title = title,
-        largeTitle = title,
-        scrollBehavior = scrollBehavior,
-        onBack = onBack,
-        showBackIcon = false
-    ) { padding ->
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
-            contentPadding = PaddingValues(
-                top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 16.dp
-            )
-        ) {
-            item { SmallTitle(text = "回复内容") }
-            item {
-                SettingsCard {
-                    PopupOptionRow(
-                        title = "回复类型",
-                        summary = redPacketReplyModeLabel(step.mode),
-                        options = redPacketReplyStepModeOptions(),
-                        currentValue = step.mode,
-                        onValueChanged = { mode ->
-                            onStepChange(
-                                step.copy(
-                                    mode = mode,
-                                    content = if (mode == step.mode) {
-                                        step.content
-                                    } else {
-                                        defaultRedPacketReplyContent(mode)
-                                    }
-                                )
-                            )
-                        }
-                    )
-                    InsetDivider()
-                    RedPacketReplyContentEditor(
-                        context = context,
-                        replyMode = step.mode,
-                        value = step.content,
-                        onValueChange = { onStepChange(step.copy(content = it)) },
-                        onClear = onClear,
-                        onFavoritePicker = onFavoritePicker,
-                        templateVariables = templateVariables
-                    )
-                    if (step.content.isBlank()) {
-                        InsetDivider()
-                        InfoRow("回复内容", "请填写或选择内容；保留上次有效配置")
-                    }
-                    InsetDivider()
-                    NumberInputRow(
-                        title = "发送前延迟",
-                        summary = if (delayInput.toLongOrNull()?.let { it in 0L..600000L } != true) "请输入 0–600000，保留上次有效配置" else "单位 ms，按步骤顺序等待",
-                        value = delayInput,
-                        onValueChange = { value ->
-                            delayInput = value
-                            value.toLongOrNull()?.takeIf { it in 0L..600000L }?.let { onStepChange(step.copy(delayMs = it)) }
-                        }
-                    )
-                    InsetDivider()
-                    SwitchRow(
-                        checked = step.random,
-                        title = "随机追加延迟",
-                        summary = "在发送前延迟后随机追加 0-2 秒",
-                        onCheckedChange = { onStepChange(step.copy(random = it)) }
-                    )
-                }
-            }
-            if (!isNew) item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
-            if (!isNew)
-            item {
-                SettingsCard {
-                    RedPacketReplyStepActions(
-                        canMoveUp = canMoveUp,
-                        canMoveDown = canMoveDown,
-                        onMoveUp = onMoveUp,
-                        onMoveDown = onMoveDown,
-                        onDelete = onDelete
-                    )
-                }
-            }
-
-            if (isNew) {
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
-                item {
-                    SettingsCard {
-                        ContentActionRow("创建") {
-                            if (delayInput.toLongOrNull()?.let { it in 0L..600000L } == true) onCreate()
-                            else Toast.makeText(context, "请输入有效的发送延迟", Toast.LENGTH_SHORT).show()
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-internal fun RedPacketReplyStepActions(
-    canMoveUp: Boolean,
-    canMoveDown: Boolean,
-    onMoveUp: () -> Unit,
-    onMoveDown: () -> Unit,
-    onDelete: () -> Unit
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        TextButton(
-            text = "上移",
-            onClick = { if (canMoveUp) onMoveUp() },
-            modifier = Modifier.weight(1f),
-            colors = ButtonDefaults.textButtonColorsPrimary()
-        )
-        TextButton(
-            text = "下移",
-            onClick = { if (canMoveDown) onMoveDown() },
-            modifier = Modifier.weight(1f),
-            colors = ButtonDefaults.textButtonColorsPrimary()
-        )
-        TextButton(
-            text = "删除",
-            onClick = onDelete,
-            modifier = Modifier.weight(1f),
-            colors = ButtonDefaults.textButtonColorsPrimary()
-        )
     }
 }
 
@@ -2030,23 +1668,26 @@ internal fun ActionRow(title: String, summary: String, onClick: () -> Unit) {
 }
 
 @Composable
+internal fun SecondaryActionRow(title: String, summary: String, onClick: () -> Unit) {
+    SelectRow(title, summary, null, false, onClick)
+}
+
+@Composable
 internal fun SelectRow(title: String, summary: String, onClick: () -> Unit) {
-    SelectRow(title, summary, null, onClick)
+    SelectRow(title, summary, null, true, onClick)
 }
 
 @Composable
 internal fun AddActionRow(title: String, onClick: () -> Unit) {
-    SelectRow(title, "", NavIcons.Add, onClick)
+    SelectRow(title, "", NavIcons.Add, false, onClick)
 }
 
 @Composable
 internal fun ContentActionRow(text: String, enabled: Boolean = true, onClick: () -> Unit) {
     if (!enabled) {
         InfoRow(text, "当前条件未满足")
-    } else if (text.startsWith("新增") || text.startsWith("添加") || text.startsWith("创建")) {
-        AddActionRow(text, onClick)
     } else {
-        ActionRow(text, "", onClick)
+        SelectRow(text, "", null, false, onClick)
     }
 }
 
@@ -2056,7 +1697,7 @@ internal fun ContentMoreActions(actions: List<Pair<String, () -> Unit>>) {
 }
 
 @Composable
-private fun SelectRow(title: String, summary: String, icon: androidx.compose.ui.graphics.vector.ImageVector?, onClick: () -> Unit) {
+private fun SelectRow(title: String, summary: String, icon: androidx.compose.ui.graphics.vector.ImageVector?, showArrow: Boolean, onClick: () -> Unit) {
     var pressed by remember { mutableStateOf(false) }
     val pressFeedbackColor = rememberPressFeedbackColor(pressed)
     Row(
@@ -2067,6 +1708,7 @@ private fun SelectRow(title: String, summary: String, icon: androidx.compose.ui.
                 onClick = onClick,
                 onPressedChange = { pressed = it }
             )
+            .defaultMinSize(minHeight = 56.dp)
             .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -2085,7 +1727,7 @@ private fun SelectRow(title: String, summary: String, icon: androidx.compose.ui.
                 Text(text = summary, color = MiuixTheme.colorScheme.onSurfaceVariantSummary, fontSize = 12.sp)
             }
         }
-        Text(text = "›", color = MiuixTheme.colorScheme.onSurfaceVariantSummary, fontSize = 22.sp)
+        if (showArrow) Text(text = "›", color = MiuixTheme.colorScheme.onSurfaceVariantSummary, fontSize = 22.sp)
     }
 }
 
@@ -2095,8 +1737,8 @@ internal fun MessageBlockLabelListCard(
     onClick: () -> Unit
 ) {
     Card(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 3.dp),
-        cornerRadius = 14.dp
+        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+        cornerRadius = 18.dp
     ) {
         var pressed by remember { mutableStateOf(false) }
         val pressFeedbackColor = rememberPressFeedbackColor(pressed)
@@ -2149,8 +1791,8 @@ internal fun MessageBlockContactListCard(
         option.id + " · " + row.labelNames.joinToString(" / ")
     }
     Card(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 3.dp),
-        cornerRadius = 14.dp
+        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+        cornerRadius = 18.dp
     ) {
         MessageBlockContactRow(
             option = option,
@@ -2198,8 +1840,8 @@ internal fun ContactListCard(
     onClick: () -> Unit
 ) {
     Card(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 3.dp),
-        cornerRadius = 14.dp
+        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+        cornerRadius = 18.dp
     ) {
         ContactRow(
             option = option,
@@ -2221,8 +1863,8 @@ internal fun FavoriteListCard(
     unavailableSummary: String = ""
 ) {
     Card(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 3.dp),
-        cornerRadius = 8.dp
+        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+        cornerRadius = 18.dp
     ) {
         var pressed by remember { mutableStateOf(false) }
         val pressFeedbackColor = rememberPressFeedbackColor(pressed)
@@ -2513,6 +2155,7 @@ internal fun OptionChoiceRow(
                 onClick = onClick,
                 onPressedChange = { pressed = it }
             )
+            .defaultMinSize(minHeight = 56.dp)
             .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -2581,7 +2224,7 @@ private fun isGestureNavigationMode(context: Context): Boolean {
 
 @Composable
 internal fun StatsCard(sp: SharedPreferences) {
-    SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "红包记录")
+    SettingsSectionTitle(text = "红包记录")
     SettingsCard {
         InfoRow("已抢红包", "${sp.getInt(RedPacketSettings.KEY_STATS_COUNT, 0)} 个")
         InsetDivider()
@@ -2596,9 +2239,9 @@ internal fun StatsCard(sp: SharedPreferences) {
 @Composable
 internal fun InfoRow(label: String, value: String, onClick: (() -> Unit)? = null) {
     val modifier = if (onClick != null) {
-        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 15.dp)
+        Modifier.fillMaxWidth().clickable(onClick = onClick).defaultMinSize(minHeight = 56.dp).padding(horizontal = 16.dp, vertical = 15.dp)
     } else {
-        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 15.dp)
+        Modifier.fillMaxWidth().defaultMinSize(minHeight = 56.dp).padding(horizontal = 16.dp, vertical = 15.dp)
     }
     Row(
         modifier = modifier,
@@ -2607,15 +2250,16 @@ internal fun InfoRow(label: String, value: String, onClick: (() -> Unit)? = null
     ) {
         Text(
             text = label,
+            modifier = Modifier.weight(1f, fill = false),
             color = MiuixTheme.colorScheme.onSurface,
             fontWeight = FontWeight.Medium
         )
-        Row(
+        if (value.isNotBlank() || onClick != null) Row(
             modifier = Modifier.weight(1f),
             horizontalArrangement = Arrangement.End,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(text = value, color = MiuixTheme.colorScheme.onSurfaceVariantSummary, textAlign = TextAlign.End)
+            if (value.isNotBlank()) Text(text = value, color = MiuixTheme.colorScheme.onSurfaceVariantSummary, textAlign = TextAlign.End)
             if (onClick != null) {
                 Box(
                     modifier = Modifier
@@ -2874,7 +2518,6 @@ internal enum class AutoMessageForwardRoute {
     EDITOR,
     CONTACTS,
     MEMBERS,
-    TYPES,
     REPLACEMENTS
 }
 
@@ -3508,7 +3151,7 @@ private fun redPacketReplyModeOptions(): List<OptionItem> {
     )
 }
 
-private fun redPacketReplyStepModeOptions(): List<OptionItem> {
+internal fun redPacketReplyStepModeOptions(): List<OptionItem> {
     return redPacketReplyModeOptions().filter { it.value != RedPacketRuleConfig.REPLY_OFF }
 }
 
@@ -3566,25 +3209,7 @@ internal fun cleanRedPacketReplySteps(steps: List<RedPacketReplyStep>): List<Red
         .filter { it.mode != RedPacketRuleConfig.REPLY_OFF && it.content.isNotBlank() }
 }
 
-private fun newRedPacketReplyStep(index: Int): RedPacketReplyStep {
-    return RedPacketReplyStep(
-        id = System.currentTimeMillis().toString() + "_$index",
-        mode = RedPacketRuleConfig.REPLY_TEXT,
-        content = "谢谢老板",
-        delayMs = 0L,
-        random = false
-    )
-}
-
-private fun defaultRedPacketReplyContent(replyMode: Int): String {
-    return when {
-        redPacketReplyUsesText(replyMode) -> "谢谢老板"
-        replyMode == RedPacketRuleConfig.REPLY_XML -> "<msg><appmsg appid=\"\" sdkver=\"0\"><title>谢谢老板</title></appmsg></msg>"
-        else -> ""
-    }
-}
-
-private fun redPacketReplyModeLabel(replyMode: Int): String {
+internal fun redPacketReplyModeLabel(replyMode: Int): String {
     return when (normalizeRedPacketReplyModeForUi(replyMode)) {
         RedPacketRuleConfig.REPLY_TEXT -> "发送文字"
         RedPacketRuleConfig.REPLY_IMAGE -> "发送图片"
@@ -3605,7 +3230,7 @@ internal fun describeRedPacketReplySteps(steps: List<RedPacketReplyStep>): Strin
     return "${steps.size} 条回复 · $types$suffix · 顺序发送"
 }
 
-private fun redPacketReplyStepSummary(step: RedPacketReplyStep): String {
+internal fun redPacketReplyStepSummary(step: RedPacketReplyStep): String {
     val content = if (redPacketReplyUsesText(step.mode) || step.mode == RedPacketRuleConfig.REPLY_XML) {
         step.content.trim().replace('\n', ' ').ifBlank { "未填写内容" }.take(24)
     } else {

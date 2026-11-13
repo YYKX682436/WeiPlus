@@ -22,7 +22,6 @@ import h.Hchat.hooks.items.sportstep.SportStepFeature
 import h.Hchat.ui.FeatureSettingsProvider
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
-import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 
@@ -56,7 +55,7 @@ internal fun SportStepMiuixPage(context: Context, provider: FeatureSettingsProvi
                 top = padding.calculateTopPadding() + 8.dp,
                 bottom = padding.calculateBottomPadding() + 16.dp
             )) {
-            item { SmallTitle(text = "手动提交") }
+            item { SettingsSectionTitle(text = "手动提交") }
             item {
                 SettingsCard {
                     InputRow("目标步数", "请输入 1 至 2147483647 的整数", input) { input = it }

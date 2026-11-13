@@ -1,16 +1,35 @@
 package h.Hchat.ui.miuix
 
 import h.Hchat.ui.FeatureSettingsProvider
+import h.Hchat.hooks.items.batch.BatchOperation
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SettingsLayoutNavigationTest {
+    @Test
+    fun `batch sections keep every operation exactly once`() {
+        val displayed = batchOperationSections.flatMap { it.second }
+        assertEquals(BatchOperation.entries.toSet(), displayed.toSet())
+        assertEquals(BatchOperation.entries.size, displayed.size)
+    }
     private data class Provider(private val id: String, private val label: String = id) : FeatureSettingsProvider {
         override fun featureId() = id
         override fun title() = label
         override fun subtitle() = ""
+    }
+
+    @Test
+    fun `single switch routes retain provider ids and focus their category`() {
+        val ids = listOf("emoji_save", "quote_delete_clear", "disable_pat", "block_typing_report", "auto_original_image", "original_moments_upload", "remove_moments_ads", "wechat_tablet")
+        val providers = ids.map { Provider(it) }
+        providers.forEach { provider ->
+            val target = resolveFeatureTarget(provider, providers) as DetailPage.FeatureGroup
+            assertEquals(SettingsLayout.inlineGroupFor(provider.featureId()), target.group.id)
+            assertEquals(provider.featureId(), target.focusId)
+            assertEquals(1, filterFeatureSearchResults(provider.featureId(), featureGroups(providers), providers).count { it.provider == provider })
+        }
     }
 
     @Test

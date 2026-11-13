@@ -10,6 +10,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -34,12 +35,15 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.saveable.SaveableStateHolder
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigationevent.NavigationEventInfo
@@ -66,7 +70,6 @@ import h.Hchat.preferences.HchatStorage
 import h.Hchat.ui.FeatureSettingsProvider
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
-import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import kotlinx.coroutines.Dispatchers
@@ -75,6 +78,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.LinkedHashSet
 import java.util.Locale
+import androidx.compose.runtime.MutableState
 
 @Composable
 internal fun CustomNotificationMiuixPage(
@@ -315,11 +319,15 @@ internal fun AutoReplyMiuixPage(
     val sceneStateHolder = rememberSaveableStateHolder()
     var editingRuleId by remember { mutableStateOf<String?>(null) }
     var editingRuleDraft by remember { mutableStateOf<AutoReplyRule?>(null) }
+    var ruleSequence by remember { mutableStateOf(AutoReplySequenceSession(emptyList(), false)) }
     var editingRuleExplicitlyEmpty by remember { mutableStateOf(false) }
-    var editingSteps by remember { mutableStateOf<Triple<String, List<AutoReplyStep>, Boolean>?>(null) }
+    var showDiscardRuleDraft by remember { mutableStateOf(false) }
+    val autoAcceptSequence = remember { AutoReplySequenceSession(settings.autoAcceptSteps(), true) }
+    val greetAcceptedSequence = remember { AutoReplySequenceSession(settings.greetAcceptedSteps(), true) }
     val ruleListState = rememberLazyListState()
     var ruleQuery by remember { mutableStateOf("") }
     val ruleEditorListState = rememberLazyListState()
+    val ruleEditorScope = rememberCoroutineScope()
     val autoAcceptListState = rememberLazyListState()
     val greetAcceptedListState = rememberLazyListState()
     val autoAcceptLabelListState = rememberLazyListState()
@@ -360,62 +368,60 @@ internal fun AutoReplyMiuixPage(
         settings.saveRules(next, explicitlyEmptyRuleId)
     }
 
-    val autoReplyRoute = if (editingSteps != null) "steps" else route
+    fun updateRuleDraft(changed: AutoReplyRule, explicitEmpty: Boolean? = null) {
+        if (explicitEmpty != null) editingRuleExplicitlyEmpty = explicitEmpty
+        editingRuleDraft = changed
+        val previous = rules.firstOrNull { it.id == changed.id } ?: return
+        val validKeyword = (changed.matchType == AutoReplySettings.MATCH_ANY || changed.patTrigger == AutoReplySettings.PAT_ME || changed.keyword.isNotBlank()) &&
+            (changed.matchType != AutoReplySettings.MATCH_REGEX || (changed.keyword.isNotBlank() && runCatching { java.util.regex.Pattern.compile(changed.keyword) }.isSuccess))
+        val validTarget = changed.targetMode != AutoReplySettings.TARGET_SPECIFIC || changed.targetIds.isNotEmpty() || changed.includedGroupMembers.isNotEmpty()
+        val safe = changed.copy(
+            name = changed.name.takeIf { it.isNotBlank() } ?: previous.name,
+            keyword = if (validKeyword) changed.keyword else previous.keyword,
+            matchType = if (validKeyword) changed.matchType else previous.matchType,
+            targetMode = if (validTarget) changed.targetMode else previous.targetMode,
+            targetIds = if (validTarget) changed.targetIds else previous.targetIds,
+            includedGroupMembers = if (validTarget) changed.includedGroupMembers else previous.includedGroupMembers
+        )
+        saveRules(rules.map { if (it.id == changed.id) safe else it }, if (editingRuleExplicitlyEmpty) changed.id else null)
+    }
+
     SettingsRouteTransition(
-        targetState = autoReplyRoute,
+        targetState = route,
         label = "AutoReplyRouteTransition",
         depthOf = { autoReplyRouteDepth(it) }
     ) { currentRoute ->
         RetainFriendDraft(sceneStateHolder, currentRoute) {
         when (currentRoute) {
-            "steps" -> {
-                val request = editingSteps ?: return@RetainFriendDraft
-            AutoReplyStepsPage(
-                title = request.first,
-                initialSteps = request.second,
-                initiallyExplicitEmpty = request.third,
-                onBack = { editingSteps = null },
-                onSave = { steps, explicitEmpty ->
-                    when (route) {
-                        "autoAccept" -> settings.saveAutoAcceptSteps(steps, explicitEmpty)
-                        "greetAccepted" -> settings.saveGreetAcceptedSteps(steps, explicitEmpty)
-                        else -> {
-                            val id = editingRuleId
-                            if (id != null) {
-                                val updated = (editingRuleDraft ?: rules.firstOrNull { it.id == id })
-                                    ?.copy(steps = steps)
-                                if (updated != null) {
-                                    editingRuleDraft = updated
-                                    editingRuleExplicitlyEmpty = explicitEmpty
-                                    if (rules.any { it.id == id }) {
-                                        saveRules(rules.map { if (it.id == id) it.copy(steps = steps) else it }, if (explicitEmpty) id else null)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            )
-            }
-        "rules" -> AutoReplyRuleListPage(
+        "rules", "main" -> AutoReplyRuleListPage(
+            provider = provider,
+            sp = sp,
             rules = rules,
             query = ruleQuery,
             onQueryChange = { ruleQuery = it },
             listState = ruleListState,
-            onBack = { route = "main" },
+            onBack = onBack,
+            onOpenAi = { route = "ai" },
+            relatedProviders = relatedProviders,
+            onOpenProvider = onOpenProvider,
             onAdd = {
+                ruleEditorScope.launch { ruleEditorListState.scrollToItem(0) }
                 val rule = AutoReplyRule(
                     id = System.currentTimeMillis().toString(),
-                    name = "规则 ${rules.size + 1}"
+                    name = "规则 ${rules.size + 1}",
+                    steps = emptyList()
                 )
                 editingRuleId = rule.id
                 editingRuleDraft = rule
+                ruleSequence = AutoReplySequenceSession(emptyList(), false)
                 editingRuleExplicitlyEmpty = false
                 route = "ruleEditor"
             },
             onEdit = {
+                ruleEditorScope.launch { ruleEditorListState.scrollToItem(0) }
                 editingRuleId = it.id
                 editingRuleDraft = it
+                ruleSequence = AutoReplySequenceSession(it.steps, true)
                 editingRuleExplicitlyEmpty = settings.isRuleExplicitlyEmpty(it.id)
                 route = "ruleEditor"
             },
@@ -434,15 +440,16 @@ internal fun AutoReplyMiuixPage(
             val rule = editingRuleDraft ?: rules.firstOrNull { it.id == editingRuleId }
             if (rule == null) {
                 editingRuleDraft = null
-                route = "rules"
+                route = "main"
             } else {
                 AutoReplyRuleEditorPage(
                     rule = rule,
+                    sequence = ruleSequence,
                     isNew = rules.none { it.id == rule.id },
                     listState = ruleEditorListState,
                     onBack = {
-                        editingRuleDraft = null
-                        route = "rules"
+                        if (ruleSequence.entries.any { it.pending }) showDiscardRuleDraft = true
+                        else { editingRuleDraft = null; route = "main" }
                     },
                     onSave = { saved ->
                         val error = when {
@@ -450,7 +457,7 @@ internal fun AutoReplyMiuixPage(
                             saved.matchType != AutoReplySettings.MATCH_ANY && saved.keyword.isBlank() && saved.patTrigger != AutoReplySettings.PAT_ME -> "请填写关键词"
                             saved.matchType == AutoReplySettings.MATCH_REGEX && runCatching { java.util.regex.Pattern.compile(saved.keyword) }.isFailure -> "正则表达式无效"
                             saved.targetMode == AutoReplySettings.TARGET_SPECIFIC && saved.targetIds.isEmpty() && saved.includedGroupMembers.isEmpty() -> "请选择指定对象"
-                            saved.steps.isEmpty() && !editingRuleExplicitlyEmpty -> "请配置回复步骤"
+                            !ruleSequence.isComplete() -> "请添加并完善回复步骤"
                             else -> null
                         }
                         if (error != null) {
@@ -461,31 +468,11 @@ internal fun AutoReplyMiuixPage(
                                 if (editingRuleExplicitlyEmpty) saved.id else null
                             )
                             editingRuleDraft = null
-                            route = "rules"
+                            route = "main"
                         }
                     },
-                    onDraftChange = { changed ->
-                        editingRuleDraft = changed
-                        val previous = rules.firstOrNull { it.id == changed.id }
-                        if (previous != null) {
-                            val validKeyword = (changed.matchType == AutoReplySettings.MATCH_ANY || changed.patTrigger == AutoReplySettings.PAT_ME || changed.keyword.isNotBlank()) &&
-                                (changed.matchType != AutoReplySettings.MATCH_REGEX || (changed.keyword.isNotBlank() && runCatching { java.util.regex.Pattern.compile(changed.keyword) }.isSuccess))
-                            val validTarget = changed.targetMode != AutoReplySettings.TARGET_SPECIFIC || changed.targetIds.isNotEmpty() || changed.includedGroupMembers.isNotEmpty()
-                            val safe = changed.copy(
-                                name = changed.name.takeIf { it.isNotBlank() } ?: previous.name,
-                                keyword = if (validKeyword) changed.keyword else previous.keyword,
-                                matchType = if (validKeyword) changed.matchType else previous.matchType,
-                                targetMode = if (validTarget) changed.targetMode else previous.targetMode,
-                                targetIds = if (validTarget) changed.targetIds else previous.targetIds,
-                                includedGroupMembers = if (validTarget) changed.includedGroupMembers else previous.includedGroupMembers
-                            )
-                            saveRules(rules.map { if (it.id == changed.id) safe else it }, if (editingRuleExplicitlyEmpty) changed.id else null)
-                        }
-                    },
-                    onEditSteps = { draft ->
-                        editingRuleDraft = draft
-                        editingSteps = Triple("规则回复", draft.steps, draft.steps.isEmpty() && editingRuleExplicitlyEmpty)
-                    }
+                    onDraftChange = { changed -> updateRuleDraft(changed) },
+                    onStepsChange = { changed, explicitlyEmpty -> updateRuleDraft(changed, explicitlyEmpty) }
                 )
             }
         }
@@ -497,12 +484,12 @@ internal fun AutoReplyMiuixPage(
             delayKey = AutoReplySettings.KEY_AUTO_ACCEPT_DELAY_MS,
             tagEnabledKey = AutoReplySettings.KEY_AUTO_ACCEPT_TAG_ENABLE,
             tagNameKey = AutoReplySettings.KEY_AUTO_ACCEPT_TAG_NAME,
-            steps = settings.autoAcceptSteps(),
+            sequence = autoAcceptSequence,
             listState = autoAcceptListState,
             onBack = { if (initialScene == AutoReplyInitialScene.MAIN) route = "main" else onBack() },
             automationKeys = autoAcceptAutomationKeys,
             onSelectLabels = { route = "autoAcceptLabels" },
-            onEditSteps = { editingSteps = Triple("好友请求回复", settings.autoAcceptSteps(), settings.isAutoAcceptExplicitlyEmpty()) }
+            onStepsChange = { steps, explicitlyEmpty -> settings.saveAutoAcceptSteps(steps, explicitlyEmpty) }
         )
         "autoAcceptLabels" -> AutoReplyLabelPickerPage(
             context = context,
@@ -519,13 +506,13 @@ internal fun AutoReplyMiuixPage(
             delayKey = AutoReplySettings.KEY_GREET_ACCEPTED_DELAY_MS,
             tagEnabledKey = AutoReplySettings.KEY_GREET_ACCEPTED_TAG_ENABLE,
             tagNameKey = AutoReplySettings.KEY_GREET_ACCEPTED_TAG_NAME,
-            steps = settings.greetAcceptedSteps(),
+            sequence = greetAcceptedSequence,
             listState = greetAcceptedListState,
             onBack = { if (initialScene == AutoReplyInitialScene.MAIN) route = "main" else onBack() },
             automationKeys = greetAcceptedAutomationKeys,
             dependencyHint = "沿用自动回复总开关及排除名单",
             onSelectLabels = { route = "greetAcceptedLabels" },
-            onEditSteps = { editingSteps = Triple("对方通过验证", settings.greetAcceptedSteps(), settings.isGreetAcceptedExplicitlyEmpty()) }
+            onStepsChange = { steps, explicitlyEmpty -> settings.saveGreetAcceptedSteps(steps, explicitlyEmpty) }
         )
         "greetAcceptedLabels" -> AutoReplyLabelPickerPage(
             context = context,
@@ -535,19 +522,19 @@ internal fun AutoReplyMiuixPage(
             onBack = { route = "greetAccepted" }
         )
         "ai" -> AutoReplyAiPage(context, sp, onBack = { route = "main" })
-        else -> AutoReplyMainPage(
-            provider = provider,
-            sp = sp,
-            rules = rules,
-            onBack = onBack,
-            onOpenRules = { route = "rules" },
-            onOpenAi = { route = "ai" },
-            relatedProviders = relatedProviders,
-            onOpenProvider = onOpenProvider
-        )
+        else -> Unit
         }
         }
     }
+    BatchDeleteConfirmDialog(
+        show = showDiscardRuleDraft,
+        title = "放弃尚未加入的回复？",
+        message = "返回会放弃尚未加入的回复草稿。",
+        labels = emptyList(),
+        confirmText = "放弃并返回",
+        onDismiss = { showDiscardRuleDraft = false },
+        onConfirm = { showDiscardRuleDraft = false; editingRuleDraft = null; route = "main" }
+    )
 }
 
 @Composable
@@ -612,34 +599,24 @@ fun Page(
         label = "AutoMessageForwardRoute",
         depthOf = {
             when (it) {
-                AutoMessageForwardRoute.MAIN -> 0
-                AutoMessageForwardRoute.RULES -> 1
-                AutoMessageForwardRoute.EDITOR -> 2
+                AutoMessageForwardRoute.MAIN, AutoMessageForwardRoute.RULES -> 0
+                AutoMessageForwardRoute.EDITOR -> 1
                 AutoMessageForwardRoute.CONTACTS,
                 AutoMessageForwardRoute.MEMBERS,
-                AutoMessageForwardRoute.TYPES,
-                AutoMessageForwardRoute.REPLACEMENTS -> 3
+                AutoMessageForwardRoute.REPLACEMENTS -> 2
             }
         }
     ) { currentRoute ->
         when (currentRoute) {
-            AutoMessageForwardRoute.MAIN -> AutoMessageForwardMainPage(
+            AutoMessageForwardRoute.MAIN, AutoMessageForwardRoute.RULES -> AutoMessageForwardRuleListPage(
                 provider = provider,
                 enabled = enabled,
-                rules = rules,
-                onBack = onBack,
-                onEnabledChange = {
-                    enabled = it
-                    settings.setEnabled(context, it)
-                },
-                onOpenRules = { route = AutoMessageForwardRoute.RULES }
-            )
-            AutoMessageForwardRoute.RULES -> AutoMessageForwardRuleListPage(
+                onEnabledChange = { enabled = it; settings.setEnabled(context, it) },
                 rules = rules,
                 listState = ruleListState,
                 query = ruleQuery,
                 onQueryChange = { ruleQuery = it },
-                onBack = { route = AutoMessageForwardRoute.MAIN },
+                onBack = onBack,
                 onAdd = {
                     draft = settings.newRule(rules.size + 1)
                     route = AutoMessageForwardRoute.EDITOR
@@ -664,13 +641,13 @@ fun Page(
             AutoMessageForwardRoute.EDITOR -> {
                 val current = draft
                 if (current == null) {
-                    route = AutoMessageForwardRoute.RULES
+                    route = AutoMessageForwardRoute.MAIN
                 } else {
                     AutoMessageForwardRuleEditorPage(
                         rule = current,
                         isNew = rules.none { it.id == current.id },
                         listState = editorListState,
-                        onBack = { route = AutoMessageForwardRoute.RULES },
+                        onBack = { route = AutoMessageForwardRoute.MAIN },
                         onDraftChange = ::updateDraft,
                         onPickContacts = { next, field ->
                             draft = next
@@ -680,10 +657,6 @@ fun Page(
                         onPickMembers = { next ->
                             draft = next
                             route = AutoMessageForwardRoute.MEMBERS
-                        },
-                        onPickTypes = { next ->
-                            draft = next
-                            route = AutoMessageForwardRoute.TYPES
                         },
                         onPickReplacementRules = { next ->
                             draft = next
@@ -712,7 +685,7 @@ fun Page(
                                     )
                                     draft = null
                                     Toast.makeText(context, "规则已保存", Toast.LENGTH_SHORT).show()
-                                    route = AutoMessageForwardRoute.RULES
+                                    route = AutoMessageForwardRoute.MAIN
                                 }
                             }
                         }
@@ -776,18 +749,6 @@ fun Page(
                     )
                 }
             }
-            AutoMessageForwardRoute.TYPES -> {
-                val current = draft
-                if (current == null) {
-                    route = AutoMessageForwardRoute.EDITOR
-                } else {
-                    AutoMessageForwardTypePickerPage(
-                        selectedKinds = current.messageKinds,
-                        onBack = { route = AutoMessageForwardRoute.EDITOR },
-                        onSelectionChange = { updateDraft((draft ?: current).copy(messageKinds = it)) }
-                    )
-                }
-            }
             AutoMessageForwardRoute.REPLACEMENTS -> {
                 val current = draft
                 if (current == null) {
@@ -808,54 +769,10 @@ fun Page(
 }
 
 @Composable
-private fun AutoMessageForwardMainPage(
+private fun AutoMessageForwardRuleListPage(
     provider: FeatureSettingsProvider,
     enabled: Boolean,
-    rules: List<AutoMessageForwardRule>,
-    onBack: () -> Unit,
     onEnabledChange: (Boolean) -> Unit,
-    onOpenRules: () -> Unit
-) {
-    val listState = rememberLazyListState()
-    val scrollBehavior = MiuixScrollBehavior()
-    PageScaffold(
-        title = provider.title(),
-        largeTitle = provider.title(),
-        scrollBehavior = scrollBehavior,
-        onBack = onBack,
-        showBackIcon = false
-    ) { padding ->
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
-            state = listState,
-            contentPadding = PaddingValues(
-                top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 16.dp
-            )
-        ) {
-            item { SmallTitle(text = "消息自动转发") }
-            item {
-                SettingsCard {
-                    SwitchRow(
-                        checked = enabled,
-                        title = "消息自动转发",
-                        summary = "默认不转发自己发送的消息，可在每条规则中单独开启",
-                        onCheckedChange = onEnabledChange
-                    )
-                    InsetDivider()
-                    ActionRow(
-                        title = "转发规则",
-                        summary = if (rules.isEmpty()) "暂无规则" else "${rules.size} 条规则，${rules.count { it.enabled }} 条启用",
-                        onClick = onOpenRules
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun AutoMessageForwardRuleListPage(
     rules: List<AutoMessageForwardRule>,
     listState: LazyListState,
     query: String,
@@ -890,8 +807,8 @@ private fun AutoMessageForwardRuleListPage(
         selectedIds = emptySet()
     })
     PageScaffold(
-        title = "转发规则",
-        largeTitle = "转发规则",
+        title = provider.title(),
+        largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
         onBack = {
             if (batchDeleteMode) { batchDeleteMode = false; selectedIds = emptySet() } else onBack()
@@ -903,8 +820,15 @@ private fun AutoMessageForwardRuleListPage(
             state = listState,
             contentPadding = PaddingValues(top = padding.calculateTopPadding() + 8.dp, bottom = padding.calculateBottomPadding() + 16.dp)
         ) {
+            item { SettingsSectionTitle(text = "自动转发") }
             item {
                 SettingsCard {
+                    SwitchRow(enabled, "消息自动转发", "默认不转发自己发送的消息，可在每条规则中单独开启", onCheckedChange = onEnabledChange)
+                }
+            }
+            item { SettingsSectionTitle(text = "转发规则 · ${rules.size} 条") }
+            item {
+                SettingsCard(modifier = Modifier.padding(top = 12.dp)) {
                     InputRow("搜索", "按规则名、会话、群成员或消息类型筛选", query, onValueChange = onQueryChange)
                 }
             }
@@ -924,7 +848,7 @@ private fun AutoMessageForwardRuleListPage(
                         }
                     } else {
                         if (rules.isNotEmpty()) ContentActionRow("批量删除") { batchDeleteMode = true; selectedIds = emptySet() }
-                        ContentActionRow("新增规则", onClick = onAdd)
+                        AddActionRow("新增规则", onClick = onAdd)
                     }
                 }
             }
@@ -933,8 +857,7 @@ private fun AutoMessageForwardRuleListPage(
             } else {
                 visible.forEachIndexed { index, rule ->
                     item {
-                        SmallTitle(
-                            modifier = Modifier.padding(top = if (index == 0) 10.dp else 18.dp),
+                        SettingsSectionTitle(
                             text = "规则 ${index + 1}"
                         )
                     }
@@ -960,7 +883,7 @@ private fun AutoMessageForwardRuleListPage(
                                 InsetDivider()
                                 ActionRow("编辑", "修改监听会话、转发会话和消息类型") { onEdit(rule) }
                                 InsetDivider()
-                                ActionRow("删除", "移除此规则") { onDelete(rule) }
+                                SecondaryActionRow("删除", "移除此规则") { onDelete(rule) }
                             }
                         }
                     }
@@ -992,13 +915,13 @@ private fun AutoMessageForwardRuleEditorPage(
     onDraftChange: (AutoMessageForwardRule) -> Unit,
     onPickContacts: (AutoMessageForwardRule, AutoMessageForwardContactField) -> Unit,
     onPickMembers: (AutoMessageForwardRule) -> Unit,
-    onPickTypes: (AutoMessageForwardRule) -> Unit,
     onPickReplacementRules: (AutoMessageForwardRule) -> Unit,
     onSave: (AutoMessageForwardRule) -> Unit
 ) {
     val context = LocalContext.current
     val current = rule
     var delayInput by remember(rule.id) { mutableStateOf(rule.delaySeconds.toString()) }
+    var typesExpanded by remember(rule.id) { mutableStateOf(false) }
     val scrollBehavior = MiuixScrollBehavior()
     PageScaffold(
         title = if (isNew) "新增转发规则" else "编辑转发规则",
@@ -1012,7 +935,7 @@ private fun AutoMessageForwardRuleEditorPage(
             state = listState,
             contentPadding = PaddingValues(top = padding.calculateTopPadding() + 8.dp, bottom = padding.calculateBottomPadding() + 16.dp)
         ) {
-            item { SmallTitle(text = "基础") }
+            item { SettingsSectionTitle(text = "基础") }
             item {
                 SettingsCard {
                     SwitchRow(current.enabled, "规则", "关闭后保留配置但不触发") { onDraftChange(current.copy(enabled = it)) }
@@ -1037,7 +960,7 @@ private fun AutoMessageForwardRuleEditorPage(
                     }
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "会话") }
+            item { SettingsSectionTitle(text = "会话") }
             item {
                 SettingsCard {
                     ActionRow("监听会话", autoMessageForwardIdSummary(current.sourceIds, "未选择")) {
@@ -1060,13 +983,29 @@ private fun AutoMessageForwardRuleEditorPage(
                     }
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "消息类型") }
+            item { SettingsSectionTitle(text = "消息类型") }
+            item {
+                SequenceItemCard(
+                    title = "选择消息类型",
+                    summary = autoMessageForwardTypeSummary(current.messageKinds),
+                    expanded = typesExpanded,
+                    onToggle = { typesExpanded = !typesExpanded }
+                ) {
+                    val options = autoMessageForwardTypeOptions()
+                    ContentActionRow(if (current.messageKinds.size == options.size) "取消全选" else "全选") {
+                        onDraftChange(current.copy(messageKinds = if (current.messageKinds.size == options.size) emptySet() else options.mapTo(LinkedHashSet()) { it.first }))
+                    }
+                    options.forEach { (kind, label, description) ->
+                        InsetDivider()
+                        SwitchRow(kind in current.messageKinds, label, description) { checked ->
+                            onDraftChange(current.copy(messageKinds = if (checked) current.messageKinds + kind else current.messageKinds - kind))
+                        }
+                    }
+                }
+            }
+            item { SettingsSectionTitle(text = "文本处理") }
             item {
                 SettingsCard {
-                    ActionRow("选择消息类型", autoMessageForwardTypeSummary(current.messageKinds)) {
-                        onPickTypes(current)
-                    }
-                    InsetDivider()
                     SwitchRow(current.includeKeywordsEnabled, "包含关键词", "开启后仅转发命中关键词的消息") {
                         onDraftChange(current.copy(includeKeywordsEnabled = it))
                     }
@@ -1101,59 +1040,15 @@ private fun AutoMessageForwardRuleEditorPage(
             }
 
             if (isNew) item {
-                SettingsCard {
-                    ContentActionRow("创建") { onSave(current) }
+                val error = when {
+                    current.name.isBlank() -> "请输入规则名称"
+                    current.sourceIds.isEmpty() -> "请选择监听会话"
+                    current.targetIds.isEmpty() -> "请选择转发会话"
+                    current.messageKinds.isEmpty() -> "至少选择一种消息类型"
+                    delayInput.toLongOrNull()?.let { it >= 0 } != true -> "请输入有效的延迟时间"
+                    else -> null
                 }
-            }
-        }
-    }
-}
-
-@Composable
-private fun AutoMessageForwardTypePickerPage(
-    selectedKinds: Set<String>,
-    onBack: () -> Unit,
-    onSelectionChange: (Set<String>) -> Unit
-) {
-    var selected by remember { mutableStateOf(selectedKinds) }
-    val options = autoMessageForwardTypeOptions()
-    val listState = rememberLazyListState()
-    val scrollBehavior = MiuixScrollBehavior()
-    PageScaffold(
-        title = "选择消息类型",
-        largeTitle = "选择消息类型",
-        scrollBehavior = scrollBehavior,
-        onBack = onBack,
-        showBackIcon = false
-    ) { padding ->
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
-            state = listState,
-            contentPadding = PaddingValues(top = padding.calculateTopPadding() + 8.dp, bottom = padding.calculateBottomPadding() + 16.dp)
-        ) {
-            item {
-                SettingsCard {
-                    ContentActionRow(if (selected.size == options.size) "取消全选" else "全选") {
-                        selected = if (selected.size == options.size) emptySet() else options.mapTo(LinkedHashSet()) { it.first }
-                        onSelectionChange(selected)
-                    }
-                }
-            }
-
-            item {
-                SettingsCard {
-                    options.forEachIndexed { index, option ->
-                        if (index > 0) InsetDivider()
-                        SwitchRow(
-                            checked = option.first in selected,
-                            title = option.second,
-                            summary = option.third
-                        ) {
-                            selected = if (it) selected + option.first else selected - option.first
-                            onSelectionChange(selected)
-                        }
-                    }
-                }
+                PrimaryFormAction("创建规则", error) { onSave(current) }
             }
         }
     }
@@ -1219,75 +1114,17 @@ private fun autoMessageForwardTypeOptions(): List<Triple<String, String, String>
 }
 
 @Composable
-private fun AutoReplyMainPage(
+private fun AutoReplyRuleListPage(
     provider: FeatureSettingsProvider,
     sp: SharedPreferences,
-    rules: List<AutoReplyRule>,
-    onBack: () -> Unit,
-    onOpenRules: () -> Unit,
-    onOpenAi: () -> Unit,
-    relatedProviders: List<FeatureSettingsProvider>,
-    onOpenProvider: (FeatureSettingsProvider) -> Unit
-) {
-    var excludedTalkersEnabled by remember {
-        mutableStateOf(sp.getBoolean(AutoReplySettings.KEY_EXCLUDED_TALKERS_ENABLE, false))
-    }
-    var excludedTalkers by remember {
-        mutableStateOf(sp.getString(AutoReplySettings.KEY_EXCLUDED_TALKERS, "").orEmpty())
-    }
-    val listState = rememberLazyListState()
-    val scrollBehavior = MiuixScrollBehavior()
-    PageScaffold(
-        title = provider.title(),
-        largeTitle = provider.title(),
-        scrollBehavior = scrollBehavior,
-        onBack = onBack,
-        showBackIcon = false
-    ) { padding ->
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
-            state = listState,
-            contentPadding = PaddingValues(
-                top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 16.dp
-            )
-        ) {
-            item { SmallTitle(text = "聊天自动回复") }
-            item {
-                SettingsCard {
-                    SwitchRow(sp, AutoReplySettings.KEY_ENABLE, "自动回复", "开启后按规则回复收到的消息", AutoReplySettings.DEFAULT_ENABLE)
-                    InsetDivider()
-                    SwitchRow(excludedTalkersEnabled, "排除指定会话", "开启后不回复指定会话的消息") {
-                        excludedTalkersEnabled = it
-                        sp.edit().putBoolean(AutoReplySettings.KEY_EXCLUDED_TALKERS_ENABLE, it).apply()
-                    }
-                    InsetDivider()
-                    InputRow("排除会话 ID", "多个 ID 用逗号、分号或换行分隔", excludedTalkers, minLines = 2) {
-                        excludedTalkers = it
-                        sp.edit().putString(AutoReplySettings.KEY_EXCLUDED_TALKERS, it).apply()
-                    }
-
-                    InsetDivider()
-                    ActionRow("回复规则", if (rules.isEmpty()) "暂无规则" else "${rules.size} 条规则，${rules.count { it.enabled }} 条启用", onOpenRules)
-                    InsetDivider()
-                    ActionRow("AI 配置", "配置智聊AI，可切换多个模型", onOpenAi)
-                }
-            }
-            if (relatedProviders.isNotEmpty()) {
-                item { SmallTitle(text = "独立功能") }
-                item { FeatureListCard(relatedProviders, "", onOpenProvider) }
-            }
-        }
-    }
-}
-
-@Composable
-private fun AutoReplyRuleListPage(
     rules: List<AutoReplyRule>,
     query: String,
     onQueryChange: (String) -> Unit,
     listState: LazyListState,
     onBack: () -> Unit,
+    onOpenAi: () -> Unit,
+    relatedProviders: List<FeatureSettingsProvider>,
+    onOpenProvider: (FeatureSettingsProvider) -> Unit,
     onAdd: () -> Unit,
     onEdit: (AutoReplyRule) -> Unit,
     onToggle: (AutoReplyRule, Boolean) -> Unit,
@@ -1298,6 +1135,9 @@ private fun AutoReplyRuleListPage(
     var batchDeleteMode by remember { mutableStateOf(false) }
     var selectedIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
+    var excludeExpanded by remember { mutableStateOf(false) }
+    var excludedTalkersEnabled by remember { mutableStateOf(sp.getBoolean(AutoReplySettings.KEY_EXCLUDED_TALKERS_ENABLE, false)) }
+    var excludedTalkers by remember { mutableStateOf(sp.getString(AutoReplySettings.KEY_EXCLUDED_TALKERS, "").orEmpty()) }
     val visible = rules.filter {
         val lower = query.trim().lowercase(Locale.US)
         lower.isBlank() ||
@@ -1315,8 +1155,8 @@ private fun AutoReplyRuleListPage(
         selectedIds = emptySet()
     })
     PageScaffold(
-        title = "回复规则",
-        largeTitle = "回复规则",
+        title = provider.title(),
+        largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
         onBack = {
             if (batchDeleteMode) {
@@ -1333,13 +1173,45 @@ private fun AutoReplyRuleListPage(
             state = listState,
             contentPadding = PaddingValues(top = padding.calculateTopPadding() + 8.dp, bottom = padding.calculateBottomPadding() + 16.dp)
         ) {
+            item { SettingsSectionTitle(text = "自动回复") }
+            item {
+                SettingsCard {
+                    SwitchRow(sp, AutoReplySettings.KEY_ENABLE, "自动回复", "开启后按规则回复收到的消息", AutoReplySettings.DEFAULT_ENABLE)
+                    InsetDivider()
+                    ActionRow("AI 配置", "配置智聊 AI，可切换多个模型", onOpenAi)
+                }
+            }
+            item {
+                SequenceItemCard(
+                    title = "全局排除",
+                    summary = (if (excludedTalkersEnabled) "已开启" else "未开启") + " · ${parseIds(excludedTalkers).size} 个会话",
+                    expanded = excludeExpanded,
+                    modifier = Modifier.padding(top = 12.dp),
+                    onToggle = { excludeExpanded = !excludeExpanded }
+                ) {
+                    SwitchRow(excludedTalkersEnabled, "排除指定会话", "开启后不回复指定会话的消息") {
+                        excludedTalkersEnabled = it
+                        sp.edit().putBoolean(AutoReplySettings.KEY_EXCLUDED_TALKERS_ENABLE, it).apply()
+                    }
+                    InsetDivider()
+                    InputRow("排除会话 ID", "多个 ID 用逗号、分号或换行分隔", excludedTalkers, minLines = 2) {
+                        excludedTalkers = it
+                        sp.edit().putString(AutoReplySettings.KEY_EXCLUDED_TALKERS, it).apply()
+                    }
+                }
+            }
+            if (relatedProviders.isNotEmpty()) {
+                item { SettingsSectionTitle(text = "相关功能") }
+                item { FeatureListCard(relatedProviders, "", onOpenProvider) }
+            }
+            item { SettingsSectionTitle(text = "回复规则 · ${rules.size} 条") }
             item {
                 SettingsCard {
                     InputRow("搜索", "按规则名或关键词筛选", query, onValueChange = onQueryChange)
                 }
             }
             item {
-                SettingsCard {
+                SettingsCard(modifier = Modifier.padding(top = 12.dp)) {
                     if (rules.isEmpty()) {
                         EmptyText("暂无规则")
                         InsetDivider()
@@ -1357,7 +1229,7 @@ private fun AutoReplyRuleListPage(
                             batchDeleteMode = true
                             selectedIds = emptySet()
                         }
-                        ContentActionRow("新增规则", onClick = onAdd)
+                        AddActionRow("新增规则", onClick = onAdd)
                     }
                 }
             }
@@ -1366,8 +1238,7 @@ private fun AutoReplyRuleListPage(
             } else {
                 visible.forEachIndexed { index, rule ->
                     item {
-                        SmallTitle(
-                            modifier = Modifier.padding(top = if (index == 0) 10.dp else 18.dp),
+                        SettingsSectionTitle(
                             text = "规则 ${index + 1}"
                         )
                     }
@@ -1401,7 +1272,7 @@ private fun AutoReplyRuleListPage(
                                 InsetDivider()
                                 ActionRow("编辑", "修改触发条件和回复步骤") { onEdit(rule) }
                                 InsetDivider()
-                                ActionRow("删除", "移除此规则") { onDelete(rule) }
+                                SecondaryActionRow("删除", "移除此规则") { onDelete(rule) }
                             }
                         }
                     }
@@ -1427,12 +1298,13 @@ private fun AutoReplyRuleListPage(
 @Composable
 private fun AutoReplyRuleEditorPage(
     rule: AutoReplyRule,
+    sequence: AutoReplySequenceSession,
     isNew: Boolean,
     listState: LazyListState,
     onBack: () -> Unit,
     onSave: (AutoReplyRule) -> Unit,
     onDraftChange: (AutoReplyRule) -> Unit,
-    onEditSteps: (AutoReplyRule) -> Unit
+    onStepsChange: (AutoReplyRule, Boolean) -> Unit
 ) {
     val context = LocalContext.current
     var current by remember(rule.id) { mutableStateOf(rule) }
@@ -1440,10 +1312,12 @@ private fun AutoReplyRuleEditorPage(
     var optionPicker by remember { mutableStateOf<OptionPickerRequest?>(null) }
     var contactPicker by remember { mutableStateOf<ContactPickerRequest?>(null) }
     var groupMemberPicker by remember { mutableStateOf<GroupMemberPickerRequest?>(null) }
+    var favoritePicker by remember { mutableStateOf<FavoritePickerRequest?>(null) }
     val editorRoute = when {
         optionPicker != null -> AutoReplyEditorRoute.OptionPicker(optionPicker!!)
         contactPicker != null -> AutoReplyEditorRoute.ContactPicker(contactPicker!!)
         groupMemberPicker != null -> AutoReplyEditorRoute.GroupMemberPicker(groupMemberPicker!!)
+        favoritePicker != null -> AutoReplyEditorRoute.FavoritePicker(favoritePicker!!)
         else -> AutoReplyEditorRoute.Main
     }
     SettingsRouteTransition(
@@ -1478,8 +1352,13 @@ private fun AutoReplyRuleEditorPage(
                     onSelectionChange = { entries -> request.onValue(formatIds(entries)) }
                 )
             }
+            is AutoReplyEditorRoute.FavoritePicker -> FavoritePickerPage(
+                request = route.request,
+                onBack = { favoritePicker = null }
+            )
             AutoReplyEditorRoute.Main -> AutoReplyRuleEditorContent(
                 rule = current,
+                sequence = sequence,
                 isNew = isNew,
                 listState = listState,
                 onRuleChange = {
@@ -1488,10 +1367,14 @@ private fun AutoReplyRuleEditorPage(
                 },
                 onBack = onBack,
                 onSave = { onSave(current) },
-                onEditSteps = { onEditSteps(current) },
+                onStepsChange = { steps, explicitlyEmpty ->
+                    current = current.copy(steps = steps)
+                    onStepsChange(current, explicitlyEmpty)
+                },
                 onOptionPicker = { optionPicker = it },
                 onContactPicker = { contactPicker = it },
-                onGroupMemberPicker = { groupMemberPicker = it }
+                onGroupMemberPicker = { groupMemberPicker = it },
+                onFavoritePicker = { favoritePicker = it }
             )
         }
     }
@@ -1500,20 +1383,24 @@ private fun AutoReplyRuleEditorPage(
 @Composable
 private fun AutoReplyRuleEditorContent(
     rule: AutoReplyRule,
+    sequence: AutoReplySequenceSession,
     isNew: Boolean,
     listState: LazyListState,
     onRuleChange: (AutoReplyRule) -> Unit,
     onBack: () -> Unit,
     onSave: () -> Unit,
-    onEditSteps: () -> Unit,
+    onStepsChange: (List<AutoReplyStep>, Boolean) -> Unit,
     onOptionPicker: (OptionPickerRequest) -> Unit,
     onContactPicker: (ContactPickerRequest) -> Unit,
-    onGroupMemberPicker: (GroupMemberPickerRequest) -> Unit
+    onGroupMemberPicker: (GroupMemberPickerRequest) -> Unit,
+    onFavoritePicker: (FavoritePickerRequest) -> Unit
 ) {
     val current = rule
+    val context = LocalContext.current
     val scrollBehavior = MiuixScrollBehavior()
     var maxCountText by remember(current.id) { mutableStateOf(current.maxReplyCount.toString()) }
     var cooldownText by remember(current.id) { mutableStateOf(current.cooldownSeconds.toString()) }
+    AutoReplySequenceAutoScroll(sequence, listState, firstItemIndex = 9)
     PageScaffold(
         title = if (isNew) "新增规则" else "编辑规则",
         largeTitle = if (isNew) "新增规则" else "编辑规则",
@@ -1526,7 +1413,7 @@ private fun AutoReplyRuleEditorContent(
             state = listState,
             contentPadding = PaddingValues(top = padding.calculateTopPadding() + 8.dp, bottom = padding.calculateBottomPadding() + 16.dp)
         ) {
-            item { SmallTitle(text = "基础") }
+            item { SettingsSectionTitle(text = "触发条件") }
             item {
                 SettingsCard {
                     SwitchRow(current.enabled, "规则", "关闭后保留配置但不触发") { onRuleChange(current.copy(enabled = it)) }
@@ -1560,7 +1447,7 @@ private fun AutoReplyRuleEditorContent(
                     }
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "范围") }
+            item { SettingsSectionTitle(text = "范围") }
             item {
                 SettingsCard {
                     PopupOptionRow(
@@ -1633,7 +1520,7 @@ private fun AutoReplyRuleEditorContent(
                     }
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "触发") }
+            item { SettingsSectionTitle(text = "触发") }
             item {
                 SettingsCard {
                     PopupOptionRow(
@@ -1671,19 +1558,32 @@ private fun AutoReplyRuleEditorContent(
                     }
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "回复") }
+            item { SettingsSectionTitle(text = "回复") }
             item {
                 SettingsCard {
                     SwitchRow(current.replyAsQuote, "引用回复", "文本和 AI 可引用原消息回复") { onRuleChange(current.copy(replyAsQuote = it)) }
-                    InsetDivider()
-                    ActionRow("回复步骤", describeAutoReplySteps(current.steps), onEditSteps)
                 }
             }
+            autoReplySequenceSection(
+                context = context,
+                session = sequence,
+                isNew = isNew,
+                onStepsChange = onStepsChange,
+                onContactPicker = onContactPicker,
+                onFavoritePicker = onFavoritePicker
+            )
 
             if (isNew) item {
-                SettingsCard {
-                    ContentActionRow("创建", enabled = maxCountText.toIntOrNull() != null && cooldownText.toLongOrNull() != null, onClick = onSave)
+                val error = when {
+                    current.name.isBlank() -> "请填写规则名称"
+                    current.matchType != AutoReplySettings.MATCH_ANY && current.keyword.isBlank() && current.patTrigger != AutoReplySettings.PAT_ME -> "请填写关键词"
+                    current.matchType == AutoReplySettings.MATCH_REGEX && runCatching { java.util.regex.Pattern.compile(current.keyword) }.isFailure -> "正则表达式无效"
+                    current.targetMode == AutoReplySettings.TARGET_SPECIFIC && current.targetIds.isEmpty() && current.includedGroupMembers.isEmpty() -> "请选择指定对象"
+                    maxCountText.toIntOrNull()?.let { it >= 0 } != true || cooldownText.toLongOrNull()?.let { it >= 0 } != true -> "请填写有效的回复次数和冷却时间"
+                    !sequence.isComplete() -> "请添加并完善回复步骤"
+                    else -> null
                 }
+                PrimaryFormAction("创建规则", error, onSave)
             }
         }
     }
@@ -1698,13 +1598,73 @@ private fun AutoReplyFriendPage(
     delayKey: String,
     tagEnabledKey: String,
     tagNameKey: String,
-    steps: List<AutoReplyStep>,
+    sequence: AutoReplySequenceSession,
     listState: LazyListState,
     onBack: () -> Unit,
     automationKeys: AutoReplyFriendAutomationKeys?,
     dependencyHint: String? = null,
     onSelectLabels: (() -> Unit)?,
-    onEditSteps: () -> Unit
+    onStepsChange: (List<AutoReplyStep>, Boolean) -> Unit
+) {
+    var contactPicker by remember { mutableStateOf<ContactPickerRequest?>(null) }
+    var favoritePicker by remember { mutableStateOf<FavoritePickerRequest?>(null) }
+    var showDiscard by remember { mutableStateOf(false) }
+    val pageRoute = when {
+        contactPicker != null -> AutoReplyStepsRoute.ContactPicker(contactPicker!!)
+        favoritePicker != null -> AutoReplyStepsRoute.FavoritePicker(favoritePicker!!)
+        else -> AutoReplyStepsRoute.Main
+    }
+    SettingsRouteTransition(targetState = pageRoute, label = "AutoReplyFriendRoute", depthOf = { it.depth() }) { route ->
+        when (route) {
+            AutoReplyStepsRoute.Main -> AutoReplyFriendContent(
+                context, title, sp, enabledKey, delayKey, tagEnabledKey, tagNameKey, sequence,
+                listState, { if (sequence.entries.any { it.pending }) showDiscard = true else onBack() }, automationKeys, dependencyHint, onSelectLabels, onStepsChange,
+                onContactPicker = { contactPicker = it },
+                onFavoritePicker = { favoritePicker = it }
+            )
+            is AutoReplyStepsRoute.ContactPicker -> ContactPickerPage(
+                context = context,
+                request = route.request,
+                onBack = { contactPicker = null },
+                onSelectionChange = { selected -> route.request.onValue(formatIds(selected)) }
+            )
+            is AutoReplyStepsRoute.FavoritePicker -> FavoritePickerPage(route.request, onBack = { favoritePicker = null })
+            is AutoReplyStepsRoute.OptionPicker -> Unit
+        }
+    }
+    BatchDeleteConfirmDialog(
+        show = showDiscard,
+        title = "放弃尚未加入的回复？",
+        message = "返回会放弃尚未加入的回复草稿。",
+        labels = emptyList(),
+        confirmText = "放弃并返回",
+        onDismiss = { showDiscard = false },
+        onConfirm = {
+            sequence.entries.filter { it.pending }.forEach { sequence.remove(it.step.id) }
+            showDiscard = false
+            onBack()
+        }
+    )
+}
+
+@Composable
+private fun AutoReplyFriendContent(
+    context: Context,
+    title: String,
+    sp: SharedPreferences,
+    enabledKey: String,
+    delayKey: String,
+    tagEnabledKey: String,
+    tagNameKey: String,
+    sequence: AutoReplySequenceSession,
+    listState: LazyListState,
+    onBack: () -> Unit,
+    automationKeys: AutoReplyFriendAutomationKeys?,
+    dependencyHint: String? = null,
+    onSelectLabels: (() -> Unit)?,
+    onStepsChange: (List<AutoReplyStep>, Boolean) -> Unit,
+    onContactPicker: (ContactPickerRequest) -> Unit,
+    onFavoritePicker: (FavoritePickerRequest) -> Unit
 ) {
     var delayMs by rememberSaveable { mutableStateOf(sp.getLong(delayKey, 2000L).coerceAtLeast(0L).toString()) }
     var tagName by rememberSaveable { mutableStateOf(sp.getString(tagNameKey, "") ?: "") }
@@ -1724,7 +1684,9 @@ private fun AutoReplyFriendPage(
     var remarkDateEnabled by remember { mutableStateOf(automationKeys?.let { sp.getBoolean(it.remarkDateEnable, false) } ?: false) }
     var remarkCustomEnabled by remember { mutableStateOf(automationKeys?.let { sp.getBoolean(it.remarkCustomEnable, false) } ?: false) }
     var tagEnabled by remember { mutableStateOf(sp.getBoolean(tagEnabledKey, false)) }
+    var advancedExpanded by remember { mutableStateOf(false) }
     val scrollBehavior = MiuixScrollBehavior()
+    AutoReplySequenceAutoScroll(sequence, listState, firstItemIndex = 2)
     PageScaffold(
         title = title,
         largeTitle = title,
@@ -1745,9 +1707,34 @@ private fun AutoReplyFriendPage(
                         delayMs = it
                         it.toLongOrNull()?.takeIf { value -> value in 0L..600000L }?.let { value -> sp.edit().putLong(delayKey, value).apply() }
                     }
+
+                }
+            }
+            autoReplySequenceSection(
+                context = context,
+                session = sequence,
+                isNew = false,
+                onStepsChange = onStepsChange,
+                onContactPicker = onContactPicker,
+                onFavoritePicker = onFavoritePicker
+            )
+            item {
+                SettingsDisclosure(
+                    title = if (hasAutomation) "标签与备注" else "标签设置",
+                    summary = if (hasAutomation) "自动标签、备注及日期格式" else "处理后添加标签",
+                    expanded = advancedExpanded,
+                    onToggle = {
+                        val invalidDate = (labelDateFormat.isNotBlank() && runCatching { java.text.SimpleDateFormat(labelDateFormat, Locale.getDefault()) }.isFailure) ||
+                            (remarkDateFormat.isNotBlank() && runCatching { java.text.SimpleDateFormat(remarkDateFormat, Locale.getDefault()) }.isFailure)
+                        if (advancedExpanded && invalidDate) Toast.makeText(context, "请先修正日期格式", Toast.LENGTH_SHORT).show()
+                        else advancedExpanded = !advancedExpanded
+                    }
+                )
+            }
+            if (advancedExpanded) item {
+                SettingsCard(modifier = Modifier.padding(top = 12.dp)) {
                     if (hasAutomation) {
                         val keys = automationKeys!!
-                        InsetDivider()
                         SwitchRow(sp, keys.labelNewFriendEnable, "自动标签新加好友", "给好友添加“新加好友”标签", false)
                         InsetDivider()
                         SwitchRow(labelDateEnabled, "自动标签日期", "按日期格式生成一个标签") {
@@ -1756,7 +1743,7 @@ private fun AutoReplyFriendPage(
                         }
                         InsetDivider()
                         InputRow("标签日期格式", if (labelDateFormat.isNotBlank() && runCatching { java.text.SimpleDateFormat(labelDateFormat, Locale.getDefault()) }.isFailure) "日期格式无效；保留上次保存的值" else "例如 yyyy-MM-dd", labelDateFormat,
-                            onEditingFinished = { if (it.isBlank()) sp.edit().putString(keys.labelDateFormat, "yyyy-MM-dd").apply() }) {
+                            onEditingFinished = { if (advancedExpanded && it.isBlank()) sp.edit().putString(keys.labelDateFormat, "yyyy-MM-dd").apply() }) {
                             labelDateFormat = it
                             if (it.isNotBlank() && runCatching { java.text.SimpleDateFormat(it, Locale.getDefault()) }.isSuccess) sp.edit().putString(keys.labelDateFormat, it.trim()).apply()
                         }
@@ -1778,7 +1765,7 @@ private fun AutoReplyFriendPage(
                         }
                         InsetDivider()
                         InputRow("备注日期格式", if (remarkDateFormat.isNotBlank() && runCatching { java.text.SimpleDateFormat(remarkDateFormat, Locale.getDefault()) }.isFailure) "日期格式无效；保留上次保存的值" else "例如 yyMMdd", remarkDateFormat,
-                            onEditingFinished = { if (it.isBlank()) sp.edit().putString(keys.remarkDateFormat, "yyMMdd").apply() }) {
+                            onEditingFinished = { if (advancedExpanded && it.isBlank()) sp.edit().putString(keys.remarkDateFormat, "yyMMdd").apply() }) {
                             remarkDateFormat = it
                             if (it.isNotBlank() && runCatching { java.text.SimpleDateFormat(it, Locale.getDefault()) }.isSuccess) sp.edit().putString(keys.remarkDateFormat, it.trim()).apply()
                         }
@@ -1789,25 +1776,22 @@ private fun AutoReplyFriendPage(
                         }
                         InsetDivider()
                         InputRow("备注自定义文本", "例如 渠道A", remarkCustomText,
-                            onEditingFinished = { if (it.isBlank()) sp.edit().putString(keys.remarkCustomText, "").apply() }) {
+                            onEditingFinished = { if (advancedExpanded && it.isBlank()) sp.edit().putString(keys.remarkCustomText, "").apply() }) {
                             remarkCustomText = it
                             if (it.isNotBlank()) sp.edit().putString(keys.remarkCustomText, it.trim()).apply()
                         }
                     } else {
-                        InsetDivider()
                         SwitchRow(tagEnabled, "自动打标签", "处理后把好友加入指定标签") {
                             tagEnabled = it
                             sp.edit().putBoolean(tagEnabledKey, it).apply()
                         }
                         InsetDivider()
                         InputRow("标签名称", "标签需要微信里已存在", tagName,
-                            onEditingFinished = { if (it.isBlank()) sp.edit().putString(tagNameKey, "").apply() }) {
+                            onEditingFinished = { if (advancedExpanded && it.isBlank()) sp.edit().putString(tagNameKey, "").apply() }) {
                             tagName = it
                             if (it.isNotBlank()) sp.edit().putString(tagNameKey, it.trim()).apply()
                         }
                     }
-                    InsetDivider()
-                    ActionRow("回复步骤", describeAutoReplySteps(steps), onEditSteps)
                 }
             }
         }
@@ -1868,13 +1852,13 @@ private fun AutoReplyLabelPickerPage(
             state = listState,
             contentPadding = PaddingValues(top = padding.calculateTopPadding() + 8.dp, bottom = padding.calculateBottomPadding() + 16.dp)
         ) {
-            item { SmallTitle(text = "搜索") }
+            item { SettingsSectionTitle(text = "搜索") }
             item {
                 SettingsCard {
                     InputRow("关键词", "按标签名筛选", query) { query = it }
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "标签") }
+            item { SettingsSectionTitle(text = "标签") }
             when {
                 loading -> item { SettingsCard { EmptyText("正在载入标签...") } }
                 error.isNotEmpty() -> item { SettingsCard { EmptyText(error) } }
@@ -2071,7 +2055,7 @@ private fun AutoReplyAiPage(context: Context, sp: SharedPreferences, onBack: () 
                         state = zhiliaListState,
                         contentPadding = PaddingValues(top = padding.calculateTopPadding() + 8.dp, bottom = padding.calculateBottomPadding() + 16.dp)
                     ) {
-                        item { SmallTitle(text = "当前配置") }
+                        item { SettingsSectionTitle(text = "当前配置") }
                         item {
                             SettingsCard {
                                 InfoRow("当前启用", activeName)
@@ -2118,7 +2102,7 @@ private fun AutoReplyAiPage(context: Context, sp: SharedPreferences, onBack: () 
                                 SwitchRow(sp, AutoReplySettings.KEY_AI_CLEAR_CONTEXT_ON_SAVE, "编辑完成后清空上下文", "修改配置后避免继续沿用旧对话", AutoReplySettings.DEFAULT_AI_CLEAR_CONTEXT_ON_SAVE)
                             }
                         }
-                        item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "配置管理") }
+                        item { SettingsSectionTitle(text = "配置管理") }
                         item {
                             SettingsCard {
                                 ActionRow("配置列表", "${configs.size} 个配置，当前启用：$activeName") {
@@ -2127,7 +2111,7 @@ private fun AutoReplyAiPage(context: Context, sp: SharedPreferences, onBack: () 
                                 }
                             }
                         }
-                        item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "模型工具") }
+                        item { SettingsSectionTitle(text = "模型工具") }
                         item {
                             SettingsCard {
                                 ActionRow("模型选择", model.ifBlank { "未设置模型" }) {
@@ -2147,10 +2131,10 @@ private fun AutoReplyAiPage(context: Context, sp: SharedPreferences, onBack: () 
                                 }
                             }
                         }
-                        item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "运行状态") }
+                        item { SettingsSectionTitle(text = "运行状态") }
                         item {
                             SettingsCard {
-                                ActionRow("立即清空上下文", "清除当前运行中的 AI 对话记忆") {
+                                SecondaryActionRow("立即清空上下文", "清除当前运行中的 AI 对话记忆") {
                                     AutoReplyRuntime.clearAiHistories()
                                     Toast.makeText(context, "AI 上下文已清空", Toast.LENGTH_SHORT).show()
                                 }
@@ -2173,7 +2157,7 @@ private fun AutoReplyAiPage(context: Context, sp: SharedPreferences, onBack: () 
                         state = zhiliaConfigListState,
                         contentPadding = PaddingValues(top = padding.calculateTopPadding() + 8.dp, bottom = padding.calculateBottomPadding() + 16.dp)
                     ) {
-                        item { SmallTitle(text = "配置") }
+                        item { SettingsSectionTitle(text = "配置") }
                         configs.forEach { config ->
                             item {
                                 SettingsCard(modifier = Modifier.padding(bottom = 8.dp)) {
@@ -2191,7 +2175,7 @@ private fun AutoReplyAiPage(context: Context, sp: SharedPreferences, onBack: () 
                             }
                         }
 
-                        item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
+                        item { SettingsSectionTitle(text = "操作") }
                         item {
                             SettingsCard {
                                 ContentActionRow("复制") {
@@ -2210,7 +2194,7 @@ private fun AutoReplyAiPage(context: Context, sp: SharedPreferences, onBack: () 
                                     zhiliaPendingName = activeName
                                     edited = true
                                 }
-                                ContentActionRow("新增配置") { route = AutoReplyAiRoute.ZhiliaNew }
+                                AddActionRow("新增配置") { route = AutoReplyAiRoute.ZhiliaNew }
                             }
                         }
                     }
@@ -2240,7 +2224,7 @@ private fun AutoReplyAiPage(context: Context, sp: SharedPreferences, onBack: () 
                         state = zhiliaModelListState,
                         contentPadding = PaddingValues(top = padding.calculateTopPadding() + 8.dp, bottom = padding.calculateBottomPadding() + 16.dp)
                     ) {
-                        item { SmallTitle(text = "拉取模型") }
+                        item { SettingsSectionTitle(text = "拉取模型") }
                         item {
                             SettingsCard {
                                 ActionRow("拉取模型列表", if (loadingText.isBlank()) "从当前 API 地址获取 /models" else loadingText) {
@@ -2259,7 +2243,7 @@ private fun AutoReplyAiPage(context: Context, sp: SharedPreferences, onBack: () 
                             }
                         }
                         if (visibleModels.isNotEmpty()) {
-                            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "模型列表 · ${visibleModels.size}") }
+                            item { SettingsSectionTitle(text = "模型列表 · ${visibleModels.size}") }
                             item {
                                 SettingsCard(modifier = Modifier.padding(bottom = 8.dp)) {
                                     InputRow("搜索", "输入模型名过滤", modelQuery) { modelQuery = it }
@@ -2393,7 +2377,7 @@ private fun NewZhiliaConfigPage(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             contentPadding = PaddingValues(top = padding.calculateTopPadding() + 8.dp, bottom = padding.calculateBottomPadding() + 16.dp)
         ) {
-            item { SmallTitle(text = "配置") }
+            item { SettingsSectionTitle(text = "配置") }
             item {
                 SettingsCard {
                     InputRow("配置名称", if (name.trim() in existingNames) "名称已存在" else "用于区分智聊配置", name) { name = it }
@@ -2406,7 +2390,7 @@ private fun NewZhiliaConfigPage(
                 }
             }
 
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
+            item { SettingsSectionTitle(text = "操作") }
             item {
                 SettingsCard {
                     ContentActionRow("创建", enabled = valid) {
@@ -2418,222 +2402,134 @@ private fun NewZhiliaConfigPage(
     }
 }
 
-internal fun autoReplyStepsAfterDelete(
-    steps: List<AutoReplyStep>, index: Int, removedLegacyStep: Boolean = false
-): List<AutoReplyStep> {
-    val deleted = steps.getOrNull(index) ?: return steps
-    val remaining = steps.filterIndexed { position, _ -> position != index }
-    return if (remaining.isEmpty() && !removedLegacyStep && !AutoReplySettings.isRemovedReplyMode(deleted.mode)) {
-        listOf(AutoReplyStep())
-    } else remaining
+@Composable
+private fun AutoReplySequenceAutoScroll(session: AutoReplySequenceSession, listState: LazyListState, firstItemIndex: Int) {
+    val scrollOffset = with(LocalDensity.current) { 80.dp.roundToPx() }
+    LaunchedEffect(session.scrollRequest) {
+        val id = session.scrollRequest ?: return@LaunchedEffect
+        val index = session.entries.indexOfFirst { it.step.id == id }
+        if (index >= 0) {
+            withFrameNanos { }
+            listState.animateScrollToItem(firstItemIndex + index, -scrollOffset)
+        }
+        session.consumeScrollRequest(id)
+    }
 }
 
-@Composable
-private fun AutoReplyStepsPage(
-    title: String,
-    initialSteps: List<AutoReplyStep>,
-    initiallyExplicitEmpty: Boolean,
-    onBack: () -> Unit,
-    onSave: (List<AutoReplyStep>, Boolean) -> Unit
+private fun LazyListScope.autoReplySequenceSection(
+    context: Context,
+    session: AutoReplySequenceSession,
+    isNew: Boolean,
+    onStepsChange: (List<AutoReplyStep>, Boolean) -> Unit,
+    onContactPicker: (ContactPickerRequest) -> Unit,
+    onFavoritePicker: (FavoritePickerRequest) -> Unit
 ) {
-    val context = LocalContext.current
-    var steps by remember {
-        mutableStateOf(if (initialSteps.isEmpty() && !initiallyExplicitEmpty) listOf(AutoReplyStep()) else initialSteps)
+    val entries = session.entries
+    fun publish() {
+        val steps = session.stepsForDraft()
+        onStepsChange(steps, !isNew && steps.isEmpty())
     }
-    var savedSteps by remember { mutableStateOf(steps) }
-    var removedLegacyStep by remember { mutableStateOf(initiallyExplicitEmpty) }
-    var newStep by remember { mutableStateOf<AutoReplyStep?>(null) }
-    var newDelayValid by remember { mutableStateOf(true) }
-    var optionPicker by remember { mutableStateOf<OptionPickerRequest?>(null) }
-    var contactPicker by remember { mutableStateOf<ContactPickerRequest?>(null) }
-    var favoritePicker by remember { mutableStateOf<FavoritePickerRequest?>(null) }
-    val listState = rememberLazyListState()
-    val scrollBehavior = MiuixScrollBehavior()
-    fun validStep(step: AutoReplyStep): Boolean =
-        AutoReplySettings.isAiReplyMode(step.mode) || AutoReplySettings.isRemovedReplyMode(step.mode) || step.content.isNotBlank()
-    fun persist() {
-        onSave(savedSteps, savedSteps.isEmpty() && removedLegacyStep)
+    item(key = "reply-sequence-heading") {
+        var showPicker by remember { mutableStateOf(false) }
+        val add = { showPicker = true }
+        SequenceSectionHeader("回复步骤", entries.size, if (entries.isNotEmpty()) add else null)
+        if (entries.isEmpty()) SequenceEmptyCard("尚未添加回复", "添加第一条回复", add)
+        SequenceTypePickerDialog(
+            show = showPicker,
+            title = "选择回复类型",
+            options = autoReplyStepOptions().map { it.value to it.label },
+            onDismiss = { showPicker = false },
+            onSelect = { mode -> session.add(mode); if (isNew) publish() }
+        )
     }
-    fun update(index: Int, step: AutoReplyStep) {
-        if (index == steps.size && newStep != null) {
-            newStep = step
-        } else if (index in steps.indices) {
-            steps = steps.toMutableList().also { it[index] = step }
-            if (validStep(step)) {
-                savedSteps = if (savedSteps.any { it.id == step.id }) {
-                    savedSteps.map { if (it.id == step.id) step else it }
-                } else {
-                    val order = steps.mapIndexed { position, item -> item.id to position }.toMap()
-                    (savedSteps + step).sortedBy { order[it.id] ?: Int.MAX_VALUE }
+    if (entries.isNotEmpty()) {
+        entries.forEachIndexed { index, entry ->
+            val step = entry.step
+            item(key = "reply-sequence-${step.id}") {
+                val preview = when {
+                    AutoReplySettings.isRemovedReplyMode(step.mode) -> "已移除的类型，不会执行"
+                    AutoReplySettings.isAiReplyMode(step.mode) -> "使用 AI 生成回复"
+                    step.content.isBlank() -> "未完成"
+                    autoReplyStepUsesFilePicker(step.mode) -> autoReplyFileSummary(step.content)
+                    step.mode == AutoReplySettings.REPLY_FAVORITE -> favoriteSummary(step.content)
+                    autoReplyStepUsesContactPicker(step.mode) -> autoReplySelectedIdSummary(step.content)
+                    else -> step.content
                 }
-                persist()
-            }
-        }
-    }
-    fun reorderSaved() {
-        val order = steps.mapIndexed { index, step -> step.id to index }.toMap()
-        savedSteps = savedSteps.sortedBy { order[it.id] ?: Int.MAX_VALUE }
-        persist()
-    }
-    fun clearStep(index: Int, step: AutoReplyStep) {
-        update(index, step.copy(content = ""))
-        if (index in steps.indices) {
-            savedSteps = savedSteps.filterNot { it.id == step.id }
-            if (savedSteps.isEmpty()) removedLegacyStep = true
-            persist()
-        }
-    }
-    val stepsRoute = when {
-        favoritePicker != null -> AutoReplyStepsRoute.FavoritePicker(favoritePicker!!)
-        optionPicker != null -> AutoReplyStepsRoute.OptionPicker(optionPicker!!)
-        contactPicker != null -> AutoReplyStepsRoute.ContactPicker(contactPicker!!)
-        else -> AutoReplyStepsRoute.Main
-    }
-    SettingsRouteTransition(
-        targetState = stepsRoute,
-        label = "AutoReplyStepsRoute",
-        depthOf = { it.depth() }
-    ) { currentRoute ->
-        when (currentRoute) {
-            is AutoReplyStepsRoute.OptionPicker -> {
-                val request = currentRoute.request
-                OptionPickerPage(
-                    request = request,
-                    onBack = { optionPicker = null },
-                    onSelected = { request.onSelected(it); optionPicker = null }
-                )
-            }
-            is AutoReplyStepsRoute.ContactPicker -> {
-                val request = currentRoute.request
-                ContactPickerPage(
-                    context = context,
-                    request = request,
-                    onBack = { contactPicker = null },
-                    onSelectionChange = { selected -> request.onValue(formatIds(selected)) }
-                )
-            }
-            is AutoReplyStepsRoute.FavoritePicker -> {
-                FavoritePickerPage(
-                    request = currentRoute.request,
-                    onBack = { favoritePicker = null }
-                )
-            }
-            AutoReplyStepsRoute.Main -> PageScaffold(
-                title = title,
-                largeTitle = title,
-                scrollBehavior = scrollBehavior,
-                onBack = onBack,
-                showBackIcon = false
-            ) { padding ->
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
-                    state = listState,
-                    contentPadding = PaddingValues(top = padding.calculateTopPadding() + 8.dp, bottom = padding.calculateBottomPadding() + 16.dp)
+                val delay = "延迟 ${step.delayMs} ms" + if (step.randomDelay) "，随机追加 0–2 秒" else ""
+                val status = if (entry.pending) " · 尚未加入" else ""
+                SequenceItemCard(
+                    title = "第 ${index + 1} 条 · ${autoReplyStepLabel(step.mode).removePrefix("发送")}",
+                    summary = "$preview · $delay$status",
+                    expanded = session.expandedId == step.id,
+                    modifier = Modifier.padding(top = if (index == 0) 0.dp else 12.dp),
+                    onToggle = { session.expandedId = if (session.expandedId == step.id) null else step.id }
                 ) {
-                    (steps + listOfNotNull(newStep)).forEachIndexed { index, step ->
-                        val isNewStep = index == steps.size
-                        item { SmallTitle(modifier = Modifier.padding(top = if (index == 0) 0.dp else 10.dp), text = "第 ${index + 1} 条") }
-                        item(key = step.id) {
-                            var delayText by remember(step.id) { mutableStateOf(step.delayMs.toString()) }
-                            SettingsCard {
-                                PopupOptionRow(
-                                    title = "回复类型",
-                                    summary = autoReplyStepLabel(step.mode),
-                                    options = if (AutoReplySettings.isRemovedReplyMode(step.mode)) {
-                                        listOf(OptionItem("已移除的回复类型", step.mode, "")) + autoReplyStepOptions()
-                                    } else autoReplyStepOptions(),
-                                    currentValue = step.mode,
-                                    onValueChanged = {
-                                        if (AutoReplySettings.isRemovedReplyMode(step.mode) && it != step.mode) removedLegacyStep = true
-                                        update(
-                                            index,
-                                            step.copy(
-                                                mode = it,
-                                                content = when {
-                                                    AutoReplySettings.isAiReplyMode(it) -> ""
-                                                    it == step.mode -> step.content
-                                                    it == AutoReplySettings.REPLY_FAVORITE ||
-                                                        step.mode == AutoReplySettings.REPLY_FAVORITE -> ""
-                                                    else -> step.content
-                                                }
-                                            )
-                                        )
-                                    }
-                                )
-                                InsetDivider()
-                                if (AutoReplySettings.isRemovedReplyMode(step.mode)) {
-                                    InfoRow("已移除的回复类型", "此步骤不会执行，可手动删除或更换回复类型")
-                                    InsetDivider()
-                                } else if (!AutoReplySettings.isAiReplyMode(step.mode)) {
-                                    AutoReplyStepContentEditor(
-                                        context = context,
-                                        step = step,
-                                        onStepChange = { update(index, it) },
-                                        onClear = { clearStep(index, step) },
-                                        onContactPicker = { contactPicker = it },
-                                        onFavoritePicker = { favoritePicker = it }
-                                    )
-                                    InsetDivider()
-                                }
-                                NumberInputRow("发送前延迟", if (delayText.toLongOrNull()?.let { it in 0L..600000L } != true) "请输入 0–600000，保留上次有效配置" else "单位 ms", delayText) {
-                                    delayText = it
-                                    val delay = it.toLongOrNull()?.takeIf { value -> value in 0L..600000L }
-                                    if (isNewStep) newDelayValid = delay != null
-                                    delay?.let { value -> update(index, step.copy(delayMs = value)) }
-                                }
-                                InsetDivider()
-                                SwitchRow(step.randomDelay, "随机追加延迟", "发送前额外随机等待 0-2 秒") {
-                                    update(index, step.copy(randomDelay = it))
-                                }
-                                InsetDivider()
-                                if (isNewStep) ActionRow("放弃新增", "移除尚未完成的回复草稿") { newStep = null }
-                                else RedPacketReplyStepActions(
-                                    canMoveUp = index > 0,
-                                    canMoveDown = index < steps.lastIndex,
-                                    onMoveUp = {
-                                        steps = steps.toMutableList().also {
-                                            val item = it.removeAt(index)
-                                            it.add(index - 1, item)
-                                        }
-                                        reorderSaved()
-                                    },
-                                    onMoveDown = {
-                                        steps = steps.toMutableList().also {
-                                            val item = it.removeAt(index)
-                                            it.add(index + 1, item)
-                                        }
-                                        reorderSaved()
-                                    },
-                                    onDelete = {
-                                        removedLegacyStep = removedLegacyStep || AutoReplySettings.isRemovedReplyMode(step.mode)
-                                        steps = autoReplyStepsAfterDelete(steps, index, removedLegacyStep)
-                                        val previous = savedSteps.associateBy { it.id }
-                                        savedSteps = steps.mapNotNull { previous[it.id] ?: it.takeIf(::validStep) }
-                                        persist()
-                                    }
-                                )
+                    PopupOptionRow(
+                        title = "回复类型",
+                        summary = autoReplyStepLabel(step.mode),
+                        options = if (AutoReplySettings.isRemovedReplyMode(step.mode)) {
+                            listOf(OptionItem("已移除的回复类型", step.mode, "")) + autoReplyStepOptions()
+                        } else autoReplyStepOptions(),
+                        currentValue = step.mode,
+                        onValueChanged = { mode ->
+                            session.update(step.id) { current ->
+                                current.copy(mode = mode, content = when {
+                                    AutoReplySettings.isAiReplyMode(mode) -> ""
+                                    current.mode == mode -> current.content
+                                    current.mode == AutoReplySettings.REPLY_FAVORITE || mode == AutoReplySettings.REPLY_FAVORITE -> ""
+                                    else -> current.content
+                                })
                             }
+                            if (!entry.pending) publish()
+                        }
+                    )
+                    InsetDivider()
+                    if (AutoReplySettings.isRemovedReplyMode(step.mode)) {
+                        InfoRow("已移除的回复类型", "此步骤不会执行，可手动删除或更换回复类型")
+                        InsetDivider()
+                    } else if (!AutoReplySettings.isAiReplyMode(step.mode)) {
+                        AutoReplyStepContentEditor(
+                            context = context,
+                            step = step,
+                            onStepChange = { changed ->
+                                if (session.update(step.id) { it.copy(content = changed.content) } && !entry.pending) publish()
+                            },
+                            onClear = {
+                                if (session.update(step.id) { it.copy(content = "") } && !entry.pending) publish()
+                            },
+                            onContactPicker = onContactPicker,
+                            onFavoritePicker = onFavoritePicker,
+                            fieldState = session.textState(step.id),
+                            currentStep = { session.find(step.id)?.step }
+                        )
+                        InsetDivider()
+                    }
+                    val delayState = session.delayState(step.id)
+                    NumberInputRow("发送前延迟", if (session.delayValid(step.id)) "单位 ms" else "请输入 0–600000，保留上次有效配置", delayState.value) { value ->
+                        delayState.value = value
+                        value.toLongOrNull()?.takeIf { it in 0L..600000L }?.let { delayMs ->
+                            if (session.update(step.id) { it.copy(delayMs = delayMs) } && !entry.pending) publish()
                         }
                     }
-
-                    item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
-                    item {
-                        SettingsCard {
-                            ContentActionRow(if (newStep == null) "新增回复" else "完成") {
-                                val pending = newStep
-                                if (pending == null) {
-                                    newStep = AutoReplyStep(id = System.currentTimeMillis().toString(), content = "你好")
-                                    newDelayValid = true
-                                } else if (!validStep(pending) || !newDelayValid) {
-                                    Toast.makeText(context, "请填写有效的回复内容和延迟", Toast.LENGTH_SHORT).show()
-                                } else {
-                                    steps = steps + pending
-                                    savedSteps = savedSteps + pending
-                                    newStep = null
-                                    persist()
-                                }
-                            }
+                    InsetDivider()
+                    SwitchRow(step.randomDelay, "随机追加延迟", "发送前额外随机等待 0–2 秒") { value ->
+                        if (session.update(step.id) { it.copy(randomDelay = value) } && !entry.pending) publish()
+                    }
+                    InsetDivider()
+                    if (entry.pending) {
+                        ContentActionRow("添加此条") {
+                            if (session.commit(step.id)) publish()
+                            else Toast.makeText(context, "请填写有效的回复内容和延迟", Toast.LENGTH_SHORT).show()
                         }
+                        ContentActionRow("放弃新增") { session.remove(step.id) }
+                    } else {
+                        SequenceItemActions(
+                            canMoveUp = index > 0,
+                            canMoveDown = index < entries.lastIndex,
+                            onMoveUp = { if (session.move(step.id, -1)) publish() },
+                            onMoveDown = { if (session.move(step.id, 1)) publish() },
+                            onDelete = { if (session.remove(step.id)) publish() }
+                        )
                     }
                 }
             }
@@ -2648,7 +2544,9 @@ private fun AutoReplyStepContentEditor(
     onStepChange: (AutoReplyStep) -> Unit,
     onClear: () -> Unit,
     onContactPicker: (ContactPickerRequest) -> Unit,
-    onFavoritePicker: (FavoritePickerRequest) -> Unit
+    onFavoritePicker: (FavoritePickerRequest) -> Unit,
+    fieldState: MutableState<TextFieldValue>? = null,
+    currentStep: () -> AutoReplyStep? = { step }
 ) {
     when {
         step.mode == AutoReplySettings.REPLY_TEXT || step.mode == AutoReplySettings.REPLY_XML -> {
@@ -2657,7 +2555,8 @@ private fun AutoReplyStepContentEditor(
                 summary = autoReplyStepContentHint(step.mode),
                 value = step.content,
                 variables = autoReplyTemplateVariables,
-                minLines = 4
+                minLines = 4,
+                fieldState = fieldState
             ) {
                 onStepChange(step.copy(content = it))
             }
@@ -2674,14 +2573,18 @@ private fun AutoReplyStepContentEditor(
                         mode = mode,
                         multiSelect = true,
                         existingValue = formatIds(autoReplySplitContent(step.content)),
-                        onValue = { if (it.isEmpty()) onClear() else onStepChange(step.copy(content = it)) },
+                        onValue = { value ->
+                            currentStep()?.takeIf { it.mode == step.mode }?.let { current ->
+                                if (value.isEmpty()) onClear() else onStepChange(current.copy(content = value))
+                            }
+                        },
                         enableLabels = step.mode == AutoReplySettings.REPLY_CARD
                     )
                 )
             }
             if (step.content.isNotBlank()) {
                 InsetDivider()
-                ActionRow("清空已选", "移除当前已选择内容") {
+                SecondaryActionRow("清空已选", "移除当前已选择内容") {
                     onClear()
                 }
             }
@@ -2695,7 +2598,11 @@ private fun AutoReplyStepContentEditor(
                     FavoritePickerRequest(
                         title = autoReplyPickerTitle(step.mode),
                         existingValue = step.content,
-                        onValue = { if (it.isEmpty()) onClear() else onStepChange(step.copy(content = it)) },
+                        onValue = { value ->
+                            currentStep()?.takeIf { it.mode == step.mode }?.let { current ->
+                                if (value.isEmpty()) onClear() else onStepChange(current.copy(content = value))
+                            }
+                        },
                         multiSelect = true,
                         delimiter = ";;;"
                     )
@@ -2703,7 +2610,7 @@ private fun AutoReplyStepContentEditor(
             }
             if (step.content.isNotBlank()) {
                 InsetDivider()
-                ActionRow("清空已选收藏", "移除当前回复类型的收藏") {
+                SecondaryActionRow("清空已选收藏", "移除当前回复类型的收藏") {
                     onClear()
                 }
             }
@@ -2719,19 +2626,20 @@ private fun AutoReplyStepContentEditor(
                     return@ActionRow
                 }
                 AutoReplyFilePickerBridge.launch(activity, step.mode) { paths ->
-                    val merged = (autoReplySplitContent(step.content) + paths)
+                    val current = currentStep()?.takeIf { it.mode == step.mode } ?: return@launch
+                    val merged = (autoReplySplitContent(current.content) + paths)
                         .map { it.trim() }
                         .filter { it.isNotEmpty() }
                         .distinct()
                     if (merged.isNotEmpty()) {
-                        onStepChange(step.copy(content = merged.joinToString(";;;")))
+                        onStepChange(current.copy(content = merged.joinToString(";;;")))
                         Toast.makeText(context, "已选择 ${paths.size} 个文件", Toast.LENGTH_SHORT).show()
                     }
                 }
             }
             if (step.content.isNotBlank()) {
                 InsetDivider()
-                ActionRow("清空已选文件", "移除当前回复类型的文件") {
+                SecondaryActionRow("清空已选文件", "移除当前回复类型的文件") {
                     onClear()
                 }
             }

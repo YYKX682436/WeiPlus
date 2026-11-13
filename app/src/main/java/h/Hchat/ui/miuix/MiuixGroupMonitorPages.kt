@@ -37,7 +37,6 @@ import h.Hchat.hooks.items.payment.core.RedPacketRuleConfig
 import h.Hchat.preferences.HchatStorage
 import h.Hchat.ui.FeatureSettingsProvider
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
-import top.yukonga.miuix.kmp.basic.SmallTitle
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.LinkedHashSet
@@ -230,7 +229,7 @@ internal fun GroupRenameMonitorMiuixPage(
                         bottom = padding.calculateBottomPadding() + 16.dp
                     )
                 ) {
-                    item { SmallTitle(text = "提醒方式") }
+                    item { SettingsSectionTitle(text = "提醒方式") }
                     item {
                         SettingsCard {
                             SwitchRow(noticeEnabled, "插入系统消息", "在对应群聊插入可点击成员资料的改名消息", onCheckedChange = { noticeEnabled = it; sp.edit().putBoolean(GroupRenameMonitorSettings.KEY_NOTICE_ENABLE, it).apply() })
@@ -284,7 +283,7 @@ internal fun GroupRenameMonitorMiuixPage(
 
                         }
                     }
-                    item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "发送设置") }
+                    item { SettingsSectionTitle(text = "发送设置") }
                     item {
                         SettingsCard {
                             ActionRow("监听群与专属设置", groupSelectionSummary(listenGroups)) {
@@ -327,7 +326,7 @@ internal fun GroupRenameMonitorMiuixPage(
                         }
                     }
                     if (promptType != GroupRenameMonitorSettings.PROMPT_CARD) {
-                        item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "文本模板") }
+                        item { SettingsSectionTitle(text = "文本模板") }
                         item {
                             SettingsCard {
                                 VariableInputRow("改名提醒文本", "多个模板用 || 分隔随机选择", text, groupRenameTemplateVariables, minLines = 3, onEditingFinished = { if (it.isBlank()) sp.edit().putString(GroupRenameMonitorSettings.KEY_TEXT, it).apply() }) { text = it; if (it.isNotBlank()) sp.edit().putString(GroupRenameMonitorSettings.KEY_TEXT, it).apply() }
@@ -335,7 +334,7 @@ internal fun GroupRenameMonitorMiuixPage(
                         }
                     }
                     if (promptType != GroupRenameMonitorSettings.PROMPT_TEXT) {
-                        item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "卡片模板") }
+                        item { SettingsSectionTitle(text = "卡片模板") }
                         item {
                             SettingsCard {
                                 VariableInputRow("卡片标题", "多个模板用 || 分隔随机选择", cardTitle, groupRenameTemplateVariables, onEditingFinished = { if (it.isBlank()) sp.edit().putString(GroupRenameMonitorSettings.KEY_CARD_TITLE, it).apply() }) { cardTitle = it; if (it.isNotBlank()) sp.edit().putString(GroupRenameMonitorSettings.KEY_CARD_TITLE, it).apply() }
@@ -435,7 +434,7 @@ private fun GroupRenameGroupManagerPage(
                 }
             }
             if (!batchDeleteMode) {
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "模板") }
+                item { SettingsSectionTitle(text = "模板") }
 
 
                 item {
@@ -453,7 +452,7 @@ private fun GroupRenameGroupManagerPage(
                     }
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "已监听群 · ${selectedIds.size} 项") }
+            item { SettingsSectionTitle(text = "已监听群 · ${selectedIds.size} 项") }
             item {
                 SettingsCard {
                     when {
@@ -532,7 +531,7 @@ private fun GroupRenameTemplateListPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "模板") }
+            item { SettingsSectionTitle(text = "模板") }
             item {
                 SettingsCard {
                     if (templates.isEmpty()) {
@@ -549,7 +548,7 @@ private fun GroupRenameTemplateListPage(
                     }
 
                     InsetDivider()
-                    ContentActionRow("新增模板", onClick = onAddTemplate)
+                    AddActionRow("新增模板", onClick = onAddTemplate)
                 }
             }
         }
@@ -614,7 +613,7 @@ private fun GroupRenameTemplateEditorPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "模板") }
+            item { SettingsSectionTitle(text = "模板") }
             item {
                 SettingsCard {
                     InputRow("模板名称", if (name.isBlank()) "请输入名称，保留上次有效配置" else "用于列表和批量套用", name) { name = it; if (it.isNotBlank()) persist() }
@@ -624,7 +623,7 @@ private fun GroupRenameTemplateEditorPage(
                     NumberInputRow("整体延迟", if (delaySeconds.toIntOrNull()?.let { it in 0..600 } != true) "请输入 0–600，保留上次有效配置" else "单位秒，0-600", delaySeconds) { delaySeconds = it; if (it.toIntOrNull()?.let { value -> value in 0..600 } == true) persist() }
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "提示设置") }
+            item { SettingsSectionTitle(text = "提示设置") }
             item {
                 SettingsCard {
                     PopupChoiceRow(
@@ -647,7 +646,7 @@ private fun GroupRenameTemplateEditorPage(
                 }
             }
             if (promptType != GroupRenameMonitorSettings.PROMPT_CARD) {
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "文本模板") }
+                item { SettingsSectionTitle(text = "文本模板") }
                 item {
                     SettingsCard {
                         VariableInputRow("改名提醒文本", "多个模板用 || 分隔随机选择", text, groupRenameTemplateVariables, minLines = 3, onEditingFinished = { if (it.isBlank()) { validText = it; persist() } }) { text = it; if (it.isNotBlank()) { validText = it; persist() } }
@@ -655,7 +654,7 @@ private fun GroupRenameTemplateEditorPage(
                 }
             }
             if (promptType != GroupRenameMonitorSettings.PROMPT_TEXT) {
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "卡片模板") }
+                item { SettingsSectionTitle(text = "卡片模板") }
                 item {
                     SettingsCard {
                         VariableInputRow("卡片标题", "多个模板用 || 分隔随机选择", cardTitle, groupRenameTemplateVariables, onEditingFinished = { if (it.isBlank()) { validCardTitle = it; persist() } }) { cardTitle = it; if (it.isNotBlank()) { validCardTitle = it; persist() } }
@@ -665,7 +664,7 @@ private fun GroupRenameTemplateEditorPage(
                 }
             }
 
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
+            item { SettingsSectionTitle(text = "操作") }
             item {
                 SettingsCard {
                     if (!canDelete) ContentActionRow("创建") { validText = text; validCardTitle = cardTitle; validCardDesc = cardDesc; persist(create = true) }
@@ -740,7 +739,7 @@ private fun GroupRenameBatchTemplateBindingPage(
                     InputRow("搜索监听群", "群名称 / 群聊备注 / 群号", query) { query = it }
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "已选择 ${selectedGroups.size} 个群") }
+            item { SettingsSectionTitle(text = "已选择 ${selectedGroups.size} 个群") }
             item {
                 SettingsCard {
                     if (visibleIds.isNotEmpty()) ContentActionRow(if (allVisibleSelected) "取消全选" else "全选") {
@@ -851,7 +850,7 @@ private fun GroupRenameGroupEditorPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "模板") }
+            item { SettingsSectionTitle(text = "模板") }
             item {
                 SettingsCard {
                     PopupChoiceRow(
@@ -874,7 +873,7 @@ private fun GroupRenameGroupEditorPage(
                 }
             }
             if (boundTemplate == null) {
-                item { SmallTitle(text = "提示设置") }
+                item { SettingsSectionTitle(text = "提示设置") }
                 item {
                     SettingsCard {
                         PopupChoiceRow(
@@ -897,7 +896,7 @@ private fun GroupRenameGroupEditorPage(
                     }
                 }
                 if (effectivePromptType != GroupRenameMonitorSettings.PROMPT_CARD) {
-                    item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "文本模板") }
+                    item { SettingsSectionTitle(text = "文本模板") }
                     item {
                         SettingsCard {
                             VariableInputRow("改名提醒文本", "本群专属；多个模板用 || 分隔随机选择", text, groupRenameTemplateVariables, minLines = 3, onEditingFinished = { if (it.isBlank()) sp.edit().putString(GroupRenameMonitorSettings.groupKey(GroupRenameMonitorSettings.KEY_TEXT, groupId), it).apply() }) { text = it; if (it.isNotBlank()) sp.edit().putString(GroupRenameMonitorSettings.groupKey(GroupRenameMonitorSettings.KEY_TEXT, groupId), it).apply() }
@@ -905,7 +904,7 @@ private fun GroupRenameGroupEditorPage(
                     }
                 }
                 if (effectivePromptType != GroupRenameMonitorSettings.PROMPT_TEXT) {
-                    item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "卡片模板") }
+                    item { SettingsSectionTitle(text = "卡片模板") }
                     item {
                         SettingsCard {
                             VariableInputRow("卡片标题", "本群专属；多个模板用 || 分隔随机选择", cardTitle, groupRenameTemplateVariables, onEditingFinished = { if (it.isBlank()) sp.edit().putString(GroupRenameMonitorSettings.groupKey(GroupRenameMonitorSettings.KEY_CARD_TITLE, groupId), it).apply() }) { cardTitle = it; if (it.isNotBlank()) sp.edit().putString(GroupRenameMonitorSettings.groupKey(GroupRenameMonitorSettings.KEY_CARD_TITLE, groupId), it).apply() }
@@ -1143,6 +1142,8 @@ internal fun GroupLeaveMonitorMiuixPage(
     var mediaSequence by remember {
         mutableStateOf(sp.getString(GroupLeaveMonitorSettings.KEY_MEDIA_SEQUENCE, GroupLeaveMonitorSettings.DEFAULT_MEDIA_SEQUENCE) ?: GroupLeaveMonitorSettings.DEFAULT_MEDIA_SEQUENCE)
     }
+    val mediaSequenceSession = remember { GroupMediaSequenceSession(mediaSequence, true) }
+    var showMediaDiscard by remember { mutableStateOf(false) }
     var joinImages by remember { mutableStateOf(sp.getString(GroupLeaveMonitorSettings.KEY_JOIN_IMAGE_PATHS, "").orEmpty()) }
     var leftImages by remember { mutableStateOf(sp.getString(GroupLeaveMonitorSettings.KEY_LEFT_IMAGE_PATHS, "").orEmpty()) }
     var joinVoices by remember { mutableStateOf(sp.getString(GroupLeaveMonitorSettings.KEY_JOIN_VOICE_PATHS, "").orEmpty()) }
@@ -1348,7 +1349,7 @@ internal fun GroupLeaveMonitorMiuixPage(
         title = provider.title(),
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
-        onBack = onBack,
+        onBack = { if (mediaSequenceSession.entries.any { it.pending }) showMediaDiscard = true else onBack() },
         showBackIcon = false
     ) { padding ->
         LazyColumn(
@@ -1359,7 +1360,7 @@ internal fun GroupLeaveMonitorMiuixPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "系统消息") }
+            item { SettingsSectionTitle(text = "系统消息") }
             item {
                 SettingsCard {
                     SwitchRow(
@@ -1438,7 +1439,7 @@ internal fun GroupLeaveMonitorMiuixPage(
                     }
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "进退群回复") }
+            item { SettingsSectionTitle(text = "进退群回复") }
             item {
                 SettingsCard {
                     SwitchRow(
@@ -1510,7 +1511,7 @@ internal fun GroupLeaveMonitorMiuixPage(
                     }
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "文本模板") }
+            item { SettingsSectionTitle(text = "文本模板") }
             item {
                 SettingsCard {
                     VariableInputRow(
@@ -1534,7 +1535,7 @@ internal fun GroupLeaveMonitorMiuixPage(
                     )
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "卡片模板") }
+            item { SettingsSectionTitle(text = "卡片模板") }
             item {
                 SettingsCard {
                     VariableInputRow("进群卡片标题", "支持变量", joinCardTitle, groupMemberTemplateVariables, onEditingFinished = { if (it.isBlank()) persistGroupText(GroupLeaveMonitorSettings.KEY_JOIN_CARD_TITLE, it, true) }) { joinCardTitle = it; persistGroupText(GroupLeaveMonitorSettings.KEY_JOIN_CARD_TITLE, it) }
@@ -1546,7 +1547,7 @@ internal fun GroupLeaveMonitorMiuixPage(
                     VariableInputRow("退群卡片描述", "支持变量", leftCardDesc, groupMemberTemplateVariables, minLines = 3, onEditingFinished = { if (it.isBlank()) persistGroupText(GroupLeaveMonitorSettings.KEY_LEFT_CARD_DESC, it, true) }) { leftCardDesc = it; persistGroupText(GroupLeaveMonitorSettings.KEY_LEFT_CARD_DESC, it) }
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "媒体") }
+            item { SettingsSectionTitle(text = "媒体") }
             item {
                 SettingsCard {
                     PopupChoiceRow(
@@ -1559,49 +1560,37 @@ internal fun GroupLeaveMonitorMiuixPage(
                             sp.edit().putString(GroupLeaveMonitorSettings.KEY_MEDIA_ORDER, it).apply()
                         }
                     )
-                    InsetDivider()
-                    InputRow("媒体类型顺序", "英文逗号分隔：image,voice,emoji,video,file,favorite", mediaSequence, onEditingFinished = { if (it.isBlank()) persistGroupText(GroupLeaveMonitorSettings.KEY_MEDIA_SEQUENCE, it, true) }) { mediaSequence = it; persistGroupText(GroupLeaveMonitorSettings.KEY_MEDIA_SEQUENCE, it) }
-                    InsetDivider()
-                    GroupMemberMediaRow(context, "进群图片", joinImages, RedPacketRuleConfig.REPLY_IMAGE) { joinImages = it; sp.edit().putString(GroupLeaveMonitorSettings.KEY_JOIN_IMAGE_PATHS, it).apply() }
-                    InsetDivider()
-                    GroupMemberMediaRow(context, "退群图片", leftImages, RedPacketRuleConfig.REPLY_IMAGE) { leftImages = it; sp.edit().putString(GroupLeaveMonitorSettings.KEY_LEFT_IMAGE_PATHS, it).apply() }
-                    InsetDivider()
-                    GroupMemberMediaRow(context, "进群语音", joinVoices, RedPacketRuleConfig.REPLY_VOICE) { joinVoices = it; sp.edit().putString(GroupLeaveMonitorSettings.KEY_JOIN_VOICE_PATHS, it).apply() }
-                    InsetDivider()
-                    GroupMemberMediaRow(context, "退群语音", leftVoices, RedPacketRuleConfig.REPLY_VOICE) { leftVoices = it; sp.edit().putString(GroupLeaveMonitorSettings.KEY_LEFT_VOICE_PATHS, it).apply() }
-                    InsetDivider()
-                    GroupMemberMediaRow(context, "进群表情", joinEmojis, RedPacketRuleConfig.REPLY_EMOJI) { joinEmojis = it; sp.edit().putString(GroupLeaveMonitorSettings.KEY_JOIN_EMOJI_PATHS, it).apply() }
-                    InsetDivider()
-                    GroupMemberMediaRow(context, "退群表情", leftEmojis, RedPacketRuleConfig.REPLY_EMOJI) { leftEmojis = it; sp.edit().putString(GroupLeaveMonitorSettings.KEY_LEFT_EMOJI_PATHS, it).apply() }
-                    InsetDivider()
-                    GroupMemberMediaRow(context, "进群视频", joinVideos, RedPacketRuleConfig.REPLY_VIDEO) { joinVideos = it; sp.edit().putString(GroupLeaveMonitorSettings.KEY_JOIN_VIDEO_PATHS, it).apply() }
-                    InsetDivider()
-                    GroupMemberMediaRow(context, "退群视频", leftVideos, RedPacketRuleConfig.REPLY_VIDEO) { leftVideos = it; sp.edit().putString(GroupLeaveMonitorSettings.KEY_LEFT_VIDEO_PATHS, it).apply() }
-                    InsetDivider()
-                    GroupMemberMediaRow(context, "进群文件", joinFiles, RedPacketRuleConfig.REPLY_FILE) { joinFiles = it; sp.edit().putString(GroupLeaveMonitorSettings.KEY_JOIN_FILE_PATHS, it).apply() }
-                    InsetDivider()
-                    GroupMemberMediaRow(context, "退群文件", leftFiles, RedPacketRuleConfig.REPLY_FILE) { leftFiles = it; sp.edit().putString(GroupLeaveMonitorSettings.KEY_LEFT_FILE_PATHS, it).apply() }
-                    InsetDivider()
-                    GroupMemberMediaRow(
-                        context,
-                        "进群收藏",
-                        joinFavorites,
-                        RedPacketRuleConfig.REPLY_FAVORITE,
-                        onValueChange = { joinFavorites = it; sp.edit().putString(GroupLeaveMonitorSettings.KEY_JOIN_FAVORITE_PATHS, it).apply() },
-                        onFavoritePicker = { favoritePicker = it }
-                    )
-                    InsetDivider()
-                    GroupMemberMediaRow(
-                        context,
-                        "退群收藏",
-                        leftFavorites,
-                        RedPacketRuleConfig.REPLY_FAVORITE,
-                        onValueChange = { leftFavorites = it; sp.edit().putString(GroupLeaveMonitorSettings.KEY_LEFT_FAVORITE_PATHS, it).apply() },
-                        onFavoritePicker = { favoritePicker = it }
-                    )
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "精细延迟") }
+            item {
+                GroupMediaSequenceEditor(
+                    context = context, session = mediaSequenceSession,
+                    definitions = listOf(
+                        GroupMediaDefinition("image", "图片", RedPacketRuleConfig.REPLY_IMAGE, joinImages, leftImages, "延迟 ${imageDelay} ms",
+                            { value -> joinImages = value; sp.edit().putString(GroupLeaveMonitorSettings.KEY_JOIN_IMAGE_PATHS, value).apply() },
+                            { value -> leftImages = value; sp.edit().putString(GroupLeaveMonitorSettings.KEY_LEFT_IMAGE_PATHS, value).apply() }),
+                        GroupMediaDefinition("voice", "语音", RedPacketRuleConfig.REPLY_VOICE, joinVoices, leftVoices, "延迟 ${voiceDelay} ms",
+                            { value -> joinVoices = value; sp.edit().putString(GroupLeaveMonitorSettings.KEY_JOIN_VOICE_PATHS, value).apply() },
+                            { value -> leftVoices = value; sp.edit().putString(GroupLeaveMonitorSettings.KEY_LEFT_VOICE_PATHS, value).apply() }),
+                        GroupMediaDefinition("emoji", "表情", RedPacketRuleConfig.REPLY_EMOJI, joinEmojis, leftEmojis, "延迟 ${emojiDelay} ms",
+                            { value -> joinEmojis = value; sp.edit().putString(GroupLeaveMonitorSettings.KEY_JOIN_EMOJI_PATHS, value).apply() },
+                            { value -> leftEmojis = value; sp.edit().putString(GroupLeaveMonitorSettings.KEY_LEFT_EMOJI_PATHS, value).apply() }),
+                        GroupMediaDefinition("video", "视频", RedPacketRuleConfig.REPLY_VIDEO, joinVideos, leftVideos, "延迟 ${videoDelay} ms",
+                            { value -> joinVideos = value; sp.edit().putString(GroupLeaveMonitorSettings.KEY_JOIN_VIDEO_PATHS, value).apply() },
+                            { value -> leftVideos = value; sp.edit().putString(GroupLeaveMonitorSettings.KEY_LEFT_VIDEO_PATHS, value).apply() }),
+                        GroupMediaDefinition("file", "文件", RedPacketRuleConfig.REPLY_FILE, joinFiles, leftFiles, "延迟 ${fileDelay} ms",
+                            { value -> joinFiles = value; sp.edit().putString(GroupLeaveMonitorSettings.KEY_JOIN_FILE_PATHS, value).apply() },
+                            { value -> leftFiles = value; sp.edit().putString(GroupLeaveMonitorSettings.KEY_LEFT_FILE_PATHS, value).apply() }),
+                        GroupMediaDefinition("favorite", "收藏", RedPacketRuleConfig.REPLY_FAVORITE, joinFavorites, leftFavorites, "延迟 ${favoriteDelay} ms",
+                            { value -> joinFavorites = value; sp.edit().putString(GroupLeaveMonitorSettings.KEY_JOIN_FAVORITE_PATHS, value).apply() },
+                            { value -> leftFavorites = value; sp.edit().putString(GroupLeaveMonitorSettings.KEY_LEFT_FAVORITE_PATHS, value).apply() })
+                    ),
+                    emptySummary = "尚未添加媒体类型",
+                    onChange = { value -> mediaSequence = value; persistGroupText(GroupLeaveMonitorSettings.KEY_MEDIA_SEQUENCE, value, true) },
+                    onFavoritePicker = { favoritePicker = it }
+                )
+            }
+            item { SettingsSectionTitle(text = "精细延迟") }
             item {
                 SettingsCard {
                     NumberInputRow("提示延迟", "单位 ms", promptDelay) { promptDelay = it; persistGroupDelay(GroupLeaveMonitorSettings.KEY_PROMPT_DELAY_MS, it) }
@@ -1623,6 +1612,11 @@ internal fun GroupLeaveMonitorMiuixPage(
     }
         }
     }
+    GroupMediaDiscardDialog(
+        show = showMediaDiscard,
+        onDismiss = { showMediaDiscard = false },
+        onConfirm = { mediaSequenceSession.discardPending(); showMediaDiscard = false; onBack() }
+    )
 }
 
 @Composable
@@ -1710,7 +1704,7 @@ private fun GroupMemberGroupManagerPage(
                 }
             }
             if (!batchDeleteMode) {
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "模板") }
+                item { SettingsSectionTitle(text = "模板") }
 
 
                 item {
@@ -1731,7 +1725,7 @@ private fun GroupMemberGroupManagerPage(
                     }
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "已监听群 · ${selectedIds.size} 项") }
+            item { SettingsSectionTitle(text = "已监听群 · ${selectedIds.size} 项") }
             item {
                 SettingsCard {
                     when {
@@ -1810,7 +1804,7 @@ private fun GroupLeaveTemplateListPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "模板") }
+            item { SettingsSectionTitle(text = "模板") }
             item {
                 SettingsCard {
                     if (templates.isEmpty()) {
@@ -1828,7 +1822,7 @@ private fun GroupLeaveTemplateListPage(
                     }
 
                     InsetDivider()
-                    ContentActionRow("新增模板", onClick = onAddTemplate)
+                    AddActionRow("新增模板", onClick = onAddTemplate)
                 }
             }
         }
@@ -1890,7 +1884,7 @@ private fun GroupLeaveBatchTemplateBindingPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "模板") }
+            item { SettingsSectionTitle(text = "模板") }
             item {
                 SettingsCard {
                     if (visibleIds.isNotEmpty()) ContentActionRow(if (visibleAllSelected) "取消全选" else "全选") {
@@ -1934,7 +1928,7 @@ private fun GroupLeaveBatchTemplateBindingPage(
                     }
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "监听群") }
+            item { SettingsSectionTitle(text = "监听群") }
             item {
                 SettingsCard {
                     InputRow("搜索监听群", "群名称 / 群聊备注 / 群号", query) { query = it }
@@ -1989,6 +1983,8 @@ private fun GroupLeaveTemplateEditorPage(
     var mediaMode by remember(request) { mutableStateOf(request.template.mediaMode) }
     var mediaOrder by remember(request) { mutableStateOf(request.template.mediaOrder) }
     var mediaSequence by remember(request) { mutableStateOf(request.template.mediaSequence) }
+    val mediaSequenceSession = remember(request) { GroupMediaSequenceSession(mediaSequence, request.canDelete) }
+    var showMediaDiscard by remember { mutableStateOf(false) }
     var joinImages by remember(request) { mutableStateOf(request.template.joinImages) }
     var leftImages by remember(request) { mutableStateOf(request.template.leftImages) }
     var joinVoices by remember(request) { mutableStateOf(request.template.joinVoices) }
@@ -2031,7 +2027,7 @@ private fun GroupLeaveTemplateEditorPage(
             title = name.ifBlank { "回复模板" },
             largeTitle = name.ifBlank { "回复模板" },
             scrollBehavior = scrollBehavior,
-            onBack = onBack,
+            onBack = { if (mediaSequenceSession.entries.any { it.pending }) showMediaDiscard = true else onBack() },
             showBackIcon = false
         ) { padding ->
             LazyColumn(
@@ -2042,7 +2038,7 @@ private fun GroupLeaveTemplateEditorPage(
                     bottom = padding.calculateBottomPadding() + 16.dp
                 )
             ) {
-                item { SmallTitle(text = "模板") }
+                item { SettingsSectionTitle(text = "模板") }
                 item {
                     SettingsCard {
                         InputRow("模板名称", if (name.isBlank() && request.canDelete) "请输入名称，保留上次有效配置" else "用于区分不同群回复配置", name) { text -> name = text; if (text.isNotBlank()) update { it.copy(name = text.trim()) } }
@@ -2050,7 +2046,7 @@ private fun GroupLeaveTemplateEditorPage(
                         SwitchRow(enabled, "模板", "关闭后绑定此模板的群不会按模板回复", onCheckedChange = { checked -> enabled = checked; update { it.copy(enabled = checked) } })
                     }
                 }
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "事件") }
+                item { SettingsSectionTitle(text = "事件") }
                 item {
                     SettingsCard {
                         SwitchRow(joinEnabled, "进群回复", "绑定群检测到成员进群时发送", onCheckedChange = { checked -> joinEnabled = checked; update { it.copy(joinEnabled = checked) } })
@@ -2058,7 +2054,7 @@ private fun GroupLeaveTemplateEditorPage(
                         SwitchRow(leftEnabled, "退群回复", "绑定群检测到成员退群时发送", onCheckedChange = { checked -> leftEnabled = checked; update { it.copy(leftEnabled = checked) } })
                     }
                 }
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "提示模板") }
+                item { SettingsSectionTitle(text = "提示模板") }
                 item {
                     SettingsCard {
                         PopupChoiceRow(
@@ -2094,7 +2090,7 @@ private fun GroupLeaveTemplateEditorPage(
                         }
                     }
                 }
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "媒体") }
+                item { SettingsSectionTitle(text = "媒体") }
                 item {
                     SettingsCard {
                         PopupChoiceRow(
@@ -2113,50 +2109,38 @@ private fun GroupLeaveTemplateEditorPage(
                                 currentValue = mediaOrder,
                                 onValueChanged = { selected -> mediaOrder = selected; update { it.copy(mediaOrder = GroupLeaveMonitorSettings.normalizeMediaOrder(selected)) } }
                             )
-                            InsetDivider()
-                            InputRow("媒体类型顺序", "英文逗号分隔：image,voice,emoji,video,file,favorite", mediaSequence, onEditingFinished = { text -> if (text.isBlank()) update { it.copy(mediaSequence = text) } }) { text -> mediaSequence = text; if (text.isNotBlank()) update { it.copy(mediaSequence = text) } }
-                            InsetDivider()
-                            GroupMemberMediaRow(context, "进群图片", joinImages, RedPacketRuleConfig.REPLY_IMAGE) { selected -> joinImages = selected; update { it.copy(joinImages = selected) } }
-                            InsetDivider()
-                            GroupMemberMediaRow(context, "退群图片", leftImages, RedPacketRuleConfig.REPLY_IMAGE) { selected -> leftImages = selected; update { it.copy(leftImages = selected) } }
-                            InsetDivider()
-                            GroupMemberMediaRow(context, "进群语音", joinVoices, RedPacketRuleConfig.REPLY_VOICE) { selected -> joinVoices = selected; update { it.copy(joinVoices = selected) } }
-                            InsetDivider()
-                            GroupMemberMediaRow(context, "退群语音", leftVoices, RedPacketRuleConfig.REPLY_VOICE) { selected -> leftVoices = selected; update { it.copy(leftVoices = selected) } }
-                            InsetDivider()
-                            GroupMemberMediaRow(context, "进群表情", joinEmojis, RedPacketRuleConfig.REPLY_EMOJI) { selected -> joinEmojis = selected; update { it.copy(joinEmojis = selected) } }
-                            InsetDivider()
-                            GroupMemberMediaRow(context, "退群表情", leftEmojis, RedPacketRuleConfig.REPLY_EMOJI) { selected -> leftEmojis = selected; update { it.copy(leftEmojis = selected) } }
-                            InsetDivider()
-                            GroupMemberMediaRow(context, "进群视频", joinVideos, RedPacketRuleConfig.REPLY_VIDEO) { selected -> joinVideos = selected; update { it.copy(joinVideos = selected) } }
-                            InsetDivider()
-                            GroupMemberMediaRow(context, "退群视频", leftVideos, RedPacketRuleConfig.REPLY_VIDEO) { selected -> leftVideos = selected; update { it.copy(leftVideos = selected) } }
-                            InsetDivider()
-                            GroupMemberMediaRow(context, "进群文件", joinFiles, RedPacketRuleConfig.REPLY_FILE) { selected -> joinFiles = selected; update { it.copy(joinFiles = selected) } }
-                            InsetDivider()
-                            GroupMemberMediaRow(context, "退群文件", leftFiles, RedPacketRuleConfig.REPLY_FILE) { selected -> leftFiles = selected; update { it.copy(leftFiles = selected) } }
-                            InsetDivider()
-                            GroupMemberMediaRow(
-                                context,
-                                "进群收藏",
-                                joinFavorites,
-                                RedPacketRuleConfig.REPLY_FAVORITE,
-                                onValueChange = { selected -> joinFavorites = selected; update { it.copy(joinFavorites = selected) } },
-                                onFavoritePicker = { favoritePicker = it }
-                            )
-                            InsetDivider()
-                            GroupMemberMediaRow(
-                                context,
-                                "退群收藏",
-                                leftFavorites,
-                                RedPacketRuleConfig.REPLY_FAVORITE,
-                                onValueChange = { selected -> leftFavorites = selected; update { it.copy(leftFavorites = selected) } },
-                                onFavoritePicker = { favoritePicker = it }
-                            )
                         }
                     }
                 }
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "延迟") }
+                if (mediaMode == GroupLeaveMonitorSettings.MODE_CUSTOM) item {
+                    GroupMediaSequenceEditor(
+                        context = context, session = mediaSequenceSession,
+                        definitions = listOf(
+                            GroupMediaDefinition("image", "图片", RedPacketRuleConfig.REPLY_IMAGE, joinImages, leftImages, if (delayMode == GroupLeaveMonitorSettings.MODE_CUSTOM) "延迟 ${imageDelay} ms" else "延迟继承全局",
+                                { value -> joinImages = value; update { it.copy(joinImages = value) } },
+                                { value -> leftImages = value; update { it.copy(leftImages = value) } }),
+                            GroupMediaDefinition("voice", "语音", RedPacketRuleConfig.REPLY_VOICE, joinVoices, leftVoices, if (delayMode == GroupLeaveMonitorSettings.MODE_CUSTOM) "延迟 ${voiceDelay} ms" else "延迟继承全局",
+                                { value -> joinVoices = value; update { it.copy(joinVoices = value) } },
+                                { value -> leftVoices = value; update { it.copy(leftVoices = value) } }),
+                            GroupMediaDefinition("emoji", "表情", RedPacketRuleConfig.REPLY_EMOJI, joinEmojis, leftEmojis, if (delayMode == GroupLeaveMonitorSettings.MODE_CUSTOM) "延迟 ${emojiDelay} ms" else "延迟继承全局",
+                                { value -> joinEmojis = value; update { it.copy(joinEmojis = value) } },
+                                { value -> leftEmojis = value; update { it.copy(leftEmojis = value) } }),
+                            GroupMediaDefinition("video", "视频", RedPacketRuleConfig.REPLY_VIDEO, joinVideos, leftVideos, if (delayMode == GroupLeaveMonitorSettings.MODE_CUSTOM) "延迟 ${videoDelay} ms" else "延迟继承全局",
+                                { value -> joinVideos = value; update { it.copy(joinVideos = value) } },
+                                { value -> leftVideos = value; update { it.copy(leftVideos = value) } }),
+                            GroupMediaDefinition("file", "文件", RedPacketRuleConfig.REPLY_FILE, joinFiles, leftFiles, if (delayMode == GroupLeaveMonitorSettings.MODE_CUSTOM) "延迟 ${fileDelay} ms" else "延迟继承全局",
+                                { value -> joinFiles = value; update { it.copy(joinFiles = value) } },
+                                { value -> leftFiles = value; update { it.copy(leftFiles = value) } }),
+                            GroupMediaDefinition("favorite", "收藏", RedPacketRuleConfig.REPLY_FAVORITE, joinFavorites, leftFavorites, if (delayMode == GroupLeaveMonitorSettings.MODE_CUSTOM) "延迟 ${favoriteDelay} ms" else "延迟继承全局",
+                                { value -> joinFavorites = value; update { it.copy(joinFavorites = value) } },
+                                { value -> leftFavorites = value; update { it.copy(leftFavorites = value) } })
+                        ),
+                        emptySummary = "空顺序会继承全局设置",
+                        onChange = { value -> mediaSequence = value; update { it.copy(mediaSequence = value) } },
+                        onFavoritePicker = { favoritePicker = it }
+                    )
+                }
+                item { SettingsSectionTitle(text = "延迟") }
                 item {
                     SettingsCard {
                         PopupChoiceRow(
@@ -2185,7 +2169,7 @@ private fun GroupLeaveTemplateEditorPage(
                     }
                 }
 
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
+                item { SettingsSectionTitle(text = "操作") }
                 item {
                     SettingsCard {
                         if (!request.canDelete) ContentActionRow("创建") {
@@ -2207,6 +2191,11 @@ private fun GroupLeaveTemplateEditorPage(
             }
         }
     }
+    GroupMediaDiscardDialog(
+        show = showMediaDiscard,
+        onDismiss = { showMediaDiscard = false },
+        onConfirm = { mediaSequenceSession.discardPending(); showMediaDiscard = false; onBack() }
+    )
 }
 
 @Composable
@@ -2274,6 +2263,8 @@ private fun GroupMemberGroupEditorPage(
     var mediaSequence by rememberSaveable(groupId) {
         mutableStateOf(groupMemberString(sp, GroupLeaveMonitorSettings.KEY_MEDIA_SEQUENCE, groupId, sp.getString(GroupLeaveMonitorSettings.KEY_MEDIA_SEQUENCE, GroupLeaveMonitorSettings.DEFAULT_MEDIA_SEQUENCE) ?: GroupLeaveMonitorSettings.DEFAULT_MEDIA_SEQUENCE))
     }
+    val mediaSequenceSession = remember(groupId) { GroupMediaSequenceSession(mediaSequence, true) }
+    var showMediaDiscard by remember { mutableStateOf(false) }
     var joinImages by rememberSaveable(groupId) { mutableStateOf(sp.getString(groupMemberGroupKey(GroupLeaveMonitorSettings.KEY_JOIN_IMAGE_PATHS, groupId), "").orEmpty()) }
     var leftImages by rememberSaveable(groupId) { mutableStateOf(sp.getString(groupMemberGroupKey(GroupLeaveMonitorSettings.KEY_LEFT_IMAGE_PATHS, groupId), "").orEmpty()) }
     var joinVoices by rememberSaveable(groupId) { mutableStateOf(sp.getString(groupMemberGroupKey(GroupLeaveMonitorSettings.KEY_JOIN_VOICE_PATHS, groupId), "").orEmpty()) }
@@ -2318,7 +2309,7 @@ private fun GroupMemberGroupEditorPage(
             title = title,
             largeTitle = "群专属设置",
             scrollBehavior = scrollBehavior,
-            onBack = onBack,
+            onBack = { if (mediaSequenceSession.entries.any { it.pending }) showMediaDiscard = true else onBack() },
             showBackIcon = false
         ) { padding ->
             LazyColumn(
@@ -2329,7 +2320,7 @@ private fun GroupMemberGroupEditorPage(
                     bottom = padding.calculateBottomPadding() + 16.dp
                 )
             ) {
-                item { SmallTitle(text = "模板") }
+                item { SettingsSectionTitle(text = "模板") }
                 item {
                     SettingsCard {
                         if (templates.isEmpty()) {
@@ -2362,14 +2353,14 @@ private fun GroupMemberGroupEditorPage(
                     }
                 }
                 if (boundTemplate != null) {
-                    item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "群号") }
+                    item { SettingsSectionTitle(text = "群号") }
                     item {
                         SettingsCard {
                             SelectRow(title = title, summary = groupId, onClick = {})
                         }
                     }
                 } else {
-                    item { SmallTitle(text = "事件") }
+                    item { SettingsSectionTitle(text = "事件") }
             item {
                 SettingsCard {
                     SwitchRow(joinEnabled, "进群回复", "该群检测到成员进群时发送", onCheckedChange = { checked -> joinEnabled = checked; sp.edit().putString(GroupLeaveMonitorSettings.KEY_JOIN_DISABLED_GROUPS, formatIds(updateGroupToggle(sp, GroupLeaveMonitorSettings.KEY_JOIN_DISABLED_GROUPS, groupId, checked))).apply() })
@@ -2377,7 +2368,7 @@ private fun GroupMemberGroupEditorPage(
                     SwitchRow(leftEnabled, "退群回复", "该群检测到成员退群时发送", onCheckedChange = { checked -> leftEnabled = checked; sp.edit().putString(GroupLeaveMonitorSettings.KEY_LEFT_DISABLED_GROUPS, formatIds(updateGroupToggle(sp, GroupLeaveMonitorSettings.KEY_LEFT_DISABLED_GROUPS, groupId, checked))).apply() })
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "提示模板") }
+            item { SettingsSectionTitle(text = "提示模板") }
             item {
                 SettingsCard {
                     PopupChoiceRow(
@@ -2456,7 +2447,7 @@ private fun GroupMemberGroupEditorPage(
                     }
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "媒体") }
+            item { SettingsSectionTitle(text = "媒体") }
             item {
                 SettingsCard {
                     PopupChoiceRow(
@@ -2481,50 +2472,38 @@ private fun GroupMemberGroupEditorPage(
                                 sp.edit().putString(groupMemberGroupKey(GroupLeaveMonitorSettings.KEY_MEDIA_ORDER, groupId), it).apply()
                             }
                         )
-                        InsetDivider()
-                        InputRow("媒体类型顺序", "英文逗号分隔：image,voice,emoji,video,file,favorite", mediaSequence, onEditingFinished = { if (it.isBlank()) saveText(GroupLeaveMonitorSettings.KEY_MEDIA_SEQUENCE, it, true) }) { mediaSequence = it; saveText(GroupLeaveMonitorSettings.KEY_MEDIA_SEQUENCE, it) }
-                        InsetDivider()
-                        GroupMemberMediaRow(context, "进群图片", joinImages, RedPacketRuleConfig.REPLY_IMAGE) { joinImages = it; saveText(GroupLeaveMonitorSettings.KEY_JOIN_IMAGE_PATHS, it, true) }
-                        InsetDivider()
-                        GroupMemberMediaRow(context, "退群图片", leftImages, RedPacketRuleConfig.REPLY_IMAGE) { leftImages = it; saveText(GroupLeaveMonitorSettings.KEY_LEFT_IMAGE_PATHS, it, true) }
-                        InsetDivider()
-                        GroupMemberMediaRow(context, "进群语音", joinVoices, RedPacketRuleConfig.REPLY_VOICE) { joinVoices = it; saveText(GroupLeaveMonitorSettings.KEY_JOIN_VOICE_PATHS, it, true) }
-                        InsetDivider()
-                        GroupMemberMediaRow(context, "退群语音", leftVoices, RedPacketRuleConfig.REPLY_VOICE) { leftVoices = it; saveText(GroupLeaveMonitorSettings.KEY_LEFT_VOICE_PATHS, it, true) }
-                        InsetDivider()
-                        GroupMemberMediaRow(context, "进群表情", joinEmojis, RedPacketRuleConfig.REPLY_EMOJI) { joinEmojis = it; saveText(GroupLeaveMonitorSettings.KEY_JOIN_EMOJI_PATHS, it, true) }
-                        InsetDivider()
-                        GroupMemberMediaRow(context, "退群表情", leftEmojis, RedPacketRuleConfig.REPLY_EMOJI) { leftEmojis = it; saveText(GroupLeaveMonitorSettings.KEY_LEFT_EMOJI_PATHS, it, true) }
-                        InsetDivider()
-                        GroupMemberMediaRow(context, "进群视频", joinVideos, RedPacketRuleConfig.REPLY_VIDEO) { joinVideos = it; saveText(GroupLeaveMonitorSettings.KEY_JOIN_VIDEO_PATHS, it, true) }
-                        InsetDivider()
-                        GroupMemberMediaRow(context, "退群视频", leftVideos, RedPacketRuleConfig.REPLY_VIDEO) { leftVideos = it; saveText(GroupLeaveMonitorSettings.KEY_LEFT_VIDEO_PATHS, it, true) }
-                        InsetDivider()
-                        GroupMemberMediaRow(context, "进群文件", joinFiles, RedPacketRuleConfig.REPLY_FILE) { joinFiles = it; saveText(GroupLeaveMonitorSettings.KEY_JOIN_FILE_PATHS, it, true) }
-                        InsetDivider()
-                        GroupMemberMediaRow(context, "退群文件", leftFiles, RedPacketRuleConfig.REPLY_FILE) { leftFiles = it; saveText(GroupLeaveMonitorSettings.KEY_LEFT_FILE_PATHS, it, true) }
-                        InsetDivider()
-                        GroupMemberMediaRow(
-                            context,
-                            "进群收藏",
-                            joinFavorites,
-                            RedPacketRuleConfig.REPLY_FAVORITE,
-                            onValueChange = { joinFavorites = it; saveText(GroupLeaveMonitorSettings.KEY_JOIN_FAVORITE_PATHS, it, true) },
-                            onFavoritePicker = { favoritePicker = it }
-                        )
-                        InsetDivider()
-                        GroupMemberMediaRow(
-                            context,
-                            "退群收藏",
-                            leftFavorites,
-                            RedPacketRuleConfig.REPLY_FAVORITE,
-                            onValueChange = { leftFavorites = it; saveText(GroupLeaveMonitorSettings.KEY_LEFT_FAVORITE_PATHS, it, true) },
-                            onFavoritePicker = { favoritePicker = it }
-                        )
                     }
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "延迟") }
+            if (mediaMode == GroupLeaveMonitorSettings.MODE_CUSTOM) item {
+                GroupMediaSequenceEditor(
+                    context = context, session = mediaSequenceSession,
+                    definitions = listOf(
+                        GroupMediaDefinition("image", "图片", RedPacketRuleConfig.REPLY_IMAGE, joinImages, leftImages, if (delayMode == GroupLeaveMonitorSettings.MODE_CUSTOM) "延迟 ${imageDelay} ms" else "延迟继承全局",
+                            { value -> joinImages = value; saveText(GroupLeaveMonitorSettings.KEY_JOIN_IMAGE_PATHS, value, true) },
+                            { value -> leftImages = value; saveText(GroupLeaveMonitorSettings.KEY_LEFT_IMAGE_PATHS, value, true) }),
+                        GroupMediaDefinition("voice", "语音", RedPacketRuleConfig.REPLY_VOICE, joinVoices, leftVoices, if (delayMode == GroupLeaveMonitorSettings.MODE_CUSTOM) "延迟 ${voiceDelay} ms" else "延迟继承全局",
+                            { value -> joinVoices = value; saveText(GroupLeaveMonitorSettings.KEY_JOIN_VOICE_PATHS, value, true) },
+                            { value -> leftVoices = value; saveText(GroupLeaveMonitorSettings.KEY_LEFT_VOICE_PATHS, value, true) }),
+                        GroupMediaDefinition("emoji", "表情", RedPacketRuleConfig.REPLY_EMOJI, joinEmojis, leftEmojis, if (delayMode == GroupLeaveMonitorSettings.MODE_CUSTOM) "延迟 ${emojiDelay} ms" else "延迟继承全局",
+                            { value -> joinEmojis = value; saveText(GroupLeaveMonitorSettings.KEY_JOIN_EMOJI_PATHS, value, true) },
+                            { value -> leftEmojis = value; saveText(GroupLeaveMonitorSettings.KEY_LEFT_EMOJI_PATHS, value, true) }),
+                        GroupMediaDefinition("video", "视频", RedPacketRuleConfig.REPLY_VIDEO, joinVideos, leftVideos, if (delayMode == GroupLeaveMonitorSettings.MODE_CUSTOM) "延迟 ${videoDelay} ms" else "延迟继承全局",
+                            { value -> joinVideos = value; saveText(GroupLeaveMonitorSettings.KEY_JOIN_VIDEO_PATHS, value, true) },
+                            { value -> leftVideos = value; saveText(GroupLeaveMonitorSettings.KEY_LEFT_VIDEO_PATHS, value, true) }),
+                        GroupMediaDefinition("file", "文件", RedPacketRuleConfig.REPLY_FILE, joinFiles, leftFiles, if (delayMode == GroupLeaveMonitorSettings.MODE_CUSTOM) "延迟 ${fileDelay} ms" else "延迟继承全局",
+                            { value -> joinFiles = value; saveText(GroupLeaveMonitorSettings.KEY_JOIN_FILE_PATHS, value, true) },
+                            { value -> leftFiles = value; saveText(GroupLeaveMonitorSettings.KEY_LEFT_FILE_PATHS, value, true) }),
+                        GroupMediaDefinition("favorite", "收藏", RedPacketRuleConfig.REPLY_FAVORITE, joinFavorites, leftFavorites, if (delayMode == GroupLeaveMonitorSettings.MODE_CUSTOM) "延迟 ${favoriteDelay} ms" else "延迟继承全局",
+                            { value -> joinFavorites = value; saveText(GroupLeaveMonitorSettings.KEY_JOIN_FAVORITE_PATHS, value, true) },
+                            { value -> leftFavorites = value; saveText(GroupLeaveMonitorSettings.KEY_LEFT_FAVORITE_PATHS, value, true) })
+                    ),
+                    emptySummary = "尚未添加媒体类型",
+                    onChange = { value -> mediaSequence = value; saveText(GroupLeaveMonitorSettings.KEY_MEDIA_SEQUENCE, value, true) },
+                    onFavoritePicker = { favoritePicker = it }
+                )
+            }
+            item { SettingsSectionTitle(text = "延迟") }
             item {
                 SettingsCard {
                     PopupChoiceRow(
@@ -2557,7 +2536,7 @@ private fun GroupMemberGroupEditorPage(
                 }
             }
 
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
+            item { SettingsSectionTitle(text = "操作") }
             item {
                 SettingsCard {
                     ContentActionRow("移除", onClick = onDelete)
@@ -2588,6 +2567,11 @@ private fun GroupMemberGroupEditorPage(
         }
     }
 }
+    GroupMediaDiscardDialog(
+        show = showMediaDiscard,
+        onDismiss = { showMediaDiscard = false },
+        onConfirm = { mediaSequenceSession.discardPending(); showMediaDiscard = false; onBack() }
+    )
 }
 
 private fun deleteGroupMemberConfiguration(
@@ -2651,7 +2635,7 @@ private fun deleteGroupMemberConfiguration(
 }
 
 @Composable
-private fun GroupMemberMediaRow(
+internal fun GroupMemberMediaRow(
     context: Context,
     title: String,
     value: String,
@@ -2686,7 +2670,7 @@ private fun GroupMemberMediaRow(
     }
     if (value.isNotBlank()) {
         InsetDivider()
-        ActionRow(
+        SecondaryActionRow(
             "清空$title",
             if (replyMode == RedPacketRuleConfig.REPLY_FAVORITE) "移除已选择收藏" else "移除已选择文件"
         ) {

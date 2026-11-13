@@ -18,7 +18,6 @@ import h.Hchat.hooks.items.hometextcolor.HomeTextColorSettings
 import h.Hchat.preferences.HchatStorage
 import h.Hchat.ui.FeatureSettingsProvider
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
-import top.yukonga.miuix.kmp.basic.SmallTitle
 
 @Composable
 internal fun HomeTextColorMiuixPage(
@@ -66,7 +65,7 @@ internal fun HomeTextColorMiuixPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "基础") }
+            item { SettingsSectionTitle(text = "基础") }
             item {
                 SettingsCard {
                     SwitchRow(
@@ -80,7 +79,7 @@ internal fun HomeTextColorMiuixPage(
                     )
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "颜色") }
+            item { SettingsSectionTitle(text = "颜色") }
             item {
                 SettingsCard {
                     ColorPickerRow(

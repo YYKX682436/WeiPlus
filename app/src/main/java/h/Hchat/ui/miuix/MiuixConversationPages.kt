@@ -35,7 +35,6 @@ import top.yukonga.miuix.kmp.basic.BreadcrumbBar
 import top.yukonga.miuix.kmp.basic.BreadcrumbItem
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
-import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -312,7 +311,7 @@ private fun ConversationGroupListPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "功能") }
+            item { SettingsSectionTitle(text = "功能") }
             item {
                 SettingsCard {
                     SwitchRow(
@@ -328,7 +327,7 @@ private fun ConversationGroupListPage(
                     ) { onOpenAutomatic() }
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "分组") }
+            item { SettingsSectionTitle(text = "分组") }
             item {
                 SettingsCard {
                     InputRow("搜索", "分组名称 / 所属路径", query) { query = it }
@@ -355,7 +354,7 @@ private fun ConversationGroupListPage(
                     }
 
                     InsetDivider()
-                    ContentActionRow("新增分组", onClick = onAdd)
+                    AddActionRow("新增分组", onClick = onAdd)
                 }
             }
         }
@@ -401,7 +400,7 @@ private fun ConversationGroupAutomaticGroupingPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "归拢目标") }
+            item { SettingsSectionTitle(text = "归拢目标") }
             item {
                 SettingsCard {
                     PopupChoiceRow(
@@ -422,7 +421,7 @@ private fun ConversationGroupAutomaticGroupingPage(
                     )
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "群聊规则") }
+            item { SettingsSectionTitle(text = "群聊规则") }
             item {
                 SettingsCard {
                     SwitchRow(
@@ -465,7 +464,7 @@ private fun ConversationGroupAutomaticGroupingPage(
                     ) { updateDraft(draft.copy(automaticEnterpriseGroups = it)) }
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "群聊标签") }
+            item { SettingsSectionTitle(text = "群聊标签") }
             item {
                 SettingsCard {
                     if (labels.isEmpty()) {
@@ -490,7 +489,7 @@ private fun ConversationGroupAutomaticGroupingPage(
                     }
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "公众号") }
+            item { SettingsSectionTitle(text = "公众号") }
             item {
                 SettingsCard {
                     SwitchRow(
@@ -699,7 +698,7 @@ private fun ConversationGroupEditorPage(
                     modifier = Modifier.fillMaxWidth()
                 )
             }
-            item { SmallTitle(text = "分组内容") }
+            item { SettingsSectionTitle(text = "分组内容") }
             item {
                 SettingsCard {
                     InputRow("分组名称", if (name.isBlank() || duplicateName) "名称不能为空或与同层分组重复，保留上次有效配置" else "同一层级内不能重名", name) {
@@ -729,7 +728,7 @@ private fun ConversationGroupEditorPage(
                 }
             }
             if (existing) {
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
+                item { SettingsSectionTitle(text = "操作") }
                 item {
                     SettingsCard {
                         if (siblings.size > 1 && siblingIndex >= 0) {
@@ -749,7 +748,7 @@ private fun ConversationGroupEditorPage(
             }
 
             if (!existing) {
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
+                item { SettingsSectionTitle(text = "操作") }
                 item {
                     SettingsCard {
                         ContentActionRow("创建") {
@@ -1047,7 +1046,7 @@ private fun ConversationGroupParentPickerPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "可用分组") }
+            item { SettingsSectionTitle(text = "可用分组") }
             item {
                 SettingsCard {
                     ContentActionRow("微信首页") { onSelected(null) }
@@ -1357,7 +1356,7 @@ private fun GroupChatLabelListPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "分类标签") }
+            item { SettingsSectionTitle(text = "分类标签") }
             item {
                 SettingsCard {
                     if (labels.isEmpty()) {
@@ -1374,7 +1373,7 @@ private fun GroupChatLabelListPage(
                     }
 
                     InsetDivider()
-                    ContentActionRow("新增标签", onClick = onAdd)
+                    AddActionRow("新增标签", onClick = onAdd)
                 }
             }
         }
@@ -1414,7 +1413,7 @@ private fun GroupChatLabelEditorPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "标签") }
+            item { SettingsSectionTitle(text = "标签") }
             item {
                 SettingsCard {
                     InputRow("标签名称", if (name.isBlank() || duplicateName) "名称不能为空或重复，保留上次有效配置" else "用于任务和名单选择器", name) {
@@ -1432,7 +1431,7 @@ private fun GroupChatLabelEditorPage(
                 }
             }
 
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
+            item { SettingsSectionTitle(text = "操作") }
             item {
                 SettingsCard {
                     if (!existing) ContentActionRow("创建") {

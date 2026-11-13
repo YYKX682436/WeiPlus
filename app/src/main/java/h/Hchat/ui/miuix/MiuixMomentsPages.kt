@@ -61,7 +61,6 @@ import h.Hchat.preferences.HchatStorage
 import h.Hchat.ui.FeatureSettingsProvider
 import h.Hchat.utils.KeywordReplacementRule
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
-import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import java.text.SimpleDateFormat
@@ -219,7 +218,7 @@ private fun MomentsAutoLikeMainPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "自动点赞") }
+            item { SettingsSectionTitle(text = "自动点赞") }
             item {
                 SettingsCard {
                     SwitchRow(enabled, "朋友圈自动点赞", "按下方规则处理新获取的朋友圈") {
@@ -239,7 +238,7 @@ private fun MomentsAutoLikeMainPage(
                     }
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "好友范围") }
+            item { SettingsSectionTitle(text = "好友范围") }
             item {
                 SettingsCard {
                     PopupOptionRow(
@@ -270,7 +269,7 @@ private fun MomentsAutoLikeMainPage(
                     }
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "执行时间") }
+            item { SettingsSectionTitle(text = "执行时间") }
             item {
                 SettingsCard {
                     PopupOptionRow(
@@ -334,7 +333,7 @@ private fun MomentsAutoLikeMainPage(
                     }
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "内容过滤") }
+            item { SettingsSectionTitle(text = "内容过滤") }
             item {
                 SettingsCard {
                     SwitchRow(allowText, "文字朋友圈", "允许自动点赞") {
@@ -402,7 +401,7 @@ private fun MomentsAutoLikeMainPage(
                     }
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "运行记录") }
+            item { SettingsSectionTitle(text = "运行记录") }
             item {
                 SettingsCard {
                     SwitchRow(logEnabled, "记录运行日志", "只保留最近 200 条") {
@@ -428,7 +427,7 @@ private fun MomentsAutoLikeMainPage(
 
                     if (logEnabled || logs.isNotBlank()) {
                         InsetDivider()
-                        ActionRow("清空日志", "") {
+                        SecondaryActionRow("清空日志", "") {
                             sp.edit().remove(MomentsAutoLikeSettings.KEY_LOGS).apply()
                             logs = ""
                         }
@@ -612,7 +611,7 @@ internal object MomentsAutoCommentPage {
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "自动评论") }
+            item { SettingsSectionTitle(text = "自动评论") }
             item {
                 SettingsCard {
                     SwitchRow(enabled, "朋友圈自动评论", "按下方规则处理新获取的朋友圈") {
@@ -663,7 +662,7 @@ internal object MomentsAutoCommentPage {
                     }
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "好友范围") }
+            item { SettingsSectionTitle(text = "好友范围") }
             item {
                 SettingsCard {
                     PopupOptionRow(
@@ -694,7 +693,7 @@ internal object MomentsAutoCommentPage {
                     }
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "执行时间") }
+            item { SettingsSectionTitle(text = "执行时间") }
             item {
                 SettingsCard {
                     PopupOptionRow(
@@ -758,7 +757,7 @@ internal object MomentsAutoCommentPage {
                     }
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "内容过滤") }
+            item { SettingsSectionTitle(text = "内容过滤") }
             item {
                 SettingsCard {
                     SwitchRow(allowText, "文字朋友圈", "允许自动评论") {
@@ -826,7 +825,7 @@ internal object MomentsAutoCommentPage {
                     }
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "运行记录") }
+            item { SettingsSectionTitle(text = "运行记录") }
             item {
                 SettingsCard {
                     SwitchRow(logEnabled, "记录运行日志", "只保留最近 200 条") {
@@ -852,7 +851,7 @@ internal object MomentsAutoCommentPage {
 
                     if (logEnabled || logs.isNotBlank()) {
                         InsetDivider()
-                        ActionRow("清空日志", "") {
+                        SecondaryActionRow("清空日志", "") {
                             sp.edit().remove(MomentsAutoCommentSettings.KEY_LOGS).apply()
                             logs = ""
                         }
@@ -1161,7 +1160,7 @@ private fun MomentsAutoForwardMainPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "自动转发") }
+            item { SettingsSectionTitle(text = "自动转发") }
             item {
                 SettingsCard {
                     SwitchRow(enabled, "朋友圈自动转发", "按规则静默转发指定好友的新朋友圈") {
@@ -1176,13 +1175,13 @@ private fun MomentsAutoForwardMainPage(
                     }
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "转发好友") }
+            item { SettingsSectionTitle(text = "转发好友") }
             item {
                 SettingsCard {
                     ActionRow("转发好友", targetSummary, onPickTargets)
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "内容类型") }
+            item { SettingsSectionTitle(text = "内容类型") }
             item {
                 SettingsCard {
                     SwitchRow(allowText, "文字", "允许自动转发") {
@@ -1226,7 +1225,7 @@ private fun MomentsAutoForwardMainPage(
                     }
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "执行方式") }
+            item { SettingsSectionTitle(text = "执行方式") }
             item {
                 SettingsCard {
                     PopupOptionRow(
@@ -1285,7 +1284,7 @@ private fun MomentsAutoForwardMainPage(
                     }
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "内容处理") }
+            item { SettingsSectionTitle(text = "内容处理") }
             item {
                 SettingsCard {
                     SwitchRow(
@@ -1366,7 +1365,7 @@ private fun MomentsAutoForwardMainPage(
                     }
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "运行记录") }
+            item { SettingsSectionTitle(text = "运行记录") }
             item {
                 SettingsCard {
                     SwitchRow(logEnabled, "记录运行日志", "记录自动转发执行情况") {
@@ -1398,7 +1397,7 @@ private fun MomentsAutoForwardMainPage(
 
                     if (logEnabled || logs.isNotBlank()) {
                         InsetDivider()
-                        ActionRow("清空日志", "") {
+                        SecondaryActionRow("清空日志", "") {
                             sp.edit().remove(MomentsAutoForwardSettings.KEY_LOGS).apply()
                             logs = ""
                         }
@@ -1450,7 +1449,7 @@ internal fun KeywordReplacementRulesPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "关键词替换") }
+            item { SettingsSectionTitle(text = "关键词替换") }
             if (rules.isEmpty()) {
                 item {
                     SettingsCard {
@@ -1477,7 +1476,7 @@ internal fun KeywordReplacementRulesPage(
                                 updateRule(index) { it.copy(replacement = value) }
                             }
                             InsetDivider()
-                            ActionRow("删除本条", "移除第 ${index + 1} 条替换规则") {
+                            SecondaryActionRow("删除本条", "移除第 ${index + 1} 条替换规则") {
                                 rules = rules.toMutableList().also { it.removeAt(index) }
                                 savedRules = savedRules.toMutableList().also { it.removeAt(index) }
                                 onSave(savedRules)
@@ -1487,7 +1486,7 @@ internal fun KeywordReplacementRulesPage(
                 }
             }
             newRule?.let { pending ->
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "新规则") }
+                item { SettingsSectionTitle(text = "新规则") }
                 item {
                     SettingsCard {
                         InputRow("原关键词", "匹配时不区分大小写", pending.keyword) { newRule = pending.copy(keyword = it) }
@@ -1499,7 +1498,7 @@ internal fun KeywordReplacementRulesPage(
                 }
             }
 
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
+            item { SettingsSectionTitle(text = "操作") }
             item {
                 SettingsCard {
                     ContentActionRow(if (newRule == null) "新增" else "完成") {
@@ -1566,7 +1565,7 @@ internal fun MomentsAutoRefreshMiuixPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "后台刷新") }
+            item { SettingsSectionTitle(text = "后台刷新") }
             item {
                 SettingsCard {
                     SwitchRow(enabled, "朋友圈自动刷新", "按设定间隔获取新的朋友圈内容") {
@@ -1598,7 +1597,7 @@ internal fun MomentsAutoRefreshMiuixPage(
 
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "状态") }
+            item { SettingsSectionTitle(text = "状态") }
             item {
                 SettingsCard {
                     ActionRow(
@@ -1720,7 +1719,7 @@ private fun MomentsContactFilterMainPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "朋友圈") }
+            item { SettingsSectionTitle(text = "朋友圈") }
             item {
                 SettingsCard {
                     SwitchRow(
@@ -1803,7 +1802,7 @@ internal fun MomentsKeywordBlockMiuixPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "朋友圈") }
+            item { SettingsSectionTitle(text = "朋友圈") }
             item {
                 SettingsCard {
                     SwitchRow(
@@ -1887,7 +1886,7 @@ internal fun MomentsBottomDetailMiuixPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "朋友圈底部详情") }
+            item { SettingsSectionTitle(text = "朋友圈底部详情") }
             item {
                 SettingsCard {
                     SwitchRow(
@@ -1900,7 +1899,7 @@ internal fun MomentsBottomDetailMiuixPage(
                     }
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "格式") }
+            item { SettingsSectionTitle(text = "格式") }
             item {
                 SettingsCard {
                     VariableInputRow(
@@ -2028,7 +2027,7 @@ private fun MomentsPostNotificationMainPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "发布提醒") }
+            item { SettingsSectionTitle(text = "发布提醒") }
             item {
                 SettingsCard {
                     SwitchRow(enabled, "朋友圈发布通知", "指定好友发布新朋友圈时提醒") {
@@ -2055,7 +2054,7 @@ private fun MomentsPostNotificationMainPage(
                     }
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "提醒模板") }
+            item { SettingsSectionTitle(text = "提醒模板") }
             item {
                 SettingsCard {
                     VariableInputRow("通知标题", "留空使用默认标题", titleTemplate, momentsPostNotificationTemplateVariables) {
@@ -2078,46 +2077,6 @@ private fun MomentsPostNotificationMainPage(
     }
 }
 
-@Composable
-internal fun OriginalMomentsUploadMiuixPage(
-    context: Context,
-    provider: FeatureSettingsProvider,
-    onBack: () -> Unit
-) {
-    val sp = remember { HchatStorage.preferences(context, OriginalMomentsUploadSettings.PREFS_NAME) }
-    val listState = rememberLazyListState()
-    val scrollBehavior = MiuixScrollBehavior()
-
-    PageScaffold(
-        title = provider.title(),
-        largeTitle = provider.title(),
-        scrollBehavior = scrollBehavior,
-        onBack = onBack,
-        showBackIcon = false
-    ) { padding ->
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
-            state = listState,
-            contentPadding = PaddingValues(
-                top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 16.dp
-            )
-        ) {
-            item { SmallTitle(text = "朋友圈") }
-            item {
-                SettingsCard {
-                    SwitchRow(
-                        sp,
-                        OriginalMomentsUploadSettings.KEY_ENABLE,
-                        "原图上传",
-                        "发布朋友圈图片和视频时尽量跳过微信压缩",
-                        OriginalMomentsUploadSettings.DEFAULT_ENABLE
-                    )
-                }
-            }
-        }
-    }
-}
 
 @Composable
 internal fun MomentsUploadTailMiuixPage(
@@ -2170,7 +2129,7 @@ internal fun MomentsUploadTailMiuixPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "朋友圈") }
+            item { SettingsSectionTitle(text = "朋友圈") }
             item {
                 SettingsCard {
                     SwitchRow(
@@ -2297,7 +2256,7 @@ internal fun SnsAntiRecallMiuixPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "朋友圈") }
+            item { SettingsSectionTitle(text = "朋友圈") }
             item {
                 SettingsCard {
                     SwitchRow(
@@ -2499,7 +2458,7 @@ internal fun MomentsFakeInteractionMiuixPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = provider.title()) }
+            item { SettingsSectionTitle(text = provider.title()) }
             item {
                 SettingsCard {
                     SwitchRow(
@@ -2514,7 +2473,7 @@ internal fun MomentsFakeInteractionMiuixPage(
                 }
             }
             if (isLike) {
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "生成方式") }
+                item { SettingsSectionTitle(text = "生成方式") }
                 item {
                     SettingsCard {
                         SwitchRow(
@@ -2585,7 +2544,7 @@ internal fun MomentsFakeInteractionMiuixPage(
                 }
             }
             if (!isLike && !isForward) {
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "评论人范围") }
+                item { SettingsSectionTitle(text = "评论人范围") }
                 item {
                     SettingsCard {
                         SwitchRow(
@@ -2651,7 +2610,7 @@ internal fun MomentsFakeInteractionMiuixPage(
                     }
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "长按菜单") }
+            item { SettingsSectionTitle(text = "长按菜单") }
             item {
                 SettingsCard {
                     SwitchRow(
@@ -2683,7 +2642,7 @@ internal fun MomentsFakeInteractionMiuixPage(
                 }
             }
             if (isForward) {
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "诊断") }
+                item { SettingsSectionTitle(text = "诊断") }
                 item {
                     SettingsCard {
                         SwitchRow(
@@ -2701,7 +2660,7 @@ internal fun MomentsFakeInteractionMiuixPage(
                         }
                     }
                 }
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
+                item { SettingsSectionTitle(text = "操作") }
                 item {
                     SettingsCard {
                         ActionRow(
@@ -2727,7 +2686,7 @@ internal fun MomentsFakeInteractionMiuixPage(
                     }
                 }
             } else {
-                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
+                item { SettingsSectionTitle(text = "操作") }
                 item {
                     SettingsCard {
                         ActionRow(
@@ -2973,131 +2932,8 @@ private fun scheduleMomentsFakeInteractionRestore(
     ).show()
 }
 
-@Composable
-internal fun RemoveMomentsAdsMiuixPage(
-    context: Context,
-    provider: FeatureSettingsProvider,
-    onBack: () -> Unit
-) {
-    val sp = remember { HchatStorage.preferences(context, RemoveMomentsAdsSettings.PREFS_NAME) }
-    val listState = rememberLazyListState()
-    val scrollBehavior = MiuixScrollBehavior()
 
-    PageScaffold(
-        title = provider.title(),
-        largeTitle = provider.title(),
-        scrollBehavior = scrollBehavior,
-        onBack = onBack,
-        showBackIcon = false
-    ) { padding ->
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
-            state = listState,
-            contentPadding = PaddingValues(
-                top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 16.dp
-            )
-        ) {
-            item { SmallTitle(text = "朋友圈") }
-            item {
-                SettingsCard {
-                    SwitchRow(
-                        sp,
-                        RemoveMomentsAdsSettings.KEY_ENABLE,
-                        "去除朋友圈广告",
-                        "阻止朋友圈广告信息解析和展示",
-                        RemoveMomentsAdsSettings.DEFAULT_ENABLE
-                    )
-                }
-            }
-        }
-    }
-}
 
-@Composable
-internal fun FinderMediaDownloadMiuixPage(
-    context: Context,
-    provider: FeatureSettingsProvider,
-    onBack: () -> Unit
-) {
-    val sp = remember { HchatStorage.preferences(context, FinderMediaDownloadSettings.PREFS_NAME) }
-    val listState = rememberLazyListState()
-    val scrollBehavior = MiuixScrollBehavior()
-
-    PageScaffold(
-        title = provider.title(),
-        largeTitle = provider.title(),
-        scrollBehavior = scrollBehavior,
-        onBack = onBack,
-        showBackIcon = false
-    ) { padding ->
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
-            state = listState,
-            contentPadding = PaddingValues(
-                top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 16.dp
-            )
-        ) {
-            item { SmallTitle(text = "视频号") }
-            item {
-                SettingsCard {
-                    SwitchRow(
-                        sp,
-                        FinderMediaDownloadSettings.KEY_ENABLE,
-                        "视频号媒体下载",
-                        "在视频号分享菜单增加复制链接和下载入口，媒体保存到 Hchat/Finder",
-                        FinderMediaDownloadSettings.DEFAULT_ENABLE
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-internal fun HchatExtraToggleMiuixPage(
-    context: Context,
-    provider: FeatureSettingsProvider,
-    key: String,
-    defaultValue: Boolean,
-    summary: String,
-    onBack: () -> Unit
-) {
-    val sp = remember { HchatStorage.preferences(context, HchatExtraSettings.PREFS_NAME) }
-    val listState = rememberLazyListState()
-    val scrollBehavior = MiuixScrollBehavior()
-
-    PageScaffold(
-        title = provider.title(),
-        largeTitle = provider.title(),
-        scrollBehavior = scrollBehavior,
-        onBack = onBack,
-        showBackIcon = false
-    ) { padding ->
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
-            state = listState,
-            contentPadding = PaddingValues(
-                top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 16.dp
-            )
-        ) {
-            item { SmallTitle(text = "功能开关") }
-            item {
-                SettingsCard {
-                    SwitchRow(
-                        sp,
-                        key,
-                        provider.title(),
-                        summary,
-                        defaultValue
-                    )
-                }
-            }
-        }
-    }
-}
 
 @Composable
 internal fun MessageDetailsConfigPage(
@@ -3280,7 +3116,7 @@ internal fun MessageDetailsConfigPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "基础") }
+            item { SettingsSectionTitle(text = "基础") }
             item {
                 SettingsCard {
                     SwitchRow(
@@ -3305,7 +3141,7 @@ internal fun MessageDetailsConfigPage(
                     )
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "颜色") }
+            item { SettingsSectionTitle(text = "颜色") }
             item {
                 SettingsCard {
                     ColorPickerRow(
@@ -3349,7 +3185,7 @@ internal fun MessageDetailsConfigPage(
                     ) { darkText = it; saveColor(HchatExtraSettings.KEY_MESSAGE_DETAILS_DARK_TEXT, it, HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_DARK_TEXT) }
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "文本") }
+            item { SettingsSectionTitle(text = "文本") }
             item {
                 SettingsCard {
                     VariableInputRow(
@@ -3374,7 +3210,7 @@ internal fun MessageDetailsConfigPage(
                         onValueChange = { timeFormat = it; if (it.isNotBlank() && runCatching { SimpleDateFormat(it, Locale.CHINA) }.isSuccess) sp.edit().putString(HchatExtraSettings.KEY_MESSAGE_DETAILS_TIME_FORMAT, it).apply() })
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "布局") }
+            item { SettingsSectionTitle(text = "布局") }
             item {
                 SettingsCard {
                     PopupChoiceRow(
@@ -3398,7 +3234,7 @@ internal fun MessageDetailsConfigPage(
                 }
             }
 
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
+            item { SettingsSectionTitle(text = "操作") }
             item {
                 SettingsCard {
                     ContentActionRow("恢复默认", onClick = ::resetValues)
@@ -3458,46 +3294,6 @@ private fun messageDetailsVariables(): List<TemplateVariable> {
     )
 }
 
-@Composable
-internal fun ProfileIdMiuixPage(
-    context: Context,
-    provider: FeatureSettingsProvider,
-    onBack: () -> Unit
-) {
-    val sp = remember { HchatStorage.preferences(context, ProfileIdSettings.PREFS_NAME) }
-    val listState = rememberLazyListState()
-    val scrollBehavior = MiuixScrollBehavior()
-
-    PageScaffold(
-        title = provider.title(),
-        largeTitle = provider.title(),
-        scrollBehavior = scrollBehavior,
-        onBack = onBack,
-        showBackIcon = false
-    ) { padding ->
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
-            state = listState,
-            contentPadding = PaddingValues(
-                top = padding.calculateTopPadding() + 8.dp,
-                bottom = padding.calculateBottomPadding() + 16.dp
-            )
-        ) {
-            item { SmallTitle(text = "资料页") }
-            item {
-                SettingsCard {
-                    SwitchRow(
-                        sp,
-                        ProfileIdSettings.KEY_ENABLE,
-                        "显示好友/群聊ID",
-                        "在好友和群聊资料页显示可点击复制的 ID",
-                        ProfileIdSettings.DEFAULT_ENABLE
-                    )
-                }
-            }
-        }
-    }
-}
 
 @Composable
 internal fun HideChatMenuMiuixPage(
@@ -3535,7 +3331,7 @@ internal fun HideChatMenuMiuixPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "聊天菜单") }
+            item { SettingsSectionTitle(text = "聊天菜单") }
             item {
                 SettingsCard {
                     SwitchRow(
@@ -3559,7 +3355,7 @@ internal fun HideChatMenuMiuixPage(
                 }
             }
 
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
+            item { SettingsSectionTitle(text = "操作") }
             item {
                 SettingsCard {
                     ContentActionRow("恢复默认") {
@@ -3616,7 +3412,7 @@ internal fun SettingsEntryMiuixPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "入口") }
+            item { SettingsSectionTitle(text = "入口") }
             item {
                 SettingsCard {
                     SettingsEntryControls(sp)
@@ -3651,7 +3447,7 @@ internal fun QuickMarkReadMiuixPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "快捷已读") }
+            item { SettingsSectionTitle(text = "快捷已读") }
             item {
                 SettingsCard {
                     SwitchRow(
@@ -3717,7 +3513,7 @@ internal fun BackgroundRunAssistMiuixPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "后台运行辅助") }
+            item { SettingsSectionTitle(text = "后台运行辅助") }
             item {
                 SettingsCard {
                     SwitchRow(
@@ -3761,7 +3557,7 @@ internal fun BackgroundRunAssistMiuixPage(
                     )
                 }
             }
-            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "系统限制") }
+            item { SettingsSectionTitle(text = "系统限制") }
             item {
                 SettingsCard {
                     InfoRow(

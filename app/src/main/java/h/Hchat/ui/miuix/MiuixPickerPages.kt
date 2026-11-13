@@ -29,7 +29,6 @@ import h.Hchat.hooks.items.batch.BatchSelectionState
 import h.Hchat.hooks.items.conversationgroup.ConversationGroupPickerSupport
 import h.Hchat.hooks.items.grouplabel.GroupChatLabelStore
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
-import top.yukonga.miuix.kmp.basic.SmallTitle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -1140,8 +1139,7 @@ internal fun GroupMemberPickerPage(
                     }
                 }
                 item {
-                    SmallTitle(
-                        modifier = Modifier.padding(top = 10.dp),
+                    SettingsSectionTitle(
                         text = if (routeGroup == null) "群聊" else "群成员"
                     )
                 }
@@ -1221,7 +1219,7 @@ internal fun OptionPickerPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SmallTitle(text = "选项") }
+            item { SettingsSectionTitle(text = "选项") }
             item {
                 SettingsCard {
                     request.options.forEachIndexed { index, item ->
