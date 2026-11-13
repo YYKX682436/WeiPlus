@@ -45,7 +45,7 @@ class ModuleStartupStateTest {
 
         state.markApplicationReady()
         assertTrue(state.shouldScheduleInitialization())
-        listOf("first_use_agreement", "conversation_tabs", "floating_shortcut").forEach { key ->
+        listOf("first_use_agreement", "custom_bottom_bar").forEach { key ->
             assertTrue(state.installEarlyEntryOnce(key) { earlyCalls.incrementAndGet(); true })
             assertTrue(state.installEarlyEntryOnce(key) { earlyCalls.incrementAndGet(); true })
         }
@@ -55,7 +55,7 @@ class ModuleStartupStateTest {
         assertTrue("failed init is retryable after Application readiness", state.beginInitializationAttempt())
         state.finishInitializationAttempt(true)
         assertFalse(state.shouldScheduleInitialization())
-        assertTrue("each early entry is installed exactly once", earlyCalls.get() == 3)
+        assertTrue("each early entry is installed exactly once", earlyCalls.get() == 2)
     }
 
     @Test fun failedEarlyEntryCanRetryWithoutReinstallingSuccessfulEntries() {

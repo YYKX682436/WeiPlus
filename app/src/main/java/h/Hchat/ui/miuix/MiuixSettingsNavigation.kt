@@ -3,9 +3,7 @@ package h.Hchat.ui.miuix
 import android.app.Activity
 import android.content.Context
 import android.content.SharedPreferences
-import android.provider.Settings
 import android.webkit.WebView
-import h.Hchat.hooks.items.floatingshortcut.FloatingShortcutFeature
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.ExperimentalAnimationApi
 import androidx.compose.animation.fadeIn
@@ -66,7 +64,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import h.Hchat.hooks.items.audiotransform.AudioTransformFeature
 import h.Hchat.hooks.items.antirecall.AntiRecallFeature
 import h.Hchat.hooks.items.autoreply.AutoReplyFeature
 import h.Hchat.hooks.items.autooriginal.AutoOriginalImageFeature
@@ -77,7 +74,6 @@ import h.Hchat.hooks.items.callmedialimit.CallRingtoneBlockFeature
 import h.Hchat.hooks.items.chattime.ChatTimeStyleFeature
 import h.Hchat.hooks.items.conversationgroup.ConversationGroup
 import h.Hchat.hooks.items.conversationgroup.ConversationGroupFeature
-import h.Hchat.hooks.items.conversationtabs.ConversationTabsFeature
 import h.Hchat.hooks.items.custombottombar.CustomBottomBarFeature
 import h.Hchat.hooks.items.custombottombar.FloatingBottomBarSettings
 import h.Hchat.hooks.items.customnotify.CustomNotificationFeature
@@ -155,8 +151,6 @@ import h.Hchat.hooks.items.shortvideo.FinderMediaDownloadFeature
 import h.Hchat.hooks.items.statuslimit.StatusTextLimitFeature
 import h.Hchat.hooks.items.swipequote.SwipeQuoteFeature
 import h.Hchat.hooks.items.tablet.WeChatTabletFeature
-import h.Hchat.hooks.items.textspeech.TextSpeechFeature
-import h.Hchat.hooks.items.textvoice.TextVoiceFeature
 import h.Hchat.hooks.items.typingreport.TypingReportBlockFeature
 import h.Hchat.hooks.items.voiceforward.VoiceForwardFeature
 import h.Hchat.hooks.items.hchatextra.GroupMemberHistorySettingsProvider
@@ -164,7 +158,6 @@ import h.Hchat.hooks.items.hchatextra.MessageDetailsSettingsProvider
 import h.Hchat.hooks.items.hchatextra.RedPacketDetailsSettingsProvider
 import h.Hchat.hooks.items.hchatextra.SkipWebRiskSettingsProvider
 import h.Hchat.hooks.items.hchatextra.HchatExtraSettings
-import h.Hchat.hooks.items.voicepreview.VoicePreviewFeature
 import h.Hchat.preferences.HchatStorage
 import h.Hchat.ui.FeatureSettingsProvider
 import org.json.JSONArray
@@ -283,7 +276,7 @@ internal fun featureGroups(providers: List<FeatureSettingsProvider>): List<Featu
     val orphans = providers.filter { provider ->
         provider.featureId() !in known ||
             (provider.featureId() in listOf("qq_music_order", "link_parse") && "auto_reply" !in byId) ||
-            (provider.featureId() in listOf("keyword_notification", "text_speech") && "custom_notification" !in byId)
+            (provider.featureId() == "keyword_notification" && "custom_notification" !in byId)
     }
     return SettingsLayout.groups.mapNotNull { spec ->
         if (spec.directProviderId != null && spec.directProviderId !in byId) return@mapNotNull null
@@ -656,7 +649,7 @@ private fun CompositeSettingsPage(
             (if ("message_forward" in byId) listOf("forward.menu", "forward.multi", "forward.favorite", "forward.moments") else emptyList()) +
                 listOf("remove_forward_limit", "auto_message_forward", "selected_messages").filter { it in byId }
         } else {
-            listOf("quick_moments", "quick_terminate", "quick_group_chat_label", "quick_contact_edit", "floating_shortcut_menu")
+            listOf("quick_moments", "quick_terminate", "quick_group_chat_label", "quick_contact_edit")
                 .filter { it in byId }
         }
     }
@@ -852,8 +845,7 @@ private fun featureSubSearchTerms(featureId: String): List<String> {
         AutoReplyFeature.ID -> listOf(
             "自动回复规则", "任意消息", "关键词", "正则", "艾特我", "@我", "艾特全体", "@所有人", "回复步骤", "延迟回复",
             "回复冷却时间", "冷却秒数", "最大回复次数",
-            "小智", "小智AI", "小智回复", "小智语音", "小智语音回复", "小智文字回复", "唤醒词", "语音输入", "TTS",
-            "上下文", "固定ID", "清空上下文", "智谱", "模型", "Agent", "角色", "语音角色", "好友自动化", "新好友打招呼"
+            "上下文", "清空上下文", "智谱", "模型", "角色", "好友自动化", "新好友打招呼"
         )
         AutoMessageForwardFeature.ID -> listOf(
             "消息自动转发", "自动转发消息", "转发规则", "监听会话", "转发到", "好友", "群聊", "公众号",
@@ -861,9 +853,6 @@ private fun featureSubSearchTerms(featureId: String): List<String> {
         )
         ConversationGroupFeature.ID -> listOf(
             "会话分组", "聊天分组", "嵌套分组", "归拢会话", "隐藏会话", "移动会话", "分组管理"
-        )
-        ConversationTabsFeature.ID -> listOf(
-            "标签分组", "顶栏分组", "全部会话", "未读会话", "群聊", "私聊", "公众号", "自定义标签", "标签图标"
         )
         MessageAffixFeature.ID -> listOf(
             "发送文本格式", "消息格式", "消息前后缀", "消息前缀", "消息后缀", "固定文字", "发送时间", "换行"
@@ -893,26 +882,7 @@ private fun featureSubSearchTerms(featureId: String): List<String> {
         SwipeQuoteFeature.ID -> listOf("滑动手势", "左滑引用", "右滑复读", "长按复读", "菜单复读", "+1", "复读语音", "语音时长", "滑动距离")
         CallMediaLimitFeature.ID -> listOf("通话媒体限制", "语音通话", "视频通话", "播放语音", "查看视频", "打开拍摄")
         CallRingtoneBlockFeature.ID -> listOf("屏蔽通话铃声", "呼入铃声", "呼出铃声", "来电铃声", "等待铃声", "语音通话", "视频通话")
-        AudioTransformFeature.ID -> listOf(
-            "音频转换",
-            "音频转码",
-            "语音转码",
-            "silk",
-            "mp3",
-            "m4a",
-            "语音发送",
-            "切割语音",
-            "分段语音",
-            "裁剪语音",
-            "自动分割",
-            "开始时间",
-            "结束时间",
-            "试听",
-            "播放音频"
-        )
-        TextVoiceFeature.ID -> listOf("文本转语音", "文字转语音", "在线语音", "发送文字转语音", "转语音播放", "#tts", "英文语音", "TTS引擎", "TTS角色", "语速", "播放速度")
         FakeVoiceDurationFeature.ID -> listOf("伪造语音时长", "语音显示时长", "假语音时长", "语音秒数")
-        VoicePreviewFeature.ID -> listOf("语音消息预览", "预览语音", "播放语音", "语音时长", "长按语音")
         FakeMiniProgramBaseLibFeature.ID -> listOf("兼容低版本小程序", "伪装小程序宿主版本", "阻止小程序升级跳转", "微信版本较低", "官方升级页")
         SkipMiniProgramVideoAdsFeature.ID -> listOf("跳过小程序视频广告", "小程序广告", "视频广告")
         SkipGlobalMiniProgramSplashAdsFeature.ID -> listOf("跳过全局小程序开屏广告", "小程序开屏广告", "启动广告", "全局广告")
@@ -934,9 +904,6 @@ private fun featureSubSearchTerms(featureId: String): List<String> {
         )
         KeywordNotificationFeature.ID -> listOf(
             "关键词通知", "关键词列表", "关键词模板", "通知模板", "艾特我", "@我", "艾特全体", "@所有人", "允许入库", "消息入库"
-        )
-        TextSpeechFeature.ID -> listOf(
-            "文字转语音播报", "文字转语音", "语音播报", "TTS引擎", "语音引擎", "播报角色", "TTS角色", "声音角色", "音色", "Voice", "自动播放语音", "播放语音消息", "原语音", "音键控制", "音量键控制", "播报发送人", "免打扰", "开始时间", "结束时间", "设置允许名单", "允许名单"
         )
         ZombieCheckFeature.ID -> listOf("僵尸粉检测", "好友关系检测", "单向好友", "删除好友", "异常好友", "好友标签")
         LinkParseFeature.ID -> listOf("链接解析", "抖音", "小红书", "快手", "群聊触发")
@@ -981,12 +948,6 @@ private fun featureSubSearchTerms(featureId: String): List<String> {
             "长按加号",
             "启动器入口",
             "入口开关"
-        )
-        FloatingShortcutFeature.ID -> listOf(
-            "悬浮快捷菜单", "悬浮按钮", "快捷入口",
-            "按钮外观", "主按钮大小", "主按钮颜色", "副按钮大小", "副按钮颜色", "按钮渐变",
-            "菜单名称颜色", "菜单名称大小", "菜单文字",
-            "微信页面", "扫一扫", "朋友圈", "视频号", "收藏", "钱包"
         )
         ProfileIdFeature.ID -> listOf("显示ID", "好友ID", "群聊ID", "wxid", "复制ID", "资料页ID")
         QuickContactEditFeature.ID -> listOf("快捷设置备注和标签", "好友备注", "好友标签", "新建标签", "会话长按菜单", "朋友圈头像")
@@ -1175,11 +1136,6 @@ internal sealed class SelectedMessagesRoute {
     data class FavoritePicker(val request: FavoritePickerRequest) : SelectedMessagesRoute()
 }
 
-internal sealed class AudioTransformRoute {
-    object Main : AudioTransformRoute()
-    object ContactPicker : AudioTransformRoute()
-}
-
 internal sealed class CustomNotificationRoute {
     object Main : CustomNotificationRoute()
     object RuleList : CustomNotificationRoute()
@@ -1196,11 +1152,6 @@ internal sealed class KeywordNotificationRoute {
     object TemplateEditor : KeywordNotificationRoute()
     data class KeywordEditor(val oldKeyword: String?) : KeywordNotificationRoute()
     data class ContactPicker(val request: ContactPickerRequest, val includeMode: Boolean) : KeywordNotificationRoute()
-}
-
-internal sealed class TextSpeechRoute {
-    object Main : TextSpeechRoute()
-    data class ContactPicker(val request: ContactPickerRequest) : TextSpeechRoute()
 }
 
 internal enum class MessageBlockDefaultRuleKind {
@@ -1244,12 +1195,9 @@ internal sealed class AutoReplyStepsRoute {
 }
 
 internal sealed class AutoReplyAiRoute {
-    object Main : AutoReplyAiRoute()
-    object Xiaozhi : AutoReplyAiRoute()
     object Zhilia : AutoReplyAiRoute()
     object ZhiliaConfigs : AutoReplyAiRoute()
     object ZhiliaModels : AutoReplyAiRoute()
-    data class OptionPicker(val request: OptionPickerRequest) : AutoReplyAiRoute()
 }
 
 internal sealed class RedPacketReplyStepsRoute {
@@ -1337,11 +1285,6 @@ internal fun SelectedMessagesRoute.depth(): Int = when (this) {
     is SelectedMessagesRoute.FavoritePicker -> 2
 }
 
-internal fun AudioTransformRoute.depth(): Int = when (this) {
-    AudioTransformRoute.Main -> 0
-    AudioTransformRoute.ContactPicker -> 1
-}
-
 internal fun CustomNotificationRoute.depth(): Int = when (this) {
     CustomNotificationRoute.Main -> 0
     CustomNotificationRoute.RuleList,
@@ -1358,11 +1301,6 @@ internal fun KeywordNotificationRoute.depth(): Int = when (this) {
     KeywordNotificationRoute.TemplateEditor,
     is KeywordNotificationRoute.ContactPicker -> 1
     is KeywordNotificationRoute.KeywordEditor -> 2
-}
-
-internal fun TextSpeechRoute.depth(): Int = when (this) {
-    TextSpeechRoute.Main -> 0
-    is TextSpeechRoute.ContactPicker -> 1
 }
 
 internal fun autoReplyRouteDepth(route: String): Int = when (route) {
@@ -1393,12 +1331,9 @@ internal fun AutoReplyStepsRoute.depth(): Int = when (this) {
 }
 
 internal fun AutoReplyAiRoute.depth(): Int = when (this) {
-    AutoReplyAiRoute.Main -> 0
-    AutoReplyAiRoute.Xiaozhi,
-    AutoReplyAiRoute.Zhilia -> 1
+    AutoReplyAiRoute.Zhilia -> 0
     AutoReplyAiRoute.ZhiliaConfigs,
-    AutoReplyAiRoute.ZhiliaModels,
-    is AutoReplyAiRoute.OptionPicker -> 2
+    AutoReplyAiRoute.ZhiliaModels -> 1
 }
 
 internal fun RedPacketReplyStepsRoute.depth(): Int = when (this) {
@@ -1578,7 +1513,6 @@ internal fun FeatureSettingsPage(
         AutoViewOriginalFeature.ID -> AutoViewOriginalMiuixPage(context, provider, onBack)
         RemoveForwardLimitFeature.ID -> RemoveForwardLimitMiuixPage(context, provider, onBack)
         SettingsFeature.ID -> SettingsEntryMiuixPage(context, provider, onBack)
-        FloatingShortcutFeature.ID -> FloatingShortcutMiuixPage(context, provider, onBack)
         MessageDetailsSettingsProvider.FEATURE_ID -> MessageDetailsConfigPage(
             context = context,
             sp = HchatStorage.preferences(context, HchatExtraSettings.PREFS_NAME),
@@ -1616,14 +1550,12 @@ internal fun FeatureSettingsPage(
         )
         AutoMessageForwardFeature.ID -> AutoMessageForwardMiuixPage(context, provider, onBack)
         ConversationGroupFeature.ID -> ConversationGroupMiuixPage(context, provider, onBack)
-        ConversationTabsFeature.ID -> ConversationTabsMiuixPage(context, onBack)
         CustomNotificationFeature.ID -> CustomNotificationMiuixPage(
             context, provider, onBack,
-            listOfNotNull(providers.firstOrNull { it.featureId() == KeywordNotificationFeature.ID }, providers.firstOrNull { it.featureId() == TextSpeechFeature.ID }),
+            listOfNotNull(providers.firstOrNull { it.featureId() == KeywordNotificationFeature.ID }),
             onOpenProvider
         )
         KeywordNotificationFeature.ID -> KeywordNotificationMiuixPage(context, provider, onBack)
-        TextSpeechFeature.ID -> TextSpeechMiuixPage(context, provider, onBack)
         ZombieCheckFeature.ID -> ZombieCheckMiuixPage(context, provider, onBack)
         QQMusicOrderFeature.ID -> QQMusicOrderMiuixPage(context, provider, onBack)
         LinkParseFeature.ID -> LinkParseMiuixPage(context, provider, onBack)
@@ -1633,10 +1565,7 @@ internal fun FeatureSettingsPage(
         EmojiSaveFeature.ID -> EmojiSaveMiuixPage(context, provider, onBack)
         EmojiCollectionLimitFeature.ID -> EmojiCollectionLimitMiuixPage(context, provider, onBack)
         SwipeQuoteFeature.ID -> SwipeQuoteMiuixPage(context, provider, onBack)
-        AudioTransformFeature.ID -> AudioTransformSettingsPage(context, provider, onBack)
-        TextVoiceFeature.ID -> TextVoiceMiuixPage(context, provider, onBack)
         FakeVoiceDurationFeature.ID -> FakeVoiceDurationMiuixPage(context, provider, onBack)
-        VoicePreviewFeature.ID -> VoicePreviewMiuixPage(context, provider, onBack)
         FakeMiniProgramBaseLibFeature.ID -> FakeMiniProgramBaseLibMiuixPage(context, provider, onBack)
         SkipMiniProgramVideoAdsFeature.ID -> SkipMiniProgramVideoAdsMiuixPage(context, provider, onBack)
         SkipGlobalMiniProgramSplashAdsFeature.ID -> SkipGlobalMiniProgramSplashAdsMiuixPage(context, provider, onBack)

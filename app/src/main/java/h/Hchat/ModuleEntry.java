@@ -23,10 +23,8 @@ import h.Hchat.hooks.core.HookRegistry;
 import h.Hchat.hooks.core.ModuleStartupState;
 import h.Hchat.hooks.core.StartupEntryDispatch;
 import h.Hchat.hooks.core.XposedRuntime;
-import h.Hchat.hooks.items.conversationtabs.ConversationTabsFeature;
 import h.Hchat.hooks.items.custombottombar.CustomBottomBarFeature;
 import h.Hchat.hooks.items.fakelocation.FakeLocationFeature;
-import h.Hchat.hooks.items.floatingshortcut.FloatingShortcutRuntime;
 import h.Hchat.hooks.items.hotupdate.DisableHotUpdateFeature;
 import h.Hchat.hooks.items.miniprogrambaselib.FakeMiniProgramBaseLibFeature;
 import h.Hchat.hooks.items.miniprogramsplashad.SkipGlobalMiniProgramSplashAdsFeature;
@@ -534,20 +532,6 @@ public class ModuleEntry extends XposedModule {
           () -> FirstUseAgreementRuntime.install(application));
     } catch (Throwable failure) {
       HLog.e(TAG + " 首次协议运行时安装失败", failure);
-      complete = false;
-    }
-    try {
-      complete &= startupState.installEarlyEntryOnce("conversation_tabs",
-          () -> ConversationTabsFeature.installEarly(loader));
-    } catch (Throwable failure) {
-      HLog.e(TAG + " 标签分组早期安装失败", failure);
-      complete = false;
-    }
-    try {
-      complete &= startupState.installEarlyEntryOnce("floating_shortcut",
-          () -> FloatingShortcutRuntime.INSTANCE.install(context));
-    } catch (Throwable failure) {
-      HLog.e(TAG + " 悬浮快捷菜单早期安装失败", failure);
       complete = false;
     }
     try {

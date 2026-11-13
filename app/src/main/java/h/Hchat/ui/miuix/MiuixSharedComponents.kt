@@ -21,7 +21,6 @@ import android.view.View
 import android.widget.MediaController
 import android.widget.Toast
 import android.widget.VideoView
-import h.Hchat.BuildConfig
 import h.Hchat.hooks.api.contact.WeChatContactApi
 import h.Hchat.hooks.api.contact.WeChatContactTypeState
 import androidx.compose.animation.core.animateFloatAsState
@@ -110,7 +109,6 @@ import h.Hchat.hooks.items.batch.BatchSelectionPolicy
 import h.Hchat.hooks.api.media.WeChatFavoriteItem
 import h.Hchat.hooks.api.model.WeChatContact
 import h.Hchat.hooks.items.antirecall.AntiRecallSettings
-import h.Hchat.hooks.items.autoreply.XiaozhiMcpStatus
 import h.Hchat.hooks.items.groupleave.GroupLeaveReplyTemplate
 import h.Hchat.hooks.items.grouplabel.GroupChatLabel
 import h.Hchat.hooks.items.membertitle.MemberTitleStore
@@ -2553,40 +2551,6 @@ internal fun InfoRow(label: String, value: String, onClick: (() -> Unit)? = null
                     )
                 }
             }
-        }
-    }
-}
-
-@Composable
-internal fun XiaozhiMcpStatusRow(status: XiaozhiMcpStatus) {
-    val dotColor = if (status.connected) Color(0xFF20C05C) else Color(0xFF8C8C8C)
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 15.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            text = "连接状态",
-            color = MiuixTheme.colorScheme.onSurface,
-            fontWeight = FontWeight.Medium
-        )
-        Row(
-            modifier = Modifier.weight(1f),
-            horizontalArrangement = Arrangement.End,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(8.dp)
-                    .clip(RoundedCornerShape(4.dp))
-                    .background(dotColor)
-            )
-            Text(
-                text = status.label,
-                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                textAlign = TextAlign.End,
-                modifier = Modifier.padding(start = 8.dp)
-            )
         }
     }
 }

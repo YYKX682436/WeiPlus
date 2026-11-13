@@ -35,8 +35,35 @@ class AutoReplySettings(context: Context?) {
 
     fun rules(): List<AutoReplyRule> = parseRules(getString(KEY_RULES, ""))
 
-    fun saveRules(values: List<AutoReplyRule>) {
-        putString(KEY_RULES, encodeRules(values))
+    fun saveRules(values: List<AutoReplyRule>, explicitlyEmptyRuleId: String? = null) {
+        val scopes = explicitEmptyScopes().toMutableSet()
+        val emptyRuleScopes = values.filter { it.steps.isEmpty() }.mapTo(HashSet()) { RULE_EMPTY_PREFIX + it.id }
+        scopes.removeAll { it.startsWith(RULE_EMPTY_PREFIX) && it !in emptyRuleScopes }
+        if (explicitlyEmptyRuleId != null && RULE_EMPTY_PREFIX + explicitlyEmptyRuleId in emptyRuleScopes) {
+            scopes.add(RULE_EMPTY_PREFIX + explicitlyEmptyRuleId)
+        }
+        prefs?.edit()?.putString(KEY_RULES, encodeRules(values))?.also { writeEmptyScopes(it, scopes) }?.apply()
+    }
+
+    fun isRuleExplicitlyEmpty(id: String): Boolean = RULE_EMPTY_PREFIX + id in explicitEmptyScopes()
+
+    fun isAutoAcceptExplicitlyEmpty(): Boolean = ACCEPT_EMPTY_SCOPE in explicitEmptyScopes()
+
+    fun isGreetAcceptedExplicitlyEmpty(): Boolean = GREET_EMPTY_SCOPE in explicitEmptyScopes()
+
+    private fun explicitEmptyScopes(): Set<String> = runCatching {
+        prefs?.getStringSet(KEY_REMOVED_REPLY_EMPTY_SCOPES, emptySet())?.toSet().orEmpty()
+    }.getOrDefault(emptySet())
+
+    private fun writeEmptyScopes(editor: SharedPreferences.Editor, scopes: Set<String>) {
+        if (scopes.isEmpty()) editor.remove(KEY_REMOVED_REPLY_EMPTY_SCOPES)
+        else editor.putStringSet(KEY_REMOVED_REPLY_EMPTY_SCOPES, scopes)
+    }
+
+    private fun saveFriendSteps(key: String, scope: String, values: List<AutoReplyStep>, explicitEmpty: Boolean) {
+        val scopes = explicitEmptyScopes().toMutableSet()
+        if (explicitEmpty && values.isEmpty()) scopes.add(scope) else scopes.remove(scope)
+        prefs?.edit()?.putString(key, encodeSteps(values))?.also { writeEmptyScopes(it, scopes) }?.apply()
     }
 
     fun shouldExcludeTalker(talker: String?): Boolean {
@@ -53,64 +80,30 @@ class AutoReplySettings(context: Context?) {
             .filter { it.isNotEmpty() }
             .toSet()
 
-    fun autoAcceptSteps(): List<AutoReplyStep> =
-        parseSteps(getString(KEY_AUTO_ACCEPT_STEPS, "")).ifEmpty {
-            listOf(AutoReplyStep(mode = REPLY_TEXT, content = "你好，%friendName%"))
-        }
-
-    fun saveAutoAcceptSteps(values: List<AutoReplyStep>) {
-        putString(KEY_AUTO_ACCEPT_STEPS, encodeSteps(values))
+    fun autoAcceptSteps(): List<AutoReplyStep> {
+        val steps = parseSteps(getString(KEY_AUTO_ACCEPT_STEPS, ""))
+        return if (steps.isNotEmpty() || isAutoAcceptExplicitlyEmpty()) steps
+        else listOf(AutoReplyStep(mode = REPLY_TEXT, content = "你好，%friendName%"))
     }
 
-    fun greetAcceptedSteps(): List<AutoReplyStep> =
-        parseSteps(getString(KEY_GREET_ACCEPTED_STEPS, "")).ifEmpty {
-            listOf(AutoReplyStep(mode = REPLY_TEXT, content = "哈喽，%friendName%！感谢通过好友请求，以后请多指教啦！"))
-        }
+    fun saveAutoAcceptSteps(values: List<AutoReplyStep>, explicitEmpty: Boolean = false) {
+        saveFriendSteps(KEY_AUTO_ACCEPT_STEPS, ACCEPT_EMPTY_SCOPE, values, explicitEmpty)
+    }
 
-    fun saveGreetAcceptedSteps(values: List<AutoReplyStep>) {
-        putString(KEY_GREET_ACCEPTED_STEPS, encodeSteps(values))
+    fun greetAcceptedSteps(): List<AutoReplyStep> {
+        val steps = parseSteps(getString(KEY_GREET_ACCEPTED_STEPS, ""))
+        return if (steps.isNotEmpty() || isGreetAcceptedExplicitlyEmpty()) steps
+        else listOf(AutoReplyStep(mode = REPLY_TEXT, content = "哈喽，%friendName%！感谢通过好友请求，以后请多指教啦！"))
+    }
+
+    fun saveGreetAcceptedSteps(values: List<AutoReplyStep>, explicitEmpty: Boolean = false) {
+        saveFriendSteps(KEY_GREET_ACCEPTED_STEPS, GREET_EMPTY_SCOPE, values, explicitEmpty)
     }
 
     fun aiConfig(): AutoReplyAiConfig {
         return activeZhiliaConfig().toAiConfig(
             stream = getBoolean(KEY_AI_STREAM, DEFAULT_AI_STREAM)
         )
-    }
-
-    fun xiaozhiConfig(): AutoReplyXiaozhiConfig {
-        return AutoReplyXiaozhiConfig(
-            serveUrl = getString(KEY_XIAOZHI_SERVE_URL, DEFAULT_XIAOZHI_SERVE_URL),
-            otaUrl = getString(KEY_XIAOZHI_OTA_URL, DEFAULT_XIAOZHI_OTA_URL),
-            consoleUrl = getString(KEY_XIAOZHI_CONSOLE_URL, DEFAULT_XIAOZHI_CONSOLE_URL),
-            consolePhone = getString(KEY_XIAOZHI_CONSOLE_PHONE, ""),
-            consoleToken = getString(KEY_XIAOZHI_CONSOLE_TOKEN, ""),
-            consoleAgentId = getString(KEY_XIAOZHI_CONSOLE_AGENT_ID, ""),
-            consoleModel = getString(KEY_XIAOZHI_CONSOLE_MODEL, ""),
-            voiceRole = getString(KEY_XIAOZHI_VOICE_ROLE, ""),
-            musicMcpEnabled = getBoolean(KEY_XIAOZHI_MUSIC_MCP, false),
-            mcpBridgeEnabled = getBoolean(KEY_XIAOZHI_MCP_BRIDGE_ENABLE, false),
-            mcpEndpointUrl = getString(KEY_XIAOZHI_MCP_ENDPOINT_URL, ""),
-            mcpReadySeconds = getInt(KEY_XIAOZHI_MCP_READY_SECONDS, DEFAULT_XIAOZHI_MCP_READY_SECONDS),
-            mcpIdleSeconds = getInt(KEY_XIAOZHI_MCP_IDLE_SECONDS, DEFAULT_XIAOZHI_MCP_IDLE_SECONDS)
-        )
-    }
-
-    fun saveXiaozhiConfig(value: AutoReplyXiaozhiConfig) {
-        prefs?.edit()
-            ?.putString(KEY_XIAOZHI_SERVE_URL, value.serveUrl.trim().ifBlank { DEFAULT_XIAOZHI_SERVE_URL })
-            ?.putString(KEY_XIAOZHI_OTA_URL, value.otaUrl.trim().ifBlank { DEFAULT_XIAOZHI_OTA_URL })
-            ?.putString(KEY_XIAOZHI_CONSOLE_URL, value.consoleUrl.trim().ifBlank { DEFAULT_XIAOZHI_CONSOLE_URL })
-            ?.putString(KEY_XIAOZHI_CONSOLE_PHONE, value.consolePhone.trim())
-            ?.putString(KEY_XIAOZHI_CONSOLE_TOKEN, value.consoleToken.trim())
-            ?.putString(KEY_XIAOZHI_CONSOLE_AGENT_ID, value.consoleAgentId.trim())
-            ?.putString(KEY_XIAOZHI_CONSOLE_MODEL, value.consoleModel.trim())
-            ?.putString(KEY_XIAOZHI_VOICE_ROLE, value.voiceRole.trim())
-            ?.putBoolean(KEY_XIAOZHI_MUSIC_MCP, value.musicMcpEnabled)
-            ?.putBoolean(KEY_XIAOZHI_MCP_BRIDGE_ENABLE, value.mcpBridgeEnabled)
-            ?.putString(KEY_XIAOZHI_MCP_ENDPOINT_URL, value.mcpEndpointUrl.trim())
-            ?.putInt(KEY_XIAOZHI_MCP_READY_SECONDS, value.mcpReadySeconds.coerceIn(1, 30))
-            ?.putInt(KEY_XIAOZHI_MCP_IDLE_SECONDS, value.mcpIdleSeconds.coerceIn(10, 600))
-            ?.apply()
     }
 
     fun activeZhiliaName(): String {
@@ -250,6 +243,11 @@ class AutoReplySettings(context: Context?) {
 
         const val KEY_ENABLE = "auto_reply_enable"
         const val KEY_RULES = "auto_reply_rules_v1"
+        // Records an intentional empty reply after a removed legacy step was deleted.
+        const val KEY_REMOVED_REPLY_EMPTY_SCOPES = "removed_reply_empty_scopes_v1"
+        private const val RULE_EMPTY_PREFIX = "rule:"
+        private const val ACCEPT_EMPTY_SCOPE = "friend:accept"
+        private const val GREET_EMPTY_SCOPE = "friend:greet"
         const val KEY_EXCLUDED_TALKERS_ENABLE = "excluded_talkers_enable"
         const val KEY_EXCLUDED_TALKERS = "excluded_talkers"
         const val KEY_AUTO_ACCEPT_ENABLE = "auto_accept_enable"
@@ -292,19 +290,6 @@ class AutoReplySettings(context: Context?) {
         const val KEY_AI_CONTEXT_LIMIT = "ai_context_limit"
         const val KEY_AI_STREAM = "ai_stream"
         const val KEY_AI_CLEAR_CONTEXT_ON_SAVE = "ai_clear_context_on_save"
-        const val KEY_XIAOZHI_SERVE_URL = "xiaozhi_serve_url"
-        const val KEY_XIAOZHI_OTA_URL = "xiaozhi_ota_url"
-        const val KEY_XIAOZHI_CONSOLE_URL = "xiaozhi_console_url"
-        const val KEY_XIAOZHI_CONSOLE_PHONE = "xiaozhi_console_phone"
-        const val KEY_XIAOZHI_CONSOLE_TOKEN = "xiaozhi_console_token"
-        const val KEY_XIAOZHI_CONSOLE_AGENT_ID = "xiaozhi_console_agent_id"
-        const val KEY_XIAOZHI_CONSOLE_MODEL = "xiaozhi_console_model"
-        const val KEY_XIAOZHI_VOICE_ROLE = "xiaozhi_voice_role"
-        const val KEY_XIAOZHI_MUSIC_MCP = "xiaozhi_music_mcp"
-        const val KEY_XIAOZHI_MCP_BRIDGE_ENABLE = "xiaozhi_mcp_bridge_enable"
-        const val KEY_XIAOZHI_MCP_ENDPOINT_URL = "xiaozhi_mcp_endpoint_url"
-        const val KEY_XIAOZHI_MCP_READY_SECONDS = "xiaozhi_mcp_ready_seconds"
-        const val KEY_XIAOZHI_MCP_IDLE_SECONDS = "xiaozhi_mcp_idle_seconds"
         const val KEY_ZHILIA_CONFIGS = "zhilia_multi_configs_v1"
         const val KEY_ZHILIA_ACTIVE_CONFIG = "zhilia_active_config_name_v1"
         const val KEY_ZHILIA_MODEL_FAVORITES = "zhilia_model_favorites_v1"
@@ -317,11 +302,6 @@ class AutoReplySettings(context: Context?) {
         const val DEFAULT_AI_CONTEXT_LIMIT = 10
         const val DEFAULT_AI_STREAM = false
         const val DEFAULT_AI_CLEAR_CONTEXT_ON_SAVE = true
-        const val DEFAULT_XIAOZHI_SERVE_URL = "wss://api.tenclass.net/xiaozhi/v1/"
-        const val DEFAULT_XIAOZHI_OTA_URL = "https://api.tenclass.net/xiaozhi/ota/"
-        const val DEFAULT_XIAOZHI_CONSOLE_URL = "https://xiaozhi.me/console/agents"
-        const val DEFAULT_XIAOZHI_MCP_READY_SECONDS = 5
-        const val DEFAULT_XIAOZHI_MCP_IDLE_SECONDS = 90
         const val DEFAULT_ZHILIA_CONFIG_NAME = "默认配置"
 
         const val MATCH_FUZZY = 0
@@ -354,15 +334,19 @@ class AutoReplySettings(context: Context?) {
         const val REPLY_XML = 9
         const val REPLY_AI = 10
         const val REPLY_ZHILIA_AI = REPLY_AI
-        const val REPLY_XIAOZHI_AI = 11
-        const val REPLY_XIAOZHI_VOICE = 12
+        // Historical reply values remain reserved so old rules round-trip unchanged.
+        const val REPLY_REMOVED_AI = 11
+        const val REPLY_REMOVED_VOICE = 12
         const val REPLY_FAVORITE = 13
 
         const val FRIEND_ACCEPTED_KEYWORD = "我通过了你的朋友验证请求，现在我们可以开始聊天了"
 
         @JvmStatic
-        fun isAiReplyMode(mode: Int): Boolean =
-            mode == REPLY_ZHILIA_AI || mode == REPLY_XIAOZHI_AI || mode == REPLY_XIAOZHI_VOICE
+        fun isAiReplyMode(mode: Int): Boolean = mode == REPLY_ZHILIA_AI
+
+        @JvmStatic
+        fun isRemovedReplyMode(mode: Int): Boolean =
+            mode == REPLY_REMOVED_AI || mode == REPLY_REMOVED_VOICE
 
         @JvmStatic
         fun parseRules(value: String?): List<AutoReplyRule> {
@@ -439,7 +423,7 @@ class AutoReplySettings(context: Context?) {
                         val obj = array.optJSONObject(i) ?: continue
                         val mode = obj.optInt("mode", REPLY_TEXT)
                         val content = obj.optString("content", "")
-                        if (content.isBlank() && !isAiReplyMode(mode)) continue
+                        if (content.isBlank() && !isAiReplyMode(mode) && !isRemovedReplyMode(mode)) continue
                         add(
                             AutoReplyStep(
                                 id = obj.optString("id").ifBlank { System.currentTimeMillis().toString() + "_$i" },
@@ -532,22 +516,6 @@ data class AutoReplyAiConfig(
     val systemPrompt: String,
     val contextLimit: Int,
     val stream: Boolean
-)
-
-data class AutoReplyXiaozhiConfig(
-    val serveUrl: String,
-    val otaUrl: String,
-    val consoleUrl: String,
-    val consolePhone: String = "",
-    val consoleToken: String = "",
-    val consoleAgentId: String = "",
-    val consoleModel: String = "",
-    val voiceRole: String = "",
-    val musicMcpEnabled: Boolean = false,
-    val mcpBridgeEnabled: Boolean = false,
-    val mcpEndpointUrl: String = "",
-    val mcpReadySeconds: Int = AutoReplySettings.DEFAULT_XIAOZHI_MCP_READY_SECONDS,
-    val mcpIdleSeconds: Int = AutoReplySettings.DEFAULT_XIAOZHI_MCP_IDLE_SECONDS
 )
 
 data class AutoReplyZhiliaConfig(

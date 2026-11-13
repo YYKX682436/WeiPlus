@@ -257,7 +257,7 @@ private fun FeatureSettingsPage(
 - 不要在 `FeatureSettingsProvider` 上重新引入 `showDetail(Context)`。
 - `FeatureSettingsProvider` 只暴露 `featureId`、`title` 和 `subtitle`，不要把图标/颜色字段加回来。
 - 功能归类由各 `FeatureSettingsProvider.category()` 直接定义，设置功能统一显示在单页目录中。
-- `SettingsUI.show(context)` 保持模块设置入口并调用 `MiuixSettingsPage.show(context)`。启动入口包括微信设置项、按设置启用的 LauncherUI 右上角加号菜单、长按加号入口和微信进程内悬浮快捷菜单；这些入口复用已有注入链路。
+- `SettingsUI.show(context)` 保持模块设置入口并调用 `MiuixSettingsPage.show(context)`。启动入口包括微信设置项、按设置启用的 LauncherUI 右上角加号菜单和长按加号入口；这些入口复用已有注入链路。
 - 新版微信的模块设置项保持在 `SettingAdditionHeaderSearch` 与 `SettingGroupPersonalInfo` 之间。微信按 `SettingLocation.frontItem -> 当前项` 构造单链；WeKit 会在 `SettingGroupPersonalInfo` 的位置方法上用 `beforeHook` 直接返回其代理项，默认优先级下可能让后注册模块的 `afterHook` 根本不进入回调队列。Hchat 对该位置方法使用最高优先级 Hook，先进入回调队列并在最后执行 `afterHook`：读取 WeKit 或其它入口已经返回的 `frontItem` 作为 Hchat 前置项，再把 `SettingGroupPersonalInfo` 接到 Hchat 后面，保持原位置且不覆盖微信原生设置。
 - 右上角加号菜单入口必须通过结构校验动态定位 `MicroMsg.PlusSubMenuHelper`。不要写死 `of/rg` 这类特定版本混淆类、`lf/og` 这类 wrapper 类或 `mf/pg` 这类 item 类。
 - Hchat 右上角加号菜单图标从菜单 adapter 行 View 上按模块菜单 ID 设置，不能把模块 `R.drawable` ID 传进微信菜单 item。设置入口和全部已读使用透明底白色线性 `H` 自绘图标。
@@ -295,8 +295,6 @@ private fun FeatureSettingsPage(
 - 主设置页使用单一 `LazyColumn` 功能目录，保留全局搜索、固定分组入口、搜索历史和详情页返回行为。首页标题为 `Hchat`；右上角 Miuix 竖向三点菜单只有配置导入和导出，复用 `ConfigImportExportBridge` 与 `HchatConfigBackup`。
 - `CATEGORY_PRACTICAL` 的 provider 按聊天、语音、红包转账、增强、群组、朋友圈、美化、界面和杂项分组；`CATEGORY_ENHANCE` 的 provider 进入 `增强` 分组。原娱乐功能归并到 `群组`（实名尾巴、群昵称自定义颜色、群成员头衔）、`聊天`（修改聊天记录）和 `杂项`（状态词长度、点歌）。`SettingsFeature` 仍作为微信内模块设置入口保留，不作为首页 Tab。
 - “快捷设置群聊标签”默认关闭。开启后，微信首页和聊天分组二级页的真实群聊长按菜单都会显示“群聊标签”，可多选已有模块群聊标签、移出全部标签，或新建标签并立即加入当前群聊；修改后会触发聊天分组同步，使按群聊标签配置的自动归拢及时更新。普通联系人、虚拟分组会话和其它非群聊条目不显示该菜单。
-- `文字转语音播报` 位于 `增强` 分组，处理允许名单内收到的普通文字消息，并可单独开启默认关闭的 `播放语音消息`；允许名单支持好友和群聊且为空时不播报。文字消息可选择跟随系统默认或指定任一已安装的 TTS 引擎；引擎目录按实际声明 `android.intent.action.TTS_SERVICE` 的可用服务枚举，不强制厂商引擎提供额外元数据。跟随系统默认时，空包名初始化失败会依次尝试当前 Android 用户内可见的系统默认包名和其它已安装引擎，回退只在当前进程临时生效并在设置页显示实际引擎，不改写用户配置；手动指定引擎时不会静默切换。每次初始化都有超时保护，切换候选前会关闭旧实例并忽略迟到回调；微信分身所在 Android 用户看不到任何 TTS 服务时停止无效重试并记录明确原因，模块不能绕过 Android 跨用户权限绑定主用户的 TTS 服务。设置页通过所选引擎的 Android `Voice` API 读取播报角色，优先展示声明支持中文的角色，没有中文元数据时展示该引擎全部角色，并按稳定的 `Voice.name` 保存选择。角色影响所有 TTS 播报，切换引擎时会恢复为该引擎默认角色，旧角色不再提供时明确标为不可用且不会擅自改选。切换引擎时销毁旧实例并使用所选包名重新初始化，保留当前待播报文字，已卸载的历史选择在设置页明确标为不可用。微信 `8.0.49`、`8.0.58`、`8.0.66`、`8.0.68`、`8.0.72`、`8.0.74`、`8.0.76` 的清单均声明了 `android.intent.action.TTS_SERVICE` 包可见性查询。语音消息不交给 TTS：收到 PB 消息后按 `talker + msgSvrId` 异步等待消息入库和本地语音文件落地，重试期间会周期性按本地消息 ID、会话内 `msgSvrId` 和必要时的全局 `msgSvrId` 刷新已落库消息，逐个验证去重后的候选文件名与实际路径，避免 PB 临时文件名阻止后续落库结果；确认文件存在后再通过微信原生 `SceneVoicePlayer` 播放 Silk/AMR 原语音；等待最多 60 秒，功能、语音开关、允许名单或免打扰状态失效时立即取消。原生播放器在七个版本中均以稳定日志和实例 `(String,boolean,boolean,int)->boolean` 播放签名定位，暂停、继续和停止入口一并缓存，不固定混淆类名。文字和原语音进入同一串行队列，不会同时发声；原生完成或错误回调缺失时按语音时长加宽限超时跳过，避免阻塞后续任务。`自定义播报内容` 沿用旧 `播报发送人` 配置键，使用单一模板和中文可点击变量，支持微信昵称、备注、群内昵称、群聊名称、会话名称、播报来源、消息正文、消息类型、语音时长、消息时间和发送者 ID；微信昵称读取原始 `nickname`，不使用会拼接备注的完整显示名。默认模板为 `{播报来源}{消息正文}`，播报来源在私聊生成“昵称发了一条消息说”，在群聊生成“群聊名称里的群内昵称说”；语音消息的正文变量为空，模板前导语与原语音连续入队，用户可用消息类型或语音时长变量自行补充。消息时间按独立格式设置渲染，格式无效时不保存并回退默认格式。默认开启的 `免打扰不播报` 同时读取私聊和群聊的微信原生会话免打扰状态；独立的定时免打扰支持跨午夜。音键控制仅在存在播报任务时接管按键：播放中按音量减暂停，暂停后再按音量减跳过当前消息，按音量加从暂停位置继续，空闲时保留微信原有音量行为；原语音使用微信播放器自身的暂停、继续和停止。微信前台通过按键分发 Hook 处理，切到后台后在播报和暂停期间通过临时 `MediaSession` 接收音量调节，并以系统媒体音量变化监听兼容不分发远程音量事件的系统；队列结束或功能关闭时立即释放会话和监听。功能关闭或模块销毁时停止 TTS 与原生语音并清空队列。
-- 自定义播报模板的“发送者昵称”按钮插入 `{发送者昵称}`，并兼容手动填写的 `{微信昵称}`；两者都只读取原始微信昵称。模板还提供发送者微信号和会话 ID 变量，备注、群内昵称、群聊名称始终独立渲染。
 - 模块内所有系统文件输入选择器统一使用 `*/*`，不按图片、视频、音频或其它 MIME 类型过滤文件列表；具体发送方式仍由用户在功能中选择的内容类型决定。系统分享 Intent 和创建输出文件使用的 MIME 保留实际业务类型，它们不属于输入文件列表过滤。
 - 视频号媒体菜单兼容标准 `ContextMenu` 和微信自定义菜单对象，覆盖普通视频流、分享面板及作者主页二级视频菜单。菜单项优先调用微信原生带图标添加方法；`8.0.49` 的五参数入口最后一个状态参数必须传 `false`，避免新增项显示为灰色禁用，找不到原生入口时才回退模块位图图标或普通菜单添加方法。作者主页旧入口额外用 `ref_eid`、`tridot`、`delete`、`forward` 锚定 `onCreateMMMenu`；新版继续使用 `getCreateSecondMoreMenuListener: username=` 等现有锚点。定位缓存升级到新槽位后只重建一次，后续仍按微信 runtime key 复用。
 - 点击视频号菜单时只从当前回调参数、点击监听对象的直属字段和一层 holder 字段提取媒体，不做无界对象图扫描，避免误复制或下载相邻视频。当前 `FinderItem` 的普通媒体 JSON 缺少 `media_cdn_info.pcdn_url` 时，会按相同下标读取 `getMediaExtList()` 并合并扩展媒体里的 PCDN 直链；扩展数据仍无直链时继续使用现有密链、密钥和详情补全流程。
@@ -921,9 +919,8 @@ fun onEvent() {
 - If a WeChat internal detail is uncertain, reverse engineer first. Do not guess class names, method names, fields, database tables, intent extras, or request parameters.
 - Put every new file in the correct layer. Feature-specific code belongs in `hooks/items/<feature>/**`; only reusable verified WeChat APIs belong in `hooks/api/**`.
 
-## 悬浮菜单方向与消息标签扩展（2026-09-11）
+## 消息标签扩展（2026-09-11）
 
-- 悬浮快捷菜单在原有向上、向下之外支持向左、向右展开，配置值为 `left` / `right`。左右方向使用横向滚动容器，保留三种显示模式；展开/收起动画沿横轴，展开时拖动仍保持菜单跟随。靠近屏幕边缘时入口会向内避让，并保存调整后位置。
 - 冷启动时，在协议已通过的 Application 初始化阶段提前注册原生 Activity 生命周期回调，免于等待完整 DexKit 初始化；恢复页面时立即挂载并以 0/80/250 ms 有限补偿，暂停、关闭和销毁时取消过期补偿。
 - 消息详情的 `${type}` 使用 `MessageTypeLabels` 细分卡片类型，涵盖文件、音乐、聊天记录、小程序、引用回复、红包、转账、视频号、接龙等。只解析外层 `appmsg` 的直接子节点 `type`，不把引用/聊天记录内的类型作为外层类型；未知类型保留编号，损坏 XML 回退为通用标签。
 - 新增可插入变量：`${appType}` 卡片子类型编号（非卡片或未识别时为空）、`${baseType}` 归一化基础类型、`${direction}` 收到/发出、`${talker}` 会话 ID、`${createTime}` 原始毫秒时间戳（无有效值时为空）、`${rawAtUserList}` 原始艾特名单。既有变量和用户模板保持兼容，正文按所需变量读取。
@@ -941,11 +938,6 @@ NativeLibraryLoader 只记录同一模块 ClassLoader 下已经成功加载的�
 
 
 平板模式的缓存 Hook 不使用 DexKit，先在共享 DexKit 串行门外尝试安装，命中即返回；缓存缺失时仍进入原串行门并复查，再按原阶段定位，保留早期安装时序。详见 STARTUP_REVIEW_2026-09-11.md。
-
-### 悬浮快捷菜单响应优化（2026-09-11）
-
-悬浮快捷菜单在初始化及快捷项变更时更新启用项快照，展开时不再反复解析配置；自定义图标在独立后台队列按需加载及预取，以 4 MB 内存缓存复用，解码结果最大边长 256 像素，待办不超过 64 项。读取期间先显示默认图标，深色图标选择与回退规则保持不变。同路径替换、删除、关闭功能会使图标缓存及待执行结果失效。菜单直接在当前窗口尺寸内测量定位，取消滚动容器对子项按压反馈的等待；移除菜单后在下一帧遍历完成后打开页面，切后台或卸载会取消待执行跳转。生产图标加载器回归可通过 scripts/run_floating_icon_tests.cjs 执行；未进行真机帧时间测量。
-
 
 ## 消息显示时间：排除系统提示与通话记录（2026-09-24）
 
@@ -979,54 +971,23 @@ DexClub 横向核验如下，表内混淆名称仅作 APK 证据，运行时代�
 
 `node scripts/run_voice_compat_tests.cjs` 和 `node scripts/run_redpacket_silent_tests.cjs` 分别验证实际语音 API 与静默红包处理器；后者可通过 `JSON_JAR` 指定本机的 `org.json` JAR。APK 静态核验和独立 JVM 回归不等于设备验证，仍需安装后验证实际语音收发与红包响应；未取得反馈设备响应样本，不能断定该次红包失败一定由缺少 ID 导致。
 
-## 标签分组（2026-09-29）
-
-- “增强分组”下新增首页顶栏标签分组，内置全部、未读、群聊、私聊、公众号和自定义会话类型；自定义标签使用现有会话选择器保存真实会话 ID，最多保留 20 个标签。每个标签可选择只显示名称、只显示图标或图标与名称，并支持符号和系统图片图标。
-- 标签栏挂载在首页所属控制器的 `id/jlt` 内容层，保留原生首页根视图和标题层级；查询 Hook 安装失败时仍显示标签栏，筛选能力在 Hook 补装成功后启用。标签只改写首页查询投影，不修改 `rconversation.parentRef`、公众号消息记录或聊天数据。旧版首页的根查询和新版分页对象都在查询构造阶段追加条件，避免分页后过滤造成漏会话；查询重写会跟随 `rconversation` 的表别名，并兼容没有 `WHERE` 的原生查询，同时保留排序、分页和尾部子句。切换标签后的刷新合并为短时间内一次。未读条件同时检查普通未读和免打扰未读，群聊识别 `@chatroom` / `@im.chatroom`，公众号识别 `gh_` 与 `rcontact.verifyFlag`。
-- 首页 UI Hook 在主进程 `Application.onCreate` 完成后、后台 `Hchat-Init` 启动前注册，不等待完整 DexKit 初始化；完整功能初始化后为已登记首页加载配置和渲染标签。`getLayoutView()` 返回时根尚未加入控制器则延后挂载，返回首页时按 `MainUI` 的唯一 `MainUIView` 类型实例字段读取现有根视图并补挂。重复恢复不重复添加，根重建或迁移到另一内容层时清理旧标签。不能为了补挂再次调用 `getLayoutView()`，它会新建首页；也不能把旧根写回新一次布局的返回值。九版均具体实现 `getLayoutView/onResume/onDestroy`，8.0.78 的根字段为 `H`、其余八个目标版本为 `G`；运行时只按字段类型定位。
-- 标签栏位置修复（2026-10-10）：沿当前 `MainUIView` 的父链寻找 `id/jlt`，避免命中其它页面的内容层或任意中间 `FrameLayout`；该层位于可选 bounce 包装之外。按原生 `id/ei` 标题的窗口坐标下沿放置标签，保留标题下拉时的 translation，转换到父层坐标时处理父层滚动。标签先以 `INVISIBLE` 完成测量，标题、容器或列表未就绪时不显示；给列表预留空间后等待下一次布局再显示，避免首帧盖住状态栏或第一条会话。下拉时跟随标题，超出内容层显示范围时隐藏，返回后恢复，不在小程序页顶部留下固定标签。
-- 只给当前 `ConversationListView` 或 `com.tencent.mm.ui.conversation.recycler.ConversationRecyclerView` 增加标签实测高度的 topMargin，不移动 status mask，不修改原生 `ALIGN_PARENT_TOP/BELOW` 规则，也不创建另一套标题。列表替换、标签实测高度变化或原生 margin 重算时重新计算预留值，不能累计；禁用、销毁和更换列表时恢复模块增加的空间，原生刚写入的新 margin 不被旧值覆盖。模块不写 TaskBar header 和 scrollOffset 字段；原生 header 仍会按调整后的列表可用高度重新测量，不保证下拉内部坐标完全不变。
-- 几何监听只在启用且首页根已 attach 时注册。全局布局回调仅标记 dirty，需要更新时只检查 `MainUIView` 的直接子节点；标题引用缓存失效时才重新定位。普通 pre-draw 使用缓存视图及两个复用坐标数组，按需改标签 translation/可见性，不遍历视图树、解码图片、查询数据库或反复写 LayoutParams。禁用、根 detach 和销毁时移除监听，重新 attach 后恢复；坐标监听异常走 `HLog.e` 并关闭该标签栏。
-- 图标导入在后台线程缩放到 128 像素以内，并使用 2 MB LRU 缓存；顶栏使用横向滚动容器，不给会话行增加绑定监听，保证滚动路径不执行图片解码或 SQL 编译。账号变化时清空当前标签选择，全部标签始终保留为返回原生首页的入口。
-- DexClub 横向逆向确认 8.0.49、8.0.58、8.0.66、8.0.68、8.0.72、8.0.74、8.0.76、8.0.77、8.0.78 首页均存在 `SelectSql` 分页构造路径；8.0.78 对应构造器为 `uf5.l0.<init>(String, String[], long, boolean, boolean)`，运行时代码通过 DexKit 类字符串定位并按完整构造签名缓存，不写死混淆类名。独立回归使用 `node scripts/run_conversation_tabs_tests.cjs`，覆盖默认配置、账号会话清洗、分类匹配、SQL 转义和分页尾部保留；未进行 Gradle 构建和设备帧时间测量。
-- 挂载时序与坐标回归使用 `node scripts/run_conversation_tabs_lifecycle_tests.cjs`，提取并编译生产初始化、Hook、固定层挂载和几何更新方法，23 个场景、156 项检查通过，覆盖挂载、下拉坐标、空间恢复、列表替换、监听清理及视图持有 Host 的清理，以及连续 120 帧普通滚动不增加资源查找、视图扫描或布局请求。替身区分 measuredHeight 与布局 height，窗口坐标包含自身及祖先 translation 并扣除父层 scroll；首条会话空间检查使用明确标注的合成原生 header 基线。缺失恢复挂载、复用旧根、标签放在顶部、误移 status mask 四个故障变体均成功编译并被运行时检查检出。此回归不代替 Android 实际布局测量或安装后的显示/筛选验证。
-
-本次 DexClub 核验的标题与页面内容资源如下。资源名在九版一致，数值不同，运行时用微信资源按名称解析，不新增 DexKit 查询：
-
-| 微信版本 | 原生标题 `id/ei` | 页面内容层 `id/jlt` | Controller 初始化方法 |
-| --- | --- | --- | --- |
-| 8.0.49 | `0x7f0900cb` | `0x7f093bff` | `com.tencent.mm.ui.ea.c0` |
-| 8.0.58 | `0x7f0900d5` | `0x7f0940b9` | `com.tencent.mm.ui.wa.c0` |
-| 8.0.66 | `0x7f0900d7` | `0x7f0943fe` | `com.tencent.mm.ui.x9.f0` |
-| 8.0.68 | `0x7f0900d7` | `0x7f09455f` | `com.tencent.mm.ui.x9.e0` |
-| 8.0.72 | `0x7f0900d6` | `0x7f094678` | `com.tencent.mm.ui.ha.e0` |
-| 8.0.74 | `0x7f0900d5` | `0x7f09474a` | `com.tencent.mm.ui.ga.e0` |
-| 8.0.76 | `0x7f0900d5` | `0x7f0947dc` | `com.tencent.mm.ui.ga.e0` |
-| 8.0.77 | `0x7f0900d5` | `0x7f094919` | `com.tencent.mm.ui.ga.e0` |
-| 8.0.78 | `0x7f0a00d4` | `0x7f0a49b0` | `com.tencent.mm.ui.ha.e0` |
-
-九版 Controller 的默认 `layout/bxp` 都为页面实例单独 inflate，`id/jlt` 是该布局根，控制器按 `FrameLayout` 使用，再加入本页内容或 bounce 包装。49/58 根类型为 `LayoutListenerView`，66～78 为 `FrostedContentView`；不能从整个 Activity 搜 `jlt` 后假定是首页。九版首页 `layout/bvn` 均以 `MainUIView(RelativeLayout)` 为根，列表和顶部装饰使用 `ALIGN_PARENT_TOP`。8.0.78 `MainUI.w0` 可将旧列表替换为 RecyclerView 并复用旧 LayoutParams，因此恢复旧列表空间后再给新列表添加预留高度。
-
 ## 分组页面与后台任务的内存清理
 
 - 聊天分组弹窗和原生长按绑定采用弱值索引，活跃弹窗句柄由自身视图持有；菜单目标弱引用 Activity/Fragment。功能销毁关闭分组弹窗并恢复仍属于模块的长按监听器，不覆盖其它模块后来安装的监听器。
 - 分组菜单后台操作使用 `ConversationGroupTask`：一个执行线程、最多八个排队任务，执行中及等待主线程/下一帧交付合计最多九项。取消、页面销毁及功能销毁释放页面回调、结果和加载层，移除排队任务；后台只携带业务数据和 ApplicationContext。不可中断的宿主调用仍可能运行至返回，但取消后不再交付结果或继续批量操作。
-- 标签栏由视图持有 Host，全局仅保留弱索引；重复配置重载合并为一项待执行任务和一份待主线程交付结果。旧图标解码、安装回调和销毁回调按代次失效，共享首页刷新也合并调度。
 - 分组同步使用 ApplicationContext、合并请求和代次校验。销毁不提前释放仍运行任务的调度标记；旧任务不能回填分组快照、头像缓存或会话存储对象，重装后的同步请求仍会执行。
 - 已见群聊历史和自定义排序是业务数据，不按运行时缓存容量任意截断。限频失败日志仍可按容量控制；不能把业务数据量增长直接称为内存泄漏。
-- 回归入口：`run_conversation_group_ui_memory_tests.cjs`、`run_conversation_group_task_memory_tests.cjs`、`run_conversation_group_sync_memory_tests.cjs`、`run_conversation_group_store_memory_tests.cjs`、`run_conversation_tabs_lifecycle_tests.cjs`。脚本位于 `scripts/`，用 Node 执行；涉及 JSON 时可通过 `JSON_JAR` 指定依赖。测试使用生产类或逐字提取的生产方法与 Android/微信边界桩，不替代完整 APK 构建、实机堆分析或全局热重载验证。
+- 回归入口：`run_conversation_group_ui_memory_tests.cjs`、`run_conversation_group_task_memory_tests.cjs`、`run_conversation_group_sync_memory_tests.cjs`、`run_conversation_group_store_memory_tests.cjs`。脚本位于 `scripts/`，用 Node 执行；涉及 JSON 时可通过 `JSON_JAR` 指定依赖。测试使用生产类或逐字提取的生产方法与 Android/微信边界桩，不替代完整 APK 构建、实机堆分析或全局热重载验证。
 
 
 ### 文件请求与全量销毁的后续清理
 
 - 分组文档导入导出及发送文件选择器使用 `ConversationGroupFileRequest`，等待选择、后台执行、排队与待主线程交付合计最多九项，后台只有一个执行线程。文件读写和文件名查询仅持有 ApplicationContext，页面销毁或功能销毁会清空页面回调、结果和待执行工作。功能销毁接入 `cancelPendingDocuments()` 与 `ConversationGroupSendPicker.cancelAll()`；正常选中与取消保持一次交付，备用文件选择器仍使用原来的 `*/*`。
-- 标签图片选择也复用该请求池，和分组文件操作合计最多九项，不再单独建立无界队列。页面销毁会释放回调并移除排队读取；标签运行时销毁调用 `ConversationTabsIconPicker.cancelAll()`，同时取消等待选择、读取中及待交付的请求并卸载选择结果 Hook。无法中断的文件提供者仍可能读到返回，但返回后的图标文件和取消时尚未交付的文件都会删除；正常交付的图标保留。请求的 `onDiscard` 负责未交付结果的资源清理，仅捕获 ApplicationContext 和业务数据。
-- 图标选择回归：`node scripts/run_conversation_tabs_icon_memory_tests.cjs`，覆盖十二个场景，包括页面回收、取消后文件清理、正常交付、异常恢复、千次请求容量限制和重复销毁重装。`TABS_ICON_MUTATION=retain-callback` 与 `TABS_ICON_MUTATION=drop-discard` 分别在临时副本中恢复持页和漏删文件问题，应被回归拒绝。标签运行时的销毁接线由 `run_conversation_tabs_lifecycle_tests.cjs` 覆盖；这些是 JVM 接缝检查，不替代 Android 文件提供者、图片解码或设备堆分析。
 - 实名尾字的 `RealNameTailFeature.onFeatureDestroy` 会销毁查询调度器，清理消息队列、等待主线程执行的任务、延迟重试和超时任务，并释放调度器的完成与日志回调。初始化尚未成功的循环不再吞掉中断；超时检查使用可取消的延迟任务，不再为每次查询单开睡眠线程。任务键按调度器实例隔离，旧实例销毁不影响新实例；任务 API 未就绪时不启动查询或裸线程。晚到查询结果不会保存或恢复旧队列，正常查询仍保存并清理超时任务。
 - 实名尾字回归：`node scripts/run_real_name_tail_lifecycle_tests.cjs`，编译真实 Feature 和 Scheduler，覆盖八组生命周期场景。不可中断的底层初始化或查询仍可能持续至返回，但不阻塞调度器销毁；本轮未修改 `BeforeTransferNameQuery` 的 Hook/定位，查询对象自身在调用期间仍可能持有 context/logger，因此不代表整个功能已无长期引用，也不替代设备验证。
 - 导入保留 8 MB 限制及原有双参数接口，另外记录选择文件时的账号，在解析前与保存前复查账号和取消状态，防止选择过程中切换账号后写入错误账号。底层已开始的同步读写不能强杀；阻塞读取在取消后返回时不再进入业务提交，已经开始的同步保存不作强制回滚。
 - `DexInstallScheduler` 在安装成功、取消或本轮重试耗尽后释放安装闭包，销毁时移除排队任务与延时重试。同键新安装使用独立状态，旧任务结束不能修改新状态。`runDexKitTask` 与普通调度任务均在执行前绑定 Hook 注册代次；`HookRegistry` 在全量卸载时使旧代失效，旧任务不能通过 `hook/add` 重新挂钩。
-- 首页共享投影仅在 `FeatureManager.destroyAll` 的全量卸载中复位，不能因单独关闭聊天分组而破坏标签栏。安装去重索引、提供器、刷新对象及排队刷新一并清理，旧查询回调和旧刷新不能污染新代。全量销毁不额外等待 DexKit 全局串行门，但功能自身仍保留已有同步边界。
+- 首页共享投影仅在 `FeatureManager.destroyAll` 的全量卸载中复位，与聊天分组的生命周期隔离。安装去重索引、提供器、刷新对象及排队刷新一并清理，旧查询回调和旧刷新不能污染新代。全量销毁不额外等待 DexKit 全局串行门，但功能自身仍保留已有同步边界。
 - 新增回归：`node scripts/run_conversation_group_file_memory_tests.cjs`、`node scripts/run_dex_scheduler_lifecycle_tests.cjs`、`node scripts/run_hook_projection_lifecycle_tests.cjs`。使用真实生产类/方法与 Android、Xposed、DexKit 边界桩；实际 Runtime 销毁接线另由同步生命周期回归验证。这些检查不替代完整 APK 构建和实机堆分析。当前没有新增对外全量热重载入口，也不表示所有功能都已具备完整热重载能力；注册代次租约不自动覆盖功能另起的异步线程。
 
 

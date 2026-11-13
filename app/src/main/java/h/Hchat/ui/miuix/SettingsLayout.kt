@@ -38,16 +38,16 @@ internal object SettingsLayout {
             "anti_recall", "multi_recall", "message_affix", "block_typing_report", "disable_pat",
             "auto_original_image", "auto_view_original", "quick_mark_read", "hchat_message_time",
             "quote_delete_clear", "swipe_quote", "emoji_save", "call_media_limit", "call_ringtone_block",
-            "fake_voice_duration", "voice_forward", "edit_message", "text_voice", "audio_transform",
-            "voice_preview", "conversation_group", "conversation_tabs", "hide_chat_menu"
+            "fake_voice_duration", "voice_forward", "edit_message",
+            "conversation_group", "hide_chat_menu"
         )),
         SettingsGroupSpec("message_block", "屏蔽消息", listOf("message_block"), "message_block"),
         SettingsGroupSpec("batch", "批量操作", emptyList(), batchOperations = true),
         SettingsGroupSpec("quick", "快捷操作", listOf(
-            "quick_moments", "quick_terminate", "quick_group_chat_label", "quick_contact_edit", "floating_shortcut_menu"
+            "quick_moments", "quick_terminate", "quick_group_chat_label", "quick_contact_edit"
         )),
         SettingsGroupSpec("notifications", "自定义通知", listOf(
-            "custom_notification", "keyword_notification", "text_speech"
+            "custom_notification", "keyword_notification"
         ), "custom_notification"),
         SettingsGroupSpec("other", "其他", listOf(
             "wechat_keep_alive", "wechat_tablet", "disable_hot_update", "fake_mini_program_base_lib",

@@ -11,7 +11,6 @@ import android.graphics.Color as AndroidColor
 import android.media.RingtoneManager
 import android.os.Bundle
 import android.os.Parcelable
-import android.provider.Settings
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
@@ -19,7 +18,6 @@ import android.widget.FrameLayout
 import android.widget.Toast
 import h.Hchat.BuildConfig
 import h.Hchat.R
-import h.Hchat.hooks.items.floatingshortcut.FloatingShortcutSettings
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.ExperimentalAnimationApi
 import androidx.compose.animation.core.tween
@@ -57,7 +55,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigationevent.compose.LocalNavigationEventDispatcherOwner
 import h.Hchat.hooks.api.core.WeChatApis
-import h.Hchat.hooks.items.audiotransform.AudioTransformSettings
 import h.Hchat.hooks.items.antirecall.AntiRecallSettings
 import h.Hchat.hooks.items.autoreply.AutoReplySettings
 import h.Hchat.hooks.items.autooriginal.AutoOriginalImageSettings
@@ -65,7 +62,6 @@ import h.Hchat.hooks.items.autovieworiginal.AutoViewOriginalSettings
 import h.Hchat.hooks.items.callmedialimit.CallMediaLimitSettings
 import h.Hchat.hooks.items.chattime.ChatTimeStyleSettings
 import h.Hchat.hooks.items.conversationgroup.ConversationGroupStore
-import h.Hchat.hooks.items.conversationtabs.ConversationTabsStore
 import h.Hchat.hooks.items.customfriendavatar.CustomFriendAvatarSettings
 import h.Hchat.hooks.items.customnotify.CustomNotificationSettings
 import h.Hchat.hooks.items.editmsg.EditMessageSettings
@@ -112,8 +108,6 @@ import h.Hchat.hooks.items.shortvideo.FinderMediaDownloadSettings
 import h.Hchat.hooks.items.statuslimit.StatusTextLimitSettings
 import h.Hchat.hooks.items.swipequote.SwipeQuoteSettings
 import h.Hchat.hooks.items.tablet.WeChatTabletSettings
-import h.Hchat.hooks.items.textspeech.TextSpeechSettings
-import h.Hchat.hooks.items.textvoice.TextVoiceSettings
 import h.Hchat.hooks.items.voiceforward.VoiceForwardSettings
 import h.Hchat.hooks.items.hchatextra.HchatExtraSettings
 import h.Hchat.preferences.HchatStorage
@@ -150,8 +144,6 @@ private const val AUTO_REPLY_FILE_REQUEST_CODE = 0x48435257
 private const val CONFIG_EXPORT_REQUEST_CODE = 0x48435258
 private const val CONFIG_IMPORT_REQUEST_CODE = 0x48435259
 private const val SCHEDULED_TASK_FILE_REQUEST_CODE = 0x4843525A
-private const val AUDIO_TRANSFORM_INPUT_REQUEST_CODE = 0x4843525B
-private const val AUDIO_TRANSFORM_OUTPUT_REQUEST_CODE = 0x4843525C
 private const val FAKE_LOCATION_WECHAT_PICKER_REQUEST_CODE = 0x4843525D
 private const val MARKDOWN_LINK_TAG = "md_link"
 private val MARKDOWN_LINK_REGEX = Regex("""\[([^\]]+)]\(([^)\s]+)\)""")
@@ -227,21 +219,6 @@ internal val momentsPostNotificationTemplateVariables = listOf(
 )
 internal val momentsAutoCommentTemplateVariables = listOf(
     TemplateVariable(MomentsAutoCommentSettings.VAR_TIME, "时间")
-)
-internal val textSpeechTemplateVariables = listOf(
-    TemplateVariable(TextSpeechSettings.VAR_SENDER_NICKNAME, "发送者昵称"),
-    TemplateVariable(TextSpeechSettings.VAR_WECHAT_ID, "发送者微信号"),
-    TemplateVariable(TextSpeechSettings.VAR_REMARK_NAME, "备注"),
-    TemplateVariable(TextSpeechSettings.VAR_GROUP_NICKNAME, "群内昵称"),
-    TemplateVariable(TextSpeechSettings.VAR_GROUP_NAME, "群聊名称"),
-    TemplateVariable(TextSpeechSettings.VAR_CONVERSATION_NAME, "会话名称"),
-    TemplateVariable(TextSpeechSettings.VAR_ANNOUNCEMENT_SOURCE, "播报来源"),
-    TemplateVariable(TextSpeechSettings.VAR_MESSAGE_CONTENT, "消息正文"),
-    TemplateVariable(TextSpeechSettings.VAR_MESSAGE_TYPE, "消息类型"),
-    TemplateVariable(TextSpeechSettings.VAR_VOICE_DURATION, "语音时长"),
-    TemplateVariable(TextSpeechSettings.VAR_MESSAGE_TIME, "消息时间"),
-    TemplateVariable(TextSpeechSettings.VAR_SENDER_ID, "发送者ID"),
-    TemplateVariable(TextSpeechSettings.VAR_CONVERSATION_ID, "会话ID")
 )
 internal val momentsBottomDetailTemplateVariables = listOf(
     TemplateVariable(MomentsBottomDetailSettings.VAR_ORIGINAL_TEXT, "微信原时间"),
@@ -1794,190 +1771,6 @@ internal object ScheduledTaskFilePickerBridge {
     }
 }
 
-internal object AudioTransformDocumentBridge {
-    private val resultHooks = SettingsActivityResultHooks { onInputPicked = null; onOutputPicked = null; currentActivity = null }
-    private var onInputPicked: ((String, String) -> Unit)? = null
-    private var onOutputPicked: ((Uri, String) -> Unit)? = null
-    private var currentActivity: Activity? = null
-
-    @Synchronized
-    fun launchInput(activity: Activity, onResult: (String, String) -> Unit) {
-        var requestGeneration: Long? = null
-        try {
-            resultHooks.attach(activity)
-            requestGeneration = resultHooks.generation()
-            onInputPicked = onResult
-            currentActivity = activity
-            hookActivityResult(activity.javaClass)
-            hookActivityResult(Activity::class.java)
-            val intent =
-                Intent(Intent.ACTION_OPEN_DOCUMENT)
-                    .apply {
-                        addCategory(Intent.CATEGORY_OPENABLE)
-                        type = "*/*"
-                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                        addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
-                    }
-                    .preferSystemDocumentsUi(activity)
-            try {
-                activity.startActivityForResult(intent, AUDIO_TRANSFORM_INPUT_REQUEST_CODE)
-            } catch (_: Throwable) {
-                val fallback =
-                    Intent(Intent.ACTION_GET_CONTENT).apply {
-                        addCategory(Intent.CATEGORY_OPENABLE)
-                        type = "*/*"
-                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    }
-                activity.startActivityForResult(
-                    Intent.createChooser(fallback, "选择音频文件"),
-                    AUDIO_TRANSFORM_INPUT_REQUEST_CODE,
-                )
-            }
-        } catch (error: Throwable) {
-            resultHooks.clear(requestGeneration)
-            h.Hchat.utils.HLog.e("[Hchat:Picker] 启动选择器失败", error)
-            Toast.makeText(activity, "启动选择器失败: ${error.message.orEmpty()}", Toast.LENGTH_SHORT)
-                .show()
-        }
-    }
-
-    @Synchronized
-    fun launchOutput(
-        activity: Activity,
-        suggestedFileName: String,
-        mimeType: String,
-        onResult: (Uri, String) -> Unit,
-    ) {
-        var requestGeneration: Long? = null
-        try {
-            resultHooks.attach(activity)
-            requestGeneration = resultHooks.generation()
-            onOutputPicked = onResult
-            currentActivity = activity
-            hookActivityResult(activity.javaClass)
-            hookActivityResult(Activity::class.java)
-            val intent =
-                Intent(Intent.ACTION_CREATE_DOCUMENT)
-                    .apply {
-                        addCategory(Intent.CATEGORY_OPENABLE)
-                        type = mimeType
-                        putExtra(Intent.EXTRA_TITLE, suggestedFileName)
-                        addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    }
-                    .preferSystemDocumentsUi(activity)
-            try {
-                activity.startActivityForResult(intent, AUDIO_TRANSFORM_OUTPUT_REQUEST_CODE)
-            } catch (_: Throwable) {
-                resultHooks.clear(requestGeneration)
-                Toast.makeText(activity, "当前系统不支持创建输出文件", Toast.LENGTH_SHORT).show()
-            }
-        } catch (error: Throwable) {
-            resultHooks.clear(requestGeneration)
-            h.Hchat.utils.HLog.e("[Hchat:Picker] 启动选择器失败", error)
-            Toast.makeText(activity, "启动选择器失败: ${error.message.orEmpty()}", Toast.LENGTH_SHORT)
-                .show()
-        }
-    }
-
-    @Synchronized
-    private fun hookActivityResult(clazz: Class<*>) {
-        if (resultHooks.contains(clazz)) return
-        val installingGeneration = resultHooks.generation()
-        try {
-            val installed =
-                XposedRuntime.hookAllMethods(
-                    clazz,
-                    "onActivityResult",
-                    XposedInterface.Hooker { chain ->
-                        if (resultHooks.generation() != installingGeneration) return@Hooker chain.proceed()
-                        val requestCode =
-                            chain.args.getOrNull(0) as? Int ?: return@Hooker chain.proceed()
-                        if (
-                            requestCode != AUDIO_TRANSFORM_INPUT_REQUEST_CODE &&
-                                requestCode != AUDIO_TRANSFORM_OUTPUT_REQUEST_CODE
-                        )
-                            return@Hooker chain.proceed()
-                        if (chain.thisObject !== currentActivity) return@Hooker chain.proceed()
-                        val requestGeneration = resultHooks.generation()
-                        try {
-                            val hostResult = chain.proceed()
-                            if (resultHooks.generation() != requestGeneration) return@Hooker hostResult
-                            val resultCode =
-                                chain.args.getOrNull(1) as? Int ?: return@Hooker hostResult
-                            if (resultCode != Activity.RESULT_OK) return@Hooker hostResult
-                            val data =
-                                chain.args.getOrNull(2) as? Intent ?: return@Hooker hostResult
-                            val activity = currentActivity ?: return@Hooker hostResult
-                            val uri = data.data ?: return@Hooker hostResult
-                            if (requestCode == AUDIO_TRANSFORM_INPUT_REQUEST_CODE) {
-                                takeReadPermission(activity, data, uri)
-                                val copied =
-                                    copyInputFileToCache(activity, uri) ?: return@Hooker hostResult
-                                onInputPicked?.invoke(copied.first, copied.second)
-                            } else {
-                                val displayName =
-                                    queryDisplayName(activity, uri)
-                                        ?: uri.lastPathSegment
-                                            ?.substringAfterLast('/')
-                                            ?.substringAfterLast(':')
-                                            .orEmpty()
-                                onOutputPicked?.invoke(uri, displayName.ifBlank { "output" })
-                            }
-
-                            return@Hooker hostResult
-                        } finally {
-                            resultHooks.clear(requestGeneration)
-                        }
-                    },
-                )
-            resultHooks.add(clazz, installed, installingGeneration)
-        } catch (error: Throwable) {
-            resultHooks.clear(installingGeneration)
-            throw error
-        }
-    }
-
-    private fun takeReadPermission(activity: Activity, data: Intent, uri: Uri) {
-        if (uri.scheme != "content") return
-        try {
-            val flags = data.flags and
-                (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
-            if ((flags and Intent.FLAG_GRANT_READ_URI_PERMISSION) == 0) return
-            activity.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        } catch (_: Throwable) {
-        }
-    }
-
-    private fun copyInputFileToCache(context: Context, uri: Uri): Pair<String, String>? {
-        if ("file".equals(uri.scheme, ignoreCase = true)) {
-            val path = uri.path.orEmpty()
-            if (path.isNotBlank() && File(path).isFile) {
-                val name = File(path).name.ifBlank { "audio_input" }
-                return path to name
-            }
-        }
-        return try {
-            val name = safeAudioTransformFileName(queryDisplayName(context, uri) ?: uri.lastPathSegment ?: "audio_input")
-            val dir = File(context.filesDir, "Hchat/audio_transform/input").apply { mkdirs() }
-            val target = File(dir, "${System.currentTimeMillis()}_$name")
-            context.contentResolver.openInputStream(uri)?.use { input ->
-                target.outputStream().use { output -> input.copyTo(output) }
-            } ?: return null
-            if (!target.isFile || target.length() <= 0L) return null
-            target.absolutePath to name
-        } catch (_: Throwable) {
-            null
-        }
-    }
-
-    private fun safeAudioTransformFileName(value: String): String {
-        return value.replace(Regex("""[\\/:*?"<>|]"""), "_")
-            .trim()
-            .ifBlank { "audio_input" }
-    }
-}
-
 internal object ConfigImportExportBridge {
     private val resultHooks = SettingsActivityResultHooks { onImported = null; currentActivity = null }
     private var onImported: (() -> Unit)? = null
@@ -2127,7 +1920,7 @@ internal object ConfigImportExportBridge {
     }
 }
 
-private object HchatConfigBackup {
+internal object HchatConfigBackup {
     private const val VERSION = 1
     private const val TYPE_BOOLEAN = "boolean"
     private const val TYPE_INT = "int"
@@ -2140,6 +1933,10 @@ private object HchatConfigBackup {
     private val deprecatedPreferenceKeys = mapOf(
         UI_PREFS_NAME to setOf("floating_nav", "glass_nav")
     )
+
+    private fun isIgnoredPreference(name: String, key: String): Boolean =
+        key in deprecatedPreferenceKeys[name].orEmpty() ||
+            (name == AutoReplySettings.PREFS_NAME && key.startsWith("xiaozhi_"))
 
     private val prefsNames = listOf(
         UI_PREFS_NAME,
@@ -2161,26 +1958,21 @@ private object HchatConfigBackup {
         MomentsFakeInteractionSettings.PREFS_NAME,
         ProfileIdSettings.PREFS_NAME,
         SettingsEntrySettings.PREFS_NAME,
-        FloatingShortcutSettings.PREFS_NAME,
         QuickMarkReadSettings.PREFS_NAME,
         CustomNotificationSettings.PREFS_NAME,
         ConversationGroupStore.PREFS_NAME,
-        ConversationTabsStore.PREFS_NAME,
         AutoReplySettings.PREFS_NAME,
         MessageAffixSettings.PREFS_NAME,
         InputHintSettings.PREFS_NAME,
         AutoOriginalImageSettings.PREFS_NAME,
         AutoViewOriginalSettings.PREFS_NAME,
         KeywordNotificationSettings.PREFS_NAME,
-        TextSpeechSettings.PREFS_NAME,
-        TextVoiceSettings.PREFS_NAME,
         ZombieCheckSettings.PREFS_NAME,
         BackgroundRunAssistSettings.PREFS_NAME,
         QuoteDeleteClearSettings.PREFS_NAME,
         ChatTimeStyleSettings.PREFS_NAME,
         EmojiSaveSettings.PREFS_NAME,
         SwipeQuoteSettings.PREFS_NAME,
-        AudioTransformSettings.PREFS_NAME,
         FakeVoiceDurationSettings.PREFS_NAME,
         MessageBubbleSettings.PREFS_NAME,
         MessageTextColorSettings.PREFS_NAME,
@@ -2219,7 +2011,7 @@ private object HchatConfigBackup {
                 val sp = HchatStorage.preferences(context, name)
                 val entries = JSONObject()
                 sp.all.forEach { (key, value) ->
-                    if (key in deprecatedPreferenceKeys[name].orEmpty()) return@forEach
+                    if (isIgnoredPreference(name, key)) return@forEach
                     encodePreferenceValue(value)?.let { encoded ->
                         entries.put(key, encoded)
                         itemCount++
@@ -2255,11 +2047,18 @@ private object HchatConfigBackup {
             var itemCount = 0
             prefsNames.forEach { name ->
                 val entries = prefsJson.optJSONObject(name) ?: return@forEach
-                val editor = HchatStorage.preferences(context, name).edit().clear()
-                val keys = entries.keys()
+                val keysToImport = entries.keys().asSequence().filterNot { isIgnoredPreference(name, it) }.toList()
+                if (name == AutoReplySettings.PREFS_NAME && entries.length() > 0 && keysToImport.isEmpty()) return@forEach
+                val preferences = HchatStorage.preferences(context, name)
+                val editor = preferences.edit()
+                if (name == AutoReplySettings.PREFS_NAME) {
+                    preferences.all.keys.filterNot { isIgnoredPreference(name, it) }.forEach(editor::remove)
+                } else {
+                    editor.clear()
+                }
+                val keys = keysToImport.iterator()
                 while (keys.hasNext()) {
                     val key = keys.next()
-                    if (key in deprecatedPreferenceKeys[name].orEmpty()) continue
                     val encoded = entries.optJSONObject(key) ?: continue
                     if (decodePreferenceValue(editor, key, encoded)) {
                         itemCount++

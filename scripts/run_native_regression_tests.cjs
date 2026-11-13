@@ -47,11 +47,13 @@ sources.push(process.env.WEIPLUS_AUTOREPLY_FEATURE_SOURCE ||
   'app/src/main/java/h/Hchat/hooks/items/autoreply/AutoReplyFeature.kt');
 sources.push(process.env.WEIPLUS_BACKGROUND_ASSIST_FEATURE_SOURCE ||
   'app/src/main/java/h/Hchat/hooks/items/backgroundassist/BackgroundRunAssistFeature.kt');
+const compileXml = spawnSync(process.env.JAVAC || 'javac', ['-d', output, 'app/src/main/java/h/Hchat/utils/XmlValueReader.java'], {cwd: root, stdio: 'inherit'});
+if (compileXml.error || compileXml.status !== 0) throw compileXml.error || new Error('XmlValueReader compilation failed');
 const jar = path.join(output, 'native-regressions.jar');
 run(['-Xmx384m', '-cp', jars.map(file => path.join(lib, file)).join(path.delimiter),
   'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler', '-no-stdlib', '-no-reflect',
-  '-classpath', path.join(lib, stdlib), '-d', jar, ...sources]);
-run(['-Djava.io.tmpdir=' + output, '-cp', jar + path.delimiter + path.join(lib, stdlib), 'NativeRegressionKt']);
+  '-classpath', [output, path.join(lib, stdlib)].join(path.delimiter), '-d', jar, ...sources]);
+run(['-Djava.io.tmpdir=' + output, '-cp', [jar, output, path.join(lib, stdlib)].join(path.delimiter), 'NativeRegressionKt']);
 
 const read = file => fs.readFileSync(path.join(root, file), 'utf8');
 const entry = read('app/src/main/java/h/Hchat/ModuleEntry.java');

@@ -3145,8 +3145,3 @@ private fun updateGroupToggle(
     }
     return disabled
 }
-
-internal sealed class TextVoiceRoute {
-    object Main : TextVoiceRoute()
-    object VoicePicker : TextVoiceRoute()
-}

@@ -3,10 +3,8 @@ package h.Hchat.ui.miuix
 import android.app.Activity
 import android.content.Context
 import android.content.SharedPreferences
-import android.graphics.Color as AndroidColor
 import android.os.Handler
 import android.os.Looper
-import android.webkit.WebView
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -22,7 +20,6 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
@@ -41,7 +38,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -52,13 +48,7 @@ import h.Hchat.hooks.items.autoreply.AutoReplyRule
 import h.Hchat.hooks.items.autoreply.AutoReplyRuntime
 import h.Hchat.hooks.items.autoreply.AutoReplySettings
 import h.Hchat.hooks.items.autoreply.AutoReplyStep
-import h.Hchat.hooks.items.autoreply.XiaozhiMcpStatus
-import h.Hchat.hooks.items.autoreply.AutoReplyXiaozhiConfig
 import h.Hchat.hooks.items.autoreply.AutoReplyZhiliaConfig
-import h.Hchat.hooks.items.autoreply.XiaozhiAgentOption
-import h.Hchat.hooks.items.autoreply.XiaozhiConsoleApi
-import h.Hchat.hooks.items.autoreply.XiaozhiModelOption
-import h.Hchat.hooks.items.autoreply.XiaozhiVoiceOption
 import h.Hchat.hooks.items.automessageforward.AutoMessageForwardRule
 import h.Hchat.hooks.items.automessageforward.AutoMessageForwardSettings
 import h.Hchat.hooks.items.customnotify.CustomNotificationRule
@@ -329,7 +319,7 @@ internal fun AutoReplyMiuixPage(
     val sceneStateHolder = rememberSaveableStateHolder()
     var editingRuleId by remember { mutableStateOf<String?>(null) }
     var editingRuleDraft by remember { mutableStateOf<AutoReplyRule?>(null) }
-    var editingSteps by remember { mutableStateOf<Pair<String, List<AutoReplyStep>>?>(null) }
+    var editingSteps by remember { mutableStateOf<Triple<String, List<AutoReplyStep>, Boolean>?>(null) }
     val ruleListState = rememberLazyListState()
     var ruleQuery by remember { mutableStateOf("") }
     val ruleEditorListState = rememberLazyListState()
@@ -368,9 +358,9 @@ internal fun AutoReplyMiuixPage(
         )
     }
 
-    fun saveRules(next: List<AutoReplyRule>) {
+    fun saveRules(next: List<AutoReplyRule>, explicitlyEmptyRuleId: String? = null) {
         rules = next
-        settings.saveRules(next)
+        settings.saveRules(next, explicitlyEmptyRuleId)
     }
 
     val autoReplyRoute = if (editingSteps != null) "steps" else route
@@ -386,11 +376,12 @@ internal fun AutoReplyMiuixPage(
             AutoReplyStepsPage(
                 title = request.first,
                 initialSteps = request.second,
+                initiallyExplicitEmpty = request.third,
                 onBack = { editingSteps = null },
-                onSave = { steps ->
+                onSave = { steps, explicitEmpty ->
                     when (route) {
-                        "autoAccept" -> settings.saveAutoAcceptSteps(steps)
-                        "greetAccepted" -> settings.saveGreetAcceptedSteps(steps)
+                        "autoAccept" -> settings.saveAutoAcceptSteps(steps, explicitEmpty)
+                        "greetAccepted" -> settings.saveGreetAcceptedSteps(steps, explicitEmpty)
                         else -> {
                             val id = editingRuleId
                             if (id != null) {
@@ -398,7 +389,7 @@ internal fun AutoReplyMiuixPage(
                                     ?.copy(steps = steps)
                                 if (updated != null) {
                                     editingRuleDraft = updated
-                                    saveRules(rules.map { if (it.id == id) updated else it })
+                                    saveRules(rules.map { if (it.id == id) updated else it }, if (explicitEmpty) id else null)
                                 }
                             }
                         }
@@ -462,7 +453,7 @@ internal fun AutoReplyMiuixPage(
                     onDraftChange = { editingRuleDraft = it },
                     onEditSteps = { draft ->
                         editingRuleDraft = draft
-                        editingSteps = "规则回复" to draft.steps
+                        editingSteps = Triple("规则回复", draft.steps, draft.steps.isEmpty() && settings.isRuleExplicitlyEmpty(draft.id))
                     }
                 )
             }
@@ -480,7 +471,7 @@ internal fun AutoReplyMiuixPage(
             onBack = { if (initialScene == AutoReplyInitialScene.MAIN) route = "main" else onBack() },
             automationKeys = autoAcceptAutomationKeys,
             onSelectLabels = { route = "autoAcceptLabels" },
-            onEditSteps = { editingSteps = "好友请求回复" to settings.autoAcceptSteps() }
+            onEditSteps = { editingSteps = Triple("好友请求回复", settings.autoAcceptSteps(), settings.isAutoAcceptExplicitlyEmpty()) }
         )
         "autoAcceptLabels" -> AutoReplyLabelPickerPage(
             context = context,
@@ -503,7 +494,7 @@ internal fun AutoReplyMiuixPage(
             automationKeys = greetAcceptedAutomationKeys,
             dependencyHint = "沿用自动回复总开关及排除名单",
             onSelectLabels = { route = "greetAcceptedLabels" },
-            onEditSteps = { editingSteps = "对方通过验证" to settings.greetAcceptedSteps() }
+            onEditSteps = { editingSteps = Triple("对方通过验证", settings.greetAcceptedSteps(), settings.isGreetAcceptedExplicitlyEmpty()) }
         )
         "greetAcceptedLabels" -> AutoReplyLabelPickerPage(
             context = context,
@@ -1260,7 +1251,7 @@ private fun AutoReplyMainPage(
                     InsetDivider()
                     ActionRow("回复规则", if (rules.isEmpty()) "暂无规则" else "${rules.size} 条规则，${rules.count { it.enabled }} 条启用", onOpenRules)
                     InsetDivider()
-                    ActionRow("AI 配置", "配置小智AI和智聊AI，多智聊模型可切换", onOpenAi)
+                    ActionRow("AI 配置", "配置智聊AI，可切换多个模型", onOpenAi)
                 }
             }
             if (relatedProviders.isNotEmpty()) {
@@ -1963,44 +1954,6 @@ private fun autoReplyLabelSummary(value: String): String {
     return if (names.isEmpty()) "未选择" else names.take(3).joinToString("、") + if (names.size > 3) " 等 ${names.size} 个" else ""
 }
 
-@Composable
-private fun XiaozhiCaptchaSvgView(svg: String) {
-    AndroidView(
-        modifier = Modifier.fillMaxWidth().height(72.dp).padding(horizontal = 16.dp, vertical = 8.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .background(MiuixTheme.colorScheme.secondaryVariant),
-        factory = { context ->
-            WebView(context).apply {
-                setBackgroundColor(AndroidColor.TRANSPARENT)
-                settings.javaScriptEnabled = false
-                settings.loadWithOverviewMode = true
-                settings.useWideViewPort = true
-            }
-        },
-        update = { view ->
-            view.loadDataWithBaseURL(null, svg, "image/svg+xml", "UTF-8", null)
-        }
-    )
-}
-
-private fun xiaozhiAgentSummary(agentId: String, agents: List<XiaozhiAgentOption>): String {
-    if (agentId.isBlank()) return "未选择，点击拉取"
-    val agent = agents.firstOrNull { it.id == agentId }
-    return if (agent == null) "已保存 ID: $agentId" else "${agent.name} / ${agent.assistantName.ifBlank { agent.id }}"
-}
-
-private fun xiaozhiModelSummary(model: String, models: List<XiaozhiModelOption>): String {
-    if (model.isBlank()) return "未选择，点击拉取"
-    val item = models.firstOrNull { it.id == model }
-    return if (item == null) "已保存: $model" else "${item.name} / ${item.id}"
-}
-
-private fun xiaozhiVoiceSummary(voice: String, voices: List<XiaozhiVoiceOption>): String {
-    if (voice.isBlank()) return "未选择，留空使用控制台当前角色"
-    val item = voices.firstOrNull { it.id == voice }
-    return if (item == null) "已保存: $voice" else "${item.name} / ${item.id}"
-}
-
 private fun splitAutoReplyNames(value: String): List<String> =
     value.split(";;;", "|", "\n")
         .map { it.trim() }
@@ -2011,20 +1964,6 @@ private fun splitAutoReplyNames(value: String): List<String> =
 private fun AutoReplyAiPage(context: Context, sp: SharedPreferences, onBack: () -> Unit) {
     val settings = remember { AutoReplySettings(context) }
     val scope = rememberCoroutineScope()
-    var xiaozhiServe by remember { mutableStateOf(settings.xiaozhiConfig().serveUrl) }
-    var xiaozhiOta by remember { mutableStateOf(settings.xiaozhiConfig().otaUrl) }
-    var xiaozhiConsole by remember { mutableStateOf(settings.xiaozhiConfig().consoleUrl) }
-    var xiaozhiConsolePhone by remember { mutableStateOf(settings.xiaozhiConfig().consolePhone) }
-    var xiaozhiConsoleToken by remember { mutableStateOf(settings.xiaozhiConfig().consoleToken) }
-    var xiaozhiConsoleAgentId by remember { mutableStateOf(settings.xiaozhiConfig().consoleAgentId) }
-    var xiaozhiConsoleModel by remember { mutableStateOf(settings.xiaozhiConfig().consoleModel) }
-    var xiaozhiVoiceRole by remember { mutableStateOf(settings.xiaozhiConfig().voiceRole) }
-    var xiaozhiMusicMcp by remember { mutableStateOf(settings.xiaozhiConfig().musicMcpEnabled) }
-    var xiaozhiMcpBridge by remember { mutableStateOf(settings.xiaozhiConfig().mcpBridgeEnabled) }
-    var xiaozhiMcpEndpoint by remember { mutableStateOf(settings.xiaozhiConfig().mcpEndpointUrl) }
-    var xiaozhiMcpReadySeconds by remember { mutableStateOf(settings.xiaozhiConfig().mcpReadySeconds.toString()) }
-    var xiaozhiMcpIdleSeconds by remember { mutableStateOf(settings.xiaozhiConfig().mcpIdleSeconds.toString()) }
-    var xiaozhiMcpStatus by remember { mutableStateOf(XiaozhiMcpStatus(false, "未查询", "点击刷新查询小智控制台")) }
     var configs by remember { mutableStateOf(settings.zhiliaConfigs()) }
     var activeName by remember { mutableStateOf(settings.activeZhiliaName()) }
     val activeConfig = configs.firstOrNull { it.name == activeName } ?: configs.firstOrNull() ?: settings.activeZhiliaConfig()
@@ -2040,19 +1979,9 @@ private fun AutoReplyAiPage(context: Context, sp: SharedPreferences, onBack: () 
     var favoriteModels by remember(apiBase) { mutableStateOf(settings.favoriteModels(apiBase)) }
     var loadingText by remember { mutableStateOf("") }
     var testResult by remember { mutableStateOf("") }
-    var xiaozhiBindResult by remember { mutableStateOf("") }
-    var xiaozhiCaptchaSvg by remember { mutableStateOf("") }
-    var xiaozhiCaptchaCode by remember { mutableStateOf("") }
-    var xiaozhiSmsCode by remember { mutableStateOf("") }
-    var xiaozhiConsoleResult by remember { mutableStateOf("") }
-    var xiaozhiAgents by remember { mutableStateOf<List<XiaozhiAgentOption>>(emptyList()) }
-    var xiaozhiModels by remember { mutableStateOf<List<XiaozhiModelOption>>(emptyList()) }
-    var xiaozhiVoices by remember { mutableStateOf<List<XiaozhiVoiceOption>>(emptyList()) }
-    var route by remember { mutableStateOf<AutoReplyAiRoute>(AutoReplyAiRoute.Main) }
+    var route by remember { mutableStateOf<AutoReplyAiRoute>(AutoReplyAiRoute.Zhilia) }
     var zhiliaPendingName by remember { mutableStateOf(activeName) }
     var pendingModel by remember { mutableStateOf(model) }
-    val mainListState = rememberLazyListState()
-    val xiaozhiListState = rememberLazyListState()
     val zhiliaListState = rememberLazyListState()
     val zhiliaConfigListState = rememberLazyListState()
     val zhiliaModelListState = rememberLazyListState()
@@ -2067,264 +1996,6 @@ private fun AutoReplyAiPage(context: Context, sp: SharedPreferences, onBack: () 
             systemPrompt = prompt,
             contextLimit = contextLimit.toIntOrNull() ?: AutoReplySettings.DEFAULT_AI_CONTEXT_LIMIT
         ).normalized()
-    }
-
-    fun currentXiaozhiConfig(): AutoReplyXiaozhiConfig {
-        return AutoReplyXiaozhiConfig(
-            serveUrl = xiaozhiServe,
-            otaUrl = xiaozhiOta,
-            consoleUrl = xiaozhiConsole,
-            consolePhone = xiaozhiConsolePhone,
-            consoleToken = xiaozhiConsoleToken,
-            consoleAgentId = xiaozhiConsoleAgentId,
-            consoleModel = xiaozhiConsoleModel,
-            voiceRole = xiaozhiVoiceRole,
-            musicMcpEnabled = xiaozhiMusicMcp,
-            mcpBridgeEnabled = xiaozhiMcpBridge,
-            mcpEndpointUrl = xiaozhiMcpEndpoint,
-            mcpReadySeconds = xiaozhiMcpReadySeconds.toIntOrNull()?.coerceIn(1, 30)
-                ?: AutoReplySettings.DEFAULT_XIAOZHI_MCP_READY_SECONDS,
-            mcpIdleSeconds = xiaozhiMcpIdleSeconds.toIntOrNull()?.coerceIn(10, 600)
-                ?: AutoReplySettings.DEFAULT_XIAOZHI_MCP_IDLE_SECONDS
-        )
-    }
-
-    fun saveXiaozhi(showToast: Boolean) {
-        settings.saveXiaozhiConfig(currentXiaozhiConfig())
-        if (showToast) Toast.makeText(context, "小智AI配置已保存", Toast.LENGTH_SHORT).show()
-    }
-
-    fun xiaozhiNeedToken(): Boolean {
-        if (xiaozhiConsoleToken.trim().isBlank()) {
-            xiaozhiConsoleResult = "请先登录小智控制台"
-            Toast.makeText(context, "请先登录小智控制台", Toast.LENGTH_SHORT).show()
-            return true
-        }
-        return false
-    }
-
-    fun refreshXiaozhiCaptcha(updateStatus: Boolean = true) {
-        if (updateStatus) xiaozhiConsoleResult = "正在刷新图形验证码..."
-        scope.launch {
-            val result = withContext(Dispatchers.IO) {
-                runCatching { XiaozhiConsoleApi.fetchCaptchaSvg() }
-            }
-            result.onSuccess {
-                xiaozhiCaptchaSvg = it
-                xiaozhiCaptchaCode = ""
-                if (updateStatus) xiaozhiConsoleResult = "请输入图形验证码"
-            }.onFailure {
-                xiaozhiConsoleResult = "刷新图形验证码失败: ${it.message}"
-            }
-        }
-    }
-
-    fun sendXiaozhiSmsCode() {
-        val phone = xiaozhiConsolePhone.trim()
-        val captcha = xiaozhiCaptchaCode.trim()
-        if (phone.isBlank() || captcha.isBlank()) {
-            Toast.makeText(context, "请填写手机号和图形验证码", Toast.LENGTH_SHORT).show()
-            return
-        }
-        settings.saveXiaozhiConfig(currentXiaozhiConfig())
-        xiaozhiConsoleResult = "正在发送短信验证码..."
-        scope.launch {
-            val result = withContext(Dispatchers.IO) {
-                runCatching { XiaozhiConsoleApi.sendSmsCode(phone, captcha) }
-            }
-            result.onSuccess {
-                xiaozhiConsoleResult = it
-                xiaozhiCaptchaCode = ""
-                refreshXiaozhiCaptcha(updateStatus = false)
-            }.onFailure {
-                xiaozhiConsoleResult = "发送短信验证码失败: ${it.message}"
-                xiaozhiCaptchaCode = ""
-                refreshXiaozhiCaptcha(updateStatus = false)
-            }
-            Toast.makeText(context, xiaozhiConsoleResult, Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    fun loginXiaozhiConsole() {
-        val phone = xiaozhiConsolePhone.trim()
-        val sms = xiaozhiSmsCode.trim()
-        if (phone.isBlank() || sms.isBlank()) {
-            Toast.makeText(context, "请填写手机号和短信验证码", Toast.LENGTH_SHORT).show()
-            return
-        }
-        xiaozhiConsoleResult = "正在登录小智控制台..."
-        scope.launch {
-            val result = withContext(Dispatchers.IO) {
-                runCatching { XiaozhiConsoleApi.phoneLogin(phone, sms) }
-            }
-            result.onSuccess { token ->
-                xiaozhiConsoleToken = token
-                xiaozhiSmsCode = ""
-                xiaozhiCaptchaCode = ""
-                settings.saveXiaozhiConfig(currentXiaozhiConfig())
-                xiaozhiConsoleResult = "登录成功，token 已保存"
-                Toast.makeText(context, "小智控制台登录成功", Toast.LENGTH_SHORT).show()
-                val agentsResult = withContext(Dispatchers.IO) {
-                    runCatching { XiaozhiConsoleApi.fetchAgents(token) }
-                }
-                agentsResult.onSuccess { agents ->
-                    xiaozhiAgents = agents
-                    agents.firstOrNull()?.let { agent ->
-                        if (xiaozhiConsoleAgentId.isBlank()) xiaozhiConsoleAgentId = agent.id
-                        if (xiaozhiConsoleModel.isBlank()) xiaozhiConsoleModel = agent.model
-                        if (xiaozhiVoiceRole.isBlank()) xiaozhiVoiceRole = agent.voice
-                        settings.saveXiaozhiConfig(currentXiaozhiConfig())
-                    }
-                    xiaozhiConsoleResult = "登录成功，已拉取 ${agents.size} 个智能体"
-                }.onFailure {
-                    xiaozhiConsoleResult = "登录成功，拉取智能体失败: ${it.message}"
-                }
-            }.onFailure {
-                xiaozhiConsoleResult = "登录失败: ${it.message}"
-            }
-        }
-    }
-
-    fun fetchXiaozhiAgents(openPicker: Boolean) {
-        if (xiaozhiNeedToken()) return
-        xiaozhiConsoleResult = "正在拉取智能体..."
-        scope.launch {
-            val result = withContext(Dispatchers.IO) {
-                runCatching { XiaozhiConsoleApi.fetchAgents(xiaozhiConsoleToken) }
-            }
-            result.onSuccess { agents ->
-                xiaozhiAgents = agents
-                xiaozhiConsoleResult = "已拉取 ${agents.size} 个智能体"
-                if (openPicker && agents.isNotEmpty()) {
-                    val currentIndex = agents.indexOfFirst { it.id == xiaozhiConsoleAgentId }.coerceAtLeast(0)
-                    route = AutoReplyAiRoute.OptionPicker(
-                        OptionPickerRequest(
-                            title = "选择小智智能体",
-                            options = agents.mapIndexed { index, agent ->
-                                OptionItem(
-                                    label = agent.name,
-                                    value = index,
-                                    summary = listOf(agent.assistantName, agent.model, agent.voice).filter { it.isNotBlank() }.joinToString(" / ")
-                                )
-                            },
-                            currentValue = currentIndex,
-                            onSelected = { selected ->
-                                agents.getOrNull(selected.value)?.let { agent ->
-                                    xiaozhiConsoleAgentId = agent.id
-                                    xiaozhiConsoleModel = agent.model
-                                    xiaozhiVoiceRole = agent.voice
-                                    settings.saveXiaozhiConfig(currentXiaozhiConfig())
-                                }
-                                route = AutoReplyAiRoute.Xiaozhi
-                            }
-                        )
-                    )
-                }
-            }.onFailure {
-                xiaozhiConsoleResult = "拉取智能体失败: ${it.message}"
-            }
-        }
-    }
-
-    fun fetchXiaozhiModels(openPicker: Boolean) {
-        if (xiaozhiNeedToken()) return
-        xiaozhiConsoleResult = "正在拉取模型列表..."
-        scope.launch {
-            val result = withContext(Dispatchers.IO) {
-                runCatching { XiaozhiConsoleApi.fetchModels(xiaozhiConsoleToken) }
-            }
-            result.onSuccess { models ->
-                xiaozhiModels = models
-                xiaozhiConsoleResult = "已拉取 ${models.size} 个模型"
-                if (openPicker && models.isNotEmpty()) {
-                    val currentIndex = models.indexOfFirst { it.id == xiaozhiConsoleModel }.coerceAtLeast(0)
-                    route = AutoReplyAiRoute.OptionPicker(
-                        OptionPickerRequest(
-                            title = "选择小智模型",
-                            options = models.mapIndexed { index, item -> OptionItem(item.name, index, item.id) },
-                            currentValue = currentIndex,
-                            onSelected = { selected ->
-                                models.getOrNull(selected.value)?.let { item ->
-                                    xiaozhiConsoleModel = item.id
-                                    settings.saveXiaozhiConfig(currentXiaozhiConfig())
-                                }
-                                route = AutoReplyAiRoute.Xiaozhi
-                            }
-                        )
-                    )
-                }
-            }.onFailure {
-                xiaozhiConsoleResult = "拉取模型失败: ${it.message}"
-            }
-        }
-    }
-
-    fun fetchXiaozhiVoices(openPicker: Boolean) {
-        if (xiaozhiNeedToken()) return
-        xiaozhiConsoleResult = "正在拉取语音角色..."
-        scope.launch {
-            val result = withContext(Dispatchers.IO) {
-                runCatching { XiaozhiConsoleApi.fetchVoices(xiaozhiConsoleToken) }
-            }
-            result.onSuccess { voices ->
-                xiaozhiVoices = voices
-                xiaozhiConsoleResult = "已拉取 ${voices.size} 个语音角色"
-                if (openPicker && voices.isNotEmpty()) {
-                    val currentIndex = voices.indexOfFirst { it.id == xiaozhiVoiceRole }.coerceAtLeast(0)
-                    route = AutoReplyAiRoute.OptionPicker(
-                        OptionPickerRequest(
-                            title = "选择语音角色",
-                            options = voices.mapIndexed { index, item ->
-                                OptionItem(item.name, index, listOf(item.id, item.languages.joinToString(",")).filter { it.isNotBlank() }.joinToString(" / "))
-                            },
-                            currentValue = currentIndex,
-                            onSelected = { selected ->
-                                voices.getOrNull(selected.value)?.let { item ->
-                                    xiaozhiVoiceRole = item.id
-                                    settings.saveXiaozhiConfig(currentXiaozhiConfig())
-                                }
-                                route = AutoReplyAiRoute.Xiaozhi
-                            }
-                        )
-                    )
-                }
-            }.onFailure {
-                xiaozhiConsoleResult = "拉取语音角色失败: ${it.message}"
-            }
-        }
-    }
-
-    fun saveXiaozhiConsoleAgentConfig() {
-        if (xiaozhiNeedToken()) return
-        val agentId = xiaozhiConsoleAgentId.trim()
-        if (agentId.isBlank()) {
-            Toast.makeText(context, "请先选择智能体", Toast.LENGTH_SHORT).show()
-            return
-        }
-        settings.saveXiaozhiConfig(currentXiaozhiConfig())
-        xiaozhiConsoleResult = "正在保存到小智控制台..."
-        scope.launch {
-            val result = withContext(Dispatchers.IO) {
-                runCatching {
-                    XiaozhiConsoleApi.saveAgentConfig(
-                        token = xiaozhiConsoleToken,
-                        agentId = agentId,
-                        model = xiaozhiConsoleModel,
-                        voice = xiaozhiVoiceRole
-                    )
-                }
-            }
-            result.onSuccess { agent ->
-                xiaozhiConsoleAgentId = agent.id
-                xiaozhiConsoleModel = agent.model
-                xiaozhiVoiceRole = agent.voice
-                settings.saveXiaozhiConfig(currentXiaozhiConfig())
-                xiaozhiConsoleResult = "已保存到控制台: ${agent.name}"
-                Toast.makeText(context, "小智控制台配置已保存", Toast.LENGTH_SHORT).show()
-            }.onFailure {
-                xiaozhiConsoleResult = "保存到控制台失败: ${it.message}"
-            }
-        }
     }
 
     fun saveZhilia(showToast: Boolean) {
@@ -2378,224 +2049,6 @@ private fun AutoReplyAiPage(context: Context, sp: SharedPreferences, onBack: () 
         depthOf = { it.depth() }
     ) { currentRoute ->
         when (currentRoute) {
-            AutoReplyAiRoute.Main -> {
-                val scrollBehavior = MiuixScrollBehavior()
-                PageScaffold(
-                    title = "AI 配置",
-                    largeTitle = "AI 配置",
-                    scrollBehavior = scrollBehavior,
-                    bottomBar = { BottomActionBar("返回", onBack) }
-                ) { padding ->
-                    LazyColumn(
-                        modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
-                        state = mainListState,
-                        contentPadding = PaddingValues(top = padding.calculateTopPadding() + 8.dp, bottom = padding.calculateBottomPadding() + 84.dp)
-                    ) {
-                        item { SmallTitle(text = "配置分组") }
-                        item {
-                            SettingsCard {
-                                ActionRow("小智AI配置", xiaozhiServe.ifBlank { "未设置 WebSocket 地址" }) {
-                                    route = AutoReplyAiRoute.Xiaozhi
-                                }
-                                InsetDivider()
-                                ActionRow("智聊AI配置", "当前启用：$activeName") {
-                                    route = AutoReplyAiRoute.Zhilia
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            AutoReplyAiRoute.Xiaozhi -> {
-                val scrollBehavior = MiuixScrollBehavior()
-                PageScaffold(
-                    title = "小智AI配置",
-                    largeTitle = "小智AI配置",
-                    scrollBehavior = scrollBehavior,
-                    bottomBar = {
-                        BottomActionBar(
-                            primaryText = "保存小智",
-                            onPrimaryClick = { saveXiaozhi(showToast = true) },
-                            secondaryText = "返回",
-                            onSecondaryClick = { route = AutoReplyAiRoute.Main }
-                        )
-                    }
-                ) { padding ->
-                    LazyColumn(
-                        modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
-                        state = xiaozhiListState,
-                        contentPadding = PaddingValues(top = padding.calculateTopPadding() + 8.dp, bottom = padding.calculateBottomPadding() + 84.dp)
-                    ) {
-                        item { SmallTitle(text = "连接地址") }
-                        item {
-                            SettingsCard {
-                                InputRow("WebSocket 地址", "小智服务地址", xiaozhiServe) { xiaozhiServe = it }
-                                InsetDivider()
-                                InputRow("OTA 地址", "小智 OTA 地址", xiaozhiOta) { xiaozhiOta = it }
-                                InsetDivider()
-                                InputRow("控制台地址", "用于查看或绑定设备", xiaozhiConsole) { xiaozhiConsole = it }
-                            }
-                        }
-                        item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "设备") }
-                        item {
-                            SettingsCard {
-                                InfoRow("UUID", AutoReplyRuntime.xiaozhiDeviceUuid(context))
-                                InsetDivider()
-                                InfoRow("MAC 地址", AutoReplyRuntime.xiaozhiDeviceMac(context))
-                                InsetDivider()
-                                ActionRow("绑定设备", xiaozhiBindResult.ifBlank { "请求 OTA 获取验证码或绑定状态" }) {
-                                    xiaozhiBindResult = "正在请求..."
-                                    scope.launch {
-                                        val result = withContext(Dispatchers.IO) {
-                                            AutoReplyRuntime.bindXiaozhiDevice(context, currentXiaozhiConfig())
-                                        }
-                                        xiaozhiBindResult = result
-                                        Toast.makeText(context, result.lineSequence().firstOrNull().orEmpty(), Toast.LENGTH_SHORT).show()
-                                    }
-                                }
-                                val xiaozhiBindLink = remember(xiaozhiBindResult) { extractFirstHttpUrl(xiaozhiBindResult) }
-                                if (xiaozhiBindLink != null) {
-                                    InsetDivider()
-                                    InfoRow("绑定链接", xiaozhiBindLink) {
-                                        openExternalLink(context, xiaozhiBindLink)
-                                    }
-                                }
-                            }
-                        }
-                        item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "控制台登录") }
-                        item {
-                            SettingsCard {
-                                InfoRow("登录状态", if (xiaozhiConsoleToken.isBlank()) "未登录" else "已保存 token")
-                                InsetDivider()
-                                InputRow("手机号", "登录成功后会记住手机号", xiaozhiConsolePhone) { xiaozhiConsolePhone = it }
-                                InsetDivider()
-                                ActionRow("刷新图形验证码", if (xiaozhiCaptchaSvg.isBlank()) "先刷新，再输入图片上的字符" else "已刷新，输入下方图形验证码") {
-                                    refreshXiaozhiCaptcha()
-                                }
-                                if (xiaozhiCaptchaSvg.isNotBlank()) {
-                                    InsetDivider()
-                                    XiaozhiCaptchaSvgView(xiaozhiCaptchaSvg)
-                                }
-                                InsetDivider()
-                                InputRow("图形验证码", "输入上方图片里的字符", xiaozhiCaptchaCode) { xiaozhiCaptchaCode = it }
-                                InsetDivider()
-                                ActionRow("发送短信验证码", "需要先填写手机号和图形验证码") {
-                                    sendXiaozhiSmsCode()
-                                }
-                                InsetDivider()
-                                InputRow("短信验证码", "输入手机收到的验证码", xiaozhiSmsCode) { xiaozhiSmsCode = it }
-                                InsetDivider()
-                                ActionRow("登录并保存 token", "登录成功后自动保存 token 并拉取智能体") {
-                                    loginXiaozhiConsole()
-                                }
-                                if (xiaozhiConsoleResult.isNotBlank()) {
-                                    InsetDivider()
-                                    InfoRow("控制台状态", xiaozhiConsoleResult)
-                                }
-                            }
-                        }
-                        item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "控制台配置") }
-                        item {
-                            SettingsCard {
-                                ActionRow("选择智能体", xiaozhiAgentSummary(xiaozhiConsoleAgentId, xiaozhiAgents)) {
-                                    fetchXiaozhiAgents(openPicker = true)
-                                }
-                                InsetDivider()
-                                InfoRow("Agent ID", xiaozhiConsoleAgentId.ifBlank { "未选择" })
-                                InsetDivider()
-                                ActionRow("选择模型", xiaozhiModelSummary(xiaozhiConsoleModel, xiaozhiModels)) {
-                                    fetchXiaozhiModels(openPicker = true)
-                                }
-                                InsetDivider()
-                                ActionRow("选择语音角色", xiaozhiVoiceSummary(xiaozhiVoiceRole, xiaozhiVoices)) {
-                                    fetchXiaozhiVoices(openPicker = true)
-                                }
-                                InsetDivider()
-                                ActionRow("保存到小智控制台", "读取当前智能体配置后只替换模型和语音角色") {
-                                    saveXiaozhiConsoleAgentConfig()
-                                }
-                            }
-                        }
-                        item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "回复") }
-                        item {
-                            SettingsCard {
-                                InputRow("语音角色ID", "留空使用控制台当前角色", xiaozhiVoiceRole) { xiaozhiVoiceRole = it }
-                                InsetDivider()
-                                SwitchRow(
-                                    checked = xiaozhiMusicMcp,
-                                    title = "提示官方 Music 工具",
-                                    summary = "点歌类问题会提示小智优先使用控制台启用的官方 Music MCP",
-                                    onCheckedChange = { xiaozhiMusicMcp = it }
-                                )
-                            }
-                        }
-                        item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "MCP桥接") }
-                        item {
-                            SettingsCard {
-                                SwitchRow(
-                                    checked = xiaozhiMcpBridge,
-                                    title = "启用MCP桥接实验",
-                                    summary = "把 Hchat 能力暴露给小智调用；端点地址包含 token，请勿外传",
-                                    onCheckedChange = { xiaozhiMcpBridge = it }
-                                )
-                                InsetDivider()
-                                InputRow(
-                                    "MCP Endpoint",
-                                    "wss://api.xiaozhi.me/mcp/?token=...；留空不连接",
-                                    xiaozhiMcpEndpoint
-                                ) { xiaozhiMcpEndpoint = it }
-                                InsetDivider()
-                                XiaozhiMcpStatusRow(xiaozhiMcpStatus)
-                                InsetDivider()
-                                ActionRow("刷新连接状态", xiaozhiMcpStatus.detail) {
-                                    if (xiaozhiConsoleToken.trim().isBlank() || xiaozhiConsoleAgentId.trim().isBlank()) {
-                                        Toast.makeText(context, "请先登录并选择智能体", Toast.LENGTH_SHORT).show()
-                                    } else {
-                                        xiaozhiMcpStatus = XiaozhiMcpStatus(false, "查询中", "正在查询小智控制台...")
-                                        scope.launch {
-                                            val result = withContext(Dispatchers.IO) {
-                                                runCatching {
-                                                    XiaozhiConsoleApi.fetchMcpEndpointStatus(
-                                                        xiaozhiConsoleToken,
-                                                        xiaozhiConsoleAgentId
-                                                    )
-                                                }
-                                            }
-                                            result.onSuccess {
-                                                xiaozhiMcpStatus = it
-                                            }.onFailure {
-                                                xiaozhiMcpStatus = XiaozhiMcpStatus(false, "查询失败", it.message.orEmpty())
-                                            }
-                                        }
-                                    }
-                                }
-                                InsetDivider()
-                                InputRow(
-                                    "就绪等待时长",
-                                    "断开后首次触发等待 MCP ready 的秒数，默认 5，可填 1-30",
-                                    xiaozhiMcpReadySeconds
-                                ) { xiaozhiMcpReadySeconds = it.filter { ch -> ch.isDigit() }.take(2) }
-                                InsetDivider()
-                                InputRow(
-                                    "自动断开时长",
-                                    "空闲多少秒后断开 MCP，默认 90，可填 10-600",
-                                    xiaozhiMcpIdleSeconds
-                                ) { xiaozhiMcpIdleSeconds = it.filter { ch -> ch.isDigit() }.take(3) }
-
-                            }
-                        }
-                        item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "运行状态") }
-                        item {
-                            SettingsCard {
-                                ActionRow("立即清空上下文", "清除当前运行中的小智对话记忆") {
-                                    AutoReplyRuntime.clearAiHistories()
-                                    Toast.makeText(context, "小智上下文已清空", Toast.LENGTH_SHORT).show()
-                                }
-                            }
-                        }
-                    }
-                }
-            }
             AutoReplyAiRoute.Zhilia -> {
                 val scrollBehavior = MiuixScrollBehavior()
                 PageScaffold(
@@ -2607,7 +2060,7 @@ private fun AutoReplyAiPage(context: Context, sp: SharedPreferences, onBack: () 
                             primaryText = "保存智聊",
                             onPrimaryClick = { saveZhilia(showToast = true) },
                             secondaryText = "返回",
-                            onSecondaryClick = { route = AutoReplyAiRoute.Main }
+                            onSecondaryClick = onBack
                         )
                     }
                 ) { padding ->
@@ -2830,13 +2283,6 @@ private fun AutoReplyAiPage(context: Context, sp: SharedPreferences, onBack: () 
                     }
                 }
             }
-            is AutoReplyAiRoute.OptionPicker -> {
-                OptionPickerPage(
-                    request = currentRoute.request,
-                    onBack = { route = AutoReplyAiRoute.Xiaozhi },
-                    onSelected = { currentRoute.request.onSelected(it) }
-                )
-            }
         }
     }
 }
@@ -2912,15 +2358,29 @@ private fun ZhiliaModelSelectCard(
     }
 }
 
+internal fun autoReplyStepsAfterDelete(
+    steps: List<AutoReplyStep>, index: Int, removedLegacyStep: Boolean = false
+): List<AutoReplyStep> {
+    val deleted = steps.getOrNull(index) ?: return steps
+    val remaining = steps.filterIndexed { position, _ -> position != index }
+    return if (remaining.isEmpty() && !removedLegacyStep && !AutoReplySettings.isRemovedReplyMode(deleted.mode)) {
+        listOf(AutoReplyStep())
+    } else remaining
+}
+
 @Composable
 private fun AutoReplyStepsPage(
     title: String,
     initialSteps: List<AutoReplyStep>,
+    initiallyExplicitEmpty: Boolean,
     onBack: () -> Unit,
-    onSave: (List<AutoReplyStep>) -> Unit
+    onSave: (List<AutoReplyStep>, Boolean) -> Unit
 ) {
     val context = LocalContext.current
-    var steps by remember(initialSteps) { mutableStateOf(initialSteps.ifEmpty { listOf(AutoReplyStep()) }) }
+    var steps by remember(initialSteps, initiallyExplicitEmpty) {
+        mutableStateOf(if (initialSteps.isEmpty() && !initiallyExplicitEmpty) listOf(AutoReplyStep()) else initialSteps)
+    }
+    var removedLegacyStep by remember(initialSteps, initiallyExplicitEmpty) { mutableStateOf(initiallyExplicitEmpty) }
     var optionPicker by remember { mutableStateOf<OptionPickerRequest?>(null) }
     var contactPicker by remember { mutableStateOf<ContactPickerRequest?>(null) }
     var favoritePicker by remember { mutableStateOf<FavoritePickerRequest?>(null) }
@@ -2975,7 +2435,10 @@ private fun AutoReplyStepsPage(
                 bottomBar = {
                     BottomActionBar(
                         primaryText = "保存回复",
-                        onPrimaryClick = { onSave(steps.filter { AutoReplySettings.isAiReplyMode(it.mode) || it.content.isNotBlank() }) },
+                        onPrimaryClick = {
+                            val saved = steps.filter { AutoReplySettings.isAiReplyMode(it.mode) || AutoReplySettings.isRemovedReplyMode(it.mode) || it.content.isNotBlank() }
+                            onSave(saved, saved.isEmpty() && removedLegacyStep)
+                        },
                         secondaryText = "返回",
                         onSecondaryClick = onBack
                     )
@@ -2993,9 +2456,12 @@ private fun AutoReplyStepsPage(
                                 PopupOptionRow(
                                     title = "回复类型",
                                     summary = autoReplyStepLabel(step.mode),
-                                    options = autoReplyStepOptions(),
+                                    options = if (AutoReplySettings.isRemovedReplyMode(step.mode)) {
+                                        listOf(OptionItem("已移除的回复类型", step.mode, "")) + autoReplyStepOptions()
+                                    } else autoReplyStepOptions(),
                                     currentValue = step.mode,
                                     onValueChanged = {
+                                        if (AutoReplySettings.isRemovedReplyMode(step.mode) && it != step.mode) removedLegacyStep = true
                                         update(
                                             index,
                                             step.copy(
@@ -3012,7 +2478,10 @@ private fun AutoReplyStepsPage(
                                     }
                                 )
                                 InsetDivider()
-                                if (!AutoReplySettings.isAiReplyMode(step.mode)) {
+                                if (AutoReplySettings.isRemovedReplyMode(step.mode)) {
+                                    InfoRow("已移除的回复类型", "此步骤不会执行，可手动删除或更换回复类型")
+                                    InsetDivider()
+                                } else if (!AutoReplySettings.isAiReplyMode(step.mode)) {
                                     AutoReplyStepContentEditor(
                                         context = context,
                                         step = step,
@@ -3045,7 +2514,10 @@ private fun AutoReplyStepsPage(
                                             it.add(index + 1, item)
                                         }
                                     },
-                                    onDelete = { steps = steps.toMutableList().also { it.removeAt(index) }.ifEmpty { listOf(AutoReplyStep()) } }
+                                    onDelete = {
+                                        removedLegacyStep = removedLegacyStep || AutoReplySettings.isRemovedReplyMode(step.mode)
+                                        steps = autoReplyStepsAfterDelete(steps, index, removedLegacyStep)
+                                    }
                                 )
                             }
                         }
@@ -3300,12 +2772,12 @@ private fun autoReplyStepOptions(): List<OptionItem> = listOf(
     OptionItem("发送收藏", AutoReplySettings.REPLY_FAVORITE, "从最近收藏选择"),
     OptionItem("邀请进群", AutoReplySettings.REPLY_INVITE_GROUP, "从群聊列表选择"),
     OptionItem("发送 XML", AutoReplySettings.REPLY_XML, "AppMsg/XML 原文"),
-    OptionItem("智聊AI回复", AutoReplySettings.REPLY_ZHILIA_AI, "使用智聊/OpenAI 兼容配置生成回复"),
-    OptionItem("小智AI回复", AutoReplySettings.REPLY_XIAOZHI_AI, "使用小智 WebSocket 生成文字回复"),
-    OptionItem("小智语音回复", AutoReplySettings.REPLY_XIAOZHI_VOICE, "使用小智 TTS 生成语音回复")
+    OptionItem("智聊AI回复", AutoReplySettings.REPLY_ZHILIA_AI, "使用智聊/OpenAI 兼容配置生成回复")
 )
 
-private fun autoReplyStepLabel(value: Int): String = autoReplyStepOptions().firstOrNull { it.value == value }?.label ?: "发送文字"
+private fun autoReplyStepLabel(value: Int): String =
+    if (AutoReplySettings.isRemovedReplyMode(value)) "已移除的回复类型"
+    else autoReplyStepOptions().firstOrNull { it.value == value }?.label ?: "未知回复类型"
 
 private fun autoReplyStepContentHint(value: Int): String = when (value) {
     AutoReplySettings.REPLY_TEXT -> "多条文本用 | 分隔；下方变量可点击插入"

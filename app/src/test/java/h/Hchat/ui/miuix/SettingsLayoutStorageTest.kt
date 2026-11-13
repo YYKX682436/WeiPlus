@@ -17,7 +17,6 @@ import h.Hchat.hooks.items.quickterminate.QuickTerminateSettings
 import h.Hchat.hooks.items.settings.SettingsEntrySettings
 import h.Hchat.hooks.items.scheduledtask.ScheduledTaskSettings
 import h.Hchat.hooks.items.keywordnotify.KeywordNotificationSettings
-import h.Hchat.hooks.items.textspeech.TextSpeechSettings
 import h.Hchat.preferences.HchatStorage
 import h.Hchat.ui.FeatureSettingsProvider
 import org.junit.Assert.assertEquals
@@ -52,7 +51,7 @@ class SettingsLayoutStorageTest {
             QuickMomentsSettings.PREFS_NAME, QuickTerminateSettings.PREFS_NAME,
             QuickGroupChatLabelSettings.PREFS_NAME, QuickContactEditSettings.PREFS_NAME,
             SettingsEntrySettings.PREFS_NAME, AutoReplySettings.PREFS_NAME, CustomNotificationSettings.PREFS_NAME,
-            ScheduledTaskSettings.PREFS_NAME, KeywordNotificationSettings.PREFS_NAME, TextSpeechSettings.PREFS_NAME
+            ScheduledTaskSettings.PREFS_NAME, KeywordNotificationSettings.PREFS_NAME
         )
         val prefs = names.associateWith { HchatStorage.preferences(activity, it) }
         prefs.values.forEach { it.edit().clear().commit() }

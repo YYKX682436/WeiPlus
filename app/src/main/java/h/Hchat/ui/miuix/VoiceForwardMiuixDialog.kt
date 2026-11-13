@@ -1234,56 +1234,6 @@ object VoiceForwardMiuixDialog {
         }
     }
 
-    fun showVoicePreview(
-        activity: Activity,
-        durationMillis: Int,
-        preparePreview: () -> String?,
-        onDismiss: () -> Unit
-    ): DialogHandle {
-        return show(activity, onDismiss) { close ->
-            WindowDialog(
-                show = true,
-                title = "语音消息预览",
-                onDismissRequest = close,
-                content = {
-                    var previewPath by remember { mutableStateOf<String?>(null) }
-                    var previewVersion by remember { mutableStateOf(0) }
-                    var previewLoading by remember { mutableStateOf(true) }
-                    var previewError by remember { mutableStateOf("") }
-
-                    LaunchedEffect(Unit) {
-                        val path = withContext(Dispatchers.IO) {
-                            runCatching { preparePreview() }.getOrNull()
-                        }
-                        previewLoading = false
-                        if (path.isNullOrBlank()) {
-                            previewError = "语音预览准备失败"
-                        } else {
-                            previewPath = path
-                            previewVersion++
-                        }
-                    }
-
-                    Column(modifier = Modifier.fillMaxWidth()) {
-                        FavoriteVoicePreviewPlayer(
-                            path = previewPath,
-                            version = previewVersion,
-                            loading = previewLoading,
-                            error = previewError,
-                            knownDurationMillis = durationMillis
-                        )
-                        DialogActionButton(
-                            text = "关闭",
-                            onClick = close,
-                            modifier = Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 6.dp),
-                            primary = true
-                        )
-                    }
-                }
-            )
-        }
-    }
-
     @Composable
     private fun DialogActionButton(
         text: String,

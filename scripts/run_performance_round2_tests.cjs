@@ -8,16 +8,11 @@ const read = p => fs.readFileSync(path.join(root, p), 'utf8');
 const entry = read('app/src/main/java/h/Hchat/ModuleEntry.java');
 const moments = read('app/src/main/java/h/Hchat/hooks/items/moments/MomentsAutoRefreshFeature.kt');
 const silk = read('app/src/main/java/me/yun/silk/SilkCodec.java');
-const mediaPage = read('app/src/main/java/h/Hchat/ui/miuix/MiuixMediaPages.kt');
 const forward = read('app/src/main/java/h/Hchat/hooks/items/voiceforward/VoiceForwardFeature.kt');
 const failures = [];
 if (/nativeLibraryLoader\.loadSilkCodec\s*\(/.test(entry)) failures.push('module startup eagerly loads Silk without audio demand');
 if (/scheduleWithFixedDelay\s*\(/.test(moments)) failures.push('Moments scheduler polls on a fixed delay instead of the next deadline');
 if (!/public SilkCodec\(\)\s*\{\s*SilkLibrary\.ensureLoaded\(\)/.test(silk)) failures.push('Silk JNI construction does not ensure loading');
-const save=mediaPage.slice(mediaPage.indexOf('    fun startSave('),mediaPage.indexOf('    fun launchSavePicker('));
-if (save.indexOf('Thread({') < 0 || save.indexOf('audioTransformValidateInput(') < save.indexOf('Thread({')) {
-  failures.push('save validation can perform first Silk loading on the UI thread');
-}
 const favorite=forward.slice(forward.indexOf('VoiceForwardMiuixDialog.showFavoriteVoiceSendConfirm('),
   forward.indexOf('                    onDismiss = {',forward.indexOf('VoiceForwardMiuixDialog.showFavoriteVoiceSendConfirm(')));
 if (!/Thread\(\{[\s\S]*sendVoiceForForward\(source, target\)[\s\S]*main\.post/.test(favorite)) {

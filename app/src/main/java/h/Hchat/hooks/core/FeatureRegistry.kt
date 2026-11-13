@@ -1,7 +1,6 @@
 package h.Hchat.hooks.core
 
 import h.Hchat.hooks.api.core.WechatApiFeature
-import h.Hchat.hooks.items.audiotransform.AudioTransformFeature
 import h.Hchat.hooks.items.antirecall.AntiRecallFeature
 import h.Hchat.hooks.items.automessageforward.AutoMessageForwardFeature
 import h.Hchat.hooks.items.autoreply.AutoReplyFeature
@@ -11,7 +10,6 @@ import h.Hchat.hooks.items.callmedialimit.CallMediaLimitFeature
 import h.Hchat.hooks.items.callmedialimit.CallRingtoneBlockFeature
 import h.Hchat.hooks.items.chattime.ChatTimeStyleFeature
 import h.Hchat.hooks.items.conversationgroup.ConversationGroupFeature
-import h.Hchat.hooks.items.conversationtabs.ConversationTabsFeature
 import h.Hchat.hooks.items.custombottombar.CustomBottomBarFeature
 import h.Hchat.hooks.items.customfriendavatar.CustomFriendAvatarFeature
 import h.Hchat.hooks.items.customnotify.CustomNotificationFeature
@@ -21,7 +19,6 @@ import h.Hchat.hooks.items.emojisave.EmojiSaveFeature
 import h.Hchat.hooks.items.fakelocation.FakeLocationFeature
 import h.Hchat.hooks.items.fakescancamera.FakeScanCameraFeature
 import h.Hchat.hooks.items.fakevoiceduration.FakeVoiceDurationFeature
-import h.Hchat.hooks.items.floatingshortcut.FloatingShortcutFeature
 import h.Hchat.hooks.items.forwardlimit.RemoveForwardLimitFeature
 import h.Hchat.hooks.items.gameemoji.GameEmojiFeature
 import h.Hchat.hooks.items.groupleave.GroupLeaveMonitorFeature
@@ -83,12 +80,9 @@ import h.Hchat.hooks.items.shortvideo.FinderMediaDownloadFeature
 import h.Hchat.hooks.items.statuslimit.StatusTextLimitFeature
 import h.Hchat.hooks.items.swipequote.SwipeQuoteFeature
 import h.Hchat.hooks.items.tablet.WeChatTabletFeature
-import h.Hchat.hooks.items.textspeech.TextSpeechFeature
-import h.Hchat.hooks.items.textvoice.TextVoiceFeature
 import h.Hchat.hooks.items.typingreport.TypingReportBlockFeature
 import h.Hchat.hooks.items.voiceforward.VoiceForwardFeature
 import h.Hchat.hooks.items.hchatextra.HchatExtraFeature
-import h.Hchat.hooks.items.voicepreview.VoicePreviewFeature
 import h.Hchat.hooks.items.zombiecheck.ZombieCheckFeature
 
 /**
@@ -102,7 +96,6 @@ object FeatureRegistry {
             .register(SettingsFeature())
             .register(NativeSendButtonFeature())
 
-            .register(FloatingShortcutFeature())
             .register(CustomBottomBarFeature())
             .register(RoundAvatarFeature())
             .register(CustomFriendAvatarFeature())
@@ -126,7 +119,6 @@ object FeatureRegistry {
             .register(AutoReplyFeature())
             .register(AutoMessageForwardFeature())
             .register(ConversationGroupFeature())
-            .register(ConversationTabsFeature())
             .register(MessageAffixFeature())
             .register(TypingReportBlockFeature())
             .register(PatBlockFeature())
@@ -137,13 +129,10 @@ object FeatureRegistry {
             .register(CallRingtoneBlockFeature())
             .register(CustomNotificationFeature())
             .register(KeywordNotificationFeature())
-            .register(TextSpeechFeature())
-            .register(TextVoiceFeature())
             .register(ZombieCheckFeature())
             .register(BackgroundRunAssistFeature())
             .register(QuoteDeleteClearFeature())
             .register(SwipeQuoteFeature())
-            .register(AudioTransformFeature())
             .register(FakeVoiceDurationFeature())
             .register(ChatTimeStyleFeature())
             .register(InputHintFeature())
@@ -179,7 +168,6 @@ object FeatureRegistry {
             .register(EditMessageFeature())
             .register(EmojiSaveFeature())
             .register(EmojiCollectionLimitFeature())
-            .register(VoicePreviewFeature())
             .register(VoiceForwardFeature())
             .register(SelectedMessagesFeature())
             .register(MessageForwardFeature())

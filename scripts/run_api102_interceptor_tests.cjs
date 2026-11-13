@@ -30,7 +30,7 @@ run('java',['-cp',[avatarJar,cp].join(path.delimiter),'AvatarRegressionKt']);
 const projection=fs.readFileSync(path.join(root,'app/src/main/java/h/Hchat/hooks/items/conversationgroup/ConversationGroupHomeProjection.kt'),'utf8');
 function projectionHook(anchor){const start=projection.indexOf(anchor);if(start<0)throw Error('Missing projection hook '+anchor);return block(projection.slice(start),'XposedInterface.Hooker {').replace('XposedInterface.Hooker ','');}
 let projectionFixture=fs.readFileSync(path.join(root,'scripts/tests/api102/ProjectionRegression.kt.in'),'utf8');
-for(const [key,value]of Object.entries({ENTER:block(projection,'private fun enterQuery'),LEAVE:block(projection,'private fun leaveQuery'),LEGACY:projectionHook('(queries + changes).forEach'),MODERN:projectionHook('hook(page,')}))projectionFixture=projectionFixture.replace('@'+key+'@',value);
+for(const [key,value]of Object.entries({LEGACY:projectionHook('(queries + changes).forEach'),MODERN:projectionHook('hook(page,')}))projectionFixture=projectionFixture.replace('@'+key+'@',value);
 const projectionSource=path.join(tmp,'ProjectionRegression.kt'),projectionJar=path.join(tmp,'projection.jar');fs.writeFileSync(projectionSource,projectionFixture);
 run('java',['-Xmx256m','-cp',jars.join(path.delimiter),'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler','-no-stdlib','-no-reflect','-classpath',cp,'-d',projectionJar,projectionSource]);
 run('java',['-cp',[projectionJar,cp].join(path.delimiter),'ProjectionRegressionKt']);

@@ -29,7 +29,6 @@
 -keep class okhttp3.** { *; }
 -keep class okio.** { *; }
 -keep class me.yun.silk.** { *; }
--keep class me.yun.silk.utils.** { *; }
 
 # libxposed API 102: R8 rewrites the registered, obfuscated entry name.
 -dontwarn io.github.libxposed.annotation.**

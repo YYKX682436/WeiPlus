@@ -71,7 +71,7 @@ class SettingsLayoutNavigationTest {
 
     @Test
     fun `unregistered parents do not hide independent and newly registered features`() {
-        val providers = listOf(Provider("qq_music_order"), Provider("text_speech"), Provider("future_feature"))
+        val providers = listOf(Provider("qq_music_order"), Provider("keyword_notification"), Provider("future_feature"))
         val groups = featureGroups(providers)
         assertFalse(groups.any { it.id == "auto_reply" || it.id == "notifications" || it.id == "contacts" })
         assertEquals(providers.map { it.featureId() }.toSet(), groups.single { it.id == "other" }.providers.map { it.featureId() }.toSet())
@@ -80,4 +80,21 @@ class SettingsLayoutNavigationTest {
             assertEquals(provider, (resolveFeatureTarget(provider, providers) as DetailPage.Feature).provider)
         }
     }
+    @Test
+    fun `retained features remain searchable and removed AI has no search result`() {
+        val providers = listOf(
+            Provider("auto_reply", "自动回复"), Provider("conversation_group", "聊天分组"),
+            Provider("voice_forward", "语音转发"), Provider("custom_notification", "自定义通知"),
+            Provider("keyword_notification", "关键词通知")
+        )
+        val groups = featureGroups(providers)
+        listOf("自动回复", "聊天分组", "语音转发", "自定义通知", "关键词通知").forEach { query ->
+            assertTrue(query, filterFeatureSearchResults(query, groups, providers).isNotEmpty())
+        }
+        assertTrue(filterFeatureSearchResults("小智", groups, providers).isEmpty())
+        assertEquals(0, AutoReplyAiRoute.Zhilia.depth())
+        assertEquals(1, AutoReplyAiRoute.ZhiliaConfigs.depth())
+        assertEquals(1, AutoReplyAiRoute.ZhiliaModels.depth())
+    }
+
 }

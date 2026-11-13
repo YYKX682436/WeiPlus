@@ -21,7 +21,6 @@ const source = 'app/src/main/java/h/Hchat/';
 const tests = 'scripts/tests/performance_round1/';
 const autoForwardRuntime = fs.readFileSync(path.join(root, source+'hooks/items/automessageforward/AutoMessageForwardRuntime.kt'), 'utf8');
 const autoForwardFeature = fs.readFileSync(path.join(root, source+'hooks/items/automessageforward/AutoMessageForwardFeature.kt'), 'utf8');
-const textSpeechFeature = fs.readFileSync(path.join(root, source+'hooks/items/textspeech/TextSpeechFeature.kt'), 'utf8');
 const messageObserveLease = fs.readFileSync(path.join(root, source+'hooks/core/MessageObserveLease.kt'), 'utf8');
 const avatarFeature = fs.readFileSync(path.join(root, source+'hooks/items/customfriendavatar/CustomFriendAvatarFeature.kt'), 'utf8');
 const avatarCoordinator = fs.readFileSync(path.join(root, source+'hooks/items/customfriendavatar/AvatarLoadCoordinator.kt'), 'utf8');
@@ -69,8 +68,6 @@ assert.doesNotMatch(avatarDrawLookup, /File\(|decodeFile|MessageDigest|sha256/);
 assert.match(autoForwardFeature, /runtimeSlot\.getOrCreate/);
 assert.doesNotMatch(autoForwardFeature, /activeRulesSnapshot/);
 assert.match(autoForwardFeature, /@Synchronized\s+private fun synchronizeRuntime/);
-assert.match(textSpeechFeature, /runtimeSlot\.getOrCreate/);
-assert.match(textSpeechFeature, /@Synchronized\s+private fun synchronizeRuntime/);
 assert.match(messageObserveLease, /subscriptionObserver === target/);
 assert.match(autoForwardRuntime, /PendingForwardRuleGate\.activeRules/);
 assert.match(pendingRuleGate, /capturedRuleIds/);
@@ -118,7 +115,6 @@ const fixtures = {
  public String quoteTable(String t){return t.matches("[a-zA-Z0-9_]+")?'"'+t+'"':"";} public List<String> messageTables(){throw new AssertionError("cross-table probe");}public String messageTableForTalker(String t){return "message";}public String queryFirstString(String s,String[] a,String c){return "";}public Cursor rawQuery(String s,String[] a){return null;}}`,
 'h/Hchat/dexkit/DexFinder.java': `package h.Hchat.dexkit; public class DexFinder {public java.lang.reflect.Method messageClearBatchMethod;public void resolveMessageClearApi(){}}`,
 'h/Hchat/hooks/api/message/WeChatMessageApi.java': `package h.Hchat.hooks.api.message;public class WeChatMessageApi {public static int cancellations;public static void cancelPendingLocalSend(String t,String c){cancellations++;}}`,
-'h/Hchat/hooks/api/message/WeChatLvBufferMsgSource.java': `package h.Hchat.hooks.api.message;public final class WeChatLvBufferMsgSource {public static String extractXml(byte[] buffer){return "";}}`,
 'h/Hchat/hooks/api/message/WeChatMessageEventApi.java': `package h.Hchat.hooks.api.message; import h.Hchat.event.Events; import h.Hchat.event.EventBus; import java.util.function.Consumer; public class WeChatMessageEventApi {
  public boolean operational; public Consumer<Events.MessageReceived> messages; public boolean isAvailable(){return true;} public boolean isLocatorResolved(){return true;} public boolean isOperational(){return operational;} public EventBus.Subscription subscribeMessage(Consumer<Events.MessageReceived> c){messages=c;return new EventBus.Subscription();} public EventBus.Subscription subscribePat(Consumer<Events.PatDetected> c){return new EventBus.Subscription();} public void unsubscribe(EventBus.Subscription subscription){if(subscription!=null)subscription.unsubscribe();} }`,
 'h/Hchat/hooks/api/message/WeChatMessageParseApi.java': `package h.Hchat.hooks.api.message; public class WeChatMessageParseApi {public String getXmlParamByTag(String s,String t){return "";}public String extractXml(String s){return s;}public boolean containsRedPacketMarker(String s){return false;}public boolean isGroupTalker(String s){return s.endsWith("@chatroom");}}`,
@@ -127,7 +123,7 @@ const fixtures = {
 for (const [file, data] of Object.entries(fixtures)) { const p=path.join(output,file);fs.mkdirSync(path.dirname(p),{recursive:true});fs.writeFileSync(p,data); }
 fs.mkdirSync(path.join(output, 'android/text'), {recursive:true});
 fs.copyFileSync(path.join(root,'scripts/tests/message_parser/TextUtils.java'), path.join(output,'android/text/TextUtils.java'));
-run(process.env.JAVAC || 'javac', ['-d', output, '-cp',api.classpath,...['android/content/ContentValues.java','android/text/TextUtils.java','android/database/Cursor.java','h/Hchat/hooks/api/message/WeChatLvBufferMsgSource.java'].map(x=>path.join(output,x)), 'scripts/tests/api102/ChainFixture.java','app/src/main/java/h/Hchat/hooks/core/XposedRuntime.java','app/src/main/java/h/Hchat/hooks/core/HookErrorBoundary.java']);
+run(process.env.JAVAC || 'javac', ['-d', output, '-cp',api.classpath,...['android/content/ContentValues.java','android/text/TextUtils.java','android/database/Cursor.java'].map(x=>path.join(output,x)), 'scripts/tests/api102/ChainFixture.java',source+'utils/XmlValueReader.java','app/src/main/java/h/Hchat/hooks/core/XposedRuntime.java','app/src/main/java/h/Hchat/hooks/core/HookErrorBoundary.java']);
 function kotlinHook(file, anchor) {
  const input=fs.readFileSync(path.join(root,source+file),'utf8');
  const start=input.indexOf('XposedInterface.Hooker {',input.indexOf(anchor));
@@ -143,7 +139,7 @@ fs.writeFileSync(rowHooks,fs.readFileSync(path.join(root,tests+'RowHookRegressio
 const jar=path.join(output,'production.jar');
 run(process.env.JAVA || 'java', ['-Xmx384m','-cp',jars.join(path.delimiter),'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler',
  '-no-stdlib','-no-reflect','-classpath',[output,stdlib,api.classpath].join(path.delimiter),'-d',jar,
- ...['hooks/api/model/WeChatMessage.kt','hooks/api/model/WeChatMessageTypes.kt','hooks/api/model/DatabaseChange.kt',
+ ...['hooks/api/message/WeChatLvBufferMsgSource.kt','hooks/api/model/WeChatMessage.kt','hooks/api/model/WeChatMessageTypes.kt','hooks/api/model/DatabaseChange.kt',
  'hooks/items/groupmonitor/GroupSnapshotState.kt','hooks/items/hchatextra/MessageDetailsBindingIndex.kt','hooks/items/antirecall/RecallCachePolicy.kt','hooks/core/ChatAdapterRefresh.kt'].map(x=>source+x),
  tests+'row_refresh/ChatMessageHolder.kt',tests+'row_refresh/ContactHolder.kt',tests+'StateRegression.kt',tests+'AdapterRefreshRegression.kt',rowHooks]);
 const entry = fs.readFileSync(path.join(root, source+'ModuleEntry.java'),'utf8');

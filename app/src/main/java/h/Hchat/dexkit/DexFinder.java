@@ -216,10 +216,6 @@ public class DexFinder {
     public Constructor<?> voiceUploadCtor;
     public Constructor<?> voiceUploadCdnCtor;
     // 微信原生语音播放
-    public Method voicePlaybackStartMethod;
-    public Method voicePlaybackPauseMethod;
-    public Method voicePlaybackResumeMethod;
-    public Method voicePlaybackStopMethod;
     // 表情消息发送
     public Method emojiSendMethod;
     public Method emojiManagerSendMethod;
@@ -1976,8 +1972,6 @@ public class DexFinder {
                 voiceUploadCdnCtor = findCtorByExactTypes(voiceUploadClass, String.class, boolean.class);
             }
 
-            resolveVoicePlaybackApi();
-
             logDetail("语音发送API: start=" + methodName(voiceStartRecordMethod)
                     + " path=" + methodName(voiceFullPathMethod)
                     + " messagePath=" + methodName(voiceMessagePathMethod)
@@ -1988,80 +1982,6 @@ public class DexFinder {
         } catch (Throwable e) {
             h.Hchat.utils.HLog.e(TAG + " resolveSendVoiceApi 失败: " + e.getMessage(), e);
         }
-    }
-
-    private void resolveVoicePlaybackApi() {
-        if (!isVoicePlaybackStartMethod(voicePlaybackStartMethod)) {
-            voicePlaybackStartMethod = findVoicePlaybackMethod(
-                    null,
-                    "start file name:[%s] speakerOn:[%b], isFullPath: %s, type: %s, userType: %s",
-                    boolean.class,
-                    String.class, boolean.class, boolean.class, int.class);
-        }
-        Class<?> owner = voicePlaybackStartMethod != null
-                ? voicePlaybackStartMethod.getDeclaringClass()
-                : null;
-        if (owner == null) {
-            voicePlaybackPauseMethod = null;
-            voicePlaybackResumeMethod = null;
-            voicePlaybackStopMethod = null;
-            return;
-        }
-        if (!isExactInstanceMethod(voicePlaybackPauseMethod, owner, boolean.class, boolean.class)) {
-            voicePlaybackPauseMethod = findVoicePlaybackMethod(
-                    owner, "pause ret:%s", boolean.class, boolean.class);
-        }
-        if (!isExactInstanceMethod(voicePlaybackResumeMethod, owner, boolean.class)) {
-            voicePlaybackResumeMethod = findVoicePlaybackMethod(
-                    owner, "resumePlaying set mute false", boolean.class);
-        }
-        if (!isExactInstanceMethod(voicePlaybackStopMethod, owner, void.class, boolean.class)) {
-            voicePlaybackStopMethod = findVoicePlaybackMethod(
-                    owner, "stop player failed cause player is null %s", void.class, boolean.class);
-        }
-        logDetail("语音播放API: start=" + methodName(voicePlaybackStartMethod)
-                + " pause=" + methodName(voicePlaybackPauseMethod)
-                + " resume=" + methodName(voicePlaybackResumeMethod)
-                + " stop=" + methodName(voicePlaybackStopMethod));
-    }
-
-    private Method findVoicePlaybackMethod(Class<?> owner,
-                                           String anchor,
-                                           Class<?> returnType,
-                                           Class<?>... parameterTypes) {
-        try {
-            for (MethodData data : dexQueries.findMethod(mkMethodUsingStrings(anchor))) {
-                try {
-                    Method method = data.getMethodInstance(classLoader);
-                    Class<?> expectedOwner = owner != null ? owner : method.getDeclaringClass();
-                    if (!isExactInstanceMethod(method, expectedOwner, returnType, parameterTypes)) continue;
-                    return KavaReflector.accessible(method);
-                } catch (Throwable ignored) {}
-            }
-        } catch (Throwable ignored) {}
-        return null;
-    }
-
-    private boolean isVoicePlaybackStartMethod(Method method) {
-        return method != null
-                && isExactInstanceMethod(
-                        method,
-                        method.getDeclaringClass(),
-                        boolean.class,
-                        String.class, boolean.class, boolean.class, int.class)
-                && findCtorByExactTypes(method.getDeclaringClass(), Context.class, int.class) != null;
-    }
-
-    private boolean isExactInstanceMethod(Method method,
-                                          Class<?> owner,
-                                          Class<?> returnType,
-                                          Class<?>... parameterTypes) {
-        return method != null
-                && owner != null
-                && method.getDeclaringClass() == owner
-                && !KavaReflector.isStatic(method)
-                && method.getReturnType() == returnType
-                && Arrays.equals(method.getParameterTypes(), parameterTypes);
     }
 
     private Method findVoiceInfoQueryMethod() {
@@ -4685,10 +4605,6 @@ public class DexFinder {
             voiceInfoQueryMethod = loadMethod("voiceInfoQueryMethod");
             voiceUploadClass = loadClass("voiceUploadClass");
             voiceUploadCdnCtor = findCtorByExactTypes(voiceUploadClass, String.class, boolean.class);
-            voicePlaybackStartMethod = loadMethod("voicePlaybackStartMethod");
-            voicePlaybackPauseMethod = loadMethod("voicePlaybackPauseMethod");
-            voicePlaybackResumeMethod = loadMethod("voicePlaybackResumeMethod");
-            voicePlaybackStopMethod = loadMethod("voicePlaybackStopMethod");
             emojiSendMethod = loadMethod("emojiSendMethod");
             emojiManagerSendMethod = loadMethod("emojiManagerSendMethod");
             emojiGetByMd5Method = loadMethod("emojiGetByMd5Method");
@@ -6026,10 +5942,6 @@ public class DexFinder {
             putMethod(editor, "voiceFinishRecordMethod", voiceFinishRecordMethod);
             putMethod(editor, "voiceInfoQueryMethod", voiceInfoQueryMethod);
             putClass(editor, "voiceUploadClass", voiceUploadClass);
-            putMethod(editor, "voicePlaybackStartMethod", voicePlaybackStartMethod);
-            putMethod(editor, "voicePlaybackPauseMethod", voicePlaybackPauseMethod);
-            putMethod(editor, "voicePlaybackResumeMethod", voicePlaybackResumeMethod);
-            putMethod(editor, "voicePlaybackStopMethod", voicePlaybackStopMethod);
             putMethod(editor, "emojiSendMethod", emojiSendMethod);
             putMethod(editor, "emojiManagerSendMethod", emojiManagerSendMethod);
             putMethod(editor, "emojiGetByMd5Method", emojiGetByMd5Method);
