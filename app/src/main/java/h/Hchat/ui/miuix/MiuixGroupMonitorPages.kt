@@ -403,21 +403,7 @@ private fun GroupRenameGroupManagerPage(
         largeTitle = "改名监听群",
         scrollBehavior = scrollBehavior,
         onBack = { if (batchDeleteMode) { batchDeleteMode = false; selectedForDelete = emptySet() } else onBack() },
-        showBackIcon = false,
-        topBarActions = {
-            if (batchDeleteMode) {
-                if (visibleIds.isNotEmpty()) TopBarTextAction(if (allVisibleSelected) "取消全选" else "全选") {
-                    selectedForDelete = if (allVisibleSelected) selectedForDelete - visibleIds else selectedForDelete + visibleIds
-                }
-                TopBarTextAction("删除（${selectedGroups.size}）") {
-                    if (selectedGroups.isEmpty()) Toast.makeText(context, "请先选择监听群", Toast.LENGTH_SHORT).show()
-                    else showDeleteConfirm = true
-                }
-            } else {
-                if (selectedIds.isNotEmpty()) TopBarTextAction("批量删除") { batchDeleteMode = true; selectedForDelete = emptySet() }
-                TopBarTextAction("选择监听群", onClick = onPickGroups)
-            }
-        }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -432,8 +418,26 @@ private fun GroupRenameGroupManagerPage(
                     InputRow("搜索监听群", "群名称 / 群聊备注 / 群号", query) { query = it }
                 }
             }
+            item {
+                SettingsCard {
+                    if (batchDeleteMode) {
+                        if (visibleIds.isNotEmpty()) ContentActionRow(if (allVisibleSelected) "取消全选" else "全选") {
+                            selectedForDelete = if (allVisibleSelected) selectedForDelete - visibleIds else selectedForDelete + visibleIds
+                        }
+                        ContentActionRow("删除（${selectedGroups.size}）") {
+                            if (selectedGroups.isEmpty()) Toast.makeText(context, "请先选择监听群", Toast.LENGTH_SHORT).show()
+                            else showDeleteConfirm = true
+                        }
+                    } else {
+                        if (selectedIds.isNotEmpty()) ContentActionRow("批量删除") { batchDeleteMode = true; selectedForDelete = emptySet() }
+                        ContentActionRow("选择监听群", onClick = onPickGroups)
+                    }
+                }
+            }
             if (!batchDeleteMode) {
                 item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "模板") }
+
+
                 item {
                     SettingsCard {
                         ActionRow("提醒模板管理", if (templates.isEmpty()) "暂无模板，进入后添加" else "${templates.size} 个模板") {
@@ -455,7 +459,7 @@ private fun GroupRenameGroupManagerPage(
                     when {
                         loading -> EmptyText("正在载入监听群...")
                         error.isNotEmpty() -> EmptyText(error)
-                        selectedIds.isEmpty() -> EmptyText("暂无监听群。点击底部“选择监听群”添加。")
+                        selectedIds.isEmpty() -> EmptyText("暂无监听群。请选择监听群。")
                         visible.isEmpty() -> EmptyText("没有匹配结果")
                         else -> visible.forEachIndexed { index, option ->
                             if (batchDeleteMode) {
@@ -518,8 +522,7 @@ private fun GroupRenameTemplateListPage(
         largeTitle = "改名提醒模板",
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = { TopBarTextAction("新增模板", onClick = onAddTemplate) }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -544,6 +547,9 @@ private fun GroupRenameTemplateListPage(
                             if (index < templates.lastIndex) InsetDivider()
                         }
                     }
+
+                    InsetDivider()
+                    ContentActionRow("新增模板", onClick = onAddTemplate)
                 }
             }
         }
@@ -598,11 +604,7 @@ private fun GroupRenameTemplateEditorPage(
         largeTitle = "编辑改名模板",
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = {
-            if (!canDelete) TopBarTextAction("新增") { validText = text; validCardTitle = cardTitle; validCardDesc = cardDesc; persist(create = true) }
-            else TopBarTextAction("删除", onClick = onDelete)
-        }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -662,6 +664,14 @@ private fun GroupRenameTemplateEditorPage(
                     }
                 }
             }
+
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
+            item {
+                SettingsCard {
+                    if (!canDelete) ContentActionRow("创建") { validText = text; validCardTitle = cardTitle; validCardDesc = cardDesc; persist(create = true) }
+                    else ContentActionRow("删除", onClick = onDelete)
+                }
+            }
         }
     }
 }
@@ -707,28 +717,7 @@ private fun GroupRenameBatchTemplateBindingPage(
         largeTitle = "批量套用改名模板",
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = {
-            if (visibleIds.isNotEmpty()) TopBarTextAction(if (allVisibleSelected) "取消全选" else "全选") {
-                selectedGroups = if (allVisibleSelected) selectedGroups - visibleIds else selectedGroups + visibleIds
-            }
-            TopBarTextAction("套用模板") {
-                    when {
-                        selectedTemplateId.isBlank() -> Toast.makeText(context, "请先选择模板", Toast.LENGTH_SHORT).show()
-                        selectedGroups.isEmpty() -> Toast.makeText(context, "请先选择群", Toast.LENGTH_SHORT).show()
-                        else -> {
-                            val labels = groups.associate { it.id to it.label.ifBlank { it.id } }
-                            onSave(selectedGroups.map { groupId ->
-                                GroupRenameTemplateBinding(
-                                    groupId,
-                                    labels[groupId] ?: bindings.firstOrNull { it.groupId == groupId }?.label ?: groupId,
-                                    selectedTemplateId
-                                )
-                            })
-                        }
-                    }
-            }
-        }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -752,6 +741,30 @@ private fun GroupRenameBatchTemplateBindingPage(
                 }
             }
             item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "已选择 ${selectedGroups.size} 个群") }
+            item {
+                SettingsCard {
+                    if (visibleIds.isNotEmpty()) ContentActionRow(if (allVisibleSelected) "取消全选" else "全选") {
+                        selectedGroups = if (allVisibleSelected) selectedGroups - visibleIds else selectedGroups + visibleIds
+                    }
+                    ContentActionRow("套用模板") {
+                            when {
+                                selectedTemplateId.isBlank() -> Toast.makeText(context, "请先选择模板", Toast.LENGTH_SHORT).show()
+                                selectedGroups.isEmpty() -> Toast.makeText(context, "请先选择群", Toast.LENGTH_SHORT).show()
+                                else -> {
+                                    val labels = groups.associate { it.id to it.label.ifBlank { it.id } }
+                                    onSave(selectedGroups.map { groupId ->
+                                        GroupRenameTemplateBinding(
+                                            groupId,
+                                            labels[groupId] ?: bindings.firstOrNull { it.groupId == groupId }?.label ?: groupId,
+                                            selectedTemplateId
+                                        )
+                                    })
+                                }
+                            }
+                    }
+                }
+            }
+
             when {
                 loading -> item { SettingsCard { EmptyText("正在载入监听群...") } }
                 error.isNotEmpty() -> item { SettingsCard { EmptyText(error) } }
@@ -828,24 +841,7 @@ private fun GroupRenameGroupEditorPage(
         largeTitle = "专属改名设置",
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = {
-            if (boundTemplate == null) TopBarTextAction("恢复") {
-                promptType = GroupRenameMonitorSettings.MODE_GLOBAL
-                bothOrder = globalBothOrder
-                text = globalText
-                cardTitle = globalCardTitle
-                cardDesc = globalCardDesc
-                sp.edit()
-                    .putString(GroupRenameMonitorSettings.groupKey(GroupRenameMonitorSettings.KEY_PROMPT_TYPE, groupId), GroupRenameMonitorSettings.MODE_GLOBAL)
-                    .putString(GroupRenameMonitorSettings.groupKey(GroupRenameMonitorSettings.KEY_BOTH_ORDER, groupId), globalBothOrder)
-                    .putString(GroupRenameMonitorSettings.groupKey(GroupRenameMonitorSettings.KEY_TEXT, groupId), globalText)
-                    .putString(GroupRenameMonitorSettings.groupKey(GroupRenameMonitorSettings.KEY_CARD_TITLE, groupId), globalCardTitle)
-                    .putString(GroupRenameMonitorSettings.groupKey(GroupRenameMonitorSettings.KEY_CARD_DESC, groupId), globalCardDesc)
-                    .apply()
-            }
-            TopBarTextAction("移除", onClick = onDelete)
-        }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -917,6 +913,26 @@ private fun GroupRenameGroupEditorPage(
                             VariableInputRow("卡片描述", "本群专属；多个模板用 || 分隔随机选择", cardDesc, groupRenameTemplateVariables, minLines = 3, onEditingFinished = { if (it.isBlank()) sp.edit().putString(GroupRenameMonitorSettings.groupKey(GroupRenameMonitorSettings.KEY_CARD_DESC, groupId), it).apply() }) { cardDesc = it; if (it.isNotBlank()) sp.edit().putString(GroupRenameMonitorSettings.groupKey(GroupRenameMonitorSettings.KEY_CARD_DESC, groupId), it).apply() }
                         }
                     }
+                }
+            }
+
+            item {
+                SettingsCard {
+                    if (boundTemplate == null) ContentActionRow("恢复") {
+                        promptType = GroupRenameMonitorSettings.MODE_GLOBAL
+                        bothOrder = globalBothOrder
+                        text = globalText
+                        cardTitle = globalCardTitle
+                        cardDesc = globalCardDesc
+                        sp.edit()
+                            .putString(GroupRenameMonitorSettings.groupKey(GroupRenameMonitorSettings.KEY_PROMPT_TYPE, groupId), GroupRenameMonitorSettings.MODE_GLOBAL)
+                            .putString(GroupRenameMonitorSettings.groupKey(GroupRenameMonitorSettings.KEY_BOTH_ORDER, groupId), globalBothOrder)
+                            .putString(GroupRenameMonitorSettings.groupKey(GroupRenameMonitorSettings.KEY_TEXT, groupId), globalText)
+                            .putString(GroupRenameMonitorSettings.groupKey(GroupRenameMonitorSettings.KEY_CARD_TITLE, groupId), globalCardTitle)
+                            .putString(GroupRenameMonitorSettings.groupKey(GroupRenameMonitorSettings.KEY_CARD_DESC, groupId), globalCardDesc)
+                            .apply()
+                    }
+                    ContentActionRow("移除", onClick = onDelete)
                 }
             }
         }
@@ -1662,21 +1678,7 @@ private fun GroupMemberGroupManagerPage(
         largeTitle = "监听群",
         scrollBehavior = scrollBehavior,
         onBack = { if (batchDeleteMode) { batchDeleteMode = false; selectedForDelete = emptySet() } else onBack() },
-        showBackIcon = false,
-        topBarActions = {
-            if (batchDeleteMode) {
-                if (visibleIds.isNotEmpty()) TopBarTextAction(if (allVisibleSelected) "取消全选" else "全选") {
-                    selectedForDelete = if (allVisibleSelected) selectedForDelete - visibleIds else selectedForDelete + visibleIds
-                }
-                TopBarTextAction("删除（${selectedGroups.size}）") {
-                    if (selectedGroups.isEmpty()) Toast.makeText(context, "请先选择监听群", Toast.LENGTH_SHORT).show()
-                    else showDeleteConfirm = true
-                }
-            } else {
-                if (selectedIds.isNotEmpty()) TopBarTextAction("批量删除") { batchDeleteMode = true; selectedForDelete = emptySet() }
-                TopBarTextAction("选择监听群", onClick = onPickGroups)
-            }
-        }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -1691,8 +1693,26 @@ private fun GroupMemberGroupManagerPage(
                     InputRow("搜索监听群", "群名称 / 群聊备注 / 群号", query) { query = it }
                 }
             }
+            item {
+                SettingsCard {
+                    if (batchDeleteMode) {
+                        if (visibleIds.isNotEmpty()) ContentActionRow(if (allVisibleSelected) "取消全选" else "全选") {
+                            selectedForDelete = if (allVisibleSelected) selectedForDelete - visibleIds else selectedForDelete + visibleIds
+                        }
+                        ContentActionRow("删除（${selectedGroups.size}）") {
+                            if (selectedGroups.isEmpty()) Toast.makeText(context, "请先选择监听群", Toast.LENGTH_SHORT).show()
+                            else showDeleteConfirm = true
+                        }
+                    } else {
+                        if (selectedIds.isNotEmpty()) ContentActionRow("批量删除") { batchDeleteMode = true; selectedForDelete = emptySet() }
+                        ContentActionRow("选择监听群", onClick = onPickGroups)
+                    }
+                }
+            }
             if (!batchDeleteMode) {
                 item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "模板") }
+
+
                 item {
                     SettingsCard {
                         ActionRow(
@@ -1717,7 +1737,7 @@ private fun GroupMemberGroupManagerPage(
                     when {
                         loading -> EmptyText("正在载入监听群...")
                         error.isNotEmpty() -> EmptyText(error)
-                        selectedIds.isEmpty() -> EmptyText("暂无监听群。点击底部“选择监听群”添加。")
+                        selectedIds.isEmpty() -> EmptyText("暂无监听群。请选择监听群。")
                         visible.isEmpty() -> EmptyText("没有匹配结果")
                         else -> visible.forEachIndexed { index, option ->
                             if (batchDeleteMode) {
@@ -1780,8 +1800,7 @@ private fun GroupLeaveTemplateListPage(
         largeTitle = "回复模板",
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = { TopBarTextAction("新增模板", onClick = onAddTemplate) }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -1807,6 +1826,9 @@ private fun GroupLeaveTemplateListPage(
                             if (index < templates.lastIndex) InsetDivider()
                         }
                     }
+
+                    InsetDivider()
+                    ContentActionRow("新增模板", onClick = onAddTemplate)
                 }
             }
         }
@@ -1858,32 +1880,7 @@ private fun GroupLeaveBatchTemplateBindingPage(
         largeTitle = "批量套用模板",
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = {
-            if (visibleIds.isNotEmpty()) TopBarTextAction(if (visibleAllSelected) "取消全选" else "全选") {
-                selectedGroups = if (visibleAllSelected) selectedGroups - visibleIds else selectedGroups + visibleIds
-            }
-            TopBarTextAction("套用模板") {
-                    if (templates.isEmpty()) {
-                        Toast.makeText(context, "请先新增模板", Toast.LENGTH_SHORT).show()
-                    } else if (selectedTemplateId.isBlank()) {
-                        Toast.makeText(context, "请先选择模板", Toast.LENGTH_SHORT).show()
-                    } else if (selectedGroups.isEmpty()) {
-                        Toast.makeText(context, "请先选择群", Toast.LENGTH_SHORT).show()
-                    } else {
-                        val labels = groups.associate { it.id to it.label.ifBlank { it.id } }
-                        onSave(
-                            selectedGroups.map { groupId ->
-                                GroupLeaveReplyTemplateBinding(
-                                    groupId = groupId,
-                                    label = labels[groupId] ?: bindings.firstOrNull { it.groupId == groupId }?.label ?: groupId,
-                                    templateId = selectedTemplateId
-                                )
-                            }
-                        )
-                    }
-            }
-        }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -1894,6 +1891,34 @@ private fun GroupLeaveBatchTemplateBindingPage(
             )
         ) {
             item { SmallTitle(text = "模板") }
+            item {
+                SettingsCard {
+                    if (visibleIds.isNotEmpty()) ContentActionRow(if (visibleAllSelected) "取消全选" else "全选") {
+                        selectedGroups = if (visibleAllSelected) selectedGroups - visibleIds else selectedGroups + visibleIds
+                    }
+                    ContentActionRow("套用模板") {
+                            if (templates.isEmpty()) {
+                                Toast.makeText(context, "请先新增模板", Toast.LENGTH_SHORT).show()
+                            } else if (selectedTemplateId.isBlank()) {
+                                Toast.makeText(context, "请先选择模板", Toast.LENGTH_SHORT).show()
+                            } else if (selectedGroups.isEmpty()) {
+                                Toast.makeText(context, "请先选择群", Toast.LENGTH_SHORT).show()
+                            } else {
+                                val labels = groups.associate { it.id to it.label.ifBlank { it.id } }
+                                onSave(
+                                    selectedGroups.map { groupId ->
+                                        GroupLeaveReplyTemplateBinding(
+                                            groupId = groupId,
+                                            label = labels[groupId] ?: bindings.firstOrNull { it.groupId == groupId }?.label ?: groupId,
+                                            templateId = selectedTemplateId
+                                        )
+                                    }
+                                )
+                            }
+                    }
+                }
+            }
+
             item {
                 SettingsCard {
                     if (templates.isEmpty()) {
@@ -2007,23 +2032,7 @@ private fun GroupLeaveTemplateEditorPage(
             largeTitle = name.ifBlank { "回复模板" },
             scrollBehavior = scrollBehavior,
             onBack = onBack,
-            showBackIcon = false,
-            topBarActions = {
-                if (!request.canDelete) TopBarTextAction("新增") {
-                    val delays = listOf(promptDelay, imageDelay, voiceDelay, emojiDelay, videoDelay, fileDelay, favoriteDelay)
-                    if (delayMode == GroupLeaveMonitorSettings.MODE_CUSTOM && delays.any { it.toIntOrNull()?.let { n -> n >= 0 } != true }) {
-                        Toast.makeText(context, "请输入有效的延迟", Toast.LENGTH_SHORT).show()
-                    } else {
-                        onSave(stored.copy(
-                            name = name.trim().ifBlank { "模板 ${request.index + 1}" },
-                            joinText = joinText, leftText = leftText,
-                            joinCardTitle = joinCardTitle, joinCardDesc = joinCardDesc,
-                            leftCardTitle = leftCardTitle, leftCardDesc = leftCardDesc,
-                            mediaSequence = mediaSequence
-                        ))
-                    }
-                } else TopBarTextAction("删除", onClick = onDelete)
-            }
+            showBackIcon = false
         ) { padding ->
             LazyColumn(
                 modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -2175,6 +2184,26 @@ private fun GroupLeaveTemplateEditorPage(
                         }
                     }
                 }
+
+                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
+                item {
+                    SettingsCard {
+                        if (!request.canDelete) ContentActionRow("创建") {
+                            val delays = listOf(promptDelay, imageDelay, voiceDelay, emojiDelay, videoDelay, fileDelay, favoriteDelay)
+                            if (delayMode == GroupLeaveMonitorSettings.MODE_CUSTOM && delays.any { it.toIntOrNull()?.let { n -> n >= 0 } != true }) {
+                                Toast.makeText(context, "请输入有效的延迟", Toast.LENGTH_SHORT).show()
+                            } else {
+                                onSave(stored.copy(
+                                    name = name.trim().ifBlank { "模板 ${request.index + 1}" },
+                                    joinText = joinText, leftText = leftText,
+                                    joinCardTitle = joinCardTitle, joinCardDesc = joinCardDesc,
+                                    leftCardTitle = leftCardTitle, leftCardDesc = leftCardDesc,
+                                    mediaSequence = mediaSequence
+                                ))
+                            }
+                        } else ContentActionRow("删除", onClick = onDelete)
+                    }
+                }
             }
         }
     }
@@ -2290,32 +2319,7 @@ private fun GroupMemberGroupEditorPage(
             largeTitle = "群专属设置",
             scrollBehavior = scrollBehavior,
             onBack = onBack,
-            showBackIcon = false,
-            topBarActions = {
-                TopBarTextAction("移除", onClick = onDelete)
-                if (promptType != GroupLeaveMonitorSettings.MODE_GLOBAL) TopBarMoreActions(listOf(
-                    "恢复全局文本" to {
-                        joinText = globalJoinText
-                        leftText = globalLeftText
-                        sp.edit()
-                            .putString(groupMemberGroupKey(GroupLeaveMonitorSettings.KEY_JOIN_TEXT, groupId), joinText)
-                            .putString(groupMemberGroupKey(GroupLeaveMonitorSettings.KEY_LEFT_TEXT, groupId), leftText)
-                            .apply()
-                    },
-                    "恢复全局卡片" to {
-                        joinCardTitle = globalJoinCardTitle
-                        joinCardDesc = globalJoinCardDesc
-                        leftCardTitle = globalLeftCardTitle
-                        leftCardDesc = globalLeftCardDesc
-                        sp.edit()
-                            .putString(groupMemberGroupKey(GroupLeaveMonitorSettings.KEY_JOIN_CARD_TITLE, groupId), joinCardTitle)
-                            .putString(groupMemberGroupKey(GroupLeaveMonitorSettings.KEY_JOIN_CARD_DESC, groupId), joinCardDesc)
-                            .putString(groupMemberGroupKey(GroupLeaveMonitorSettings.KEY_LEFT_CARD_TITLE, groupId), leftCardTitle)
-                            .putString(groupMemberGroupKey(GroupLeaveMonitorSettings.KEY_LEFT_CARD_DESC, groupId), leftCardDesc)
-                            .apply()
-                    }
-                ))
-            }
+            showBackIcon = false
         ) { padding ->
             LazyColumn(
                 modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -2550,6 +2554,35 @@ private fun GroupMemberGroupEditorPage(
                         NumberInputRow("收藏延迟", "单位 ms", favoriteDelay) { favoriteDelay = it; saveDelay(GroupLeaveMonitorSettings.KEY_FAVORITE_DELAY_MS, it) }
                     }
                 }
+                }
+            }
+
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
+            item {
+                SettingsCard {
+                    ContentActionRow("移除", onClick = onDelete)
+                    if (promptType != GroupLeaveMonitorSettings.MODE_GLOBAL) ContentMoreActions(listOf(
+                        "恢复全局文本" to {
+                            joinText = globalJoinText
+                            leftText = globalLeftText
+                            sp.edit()
+                                .putString(groupMemberGroupKey(GroupLeaveMonitorSettings.KEY_JOIN_TEXT, groupId), joinText)
+                                .putString(groupMemberGroupKey(GroupLeaveMonitorSettings.KEY_LEFT_TEXT, groupId), leftText)
+                                .apply()
+                        },
+                        "恢复全局卡片" to {
+                            joinCardTitle = globalJoinCardTitle
+                            joinCardDesc = globalJoinCardDesc
+                            leftCardTitle = globalLeftCardTitle
+                            leftCardDesc = globalLeftCardDesc
+                            sp.edit()
+                                .putString(groupMemberGroupKey(GroupLeaveMonitorSettings.KEY_JOIN_CARD_TITLE, groupId), joinCardTitle)
+                                .putString(groupMemberGroupKey(GroupLeaveMonitorSettings.KEY_JOIN_CARD_DESC, groupId), joinCardDesc)
+                                .putString(groupMemberGroupKey(GroupLeaveMonitorSettings.KEY_LEFT_CARD_TITLE, groupId), leftCardTitle)
+                                .putString(groupMemberGroupKey(GroupLeaveMonitorSettings.KEY_LEFT_CARD_DESC, groupId), leftCardDesc)
+                                .apply()
+                        }
+                    ))
                 }
             }
         }

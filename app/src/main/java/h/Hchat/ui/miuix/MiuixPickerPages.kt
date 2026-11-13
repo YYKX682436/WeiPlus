@@ -126,18 +126,7 @@ internal fun MessageBlockContactPickerPage(
         onBack = {
             if (currentLabel == null) onBack() else { selectedLabel = null; query = "" }
         },
-        showBackIcon = false,
-        topBarActions = {
-            if (!bottomShowingLabelList && bottomVisibleContactIds.isNotEmpty()) {
-                TopBarTextAction(if (bottomVisibleAllSelected) "取消全选" else "全选") {
-                    selectedIds = if (bottomVisibleAllSelected) selectedIds - bottomVisibleContactIds else selectedIds + bottomVisibleContactIds
-                }
-            }
-            TopBarTextAction("下一步") {
-                    val picked = availableContacts.filter { selectedIds.contains(it.contact.id) }
-                    onConfirm(picked)
-            }
-        }
+        showBackIcon = false
     ) { padding ->
         val listRoute = if (contactFilter == MessageBlockContactFilter.LABELS && currentLabel == null) {
             MessageBlockContactPickerRoute.Labels
@@ -192,6 +181,8 @@ internal fun MessageBlockContactPickerPage(
                     bottom = padding.calculateBottomPadding() + 16.dp
                 )
             ) {
+
+
                 item {
                     SettingsCard {
                         MessageBlockContactFilterRow(
@@ -237,6 +228,19 @@ internal fun MessageBlockContactPickerPage(
                     PickerSectionHeader(
                         text = if (sectionCount > 0) "$sectionTitle · $sectionCount 项" else sectionTitle
                     )
+                }
+                item {
+                    SettingsCard {
+                        if (!bottomShowingLabelList && bottomVisibleContactIds.isNotEmpty()) {
+                            ContentActionRow(if (bottomVisibleAllSelected) "取消全选" else "全选") {
+                                selectedIds = if (bottomVisibleAllSelected) selectedIds - bottomVisibleContactIds else selectedIds + bottomVisibleContactIds
+                            }
+                        }
+                        ContentActionRow("下一步") {
+                                val picked = availableContacts.filter { selectedIds.contains(it.contact.id) }
+                                onConfirm(picked)
+                        }
+                    }
                 }
                 when {
                     loading -> item { SettingsCard { EmptyText("正在载入列表...") } }
@@ -539,40 +543,7 @@ internal fun ContactPickerPage(
         largeTitle = request.title,
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = {
-            if (request.multiSelect && bottomVisibleIds.isNotEmpty()) {
-                TopBarTextAction(if (bottomVisibleAllSelected) "取消全选" else "全选") {
-                    val next = if (request.flatBatchSelection) {
-                        BatchSelectionState.toggleVisible(batchSelectionOrderForUi, bottomVisibleIds).toSet()
-                    } else if (bottomVisibleAllSelected) {
-                        selectedIdsForUi - bottomVisibleIds
-                    } else {
-                        selectedIdsForUi + bottomVisibleIds
-                    }
-                    updateSelection(next)
-                }
-            }
-            if (onSelectionChange == null) {
-                val action = request.multiSelectConfirmPrefix
-                    ?: if (request.showSelectedCount) "下一步" else if (request.multiSelect) "完成" else request.singleConfirmText
-                TopBarTextAction(action, enabled = batchConfirmEnabled, onClick = confirm@{
-                    val picked = if (request.flatBatchSelection) {
-                        if (!canUseBatchCandidates()) return@confirm
-                        batchSelectionOrder.mapNotNull(selectableBatchContacts::get)
-                    } else {
-                        contacts.filter { selectedIdsForUi.contains(it.id) }
-                    }
-                    if (picked.isEmpty() && (!request.multiSelect || request.showSelectedCount)) {
-                        Toast.makeText(context, "请选择对象", Toast.LENGTH_SHORT).show()
-                    } else if (!request.confirmEnabled()) {
-                        Toast.makeText(context, "请先选择一个有效好友标签", Toast.LENGTH_SHORT).show()
-                    } else {
-                        onConfirm(picked)
-                    }
-                })
-            }
-        }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -582,6 +553,8 @@ internal fun ContactPickerPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
+
+
             var hasControlCard = false
             fun controlCard(content: @Composable () -> Unit) {
                 if (hasControlCard) item { Spacer(Modifier.height(8.dp)) }
@@ -714,6 +687,41 @@ internal fun ContactPickerPage(
                         else -> "${contactFilter.title}${if (request.showSelectedCount) " · 已选 ${selectedIds.intersect(contacts.map { it.id }.toSet()).size}" else ""}"
                     }
                 )
+            }
+            if ((request.multiSelect && bottomVisibleIds.isNotEmpty()) || onSelectionChange == null) item {
+                SettingsCard {
+                    if (request.multiSelect && bottomVisibleIds.isNotEmpty()) {
+                        ContentActionRow(if (bottomVisibleAllSelected) "取消全选" else "全选") {
+                            val next = if (request.flatBatchSelection) {
+                                BatchSelectionState.toggleVisible(batchSelectionOrderForUi, bottomVisibleIds).toSet()
+                            } else if (bottomVisibleAllSelected) {
+                                selectedIdsForUi - bottomVisibleIds
+                            } else {
+                                selectedIdsForUi + bottomVisibleIds
+                            }
+                            updateSelection(next)
+                        }
+                    }
+                    if (onSelectionChange == null) {
+                        val action = request.multiSelectConfirmPrefix
+                            ?: if (request.showSelectedCount) "下一步" else if (request.multiSelect) "完成" else request.singleConfirmText
+                        ContentActionRow(action, enabled = batchConfirmEnabled, onClick = confirm@{
+                            val picked = if (request.flatBatchSelection) {
+                                if (!canUseBatchCandidates()) return@confirm
+                                batchSelectionOrder.mapNotNull(selectableBatchContacts::get)
+                            } else {
+                                contacts.filter { selectedIdsForUi.contains(it.id) }
+                            }
+                            if (picked.isEmpty() && (!request.multiSelect || request.showSelectedCount)) {
+                                Toast.makeText(context, "请选择对象", Toast.LENGTH_SHORT).show()
+                            } else if (!request.confirmEnabled()) {
+                                Toast.makeText(context, "请先选择一个有效好友标签", Toast.LENGTH_SHORT).show()
+                            } else {
+                                onConfirm(picked)
+                            }
+                        })
+                    }
+                }
             }
             when {
                 candidateLoading -> item { SettingsCard { EmptyText("正在载入列表...") } }
@@ -946,14 +954,7 @@ internal fun FavoritePickerPage(
         largeTitle = request.title,
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = {
-            if (request.multiSelect && visibleIds.isNotEmpty()) {
-                TopBarTextAction(if (visibleAllSelected) "取消全选" else "全选") {
-                    updateFavoriteSelection(FavoritePickerSelectionPolicy.toggleVisible(selectedIds, visibleIds))
-                }
-            }
-        }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -963,6 +964,8 @@ internal fun FavoritePickerPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
+
+
             item {
                 SettingsCard {
                     InputRow("搜索", "标题 / 来源 / 标签", query) { query = it }
@@ -976,6 +979,13 @@ internal fun FavoritePickerPage(
                         else -> "${filter.label}收藏 · ${visible.size} / ${favorites.size} 项"
                     }
                 )
+            }
+            if (request.multiSelect && visibleIds.isNotEmpty()) item {
+                SettingsCard {
+                    ContentActionRow(if (visibleAllSelected) "取消全选" else "全选") {
+                        updateFavoriteSelection(FavoritePickerSelectionPolicy.toggleVisible(selectedIds, visibleIds))
+                    }
+                }
             }
             when {
                 loading -> item { SettingsCard { EmptyText("正在载入收藏...") } }
@@ -1090,21 +1100,7 @@ internal fun GroupMemberPickerPage(
                 query = ""
             }
         },
-        showBackIcon = false,
-        topBarActions = {
-            if (selectedEntries.isNotEmpty()) TopBarTextAction("清空") {
-                selectedEntries = emptySet()
-                selectionEdited = true
-                onSelectionChange?.invoke(selectedEntries)
-            }
-            if (onSelectionChange == null) TopBarTextAction("完成") {
-                    if (selectedGroup == null && selectedEntries.isEmpty() && !selectionEdited) {
-                        Toast.makeText(context, "请先选择群聊", Toast.LENGTH_SHORT).show()
-                    } else {
-                        onConfirm(selectedEntries.toList())
-                    }
-            }
-        }
+        showBackIcon = false
     ) { padding ->
         val listRoute = group?.let { GroupMemberPickerRoute.Members(it) } ?: GroupMemberPickerRoute.Groups
         SettingsRouteTransition(
@@ -1149,6 +1145,23 @@ internal fun GroupMemberPickerPage(
                         text = if (routeGroup == null) "群聊" else "群成员"
                     )
                 }
+                if (selectedEntries.isNotEmpty() || onSelectionChange == null) item {
+                    SettingsCard {
+                        if (selectedEntries.isNotEmpty()) ContentActionRow("清空") {
+                            selectedEntries = emptySet()
+                            selectionEdited = true
+                            onSelectionChange?.invoke(selectedEntries)
+                        }
+                        if (onSelectionChange == null) ContentActionRow("完成") {
+                                if (selectedGroup == null && selectedEntries.isEmpty() && !selectionEdited) {
+                                    Toast.makeText(context, "请先选择群聊", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    onConfirm(selectedEntries.toList())
+                                }
+                        }
+                    }
+                }
+
                 when {
                     routeGroup == null && groupLoading -> item { SettingsCard { EmptyText("正在载入群聊...") } }
                     routeGroup == null && groupError.isNotEmpty() -> item { SettingsCard { EmptyText(groupError) } }

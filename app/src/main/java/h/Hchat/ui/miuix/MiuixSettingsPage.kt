@@ -22,6 +22,9 @@ import h.Hchat.BuildConfig
 import h.Hchat.R
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.ExperimentalAnimationApi
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -32,6 +35,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
@@ -41,6 +45,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.setValue
@@ -62,6 +67,7 @@ import androidx.compose.ui.unit.sp
 import androidx.navigationevent.compose.LocalNavigationEventDispatcherOwner
 import androidx.navigationevent.DirectNavigationEventInput
 import androidx.navigationevent.NavigationEventInfo
+import androidx.navigationevent.NavigationEvent
 import androidx.navigationevent.NavigationEventTransitionState
 import androidx.navigationevent.compose.NavigationBackHandler
 import androidx.navigationevent.compose.rememberNavigationEventState
@@ -132,7 +138,6 @@ import org.json.JSONArray
 import org.json.JSONObject
 import top.yukonga.miuix.kmp.nav.core.NavDisplay
 import top.yukonga.miuix.kmp.nav.core.navBackStackOf
-import top.yukonga.miuix.kmp.nav.transition.NavTransitions
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.theme.darkColorScheme
 import top.yukonga.miuix.kmp.theme.lightColorScheme
@@ -763,13 +768,50 @@ object MiuixSettingsPage {
                     HchatMiuixTheme(activity) {
                         EmbeddedImeBackGate(owner) { imeVisible = it }
                         val rootBackState = rememberNavigationEventState(currentInfo = NavigationEventInfo.None)
+                        val rootProgress = remember { Animatable(0f) }
+                        val rootCommit = remember { Animatable(0f) }
+                        val rootScope = rememberCoroutineScope()
+                        val rootEasing = remember { CubicBezierEasing(0.1f, 0.1f, 0f, 1f) }
+                        val rootCornerRadius = settingsNavEffects().cornerClipRadius
+                        var rootGesture by remember { mutableStateOf<NavigationEvent?>(null) }
+                        var rootGestureActive by remember { mutableStateOf(false) }
+                        var rootInitialY by remember { mutableStateOf(0f) }
+                        var rootCommitting by remember { mutableStateOf(false) }
                         NavigationBackHandler(
                             state = rootBackState,
                             isBackEnabled = true,
-                            onBackCompleted = ::handleBack
+                            onBackCompleted = {
+                                if (!rootCommitting) {
+                                    if (rootGestureActive && rootGesture != null && rootProgress.value > 0f && detailBackStack.size == 1) {
+                                        rootCommitting = true
+                                        rootScope.launch {
+                                            rootCommit.snapTo(0f)
+                                            rootCommit.animateTo(1f, tween(durationMillis = 180))
+                                            handleBack()
+                                            rootProgress.snapTo(0f)
+                                            rootCommit.snapTo(0f)
+                                            rootGesture = null
+                                            rootGestureActive = false
+                                            rootCommitting = false
+                                        }
+                                    } else handleBack()
+                                }
+                            }
                         )
-                        val rootBackProgress = (rootBackState.transitionState as? NavigationEventTransitionState.InProgress)
-                            ?.latestEvent?.progress ?: 0f
+                        val event = (rootBackState.transitionState as? NavigationEventTransitionState.InProgress)?.latestEvent
+                        LaunchedEffect(event, rootCommitting) {
+                            if (rootCommitting) return@LaunchedEffect
+                            if (event != null) {
+                                if (!rootGestureActive) rootInitialY = event.touchY
+                                rootGestureActive = true
+                                rootGesture = event
+                                rootProgress.snapTo(event.progress.coerceIn(0f, 1f))
+                            } else {
+                                rootGestureActive = false
+                                rootProgress.animateTo(0f, spring(stiffness = 1500f))
+                                rootGesture = null
+                            }
+                        }
                         if (!termsAccepted.value) {
                             FirstUseAgreementDialog(
                                 context = activity,
@@ -788,13 +830,26 @@ object MiuixSettingsPage {
                             backStack = detailBackStack,
                             modifier = Modifier.fillMaxSize().graphicsLayer {
                                 if (detailBackStack.size == 1) {
-                                    val progress = rootBackProgress.coerceIn(0f, 1f)
-                                    scaleX = 1f - 0.08f * progress
-                                    scaleY = 1f - 0.08f * progress
-                                    alpha = 1f - 0.25f * progress
+                                    val progress = rootEasing.transform(rootProgress.value.coerceIn(0f, 1f))
+                                    val commit = rootCommit.value.coerceIn(0f, 1f)
+                                    val gestureScale = 1f - 0.1f * progress
+                                    scaleX = gestureScale + (1f - gestureScale) * commit
+                                    scaleY = scaleX
+                                    val margin = 8.dp.toPx()
+                                    val hug = (size.width * (1f - gestureScale) / 2f - margin).coerceAtLeast(0f)
+                                    val direction = if (rootGesture?.swipeEdge == NavigationEvent.EDGE_RIGHT) -1f else 1f
+                                    translationX = direction * (hug + 96.dp.toPx() * commit)
+                                    val deltaY = (rootGesture?.touchY ?: rootInitialY) - rootInitialY
+                                    val ratio = (kotlin.math.abs(deltaY) / (size.height / 2f).coerceAtLeast(1f)).coerceIn(0f, 1f)
+                                    val verticalLimit = (size.height * (1f - scaleY) / 2f - margin).coerceAtLeast(0f)
+                                    translationY = verticalLimit * (1f - (1f - ratio) * (1f - ratio)) * kotlin.math.sign(deltaY)
+                                    shape = RoundedCornerShape(rootCornerRadius * (progress * 4f).coerceIn(0f, 1f))
+                                    clip = progress > 0f
+                                    alpha = 1f - commit
                                 }
                             }.background(MiuixTheme.colorScheme.background),
-                            transition = NavTransitions.MiuixDefault,
+                            transition = rememberSettingsNavTransition(),
+                            effects = settingsNavEffects(),
                             onBack = {
                                 if (detailBackStack.size > 1) popDetail() else closePage()
                             }

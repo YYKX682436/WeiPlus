@@ -169,7 +169,6 @@ import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.nav.core.NavKey
 import top.yukonga.miuix.kmp.nav.core.NavDisplay
 import top.yukonga.miuix.kmp.nav.core.navBackStackOf
-import top.yukonga.miuix.kmp.nav.transition.NavTransitions
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -1407,7 +1406,8 @@ internal fun <T> SettingsRouteTransition(
     NavDisplay(
         backStack = routes,
         modifier = modifier.background(MiuixTheme.colorScheme.background),
-        transition = NavTransitions.MiuixDefault,
+        transition = rememberSettingsNavTransition(),
+        effects = settingsNavEffects(),
         onBack = {
             returning = true
             if (!dispatchBack()) returning = false

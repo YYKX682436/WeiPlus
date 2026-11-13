@@ -517,8 +517,7 @@ private fun TransferTemplateListPage(
         largeTitle = "收款规则模板",
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = { TopBarTextAction("新增模板", onClick = onAdd) }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -541,6 +540,9 @@ private fun TransferTemplateListPage(
                             if (index < templates.lastIndex) InsetDivider()
                         }
                     }
+
+                    InsetDivider()
+                    ContentActionRow("新增模板", onClick = onAdd)
                 }
             }
         }
@@ -584,21 +586,7 @@ private fun TransferBindingListPage(
         largeTitle = "适用聊天",
         scrollBehavior = scrollBehavior,
         onBack = { if (batchDeleteMode) { batchDeleteMode = false; selectedIds = emptySet() } else onBack() },
-        showBackIcon = false,
-        topBarActions = {
-            if (batchDeleteMode) {
-                if (visibleIds.isNotEmpty()) TopBarTextAction(if (allVisibleSelected) "取消全选" else "全选") {
-                    selectedIds = if (allVisibleSelected) selectedIds - visibleIds else selectedIds + visibleIds
-                }
-                TopBarTextAction("删除（${selectedBindings.size}）") {
-                    if (selectedBindings.isEmpty()) Toast.makeText(context, "请先选择适用聊天", Toast.LENGTH_SHORT).show()
-                    else showDeleteConfirm = true
-                }
-            } else {
-                if (bindings.isNotEmpty()) TopBarTextAction("批量删除") { batchDeleteMode = true; selectedIds = emptySet() }
-                TopBarTextAction("添加聊天", onClick = onAdd)
-            }
-        }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -618,8 +606,24 @@ private fun TransferBindingListPage(
             }
             item { SettingsCard { InputRow("搜索聊天", "昵称 / ID / 模板名", query) { query = it } } }
             item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "聊天 · ${visible.size}/${bindings.size} 项") }
+
+
             item {
                 SettingsCard {
+                    if (batchDeleteMode) {
+                        if (visibleIds.isNotEmpty()) ContentActionRow(if (allVisibleSelected) "取消全选" else "全选") {
+                            selectedIds = if (allVisibleSelected) selectedIds - visibleIds else selectedIds + visibleIds
+                        }
+                        ContentActionRow("删除（${selectedBindings.size}）") {
+                            if (selectedBindings.isEmpty()) Toast.makeText(context, "请先选择适用聊天", Toast.LENGTH_SHORT).show()
+                            else showDeleteConfirm = true
+                        }
+                    } else {
+                        if (bindings.isNotEmpty()) ContentActionRow("批量删除") { batchDeleteMode = true; selectedIds = emptySet() }
+                        ContentActionRow("添加聊天", onClick = onAdd)
+                    }
+
+                    InsetDivider()
                     if (visible.isEmpty()) {
                         EmptyText(if (bindings.isEmpty()) "暂无适用聊天。" else "没有匹配结果。")
                     } else {
@@ -688,11 +692,7 @@ private fun TransferBindingEditorPage(
         largeTitle = request.binding.label.ifBlank { request.binding.targetId },
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = {
-            if (!request.canDelete) TopBarTextAction("新增") { persist(create = true) }
-            else TopBarTextAction("移除", onClick = onDelete)
-        }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -723,6 +723,14 @@ private fun TransferBindingEditorPage(
                             templateId == template.id
                         ) { templateId = template.id; persist() }
                     }
+                }
+            }
+
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
+            item {
+                SettingsCard {
+                    if (!request.canDelete) ContentActionRow("创建") { persist(create = true) }
+                    else ContentActionRow("移除", onClick = onDelete)
                 }
             }
         }
@@ -857,18 +865,7 @@ private fun TransferTemplateEditorPage(
         largeTitle = value.name.ifBlank { "收款模板" },
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = {
-            if (!request.canDelete) TopBarTextAction("新增") {
-                val validDelay = when (value.delayMode) {
-                    TransferRuleConfig.DELAY_CUSTOM -> delayText.toLongOrNull()?.let { it in 0L..600000L } == true
-                    TransferRuleConfig.DELAY_RANDOM -> minText.toLongOrNull()?.let { min -> min in 0L..600000L && maxText.toLongOrNull()?.let { it in min..600000L } == true } == true
-                    else -> true
-                }
-                if (!validDelay || (amountText.isNotBlank() && !isCompleteTransferAmount(amountText))) Toast.makeText(context, "请输入有效金额和延迟", Toast.LENGTH_SHORT).show()
-                else onSave(value.copy(name = value.name.ifBlank { "收款模板" }, amountValue = amountText))
-            } else TopBarTextAction("删除", onClick = onDelete)
-        }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -973,6 +970,21 @@ private fun TransferTemplateEditorPage(
                     onToastTextFinished = { text -> if (text.isBlank()) update { it.copy(notifyToastText = text) } },
                     onAnnounceTextFinished = { text -> if (text.isBlank()) update { it.copy(announceText = text) } }
                 )
+            }
+
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
+            item {
+                SettingsCard {
+                    if (!request.canDelete) ContentActionRow("创建") {
+                        val validDelay = when (value.delayMode) {
+                            TransferRuleConfig.DELAY_CUSTOM -> delayText.toLongOrNull()?.let { it in 0L..600000L } == true
+                            TransferRuleConfig.DELAY_RANDOM -> minText.toLongOrNull()?.let { min -> min in 0L..600000L && maxText.toLongOrNull()?.let { it in min..600000L } == true } == true
+                            else -> true
+                        }
+                        if (!validDelay || (amountText.isNotBlank() && !isCompleteTransferAmount(amountText))) Toast.makeText(context, "请输入有效金额和延迟", Toast.LENGTH_SHORT).show()
+                        else onSave(value.copy(name = value.name.ifBlank { "收款模板" }, amountValue = amountText))
+                    } else ContentActionRow("删除", onClick = onDelete)
+                }
             }
         }
     }

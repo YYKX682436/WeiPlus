@@ -429,8 +429,7 @@ private fun MessageBlockTemplateListPage(
         largeTitle = "模板管理",
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = { TopBarTextAction("新增模板", onClick = onAddTemplate) }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -455,6 +454,9 @@ private fun MessageBlockTemplateListPage(
                             if (index < templates.lastIndex) InsetDivider()
                         }
                     }
+
+                    InsetDivider()
+                    ContentActionRow("新增模板", onClick = onAddTemplate)
                 }
             }
         }
@@ -503,23 +505,7 @@ private fun MessageBlockListManagerPage(
         largeTitle = "名单管理",
         scrollBehavior = scrollBehavior,
         onBack = { if (batchDeleteMode) { batchDeleteMode = false; selectedIds = emptySet() } else onBack() },
-        showBackIcon = false,
-        topBarActions = {
-            if (batchDeleteMode) {
-                if (visibleIds.isNotEmpty()) TopBarTextAction(if (allVisibleSelected) "取消全选" else "全选") {
-                    selectedIds = if (allVisibleSelected) selectedIds - visibleIds else selectedIds + visibleIds
-                }
-                TopBarTextAction("删除（${selectedBindings.size}）") {
-                    if (selectedBindings.isEmpty()) Toast.makeText(context, "请先选择名单", Toast.LENGTH_SHORT).show()
-                    else showDeleteConfirm = true
-                }
-            } else {
-                if (bindings.isNotEmpty()) TopBarTextAction("批量删除") {
-                    batchDeleteMode = true
-                    selectedIds = emptySet()
-                }
-            }
-        }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -547,8 +533,28 @@ private fun MessageBlockListManagerPage(
                     )
                 }
             }
+            if (batchDeleteMode || bindings.isNotEmpty()) item {
+                SettingsCard {
+                    if (batchDeleteMode) {
+                        if (visibleIds.isNotEmpty()) ContentActionRow(if (allVisibleSelected) "取消全选" else "全选") {
+                            selectedIds = if (allVisibleSelected) selectedIds - visibleIds else selectedIds + visibleIds
+                        }
+                        ContentActionRow("删除（${selectedBindings.size}）") {
+                            if (selectedBindings.isEmpty()) Toast.makeText(context, "请先选择名单", Toast.LENGTH_SHORT).show()
+                            else showDeleteConfirm = true
+                        }
+                    } else {
+                        if (bindings.isNotEmpty()) ContentActionRow("批量删除") {
+                            batchDeleteMode = true
+                            selectedIds = emptySet()
+                        }
+                    }
+                }
+            }
             if (!batchDeleteMode) {
                 item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "添加") }
+
+
                 item {
                     SettingsCard {
                         ActionRow("添加好友/群聊/公众号", "批量添加后可一次选择模板") {
@@ -633,28 +639,7 @@ private fun MessageBlockBatchBindingPage(
         largeTitle = request.title,
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = {
-            TopBarTextAction("新增") {
-                    if (templateIds.isEmpty()) {
-                        Toast.makeText(context, "请先选择模板", Toast.LENGTH_SHORT).show()
-                    } else {
-                        onSave(
-                            request.bindings.map {
-                                it.copy(
-                                    enabled = enabled,
-                                    action = action,
-                                    templateIds = templateIds,
-                                    customRules = false,
-                                    typeAll = false,
-                                    types = emptySet(),
-                                    textKeywords = ""
-                                )
-                            }
-                        )
-                    }
-            }
-        }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -728,6 +713,31 @@ private fun MessageBlockBatchBindingPage(
                     if (request.bindings.size > 30) {
                         InsetDivider()
                         EmptyText("还有 ${request.bindings.size - 30} 个名单项未展开显示")
+                    }
+                }
+            }
+
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
+            item {
+                SettingsCard {
+                    ContentActionRow("新增") {
+                            if (templateIds.isEmpty()) {
+                                Toast.makeText(context, "请先选择模板", Toast.LENGTH_SHORT).show()
+                            } else {
+                                onSave(
+                                    request.bindings.map {
+                                        it.copy(
+                                            enabled = enabled,
+                                            action = action,
+                                            templateIds = templateIds,
+                                            customRules = false,
+                                            typeAll = false,
+                                            types = emptySet(),
+                                            textKeywords = ""
+                                        )
+                                    }
+                                )
+                            }
                     }
                 }
             }
@@ -941,14 +951,7 @@ private fun MessageBlockTemplatePage(
         largeTitle = name.ifBlank { "模板" },
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = {
-            if (!request.canDelete) TopBarTextAction("新增") { persist(create = true) }
-            else TopBarTextAction("删除") {
-                onDelete()
-                Toast.makeText(context, "模板已删除", Toast.LENGTH_SHORT).show()
-            }
-        }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -1015,6 +1018,17 @@ private fun MessageBlockTemplatePage(
                     }
                 }
             }
+
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
+            item {
+                SettingsCard {
+                    if (!request.canDelete) ContentActionRow("创建") { persist(create = true) }
+                    else ContentActionRow("删除") {
+                        onDelete()
+                        Toast.makeText(context, "模板已删除", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
         }
     }
 }
@@ -1064,14 +1078,7 @@ private fun MessageBlockBindingPage(
         largeTitle = targetTitle,
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = {
-            if (!request.canDelete) TopBarTextAction("新增") { persist(create = true) }
-            else TopBarTextAction("删除") {
-                onDelete()
-                Toast.makeText(context, "名单已删除", Toast.LENGTH_SHORT).show()
-            }
-        }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -1199,6 +1206,17 @@ private fun MessageBlockBindingPage(
                                 ) { textKeywords = it; if (it.isNotBlank()) { validKeywords = it; persist() } }
                             }
                         }
+                    }
+                }
+            }
+
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
+            item {
+                SettingsCard {
+                    if (!request.canDelete) ContentActionRow("创建") { persist(create = true) }
+                    else ContentActionRow("删除") {
+                        onDelete()
+                        Toast.makeText(context, "名单已删除", Toast.LENGTH_SHORT).show()
                     }
                 }
             }

@@ -44,12 +44,14 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.navigationBars
@@ -251,37 +253,6 @@ internal fun PageScaffold(
             )
         }
     }
-}
-
-@Composable
-internal fun TopBarTextAction(text: String, enabled: Boolean = true, onClick: () -> Unit) {
-    Box(
-        modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
-            .then(if (enabled) Modifier.responsiveTap(onClick = onClick) else Modifier)
-            .padding(horizontal = 12.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Text(text = text, color = if (enabled) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurfaceVariantSummary, fontWeight = FontWeight.Medium)
-    }
-}
-
-@Composable
-internal fun TopBarMoreActions(actions: List<Pair<String, () -> Unit>>) {
-    var show by remember { mutableStateOf(false) }
-    if (actions.isNotEmpty()) TopBarTextAction("更多") { show = true }
-    if (show) SettingsWindowDialog(
-        show = true,
-        title = "更多操作",
-        onDismissRequest = { show = false },
-        content = {
-            Column {
-                actions.forEachIndexed { index, (title, action) ->
-                    if (index > 0) InsetDivider()
-                    ActionRow(title, "") { show = false; action() }
-                }
-            }
-        }
-    )
 }
 
 @Composable
@@ -1223,8 +1194,7 @@ private fun RedPacketReplyStepsListPage(
         largeTitle = title,
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = { TopBarTextAction("新增", onClick = onAddStep) }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -1239,6 +1209,8 @@ private fun RedPacketReplyStepsListPage(
                 item {
                     SettingsCard {
                         EmptyText("暂无回复步骤。添加后会按列表顺序依次发送。")
+                        InsetDivider()
+                        AddActionRow("新增回复", onAddStep)
                     }
                 }
             } else {
@@ -1261,6 +1233,9 @@ private fun RedPacketReplyStepsListPage(
                             )
                         }
                     }
+                }
+                item {
+                    SettingsCard { AddActionRow("新增回复", onAddStep) }
                 }
             }
         }
@@ -1292,13 +1267,7 @@ private fun RedPacketReplyStepEditorPage(
         largeTitle = title,
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = {
-            if (isNew) TopBarTextAction("新增") {
-                if (delayInput.toLongOrNull()?.let { it in 0L..600000L } == true) onCreate()
-                else Toast.makeText(context, "请输入有效的发送延迟", Toast.LENGTH_SHORT).show()
-            }
-        }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -1372,6 +1341,18 @@ private fun RedPacketReplyStepEditorPage(
                         onMoveDown = onMoveDown,
                         onDelete = onDelete
                     )
+                }
+            }
+
+            if (isNew) {
+                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
+                item {
+                    SettingsCard {
+                        ContentActionRow("创建") {
+                            if (delayInput.toLongOrNull()?.let { it in 0L..600000L } == true) onCreate()
+                            else Toast.makeText(context, "请输入有效的发送延迟", Toast.LENGTH_SHORT).show()
+                        }
+                    }
                 }
             }
         }
@@ -2050,6 +2031,32 @@ internal fun ActionRow(title: String, summary: String, onClick: () -> Unit) {
 
 @Composable
 internal fun SelectRow(title: String, summary: String, onClick: () -> Unit) {
+    SelectRow(title, summary, null, onClick)
+}
+
+@Composable
+internal fun AddActionRow(title: String, onClick: () -> Unit) {
+    SelectRow(title, "", NavIcons.Add, onClick)
+}
+
+@Composable
+internal fun ContentActionRow(text: String, enabled: Boolean = true, onClick: () -> Unit) {
+    if (!enabled) {
+        InfoRow(text, "当前条件未满足")
+    } else if (text.startsWith("新增") || text.startsWith("添加") || text.startsWith("创建")) {
+        AddActionRow(text, onClick)
+    } else {
+        ActionRow(text, "", onClick)
+    }
+}
+
+@Composable
+internal fun ContentMoreActions(actions: List<Pair<String, () -> Unit>>) {
+    actions.forEach { (title, action) -> ContentActionRow(title, onClick = action) }
+}
+
+@Composable
+private fun SelectRow(title: String, summary: String, icon: androidx.compose.ui.graphics.vector.ImageVector?, onClick: () -> Unit) {
     var pressed by remember { mutableStateOf(false) }
     val pressFeedbackColor = rememberPressFeedbackColor(pressed)
     Row(
@@ -2063,6 +2070,15 @@ internal fun SelectRow(title: String, summary: String, onClick: () -> Unit) {
             .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        if (icon != null) {
+            Image(
+                imageVector = icon,
+                contentDescription = null,
+                colorFilter = ColorFilter.tint(MiuixTheme.colorScheme.onSurface),
+                modifier = Modifier.size(20.dp).padding(end = 2.dp)
+            )
+            Spacer(Modifier.width(10.dp))
+        }
         Column(modifier = Modifier.weight(1f)) {
             Text(text = title, color = MiuixTheme.colorScheme.onSurface, fontWeight = FontWeight.Medium)
             if (summary.isNotBlank()) {

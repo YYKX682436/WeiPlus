@@ -302,8 +302,7 @@ private fun ConversationGroupListPage(
         largeTitle = title,
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = { TopBarTextAction("新增分组", onClick = onAdd) }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -354,6 +353,9 @@ private fun ConversationGroupListPage(
                             if (index < visible.lastIndex) InsetDivider()
                         }
                     }
+
+                    InsetDivider()
+                    ContentActionRow("新增分组", onClick = onAdd)
                 }
             }
         }
@@ -565,13 +567,7 @@ private fun ConversationGroupAutomaticPickerPage(
         largeTitle = kind.title,
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = {
-            if (visibleIds.isNotEmpty()) TopBarTextAction(if (visibleAllSelected) "取消全选" else "全选") {
-                selectedIds = if (visibleAllSelected) selectedIds - visibleIds else selectedIds + visibleIds
-                onSelectionChange(selectedIds.toList())
-            }
-        }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -581,6 +577,8 @@ private fun ConversationGroupAutomaticPickerPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
+
+
             item {
                 SettingsCard {
                     InputRow("搜索", "名称 / 备注 / wxid", query) { query = it }
@@ -590,6 +588,14 @@ private fun ConversationGroupAutomaticPickerPage(
                 PickerSectionHeader(
                     text = if (visible.isEmpty()) kind.title else "${kind.title} · ${visible.size} 项"
                 )
+            }
+            if (visibleIds.isNotEmpty()) item {
+                SettingsCard {
+                    ContentActionRow(if (visibleAllSelected) "取消全选" else "全选") {
+                        selectedIds = if (visibleAllSelected) selectedIds - visibleIds else selectedIds + visibleIds
+                        onSelectionChange(selectedIds.toList())
+                    }
+                }
             }
             when {
                 loading -> item { SettingsCard { EmptyText("正在载入...") } }
@@ -670,13 +676,7 @@ private fun ConversationGroupEditorPage(
         largeTitle = if (existing) "编辑聊天分组" else "新增聊天分组",
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = {
-            if (!existing) TopBarTextAction("新增") {
-                if (draft.name.isBlank()) Toast.makeText(context, "请输入分组名称", Toast.LENGTH_SHORT).show()
-                else onSave(draft)
-            }
-        }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -744,6 +744,18 @@ private fun ConversationGroupEditorPage(
                             title = "删除分组",
                             summary = "子分组移到上一级，直属会话移到上级分组或微信首页"
                         ) { showDeleteConfirm = true }
+                    }
+                }
+            }
+
+            if (!existing) {
+                item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
+                item {
+                    SettingsCard {
+                        ContentActionRow("创建") {
+                            if (draft.name.isBlank()) Toast.makeText(context, "请输入分组名称", Toast.LENGTH_SHORT).show()
+                            else onSave(draft)
+                        }
                     }
                 }
             }
@@ -902,13 +914,7 @@ internal fun ConversationGroupConversationPickerPage(
         largeTitle = "选择分组会话",
         scrollBehavior = scrollBehavior,
         onBack = { onBack(selectedIds.toList()) },
-        showBackIcon = false,
-        topBarActions = {
-            if (visibleIds.isNotEmpty()) TopBarTextAction(if (visibleAllSelected) "取消全选" else "全选") {
-                selectedIds = if (visibleAllSelected) selectedIds - visibleIds else selectedIds + visibleIds
-                onSelectionChange(selectedIds.toList())
-            }
-        }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -918,6 +924,8 @@ internal fun ConversationGroupConversationPickerPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
+
+
             item {
                 SettingsCard {
                     ContactFilterRow(
@@ -975,6 +983,14 @@ internal fun ConversationGroupConversationPickerPage(
                     }
                 )
             }
+            if (visibleIds.isNotEmpty()) item {
+                SettingsCard {
+                    ContentActionRow(if (visibleAllSelected) "取消全选" else "全选") {
+                        selectedIds = if (visibleAllSelected) selectedIds - visibleIds else selectedIds + visibleIds
+                        onSelectionChange(selectedIds.toList())
+                    }
+                }
+            }
             when {
                 loading -> item { SettingsCard { EmptyText("正在载入会话...") } }
                 error.isNotBlank() -> item { SettingsCard { EmptyText(error) } }
@@ -1021,8 +1037,7 @@ private fun ConversationGroupParentPickerPage(
         largeTitle = "选择上级分组",
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = { TopBarTextAction("微信首页") { onSelected(null) } }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -1033,6 +1048,12 @@ private fun ConversationGroupParentPickerPage(
             )
         ) {
             item { SmallTitle(text = "可用分组") }
+            item {
+                SettingsCard {
+                    ContentActionRow("微信首页") { onSelected(null) }
+                }
+            }
+
             item {
                 SettingsCard {
                     if (candidates.isEmpty()) {
@@ -1326,8 +1347,7 @@ private fun GroupChatLabelListPage(
         largeTitle = title,
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = { TopBarTextAction("新增标签", onClick = onAdd) }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -1352,6 +1372,9 @@ private fun GroupChatLabelListPage(
                             if (index < labels.lastIndex) InsetDivider()
                         }
                     }
+
+                    InsetDivider()
+                    ContentActionRow("新增标签", onClick = onAdd)
                 }
             }
         }
@@ -1381,13 +1404,7 @@ private fun GroupChatLabelEditorPage(
         largeTitle = if (existing) "编辑群聊标签" else "新增群聊标签",
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = {
-            if (!existing) TopBarTextAction("新增") {
-                if (draft.name.isBlank()) Toast.makeText(context, "请输入标签名称", Toast.LENGTH_SHORT).show()
-                else onSave(draft)
-            } else TopBarTextAction("删除", onClick = onDelete)
-        }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -1412,6 +1429,16 @@ private fun GroupChatLabelEditorPage(
                     ) {
                         onPickGroups(draft)
                     }
+                }
+            }
+
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
+            item {
+                SettingsCard {
+                    if (!existing) ContentActionRow("创建") {
+                        if (draft.name.isBlank()) Toast.makeText(context, "请输入标签名称", Toast.LENGTH_SHORT).show()
+                        else onSave(draft)
+                    } else ContentActionRow("删除", onClick = onDelete)
                 }
             }
         }

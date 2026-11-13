@@ -896,21 +896,7 @@ private fun AutoMessageForwardRuleListPage(
         onBack = {
             if (batchDeleteMode) { batchDeleteMode = false; selectedIds = emptySet() } else onBack()
         },
-        showBackIcon = false,
-        topBarActions = {
-            if (batchDeleteMode) {
-                if (visibleIds.isNotEmpty()) TopBarTextAction(if (allVisibleSelected) "取消全选" else "全选") {
-                    selectedIds = if (allVisibleSelected) selectedIds - visibleIds else selectedIds + visibleIds
-                }
-                TopBarTextAction("删除（${selected.size}）") {
-                    if (selected.isEmpty()) Toast.makeText(context, "请先选择规则", Toast.LENGTH_SHORT).show()
-                    else showDeleteConfirm = true
-                }
-            } else {
-                if (rules.isNotEmpty()) TopBarTextAction("批量删除") { batchDeleteMode = true; selectedIds = emptySet() }
-                TopBarTextAction("新增", onClick = onAdd)
-            }
-        }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -922,8 +908,28 @@ private fun AutoMessageForwardRuleListPage(
                     InputRow("搜索", "按规则名、会话、群成员或消息类型筛选", query, onValueChange = onQueryChange)
                 }
             }
+            item {
+                SettingsCard {
+                    if (rules.isEmpty()) {
+                        EmptyText("暂无规则")
+                        InsetDivider()
+                    }
+                    if (batchDeleteMode) {
+                        if (visibleIds.isNotEmpty()) ContentActionRow(if (allVisibleSelected) "取消全选" else "全选") {
+                            selectedIds = if (allVisibleSelected) selectedIds - visibleIds else selectedIds + visibleIds
+                        }
+                        ContentActionRow("删除（${selected.size}）") {
+                            if (selected.isEmpty()) Toast.makeText(context, "请先选择规则", Toast.LENGTH_SHORT).show()
+                            else showDeleteConfirm = true
+                        }
+                    } else {
+                        if (rules.isNotEmpty()) ContentActionRow("批量删除") { batchDeleteMode = true; selectedIds = emptySet() }
+                        ContentActionRow("新增规则", onClick = onAdd)
+                    }
+                }
+            }
             if (visible.isEmpty()) {
-                item { SettingsCard { EmptyText("暂无规则") } }
+                if (rules.isNotEmpty()) item { SettingsCard { EmptyText("没有匹配的规则") } }
             } else {
                 visible.forEachIndexed { index, rule ->
                     item {
@@ -932,6 +938,8 @@ private fun AutoMessageForwardRuleListPage(
                             text = "规则 ${index + 1}"
                         )
                     }
+
+
                     item {
                         SettingsCard {
                             if (batchDeleteMode) {
@@ -997,8 +1005,7 @@ private fun AutoMessageForwardRuleEditorPage(
         largeTitle = if (isNew) "新增转发规则" else "编辑转发规则",
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = { if (isNew) TopBarTextAction("新增") { onSave(current) } }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -1092,6 +1099,12 @@ private fun AutoMessageForwardRuleEditorPage(
                     }
                 }
             }
+
+            if (isNew) item {
+                SettingsCard {
+                    ContentActionRow("创建") { onSave(current) }
+                }
+            }
         }
     }
 }
@@ -1111,19 +1124,22 @@ private fun AutoMessageForwardTypePickerPage(
         largeTitle = "选择消息类型",
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = {
-            TopBarTextAction(if (selected.size == options.size) "取消全选" else "全选") {
-                selected = if (selected.size == options.size) emptySet() else options.mapTo(LinkedHashSet()) { it.first }
-                onSelectionChange(selected)
-            }
-        }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
             state = listState,
             contentPadding = PaddingValues(top = padding.calculateTopPadding() + 8.dp, bottom = padding.calculateBottomPadding() + 16.dp)
         ) {
+            item {
+                SettingsCard {
+                    ContentActionRow(if (selected.size == options.size) "取消全选" else "全选") {
+                        selected = if (selected.size == options.size) emptySet() else options.mapTo(LinkedHashSet()) { it.first }
+                        onSelectionChange(selected)
+                    }
+                }
+            }
+
             item {
                 SettingsCard {
                     options.forEachIndexed { index, option ->
@@ -1310,24 +1326,7 @@ private fun AutoReplyRuleListPage(
                 onBack()
             }
         },
-        showBackIcon = false,
-        topBarActions = {
-            if (batchDeleteMode) {
-                if (visibleIds.isNotEmpty()) TopBarTextAction(if (allVisibleSelected) "取消全选" else "全选") {
-                    selectedIds = if (allVisibleSelected) selectedIds - visibleIds else selectedIds + visibleIds
-                }
-                TopBarTextAction("删除（${selectedRules.size}）") {
-                    if (selectedRules.isEmpty()) Toast.makeText(context, "请先选择规则", Toast.LENGTH_SHORT).show()
-                    else showDeleteConfirm = true
-                }
-            } else {
-                if (rules.isNotEmpty()) TopBarTextAction("批量删除") {
-                    batchDeleteMode = true
-                    selectedIds = emptySet()
-                }
-                TopBarTextAction("新增规则", onClick = onAdd)
-            }
-        }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -1339,8 +1338,31 @@ private fun AutoReplyRuleListPage(
                     InputRow("搜索", "按规则名或关键词筛选", query, onValueChange = onQueryChange)
                 }
             }
+            item {
+                SettingsCard {
+                    if (rules.isEmpty()) {
+                        EmptyText("暂无规则")
+                        InsetDivider()
+                    }
+                    if (batchDeleteMode) {
+                        if (visibleIds.isNotEmpty()) ContentActionRow(if (allVisibleSelected) "取消全选" else "全选") {
+                            selectedIds = if (allVisibleSelected) selectedIds - visibleIds else selectedIds + visibleIds
+                        }
+                        ContentActionRow("删除（${selectedRules.size}）") {
+                            if (selectedRules.isEmpty()) Toast.makeText(context, "请先选择规则", Toast.LENGTH_SHORT).show()
+                            else showDeleteConfirm = true
+                        }
+                    } else {
+                        if (rules.isNotEmpty()) ContentActionRow("批量删除") {
+                            batchDeleteMode = true
+                            selectedIds = emptySet()
+                        }
+                        ContentActionRow("新增规则", onClick = onAdd)
+                    }
+                }
+            }
             if (visible.isEmpty()) {
-                item { SettingsCard { EmptyText("暂无规则") } }
+                if (rules.isNotEmpty()) item { SettingsCard { EmptyText("没有匹配的规则") } }
             } else {
                 visible.forEachIndexed { index, rule ->
                     item {
@@ -1349,6 +1371,8 @@ private fun AutoReplyRuleListPage(
                             text = "规则 ${index + 1}"
                         )
                     }
+
+
                     item {
                         SettingsCard {
                             if (batchDeleteMode) {
@@ -1495,10 +1519,7 @@ private fun AutoReplyRuleEditorContent(
         largeTitle = if (isNew) "新增规则" else "编辑规则",
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = {
-            if (isNew) TopBarTextAction("新增", enabled = maxCountText.toIntOrNull() != null && cooldownText.toLongOrNull() != null, onClick = onSave)
-        }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -1656,6 +1677,12 @@ private fun AutoReplyRuleEditorContent(
                     SwitchRow(current.replyAsQuote, "引用回复", "文本和 AI 可引用原消息回复") { onRuleChange(current.copy(replyAsQuote = it)) }
                     InsetDivider()
                     ActionRow("回复步骤", describeAutoReplySteps(current.steps), onEditSteps)
+                }
+            }
+
+            if (isNew) item {
+                SettingsCard {
+                    ContentActionRow("创建", enabled = maxCountText.toIntOrNull() != null && cooldownText.toLongOrNull() != null, onClick = onSave)
                 }
             }
         }
@@ -2139,26 +2166,7 @@ private fun AutoReplyAiPage(context: Context, sp: SharedPreferences, onBack: () 
                     largeTitle = "智聊配置列表",
                     scrollBehavior = scrollBehavior,
                     onBack = { route = AutoReplyAiRoute.Zhilia },
-                    showBackIcon = false,
-                    topBarActions = {
-                        TopBarTextAction("复制") {
-                            val source = settings.zhiliaConfigs().firstOrNull { it.name == activeName } ?: activeConfig
-                            val newName = uniqueConfigName("${source.name}_副本")
-                            settings.saveZhiliaConfigs(configs + source.copy(name = newName), activeName)
-                            configs = settings.zhiliaConfigs()
-                            zhiliaPendingName = newName
-                        }
-                        if (configs.size > 1) TopBarTextAction("删除") {
-                            val next = configs.filterNot { it.name == activeName }
-                            val nextActive = next.firstOrNull()?.name ?: AutoReplySettings.DEFAULT_ZHILIA_CONFIG_NAME
-                            settings.saveZhiliaConfigs(next, nextActive)
-                            configs = settings.zhiliaConfigs()
-                            activeName = settings.activeZhiliaName()
-                            zhiliaPendingName = activeName
-                            edited = true
-                        }
-                        TopBarTextAction("新增") { route = AutoReplyAiRoute.ZhiliaNew }
-                    }
+                    showBackIcon = false
                 ) { padding ->
                     LazyColumn(
                         modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -2180,6 +2188,29 @@ private fun AutoReplyAiPage(context: Context, sp: SharedPreferences, onBack: () 
                                         switchZhiliaTo(config.name)
                                     }
                                 }
+                            }
+                        }
+
+                        item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
+                        item {
+                            SettingsCard {
+                                ContentActionRow("复制") {
+                                    val source = settings.zhiliaConfigs().firstOrNull { it.name == activeName } ?: activeConfig
+                                    val newName = uniqueConfigName("${source.name}_副本")
+                                    settings.saveZhiliaConfigs(configs + source.copy(name = newName), activeName)
+                                    configs = settings.zhiliaConfigs()
+                                    zhiliaPendingName = newName
+                                }
+                                if (configs.size > 1) ContentActionRow("删除") {
+                                    val next = configs.filterNot { it.name == activeName }
+                                    val nextActive = next.firstOrNull()?.name ?: AutoReplySettings.DEFAULT_ZHILIA_CONFIG_NAME
+                                    settings.saveZhiliaConfigs(next, nextActive)
+                                    configs = settings.zhiliaConfigs()
+                                    activeName = settings.activeZhiliaName()
+                                    zhiliaPendingName = activeName
+                                    edited = true
+                                }
+                                ContentActionRow("新增配置") { route = AutoReplyAiRoute.ZhiliaNew }
                             }
                         }
                     }
@@ -2356,12 +2387,7 @@ private fun NewZhiliaConfigPage(
         largeTitle = "新增智聊配置",
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = {
-            TopBarTextAction("新增", enabled = valid) {
-                onCreate(AutoReplyZhiliaConfig(name.trim(), apiKey.trim(), apiBase.trim(), apiPath.trim(), model.trim(), prompt, contextLimit.toInt()))
-            }
-        }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -2377,6 +2403,15 @@ private fun NewZhiliaConfigPage(
                     InsetDivider(); InputRow("模型", "例如 deepseek-ai/DeepSeek-V3", model) { model = it }
                     InsetDivider(); InputRow("系统指令", "AI 角色设定和回复要求", prompt, minLines = 4) { prompt = it }
                     InsetDivider(); NumberInputRow("上下文轮数", if (contextLimit.toIntOrNull()?.let { it in 0..50 } != true) "请输入 0–50" else "0 表示不保留上下文", contextLimit) { contextLimit = it }
+                }
+            }
+
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
+            item {
+                SettingsCard {
+                    ContentActionRow("创建", enabled = valid) {
+                        onCreate(AutoReplyZhiliaConfig(name.trim(), apiKey.trim(), apiBase.trim(), apiPath.trim(), model.trim(), prompt, contextLimit.toInt()))
+                    }
                 }
             }
         }
@@ -2488,23 +2523,7 @@ private fun AutoReplyStepsPage(
                 largeTitle = title,
                 scrollBehavior = scrollBehavior,
                 onBack = onBack,
-                showBackIcon = false,
-                topBarActions = {
-                    TopBarTextAction(if (newStep == null) "新增回复" else "完成") {
-                        val pending = newStep
-                        if (pending == null) {
-                            newStep = AutoReplyStep(id = System.currentTimeMillis().toString(), content = "你好")
-                            newDelayValid = true
-                        } else if (!validStep(pending) || !newDelayValid) {
-                            Toast.makeText(context, "请填写有效的回复内容和延迟", Toast.LENGTH_SHORT).show()
-                        } else {
-                            steps = steps + pending
-                            savedSteps = savedSteps + pending
-                            newStep = null
-                            persist()
-                        }
-                    }
-                }
+                showBackIcon = false
             ) { padding ->
                 LazyColumn(
                     modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -2593,6 +2612,26 @@ private fun AutoReplyStepsPage(
                                         persist()
                                     }
                                 )
+                            }
+                        }
+                    }
+
+                    item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
+                    item {
+                        SettingsCard {
+                            ContentActionRow(if (newStep == null) "新增回复" else "完成") {
+                                val pending = newStep
+                                if (pending == null) {
+                                    newStep = AutoReplyStep(id = System.currentTimeMillis().toString(), content = "你好")
+                                    newDelayValid = true
+                                } else if (!validStep(pending) || !newDelayValid) {
+                                    Toast.makeText(context, "请填写有效的回复内容和延迟", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    steps = steps + pending
+                                    savedSteps = savedSteps + pending
+                                    newStep = null
+                                    persist()
+                                }
                             }
                         }
                     }

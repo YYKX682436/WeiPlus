@@ -209,13 +209,7 @@ private fun MomentsAutoLikeMainPage(
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = {
-            if (logEnabled || logs.isNotBlank()) TopBarTextAction("清空日志") {
-                sp.edit().remove(MomentsAutoLikeSettings.KEY_LOGS).apply()
-                logs = ""
-            }
-        }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -431,6 +425,14 @@ private fun MomentsAutoLikeMainPage(
                             )
                         }
                     }
+
+                    if (logEnabled || logs.isNotBlank()) {
+                        InsetDivider()
+                        ActionRow("清空日志", "") {
+                            sp.edit().remove(MomentsAutoLikeSettings.KEY_LOGS).apply()
+                            logs = ""
+                        }
+                    }
                 }
             }
         }
@@ -600,13 +602,7 @@ internal object MomentsAutoCommentPage {
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = {
-            if (logEnabled || logs.isNotBlank()) TopBarTextAction("清空日志") {
-                sp.edit().remove(MomentsAutoCommentSettings.KEY_LOGS).apply()
-                logs = ""
-            }
-        }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -851,6 +847,14 @@ internal object MomentsAutoCommentPage {
                                 fontFamily = FontFamily.Monospace,
                                 modifier = Modifier.fillMaxWidth().padding(16.dp)
                             )
+                        }
+                    }
+
+                    if (logEnabled || logs.isNotBlank()) {
+                        InsetDivider()
+                        ActionRow("清空日志", "") {
+                            sp.edit().remove(MomentsAutoCommentSettings.KEY_LOGS).apply()
+                            logs = ""
                         }
                     }
                 }
@@ -1147,13 +1151,7 @@ private fun MomentsAutoForwardMainPage(
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = {
-            if (logEnabled || logs.isNotBlank()) TopBarTextAction("清空日志") {
-                sp.edit().remove(MomentsAutoForwardSettings.KEY_LOGS).apply()
-                logs = ""
-            }
-        }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -1397,6 +1395,14 @@ private fun MomentsAutoForwardMainPage(
                             )
                         }
                     }
+
+                    if (logEnabled || logs.isNotBlank()) {
+                        InsetDivider()
+                        ActionRow("清空日志", "") {
+                            sp.edit().remove(MomentsAutoForwardSettings.KEY_LOGS).apply()
+                            logs = ""
+                        }
+                    }
                 }
             }
         }
@@ -1434,27 +1440,7 @@ internal fun KeywordReplacementRulesPage(
         largeTitle = "替换规则",
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = {
-            TopBarTextAction(if (newRule == null) "新增" else "完成") {
-                val pending = newRule
-                if (pending == null) {
-                    newRule = KeywordReplacementRule("", "")
-                } else {
-                    val normalized = pending.copy(keyword = pending.keyword.trim())
-                    when {
-                        normalized.keyword.isEmpty() -> Toast.makeText(context, "原关键词不能为空", Toast.LENGTH_SHORT).show()
-                        savedRules.any { it.keyword.equals(normalized.keyword, ignoreCase = true) } -> Toast.makeText(context, "存在重复的原关键词", Toast.LENGTH_SHORT).show()
-                        else -> {
-                            rules = rules + normalized
-                            savedRules = savedRules + normalized
-                            onSave(savedRules)
-                            newRule = null
-                        }
-                    }
-                }
-            }
-        }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -1509,6 +1495,30 @@ internal fun KeywordReplacementRulesPage(
                         InputRow("替换内容", "留空表示删除原关键词", pending.replacement) { newRule = pending.copy(replacement = it) }
                         InsetDivider()
                         ActionRow("放弃新增", "移除尚未完成的草稿") { newRule = null }
+                    }
+                }
+            }
+
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
+            item {
+                SettingsCard {
+                    ContentActionRow(if (newRule == null) "新增" else "完成") {
+                        val pending = newRule
+                        if (pending == null) {
+                            newRule = KeywordReplacementRule("", "")
+                        } else {
+                            val normalized = pending.copy(keyword = pending.keyword.trim())
+                            when {
+                                normalized.keyword.isEmpty() -> Toast.makeText(context, "原关键词不能为空", Toast.LENGTH_SHORT).show()
+                                savedRules.any { it.keyword.equals(normalized.keyword, ignoreCase = true) } -> Toast.makeText(context, "存在重复的原关键词", Toast.LENGTH_SHORT).show()
+                                else -> {
+                                    rules = rules + normalized
+                                    savedRules = savedRules + normalized
+                                    onSave(savedRules)
+                                    newRule = null
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -3260,8 +3270,7 @@ internal fun MessageDetailsConfigPage(
         largeTitle = "消息显示时间",
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = { TopBarTextAction("恢复默认", onClick = ::resetValues) }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -3388,6 +3397,13 @@ internal fun MessageDetailsConfigPage(
                     NumberInputRow("字体大小", "单位 sp", textSize, onEditingFinished = { saveNumber(HchatExtraSettings.KEY_MESSAGE_DETAILS_TEXT_SIZE, it, HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_TEXT_SIZE, finished = true) }, onValueChange = { textSize = it; saveNumber(HchatExtraSettings.KEY_MESSAGE_DETAILS_TEXT_SIZE, it, HchatExtraSettings.DEFAULT_MESSAGE_DETAILS_TEXT_SIZE) })
                 }
             }
+
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
+            item {
+                SettingsCard {
+                    ContentActionRow("恢复默认", onClick = ::resetValues)
+                }
+            }
         }
     }
 }
@@ -3509,13 +3525,7 @@ internal fun HideChatMenuMiuixPage(
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = {
-            TopBarTextAction("恢复默认") {
-                titles = HideChatMenuSettings.DEFAULT_TITLES
-                sp.edit().putString(HideChatMenuSettings.KEY_TITLES, titles).apply()
-            }
-        }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -3546,6 +3556,16 @@ internal fun HideChatMenuMiuixPage(
                             if (it.isNotBlank()) sp.edit().putString(HideChatMenuSettings.KEY_TITLES, HideChatMenuSettings.parseTitles(it).joinToString(",")).apply()
                         }
                     )
+                }
+            }
+
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
+            item {
+                SettingsCard {
+                    ContentActionRow("恢复默认") {
+                        titles = HideChatMenuSettings.DEFAULT_TITLES
+                        sp.edit().putString(HideChatMenuSettings.KEY_TITLES, titles).apply()
+                    }
                 }
             }
         }

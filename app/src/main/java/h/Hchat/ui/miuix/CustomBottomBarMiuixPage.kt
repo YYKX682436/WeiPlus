@@ -182,8 +182,7 @@ internal fun CustomBottomBarMiuixPage(
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = { TopBarTextAction("重置", onClick = ::resetDraft) }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -257,6 +256,13 @@ internal fun CustomBottomBarMiuixPage(
                         summary = "隐藏微信首页整个底栏",
                         onCheckedChange = { hideBar = it; sp.edit().putBoolean(CustomBottomBarSettings.KEY_HIDE_BAR, it).apply() }
                     )
+                }
+            }
+
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
+            item {
+                SettingsCard {
+                    ContentActionRow("重置", onClick = ::resetDraft)
                 }
             }
         }

@@ -350,8 +350,7 @@ private fun ScheduledTaskMainPage(
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = { TopBarTextAction("新增任务", onClick = onAdd) }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -369,28 +368,16 @@ private fun ScheduledTaskMainPage(
                         title = "定时任务",
                         summary = "开启后按计划时间发送聊天消息或发布朋友圈"
                     ) { onEnabledChange(it) }
-                    InsetDivider()
-                    InfoRow("当前任务", if (tasks.isEmpty()) "暂无任务" else "${tasks.size} 个")
                 }
             }
             item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "任务列表") }
-            when {
-                tasks.isEmpty() -> item {
-                    SettingsCard {
-                        EmptyText("还没有定时任务，点击顶部“新增任务”。")
+            item {
+                SettingsCard {
+                    tasks.forEach { task ->
+                        ActionRow(scheduledTaskTitle(task), scheduledTaskSummary(task)) { onEdit(task) }
+                        InsetDivider()
                     }
-                }
-                else -> tasks.forEach { task ->
-                    item {
-                        SettingsCard {
-                            ActionRow(
-                                scheduledTaskTitle(task),
-                                scheduledTaskSummary(task)
-                            ) {
-                                onEdit(task)
-                            }
-                        }
-                    }
+                    AddActionRow("新增任务", onAdd)
                 }
             }
         }
@@ -437,19 +424,7 @@ private fun ScheduledTaskEditorPage(
         largeTitle = if (isEditing) "编辑任务" else "新增任务",
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = {
-            if (!isEditing) TopBarTextAction("新增", enabled = intervalsValid, onClick = onSave)
-            if (onExecuteNow != null) TopBarTextAction("立即执行", enabled = intervalsValid, onClick = onExecuteNow)
-            if (onDelete != null) TopBarTextAction("删除", onClick = onDelete)
-            TopBarMoreActions(buildList {
-                add("新增计划时间" to ::addPlanTime)
-                if (task.targetType == ScheduledTaskSettings.TARGET_CHAT &&
-                    scheduledTaskEditableItems(task).none { it.type == ScheduledTaskSettings.TYPE_SELECTED_MESSAGE }) {
-                    add("新增发送内容" to { onTaskChange(appendScheduledTaskContentItem(task)) })
-                }
-            })
-        }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -583,6 +558,10 @@ private fun ScheduledTaskEditorPage(
                             onPickFavorite = onPickFavorite,
                             massSendOnly = task.sendChannel == ScheduledTaskSettings.SEND_CHANNEL_OFFICIAL
                         )
+                        if (scheduledTaskEditableItems(task).none { it.type == ScheduledTaskSettings.TYPE_SELECTED_MESSAGE }) {
+                            InsetDivider()
+                            AddActionRow("新增发送内容") { onTaskChange(appendScheduledTaskContentItem(task)) }
+                        }
                     }
                 }
             }
@@ -618,6 +597,8 @@ private fun ScheduledTaskEditorPage(
                             }
                         }
                     }
+                    InsetDivider()
+                    AddActionRow("新增计划时间", ::addPlanTime)
                     InsetDivider()
                     PopupChoiceRow(
                         title = "重复方式",
@@ -678,6 +659,21 @@ private fun ScheduledTaskEditorPage(
                             }
                         }
                     }
+                }
+            }
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
+            item {
+                SettingsCard {
+                    if (!isEditing) {
+                        if (intervalsValid) ActionRow("创建任务", "", onSave)
+                        else InfoRow("创建任务", "请先填写有效的发送间隔")
+                    }
+                    if (onExecuteNow != null) {
+                        if (intervalsValid) ActionRow("立即执行", "", onExecuteNow)
+                        else InfoRow("立即执行", "请先填写有效的发送间隔")
+                    }
+                    if (onExecuteNow != null && onDelete != null) InsetDivider()
+                    if (onDelete != null) ActionRow("删除任务", "", onDelete)
                 }
             }
         }

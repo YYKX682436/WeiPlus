@@ -214,21 +214,7 @@ internal fun CustomNotificationRuleListPage(
         largeTitle = "会话规则",
         scrollBehavior = scrollBehavior,
         onBack = { if (batchDeleteMode) { batchDeleteMode = false; selectedTalkers = emptySet() } else onBack() },
-        showBackIcon = false,
-        topBarActions = {
-            if (batchDeleteMode) {
-                if (visibleTalkers.isNotEmpty()) TopBarTextAction(if (allVisibleSelected) "取消全选" else "全选") {
-                    selectedTalkers = if (allVisibleSelected) selectedTalkers - visibleTalkers else selectedTalkers + visibleTalkers
-                }
-                TopBarTextAction("删除（${selectedRules.size}）") {
-                    if (selectedRules.isEmpty()) Toast.makeText(context, "请先选择会话规则", Toast.LENGTH_SHORT).show()
-                    else showDeleteConfirm = true
-                }
-            } else {
-                if (rules.isNotEmpty()) TopBarTextAction("批量删除") { batchDeleteMode = true; selectedTalkers = emptySet() }
-                TopBarTextAction("添加会话", onClick = onAddRules)
-            }
-        }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -259,8 +245,29 @@ internal fun CustomNotificationRuleListPage(
                 }
             }
             item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = if (visible.isEmpty()) "规则" else "规则 · ${visible.size} 项") }
+            item {
+                SettingsCard {
+                    if (rules.isEmpty()) {
+                        EmptyText("暂无会话规则。")
+                        InsetDivider()
+                    }
+                    if (batchDeleteMode) {
+                        if (visibleTalkers.isNotEmpty()) ContentActionRow(if (allVisibleSelected) "取消全选" else "全选") {
+                            selectedTalkers = if (allVisibleSelected) selectedTalkers - visibleTalkers else selectedTalkers + visibleTalkers
+                        }
+                        ContentActionRow("删除（${selectedRules.size}）") {
+                            if (selectedRules.isEmpty()) Toast.makeText(context, "请先选择会话规则", Toast.LENGTH_SHORT).show()
+                            else showDeleteConfirm = true
+                        }
+                    } else {
+                        if (rules.isNotEmpty()) ContentActionRow("批量删除") { batchDeleteMode = true; selectedTalkers = emptySet() }
+                        ContentActionRow("添加会话", onClick = onAddRules)
+                    }
+                }
+            }
+
             when {
-                rules.isEmpty() -> item { SettingsCard { EmptyText("暂无会话规则，点击底部“添加会话”。") } }
+                rules.isEmpty() -> Unit
                 visible.isEmpty() -> item { SettingsCard { EmptyText("没有匹配结果") } }
                 else -> visible.forEach { rule ->
                     item {
@@ -358,41 +365,7 @@ internal fun CustomNotificationBatchEditorPage(
         largeTitle = "批量配置",
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = {
-            TopBarTextAction("应用到 $ruleCount 项") {
-                    onApply(
-                        CustomNotificationBatchUpdate(
-                            applyEnabled = applyEnabled,
-                            enabled = enabled,
-                            applyMode = applyMode,
-                            dnd = dnd,
-                            applyVibrate = applyVibrate,
-                            vibrate = vibrate,
-                            applySound = applySound,
-                            sound = sound,
-                            applyMarkRead = applyMarkRead,
-                            markRead = markRead,
-                            applyQuickReply = applyQuickReply,
-                            quickReply = quickReply,
-                            applyQuoteQuickReply = applyQuoteQuickReply,
-                            quoteQuickReply = quoteQuickReply,
-                            applyMergeByTalker = applyMergeByTalker,
-                            mergeByTalker = mergeByTalker,
-                            applyShowDetail = applyShowDetail,
-                            showDetail = showDetail,
-                            applyIgnoreWechatDnd = applyIgnoreWechatDnd,
-                            ignoreWechatDnd = ignoreWechatDnd,
-                            applyMute = applyMute,
-                            muteEnable = muteEnable,
-                            muteStart = muteStart,
-                            muteEnd = muteEnd,
-                            applyAtRules = applyAtRules,
-                            blockAtMe = blockAtMe
-                        )
-                    )
-            }
-        }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -501,6 +474,44 @@ internal fun CustomNotificationBatchEditorPage(
                     }
                 }
             }
+
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
+            item {
+                SettingsCard {
+                    ContentActionRow("应用到 $ruleCount 项") {
+                            onApply(
+                                CustomNotificationBatchUpdate(
+                                    applyEnabled = applyEnabled,
+                                    enabled = enabled,
+                                    applyMode = applyMode,
+                                    dnd = dnd,
+                                    applyVibrate = applyVibrate,
+                                    vibrate = vibrate,
+                                    applySound = applySound,
+                                    sound = sound,
+                                    applyMarkRead = applyMarkRead,
+                                    markRead = markRead,
+                                    applyQuickReply = applyQuickReply,
+                                    quickReply = quickReply,
+                                    applyQuoteQuickReply = applyQuoteQuickReply,
+                                    quoteQuickReply = quoteQuickReply,
+                                    applyMergeByTalker = applyMergeByTalker,
+                                    mergeByTalker = mergeByTalker,
+                                    applyShowDetail = applyShowDetail,
+                                    showDetail = showDetail,
+                                    applyIgnoreWechatDnd = applyIgnoreWechatDnd,
+                                    ignoreWechatDnd = ignoreWechatDnd,
+                                    applyMute = applyMute,
+                                    muteEnable = muteEnable,
+                                    muteStart = muteStart,
+                                    muteEnd = muteEnd,
+                                    applyAtRules = applyAtRules,
+                                    blockAtMe = blockAtMe
+                                )
+                            )
+                    }
+                }
+            }
         }
     }
 }
@@ -580,8 +591,7 @@ internal fun CustomNotificationRuleEditorPage(
         largeTitle = initialRule.label.ifBlank { initialRule.talker },
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = { if (!isDefault) TopBarTextAction("删除", onClick = onDelete) }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -708,6 +718,12 @@ internal fun CustomNotificationRuleEditorPage(
                         }
                         SwitchRow(blockAtMe, "屏蔽@我", "命中 @我 时不弹通知") { blockAtMe = it; persist { rule -> rule.copy(blockAtMe = it) } }
                     }
+                }
+            }
+
+            if (!isDefault) item {
+                SettingsCard {
+                    ContentActionRow("删除", onClick = onDelete)
                 }
             }
         }
@@ -1166,13 +1182,7 @@ private fun ZombieCheckMainPage(
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = {
-            TopBarTextAction(if (snapshot.running || snapshot.deleting) "停止" else "开始") {
-                toastResult(if (snapshot.running || snapshot.deleting) ZombieCheckController.pause() else ZombieCheckController.start())
-            }
-            TopBarTextAction("重置") { toastResult(ZombieCheckController.reset()) }
-        }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -1219,6 +1229,12 @@ private fun ZombieCheckMainPage(
                     ActionRow("检测范围", if (targetIds.isEmpty()) "全部好友" else "已选择 ${targetIds.size} 位好友", onPickTargets)
                     InsetDivider()
                     ActionRow("排除好友", if (excludedIds.isEmpty()) "未排除" else "已排除 ${excludedIds.size} 位好友", onPickExcluded)
+                    InsetDivider()
+                    ActionRow(if (snapshot.running || snapshot.deleting) "停止检测" else "开始检测", "") {
+                        toastResult(if (snapshot.running || snapshot.deleting) ZombieCheckController.pause() else ZombieCheckController.start())
+                    }
+                    InsetDivider()
+                    ActionRow("重置检测", "") { toastResult(ZombieCheckController.reset()) }
                 }
             }
 
@@ -1354,6 +1370,7 @@ private fun ZombieCheckMainPage(
                     }
                 }
             }
+
         }
     }
 
@@ -1673,10 +1690,7 @@ private fun KeywordNotificationMainPage(
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = {
-            if (activeContacts.isNotEmpty()) TopBarTextAction("清空名单") { onClearContacts(filterMode) }
-        }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -1771,6 +1785,10 @@ private fun KeywordNotificationMainPage(
                         if (activeContacts.isEmpty()) "未设置" else "${activeContacts.size} 个聊天"
                     ) {
                         onPickContacts(filterMode)
+                    }
+                    if (activeContacts.isNotEmpty()) {
+                        InsetDivider()
+                        ActionRow("清空名单", "") { onClearContacts(filterMode) }
                     }
                 }
             }
@@ -1889,11 +1907,7 @@ private fun KeywordNotificationKeywordListPage(
         largeTitle = "关键词管理",
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = {
-            if (keywords.isNotEmpty()) TopBarTextAction("清空", onClick = onClear)
-            TopBarTextAction("添加", onClick = onAdd)
-        }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -1909,8 +1923,19 @@ private fun KeywordNotificationKeywordListPage(
                 }
             }
             item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = if (visible.isEmpty()) "关键词" else "关键词 · ${visible.size} 个") }
+            item {
+                SettingsCard {
+                    if (keywords.isEmpty()) {
+                        EmptyText("暂无关键词。")
+                        InsetDivider()
+                    }
+                    if (keywords.isNotEmpty()) ContentActionRow("清空", onClick = onClear)
+                    ContentActionRow("添加关键词", onClick = onAdd)
+                }
+            }
+
             when {
-                keywords.isEmpty() -> item { SettingsCard { EmptyText("暂无关键词，点击顶部“添加”。") } }
+                keywords.isEmpty() -> Unit
                 visible.isEmpty() -> item { SettingsCard { EmptyText("没有匹配结果") } }
                 else -> visible.forEach { rule ->
                     item {
@@ -1945,11 +1970,7 @@ private fun KeywordNotificationKeywordEditorPage(
         largeTitle = if (isNew) "添加关键词" else "编辑关键词",
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = {
-            if (isNew) TopBarTextAction("新增") { onSave(KeywordRule(keyword.trim(), wholeWord)) }
-            else if (onDelete != null) TopBarTextAction("删除", onClick = onDelete)
-        }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -1974,6 +1995,14 @@ private fun KeywordNotificationKeywordEditorPage(
                         wholeWord = it
                         if (!isNew && validKeyword.isNotEmpty()) onSave(KeywordRule(validKeyword, it))
                     }
+                }
+            }
+
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
+            item {
+                SettingsCard {
+                    if (isNew) ContentActionRow("创建") { onSave(KeywordRule(keyword.trim(), wholeWord)) }
+                    else if (onDelete != null) ContentActionRow("删除", onClick = onDelete)
                 }
             }
         }
@@ -2026,8 +2055,7 @@ private fun KeywordNotificationTemplatePage(
         largeTitle = "自定义文字",
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = { TopBarTextAction("恢复默认", onClick = ::reset) }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -2064,6 +2092,13 @@ private fun KeywordNotificationTemplatePage(
                     VariableInputRow("通知内容模板", "默认：${KeywordNotificationSettings.DEFAULT_AT_ALL_CONTENT}", atAllContent, keywordNotificationTemplateVariables, minLines = 3, onEditingFinished = { saveText(KeywordNotificationSettings.KEY_AT_ALL_CONTENT, it, true) }) { atAllContent = it; saveText(KeywordNotificationSettings.KEY_AT_ALL_CONTENT, it) }
                     InsetDivider()
                     VariableInputRow("Toast 文字模板", "默认：${KeywordNotificationSettings.DEFAULT_AT_ALL_TOAST}", atAllToast, keywordNotificationTemplateVariables, onEditingFinished = { saveText(KeywordNotificationSettings.KEY_AT_ALL_TOAST, it, true) }) { atAllToast = it; saveText(KeywordNotificationSettings.KEY_AT_ALL_TOAST, it) }
+                }
+            }
+
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
+            item {
+                SettingsCard {
+                    ContentActionRow("恢复默认", onClick = ::reset)
                 }
             }
         }

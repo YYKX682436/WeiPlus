@@ -365,13 +365,7 @@ private fun SelectedMessagesCustomEditorPage(
         largeTitle = "自定义群发",
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = {
-            TopBarTextAction("开始群发", enabled = official || (intervalValid && (items.size <= 1 || mediaIntervalValid)), onClick = onSend)
-            if (items.none { it.type == ScheduledTaskSettings.TYPE_SELECTED_MESSAGE }) {
-                TopBarTextAction("新增内容") { onDraftChange(appendScheduledTaskContentItem(draft)) }
-            }
-        }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -415,6 +409,10 @@ private fun SelectedMessagesCustomEditorPage(
                         onPickFavorite = onPickFavorite,
                         massSendOnly = official
                     )
+                    if (items.none { it.type == ScheduledTaskSettings.TYPE_SELECTED_MESSAGE }) {
+                        InsetDivider()
+                        AddActionRow("新增内容") { onDraftChange(appendScheduledTaskContentItem(draft)) }
+                    }
                 }
             }
             if (!official) {
@@ -441,6 +439,13 @@ private fun SelectedMessagesCustomEditorPage(
                             }
                         }
                     }
+                }
+            }
+
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
+            item {
+                SettingsCard {
+                    ContentActionRow("开始群发", enabled = official || (intervalValid && (items.size <= 1 || mediaIntervalValid)), onClick = onSend)
                 }
             }
         }
@@ -982,17 +987,7 @@ internal fun MessageAffixMiuixPage(
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = {
-            TopBarTextAction("重置") {
-                textFormat = MessageAffixSettings.DEFAULT_TEXT_FORMAT
-                timeFormat = MessageAffixSettings.DEFAULT_TIME_FORMAT
-                sp.edit()
-                    .putString(MessageAffixSettings.KEY_TEXT_FORMAT, textFormat)
-                    .putString(MessageAffixSettings.KEY_TIME_FORMAT, timeFormat)
-                    .apply()
-            }
-        }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -1041,6 +1036,20 @@ internal fun MessageAffixMiuixPage(
                                 sp.edit().putString(MessageAffixSettings.KEY_TIME_FORMAT, MessageAffixSettings.normalizeTimeFormat(it)).apply()
                             }
                         }
+                }
+            }
+
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
+            item {
+                SettingsCard {
+                    ContentActionRow("重置") {
+                        textFormat = MessageAffixSettings.DEFAULT_TEXT_FORMAT
+                        timeFormat = MessageAffixSettings.DEFAULT_TIME_FORMAT
+                        sp.edit()
+                            .putString(MessageAffixSettings.KEY_TEXT_FORMAT, textFormat)
+                            .putString(MessageAffixSettings.KEY_TIME_FORMAT, timeFormat)
+                            .apply()
+                    }
                 }
             }
         }
@@ -1096,21 +1105,7 @@ internal fun InputHintMiuixPage(
         largeTitle = provider.title(),
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = {
-            TopBarTextAction("重置") {
-                enabled = InputHintSettings.DEFAULT_ENABLE
-                statisticsEnabled = InputHintSettings.DEFAULT_STATISTICS_ENABLE
-                restoreLegacyInput = InputHintSettings.DEFAULT_RESTORE_LEGACY_INPUT
-                template = InputHintSettings.DEFAULT_TEMPLATE
-                sp.edit()
-                    .putBoolean(InputHintSettings.KEY_ENABLE, enabled)
-                    .putBoolean(InputHintSettings.KEY_STATISTICS_ENABLE, statisticsEnabled)
-                    .putBoolean(InputHintSettings.KEY_RESTORE_LEGACY_INPUT, restoreLegacyInput)
-                    .putString(InputHintSettings.KEY_TEMPLATE, template)
-                    .apply()
-            }
-        }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -1169,6 +1164,24 @@ internal fun InputHintMiuixPage(
                         }
                         InsetDivider()
                         InfoRow("当前提示", preview)
+                }
+            }
+
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
+            item {
+                SettingsCard {
+                    ContentActionRow("重置") {
+                        enabled = InputHintSettings.DEFAULT_ENABLE
+                        statisticsEnabled = InputHintSettings.DEFAULT_STATISTICS_ENABLE
+                        restoreLegacyInput = InputHintSettings.DEFAULT_RESTORE_LEGACY_INPUT
+                        template = InputHintSettings.DEFAULT_TEMPLATE
+                        sp.edit()
+                            .putBoolean(InputHintSettings.KEY_ENABLE, enabled)
+                            .putBoolean(InputHintSettings.KEY_STATISTICS_ENABLE, statisticsEnabled)
+                            .putBoolean(InputHintSettings.KEY_RESTORE_LEGACY_INPUT, restoreLegacyInput)
+                            .putString(InputHintSettings.KEY_TEMPLATE, template)
+                            .apply()
+                    }
                 }
             }
         }

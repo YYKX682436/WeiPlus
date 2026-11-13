@@ -771,8 +771,7 @@ private fun RedPacketTemplateListPage(
         largeTitle = "红包模板",
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = { TopBarTextAction("新增模板", onClick = onAddTemplate) }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -797,6 +796,9 @@ private fun RedPacketTemplateListPage(
                             if (index < templates.lastIndex) InsetDivider()
                         }
                     }
+
+                    InsetDivider()
+                    ContentActionRow("新增模板", onClick = onAddTemplate)
                 }
             }
         }
@@ -844,21 +846,7 @@ private fun RedPacketBindingListPage(
         largeTitle = "适用聊天",
         scrollBehavior = scrollBehavior,
         onBack = { if (batchDeleteMode) { batchDeleteMode = false; selectedIds = emptySet() } else onBack() },
-        showBackIcon = false,
-        topBarActions = {
-            if (batchDeleteMode) {
-                if (visibleIds.isNotEmpty()) TopBarTextAction(if (allVisibleSelected) "取消全选" else "全选") {
-                    selectedIds = if (allVisibleSelected) selectedIds - visibleIds else selectedIds + visibleIds
-                }
-                TopBarTextAction("删除（${selectedBindings.size}）") {
-                    if (selectedBindings.isEmpty()) Toast.makeText(context, "请先选择适用聊天", Toast.LENGTH_SHORT).show()
-                    else showDeleteConfirm = true
-                }
-            } else {
-                if (bindings.isNotEmpty()) TopBarTextAction("批量删除") { batchDeleteMode = true; selectedIds = emptySet() }
-                TopBarTextAction("添加聊天", onClick = onAddBinding)
-            }
-        }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -888,8 +876,24 @@ private fun RedPacketBindingListPage(
                 }
             }
             item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = listTitle) }
+
+
             item {
                 SettingsCard {
+                    if (batchDeleteMode) {
+                        if (visibleIds.isNotEmpty()) ContentActionRow(if (allVisibleSelected) "取消全选" else "全选") {
+                            selectedIds = if (allVisibleSelected) selectedIds - visibleIds else selectedIds + visibleIds
+                        }
+                        ContentActionRow("删除（${selectedBindings.size}）") {
+                            if (selectedBindings.isEmpty()) Toast.makeText(context, "请先选择适用聊天", Toast.LENGTH_SHORT).show()
+                            else showDeleteConfirm = true
+                        }
+                    } else {
+                        if (bindings.isNotEmpty()) ContentActionRow("批量删除") { batchDeleteMode = true; selectedIds = emptySet() }
+                        ContentActionRow("添加聊天", onClick = onAddBinding)
+                    }
+
+                    InsetDivider()
                     if (bindings.isEmpty()) {
                         EmptyText("暂无适用聊天。添加群聊或好友后，再给它分配红包模板。")
                     } else if (visibleBindings.isEmpty()) {
@@ -1246,14 +1250,7 @@ private fun RedPacketTemplatePage(
         largeTitle = name.ifBlank { "红包模板" },
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = {
-            if (!request.canDelete) TopBarTextAction("新增") { persist(create = true) }
-            else TopBarTextAction("删除") {
-                onDelete()
-                Toast.makeText(context, "模板已删除", Toast.LENGTH_SHORT).show()
-            }
-        }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -1521,6 +1518,17 @@ private fun RedPacketTemplatePage(
 
                 }
             }
+
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
+            item {
+                SettingsCard {
+                    if (!request.canDelete) ContentActionRow("创建") { persist(create = true) }
+                    else ContentActionRow("删除") {
+                        onDelete()
+                        Toast.makeText(context, "模板已删除", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
         }
     }
     }
@@ -1550,14 +1558,7 @@ private fun RedPacketBindingPage(
         largeTitle = targetTitle,
         scrollBehavior = scrollBehavior,
         onBack = onBack,
-        showBackIcon = false,
-        topBarActions = {
-            if (!request.canDelete) TopBarTextAction("新增") { persist(create = true) }
-            else TopBarTextAction("移除") {
-                onDelete()
-                Toast.makeText(context, "适用聊天已移除", Toast.LENGTH_SHORT).show()
-            }
-        }
+        showBackIcon = false
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -1606,6 +1607,17 @@ private fun RedPacketBindingPage(
                             onClick = { templateId = template.id; customRules = false; persist() }
                         )
                         if (index < templates.lastIndex) InsetDivider()
+                    }
+                }
+            }
+
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
+            item {
+                SettingsCard {
+                    if (!request.canDelete) ContentActionRow("创建") { persist(create = true) }
+                    else ContentActionRow("移除") {
+                        onDelete()
+                        Toast.makeText(context, "适用聊天已移除", Toast.LENGTH_SHORT).show()
                     }
                 }
             }

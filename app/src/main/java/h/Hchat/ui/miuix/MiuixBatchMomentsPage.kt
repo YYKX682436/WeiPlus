@@ -221,17 +221,7 @@ internal fun BatchMomentsPickerPage(
         title = operation.pickerTitle,
         largeTitle = friend?.label ?: operation.pickerTitle,
         scrollBehavior = scrollBehavior,
-        onBack = onBack,
-        topBarActions = {
-            TopBarTextAction(
-                "$action（${selectedIds.size}）",
-                enabled = selectedIds.isNotEmpty() && taskSnapshot.status != BatchTaskStatus.RUNNING && taskSnapshot.status != BatchTaskStatus.STOPPING
-            ) {
-                if (selectedIds.isNotEmpty()) {
-                    pendingAction = BatchMomentsSelection.selectable(posts, forLike).filter { it.snsId in selectedIds }
-                }
-            }
-        }
+        onBack = onBack
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
@@ -279,6 +269,15 @@ internal fun BatchMomentsPickerPage(
                             else "当前筛选 ${visible.size} 条；已加载历史 ${posts.size} 条"
                     ) {
                         selectedIds = BatchMomentsSelection.selectAllCurrentFilter(selectedIds, selectable)
+                    }
+                    InsetDivider()
+                    ContentActionRow(
+                        "$action（${selectedIds.size}）",
+                        enabled = selectedIds.isNotEmpty() && taskSnapshot.status != BatchTaskStatus.RUNNING && taskSnapshot.status != BatchTaskStatus.STOPPING
+                    ) {
+                        if (selectedIds.isNotEmpty()) {
+                            pendingAction = BatchMomentsSelection.selectable(posts, forLike).filter { it.snsId in selectedIds }
+                        }
                     }
                 }
             }
