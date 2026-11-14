@@ -4,6 +4,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
@@ -22,6 +23,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
@@ -33,7 +35,6 @@ import androidx.compose.ui.unit.sp
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 /** The header owns the space before and after a sequence, rather than each card doing so. */
@@ -139,14 +140,27 @@ internal fun SequenceTypePickerDialog(
 @Composable
 internal fun SequenceEmptyCard(message: String, action: String, onAdd: () -> Unit) {
     SettingsCard {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
+        Column(
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
             Text(message, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
-            TextButton(
-                text = "＋ $action",
-                onClick = onAdd,
-                modifier = Modifier.defaultMinSize(minHeight = 48.dp),
-                colors = ButtonDefaults.textButtonColorsPrimary()
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth()
+                    .defaultMinSize(minHeight = 48.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable(onClick = onAdd)
+                    .padding(horizontal = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Image(
+                    imageVector = NavIcons.Add,
+                    contentDescription = null,
+                    colorFilter = ColorFilter.tint(MiuixTheme.colorScheme.primary)
+                )
+                Text(action, color = MiuixTheme.colorScheme.primary, fontWeight = FontWeight.Medium)
+            }
         }
     }
 }

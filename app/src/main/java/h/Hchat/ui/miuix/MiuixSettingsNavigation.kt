@@ -228,9 +228,8 @@ internal fun MainSettingsPage(
                 )
             ) {
                 item(key = "search") { SettingsSearchEntry(onClick = onOpenSearch) }
-                featureGroupMenu(title = "功能", groups = groups, onOpenGroup = onOpenGroup)
+                featureGroupMenu(groups = groups, onOpenGroup = onOpenGroup)
                 if (groups.isEmpty()) {
-                    item { SettingsSectionTitle(text = "功能") }
                     item { FeatureListCard(emptyList(), "暂无功能", onOpenProvider) }
                 }
             }
@@ -569,12 +568,10 @@ private fun FeatureSearchResultRow(result: FeatureSearchResult, onClick: () -> U
 }
 
 private fun LazyListScope.featureGroupMenu(
-    title: String,
     groups: List<FeatureGroupEntry>,
     onOpenGroup: (FeatureGroupEntry) -> Unit
 ) {
     if (groups.isEmpty()) return
-    item { SettingsSectionTitle(text = title) }
     item {
         SettingsCard {
             groups.forEachIndexed { index, group ->
@@ -611,7 +608,7 @@ internal fun FeatureGroupSettingsPage(
     val other = group.providers.filterNot { SettingsLayout.inlineGroupFor(it.featureId()) == group.id }
     LaunchedEffect(group.id, focusId) {
         if (focusId != null && inline.any { it.featureId() == focusId }) {
-            listState.scrollToItem(if (group.hasFriendScenes) 2 else 1)
+            listState.scrollToItem(if (group.hasFriendScenes) 1 else 0)
         }
     }
     val scrollBehavior = MiuixScrollBehavior()
@@ -630,7 +627,6 @@ internal fun FeatureGroupSettingsPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item { SettingsSectionTitle(text = "功能") }
             if (group.hasFriendScenes) {
                 item(key = "friend-scenes") {
                     SettingsCard {
@@ -652,7 +648,11 @@ internal fun FeatureGroupSettingsPage(
             }
             if (other.isNotEmpty()) {
                 if (inline.isNotEmpty()) item { SettingsSectionTitle(text = "更多设置") }
-                item(key = "providers") { FeatureListCard(other, "暂无功能", onOpenProvider) }
+                item(key = "providers") {
+                    Box(Modifier.padding(top = if (group.hasFriendScenes && inline.isEmpty()) 12.dp else 0.dp)) {
+                        FeatureListCard(other, "暂无功能", onOpenProvider)
+                    }
+                }
             }
         }
     }
@@ -680,7 +680,7 @@ private fun CompositeSettingsPage(
     val switches = rows.filter { it.startsWith("forward.") || SettingsLayout.compositeGroupFor(it) != null }
     val details = rows.filterNot { it in switches }
     LaunchedEffect(group.id, focusId, rows) {
-        if (focusId in switches) listState.scrollToItem(1)
+        if (focusId in switches) listState.scrollToItem(0)
     }
     val scrollBehavior = MiuixScrollBehavior()
     PageScaffold(
@@ -698,7 +698,6 @@ private fun CompositeSettingsPage(
                 bottom = padding.calculateBottomPadding() + 16.dp
             )
         ) {
-            item(key = "heading") { SettingsSectionTitle(text = "功能") }
             if (switches.isNotEmpty()) item(key = "switches") {
                 SettingsCard {
                     switches.forEachIndexed { index, id ->
