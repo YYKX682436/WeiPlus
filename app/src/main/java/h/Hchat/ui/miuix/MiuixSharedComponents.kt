@@ -2670,6 +2670,18 @@ internal data class FavoritePickerRequest(
     val delimiter: String = "|"
 )
 
+internal data class FavoritePickerSessionKey(
+    val title: String,
+    val multiSelect: Boolean,
+    val delimiter: String
+)
+
+internal fun FavoritePickerRequest.sessionKey() = FavoritePickerSessionKey(
+    title = title,
+    multiSelect = multiSelect,
+    delimiter = delimiter
+)
+
 internal enum class FavoritePickerFilter(val label: String) {
     IMAGE("图片"),
     TEXT("文字"),
@@ -2700,11 +2712,31 @@ internal data class MessageBlockContactPickerRequest(
     val allowOfficialAccounts: Boolean = true
 )
 
+internal data class MessageBlockContactPickerSessionKey(
+    val title: String,
+    val allowOfficialAccounts: Boolean
+)
+
+internal fun MessageBlockContactPickerRequest.sessionKey() = MessageBlockContactPickerSessionKey(
+    title = title,
+    allowOfficialAccounts = allowOfficialAccounts
+)
+
 internal data class GroupMemberPickerRequest(
     val title: String,
     val existingValue: String,
     val onValue: (String) -> Unit,
     val allowedGroupIds: Set<String>? = null
+)
+
+internal data class GroupMemberPickerSessionKey(
+    val title: String,
+    val allowedGroupIds: Set<String>?
+)
+
+internal fun GroupMemberPickerRequest.sessionKey() = GroupMemberPickerSessionKey(
+    title = title,
+    allowedGroupIds = allowedGroupIds?.toSet()
 )
 
 internal data class RedPacketTemplateEditorRequest(
@@ -2777,6 +2809,16 @@ internal data class OptionItem(
     val label: String,
     val value: Int,
     val summary: String = ""
+)
+
+internal data class OptionPickerSessionKey(
+    val title: String,
+    val options: List<OptionItem>
+)
+
+internal fun OptionPickerRequest.sessionKey() = OptionPickerSessionKey(
+    title = title,
+    options = options.toList()
 )
 
 internal data class PopupChoice<T>(

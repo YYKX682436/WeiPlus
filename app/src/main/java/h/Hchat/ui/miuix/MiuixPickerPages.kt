@@ -41,18 +41,19 @@ internal fun MessageBlockContactPickerPage(
     onBack: () -> Unit,
     onConfirm: (List<MessageBlockContactOption>) -> Unit
 ) {
-    var loading by remember(request) { mutableStateOf(true) }
-    var error by remember(request) { mutableStateOf("") }
-    var data by remember(request) { mutableStateOf(MessageBlockContactData()) }
-    var query by remember(request) { mutableStateOf("") }
-    val initialSelectedIds = remember(request) { parseIds(request.existingValue) }
-    var selectedIds by remember(request) { mutableStateOf(initialSelectedIds) }
-    var contactFilter by remember(request) { mutableStateOf(MessageBlockContactFilter.ALL) }
-    var selectedLabel by remember(request) { mutableStateOf<MessageBlockLabelOption?>(null) }
-    var selectedConversationGroupId by remember(request) { mutableStateOf("") }
+    val sessionKey = remember(request.sessionKey()) { Any() }
+    var loading by remember(sessionKey) { mutableStateOf(true) }
+    var error by remember(sessionKey) { mutableStateOf("") }
+    var data by remember(sessionKey) { mutableStateOf(MessageBlockContactData()) }
+    var query by remember(sessionKey) { mutableStateOf("") }
+    val initialSelectedIds = remember(sessionKey) { parseIds(request.existingValue) }
+    var selectedIds by remember(sessionKey) { mutableStateOf(initialSelectedIds) }
+    var contactFilter by remember(sessionKey) { mutableStateOf(MessageBlockContactFilter.ALL) }
+    var selectedLabel by remember(sessionKey) { mutableStateOf<MessageBlockLabelOption?>(null) }
+    var selectedConversationGroupId by remember(sessionKey) { mutableStateOf("") }
     val scrollBehavior = MiuixScrollBehavior()
 
-    LaunchedEffect(request) {
+    LaunchedEffect(sessionKey) {
         loadMessageBlockContacts(context) { result, throwable ->
             loading = false
             if (throwable != null) {
@@ -172,6 +173,9 @@ internal fun MessageBlockContactPickerPage(
             }
             val sectionCount = if (showingLabelList) visibleLabels.size else visibleContactIds.size
             val routeListState = rememberLazyListState()
+            LaunchedEffect(sessionKey, routeFilter, routeLabel, selectedConversationGroupId) {
+                routeListState.scrollToItem(0)
+            }
             LazyColumn(
                 modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
                 state = routeListState,
@@ -370,7 +374,17 @@ internal fun ContactPickerPage(
     }
     val listState = rememberLazyListState()
     val scrollBehavior = MiuixScrollBehavior()
-    LaunchedEffect(sessionKey) { listState.scrollToItem(0) }
+    LaunchedEffect(
+        sessionKey,
+        candidateLoadToken,
+        batchSelectionResetKey,
+        scopeTab,
+        selectedConversationGroupId,
+        contactFilter,
+        selectedLabel
+    ) {
+        listState.scrollToItem(0)
+    }
 
     DisposableEffect(loadGate) {
         onDispose { loadGate.invalidate() }
@@ -877,22 +891,24 @@ internal fun FavoritePickerPage(
     request: FavoritePickerRequest,
     onBack: () -> Unit
 ) {
+    val sessionKey = remember(request.sessionKey()) { Any() }
     val context = LocalContext.current
     val favoriteApi = WeChatApis.media()?.favorites()
-    val initialCache = remember(request) { favoriteApi?.cachedList() }
-    var loading by remember(request) { mutableStateOf(initialCache?.items.isNullOrEmpty()) }
-    var error by remember(request) { mutableStateOf("") }
-    var favorites by remember(request) { mutableStateOf(initialCache?.items.orEmpty()) }
-    var backgroundLoading by remember(request) { mutableStateOf(false) }
-    var query by remember(request) { mutableStateOf("") }
-    var filter by remember(request) { mutableStateOf(FavoritePickerFilter.ALL) }
-    var preview by remember(request) { mutableStateOf<FavoriteMediaPreview?>(null) }
-    val initialSelectedIds = remember(request) { parseFavoriteIds(request.existingValue) }
-    var selectedIds by remember(request) { mutableStateOf(initialSelectedIds) }
+    val initialCache = remember(sessionKey) { favoriteApi?.cachedList() }
+    var loading by remember(sessionKey) { mutableStateOf(initialCache?.items.isNullOrEmpty()) }
+    var error by remember(sessionKey) { mutableStateOf("") }
+    var favorites by remember(sessionKey) { mutableStateOf(initialCache?.items.orEmpty()) }
+    var backgroundLoading by remember(sessionKey) { mutableStateOf(false) }
+    var query by remember(sessionKey) { mutableStateOf("") }
+    var filter by remember(sessionKey) { mutableStateOf(FavoritePickerFilter.ALL) }
+    var preview by remember(sessionKey) { mutableStateOf<FavoriteMediaPreview?>(null) }
+    val initialSelectedIds = remember(sessionKey) { parseFavoriteIds(request.existingValue) }
+    var selectedIds by remember(sessionKey) { mutableStateOf(initialSelectedIds) }
     val listState = rememberLazyListState()
     val scrollBehavior = MiuixScrollBehavior()
 
-    LaunchedEffect(request) {
+    LaunchedEffect(sessionKey) { listState.scrollToItem(0) }
+    LaunchedEffect(sessionKey) {
         loading = true
         backgroundLoading = false
         error = ""
@@ -1048,26 +1064,29 @@ internal fun GroupMemberPickerPage(
     onConfirm: (List<String>) -> Unit = {},
     onSelectionChange: ((Set<String>) -> Unit)? = null
 ) {
-    var groupLoading by remember(request) { mutableStateOf(true) }
-    var groupError by remember(request) { mutableStateOf("") }
-    var groups by remember(request) { mutableStateOf(emptyList<ContactOption>()) }
-    var selectedGroup by remember(request) { mutableStateOf<ContactOption?>(null) }
-    var memberLoading by remember(request) { mutableStateOf(false) }
-    var memberError by remember(request) { mutableStateOf("") }
-    var members by remember(request) { mutableStateOf(emptyList<ContactOption>()) }
-    var query by remember(request) { mutableStateOf("") }
-    val initialSelectedEntries = remember(request) {
+    val sessionKey = remember(request.sessionKey()) { Any() }
+    var groupLoading by remember(sessionKey) { mutableStateOf(true) }
+    var groupError by remember(sessionKey) { mutableStateOf("") }
+    var groups by remember(sessionKey) { mutableStateOf(emptyList<ContactOption>()) }
+    var selectedGroup by remember(sessionKey) { mutableStateOf<ContactOption?>(null) }
+    var memberLoading by remember(sessionKey) { mutableStateOf(false) }
+    var memberError by remember(sessionKey) { mutableStateOf("") }
+    var members by remember(sessionKey) { mutableStateOf(emptyList<ContactOption>()) }
+    var query by remember(sessionKey) { mutableStateOf("") }
+    val initialSelectedEntries = remember(sessionKey) {
         parseGroupMemberEntries(request.existingValue).filterTo(linkedSetOf()) { entry ->
             request.allowedGroupIds?.let { entry.substringBefore('/') in it } != false
         }
     }
-    var selectedEntries by remember(request) { mutableStateOf<Set<String>>(initialSelectedEntries) }
-    var selectionEdited by remember(request) { mutableStateOf(initialSelectedEntries.isNotEmpty()) }
+    var selectedEntries by remember(sessionKey) { mutableStateOf<Set<String>>(initialSelectedEntries) }
+    var selectionEdited by remember(sessionKey) { mutableStateOf(initialSelectedEntries.isNotEmpty()) }
     val groupListState = rememberLazyListState()
     val memberListState = rememberLazyListState()
     val scrollBehavior = MiuixScrollBehavior()
 
-    LaunchedEffect(request) {
+    LaunchedEffect(sessionKey) {
+        groupListState.scrollToItem(0)
+        memberListState.scrollToItem(0)
         loadContacts(context, ContactPickerMode.GROUPS) { result, throwable ->
             groupLoading = false
             if (throwable != null) {
@@ -1215,9 +1234,11 @@ internal fun OptionPickerPage(
     onBack: () -> Unit,
     onSelected: (OptionItem) -> Unit
 ) {
+    val sessionKey = remember(request.sessionKey()) { Any() }
     val scrollBehavior = MiuixScrollBehavior()
     val listState = rememberLazyListState()
-    var selectedValue by remember(request) { mutableStateOf(request.currentValue) }
+    LaunchedEffect(sessionKey) { listState.scrollToItem(0) }
+    var selectedValue by remember(sessionKey) { mutableStateOf(request.currentValue) }
     PageScaffold(
         title = request.title,
         largeTitle = request.title,
