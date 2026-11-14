@@ -1501,7 +1501,7 @@ internal fun KeywordReplacementRulesPage(
             item { SettingsSectionTitle(text = "操作") }
             item {
                 SettingsCard {
-                    ContentActionRow(if (newRule == null) "新增" else "完成") {
+                    ContentActionRow(if (newRule == null) "新增" else "完成", emphasis = ContentActionEmphasis.PRIMARY) {
                         val pending = newRule
                         if (pending == null) {
                             newRule = KeywordReplacementRule("", "")

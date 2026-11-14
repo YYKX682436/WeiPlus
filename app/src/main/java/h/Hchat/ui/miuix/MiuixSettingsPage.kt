@@ -12,9 +12,11 @@ import android.media.RingtoneManager
 import android.os.Bundle
 import android.os.Build
 import android.os.Parcelable
+import android.util.Log
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
+import android.provider.MediaStore
 import android.view.WindowInsets
 import android.widget.FrameLayout
 import android.widget.Toast
@@ -22,8 +24,6 @@ import h.Hchat.BuildConfig
 import h.Hchat.R
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.ExperimentalAnimationApi
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -66,11 +66,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigationevent.compose.LocalNavigationEventDispatcherOwner
 import androidx.navigationevent.DirectNavigationEventInput
-import androidx.navigationevent.NavigationEventInfo
-import androidx.navigationevent.NavigationEvent
-import androidx.navigationevent.NavigationEventTransitionState
-import androidx.navigationevent.compose.NavigationBackHandler
-import androidx.navigationevent.compose.rememberNavigationEventState
 import h.Hchat.hooks.api.core.WeChatApis
 import h.Hchat.hooks.items.antirecall.AntiRecallSettings
 import h.Hchat.hooks.items.autoreply.AutoReplySettings
@@ -137,8 +132,15 @@ import h.Hchat.hooks.core.XposedRuntime
 import org.json.JSONArray
 import org.json.JSONObject
 import top.yukonga.miuix.kmp.nav.core.NavDisplay
+import top.yukonga.miuix.kmp.nav.core.NavDisplayEffects
+import top.yukonga.miuix.kmp.nav.transition.NavTransitions
 import top.yukonga.miuix.kmp.nav.core.navBackStackOf
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.theme.darkColorScheme
 import top.yukonga.miuix.kmp.theme.lightColorScheme
 import kotlinx.coroutines.delay
@@ -559,11 +561,14 @@ internal fun RegisterSettingsBackHandler(onBack: (() -> Unit)?) {
 }
 
 @Composable
-private fun EmbeddedImeBackGate(owner: EmbeddedComposeOwner, onImeVisibilityChanged: (Boolean) -> Unit) {
+private fun EmbeddedImeVisibility(
+    owner: EmbeddedComposeOwner,
+    onImeVisibilityChanged: (Boolean) -> Unit
+) {
     val imeVisible = androidx.compose.foundation.layout.WindowInsets.ime.getBottom(LocalDensity.current) > 0
     SideEffect {
         onImeVisibilityChanged(imeVisible)
-        owner.navigationEventDispatcher.isEnabled = !imeVisible
+        owner.navigationEventDispatcher.isEnabled = true
     }
 }
 
@@ -600,8 +605,10 @@ object MiuixSettingsPage {
     @OptIn(ExperimentalAnimationApi::class)
     private fun show(context: Context, initialPage: DetailPage?) {
         val activity = context as? Activity ?: return
-        val decor = activity.window?.decorView as? ViewGroup ?: return
+        val window = activity.window ?: return
+        val decor = window.decorView as? ViewGroup ?: return
         removeExistingPage(decor)
+        val hostWasSecure = window.attributes.flags and android.view.WindowManager.LayoutParams.FLAG_SECURE != 0
 
         val hostTag = SettingsPageHostTag()
         val owner = EmbeddedComposeOwner()
@@ -618,8 +625,19 @@ object MiuixSettingsPage {
         val settingsBackHandlers = SettingsBackHandlerRegistry()
         lateinit var page: FrameLayout
         val activityBackHooks = ArrayList<XposedInterface.HookHandle>()
+        var completedBackCallbackCleanup: (() -> Unit)? = null
         var consumingBack = false
         var closed = false
+        var firstComposeDraw = false
+        fun syncScreenshotProtection(windowFocused: Boolean) {
+            if (!hostWasSecure) return
+            val settingsVisible = windowFocused && page.parent === decor && page.isAttachedToWindow
+            if (settingsVisible) {
+                window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
+            } else {
+                window.addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
+            }
+        }
         fun unhookActivityBack() {
             XposedRuntime.retryFailedUnhooks()
             val iterator = activityBackHooks.iterator()
@@ -641,6 +659,9 @@ object MiuixSettingsPage {
             hostTag.close = null
             settingsBackHandlers.clear()
             unhookActivityBack()
+            completedBackCallbackCleanup?.invoke()
+            completedBackCallbackCleanup = null
+            if (hostWasSecure) window.addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
             runCatching {
                 page.findViewById<ComposeView>(android.R.id.content)?.disposeComposition()
             }.onFailure {
@@ -658,24 +679,25 @@ object MiuixSettingsPage {
         fun backOrClose() {
             if (detailBackStack.size > 1) popDetail() else closePage()
         }
-        fun handleBack() {
-            if (settingsBackHandlers.handle()) {
-                // The current nested settings route owns this back event.
-            } else if (detailBackStack.size <= 1) {
-                closePage()
-            } else {
-                popDetail()
-            }
-        }
-        fun dispatchBack() {
-            if (consumingBack) return
-            consumingBack = true
-            directBackInput.backCompleted()
-            page.post { consumingBack = false }
-        }
         var imeVisible = false
         fun isImeVisible(): Boolean = imeVisible || (Build.VERSION.SDK_INT >= 30 &&
             page.rootWindowInsets?.isVisible(WindowInsets.Type.ime()) == true)
+        fun dispatchBack() {
+            if (consumingBack) return
+            if (isImeVisible()) {
+                (activity.getSystemService(Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager)
+                    ?.hideSoftInputFromWindow(page.windowToken, 0)
+                return
+            }
+            consumingBack = true
+            completeStandardBack(directBackInput)
+            page.post { consumingBack = false }
+        }
+        owner.setBackFallback {
+            if (!settingsBackHandlers.handle()) {
+                if (detailBackStack.size > 1) popDetail() else closePage()
+            }
+        }
         hostTag.close = { closePage() }
         fun installActivityBackHooks() {
             XposedRuntime.retryFailedUnhooks()
@@ -720,6 +742,11 @@ object MiuixSettingsPage {
         }
 
         page = object : FrameLayout(activity) {
+            override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
+                super.onWindowFocusChanged(hasWindowFocus)
+                post { syncScreenshotProtection(hasWindowFocus) }
+            }
+
             override fun dispatchKeyEvent(event: KeyEvent): Boolean {
                 if (event.keyCode == KeyEvent.KEYCODE_BACK && !isImeVisible()) {
                     if (event.action == KeyEvent.ACTION_UP) {
@@ -766,52 +793,7 @@ object MiuixSettingsPage {
                     LocalSettingsBackHandlerRegistry provides settingsBackHandlers
                 ) {
                     HchatMiuixTheme(activity) {
-                        EmbeddedImeBackGate(owner) { imeVisible = it }
-                        val rootBackState = rememberNavigationEventState(currentInfo = NavigationEventInfo.None)
-                        val rootProgress = remember { Animatable(0f) }
-                        val rootCommit = remember { Animatable(0f) }
-                        val rootScope = rememberCoroutineScope()
-                        val rootEasing = remember { CubicBezierEasing(0.1f, 0.1f, 0f, 1f) }
-                        val rootCornerRadius = settingsNavEffects().cornerClipRadius
-                        var rootGesture by remember { mutableStateOf<NavigationEvent?>(null) }
-                        var rootGestureActive by remember { mutableStateOf(false) }
-                        var rootInitialY by remember { mutableStateOf(0f) }
-                        var rootCommitting by remember { mutableStateOf(false) }
-                        NavigationBackHandler(
-                            state = rootBackState,
-                            isBackEnabled = true,
-                            onBackCompleted = {
-                                if (!rootCommitting) {
-                                    if (rootGestureActive && rootGesture != null && rootProgress.value > 0f && detailBackStack.size == 1) {
-                                        rootCommitting = true
-                                        rootScope.launch {
-                                            rootCommit.snapTo(0f)
-                                            rootCommit.animateTo(1f, tween(durationMillis = 180))
-                                            handleBack()
-                                            rootProgress.snapTo(0f)
-                                            rootCommit.snapTo(0f)
-                                            rootGesture = null
-                                            rootGestureActive = false
-                                            rootCommitting = false
-                                        }
-                                    } else handleBack()
-                                }
-                            }
-                        )
-                        val event = (rootBackState.transitionState as? NavigationEventTransitionState.InProgress)?.latestEvent
-                        LaunchedEffect(event, rootCommitting) {
-                            if (rootCommitting) return@LaunchedEffect
-                            if (event != null) {
-                                if (!rootGestureActive) rootInitialY = event.touchY
-                                rootGestureActive = true
-                                rootGesture = event
-                                rootProgress.snapTo(event.progress.coerceIn(0f, 1f))
-                            } else {
-                                rootGestureActive = false
-                                rootProgress.animateTo(0f, spring(stiffness = 1500f))
-                                rootGesture = null
-                            }
-                        }
+                        EmbeddedImeVisibility(owner) { imeVisible = it }
                         if (!termsAccepted.value) {
                             FirstUseAgreementDialog(
                                 context = activity,
@@ -828,28 +810,9 @@ object MiuixSettingsPage {
                         }
                         NavDisplay(
                             backStack = detailBackStack,
-                            modifier = Modifier.fillMaxSize().graphicsLayer {
-                                if (detailBackStack.size == 1) {
-                                    val progress = rootEasing.transform(rootProgress.value.coerceIn(0f, 1f))
-                                    val commit = rootCommit.value.coerceIn(0f, 1f)
-                                    val gestureScale = 1f - 0.1f * progress
-                                    scaleX = gestureScale + (1f - gestureScale) * commit
-                                    scaleY = scaleX
-                                    val margin = 8.dp.toPx()
-                                    val hug = (size.width * (1f - gestureScale) / 2f - margin).coerceAtLeast(0f)
-                                    val direction = if (rootGesture?.swipeEdge == NavigationEvent.EDGE_RIGHT) -1f else 1f
-                                    translationX = direction * (hug + 96.dp.toPx() * commit)
-                                    val deltaY = (rootGesture?.touchY ?: rootInitialY) - rootInitialY
-                                    val ratio = (kotlin.math.abs(deltaY) / (size.height / 2f).coerceAtLeast(1f)).coerceIn(0f, 1f)
-                                    val verticalLimit = (size.height * (1f - scaleY) / 2f - margin).coerceAtLeast(0f)
-                                    translationY = verticalLimit * (1f - (1f - ratio) * (1f - ratio)) * kotlin.math.sign(deltaY)
-                                    shape = RoundedCornerShape(rootCornerRadius * (progress * 4f).coerceIn(0f, 1f))
-                                    clip = progress > 0f
-                                    alpha = 1f - commit
-                                }
-                            }.background(MiuixTheme.colorScheme.background),
-                            transition = rememberSettingsNavTransition(),
-                            effects = settingsNavEffects(),
+                            modifier = Modifier.fillMaxSize().background(MiuixTheme.colorScheme.background),
+                            transition = NavTransitions.MiuixDefault,
+                            effects = NavDisplayEffects.None,
                             onBack = {
                                 if (detailBackStack.size > 1) popDetail() else closePage()
                             }
@@ -936,7 +899,14 @@ object MiuixSettingsPage {
                 )
             )
             decor.addView(page)
-            attachEmbeddedBackInput(page, owner.navigationEventDispatcher)
+            completedBackCallbackCleanup = attachCompletedBackCallback(page) { dispatchBack() }
+            val drawListener = android.view.ViewTreeObserver.OnDrawListener {
+                if (!firstComposeDraw && page.parent === decor && page.hasWindowFocus()) {
+                    firstComposeDraw = true
+                    page.post { syncScreenshotProtection(page.hasWindowFocus()) }
+                }
+            }
+            composeView.viewTreeObserver.addOnDrawListener(drawListener)
             composeView.createComposition()
         } catch (throwable: Throwable) {
             closePage()
@@ -1292,22 +1262,16 @@ internal object RingtonePickerBridge {
             currentActivity = activity
             hookActivityResult(activity.javaClass)
             hookActivityResult(Activity::class.java)
-            val intent =
-                Intent(Intent.ACTION_OPEN_DOCUMENT)
-                    .apply {
-                        addCategory(Intent.CATEGORY_OPENABLE)
-                        type = "*/*"
-                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                        addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
-                    }
-                    .preferSystemDocumentsUi(activity)
             try {
-                activity.startActivityForResult(intent, RINGTONE_FILE_REQUEST_CODE)
+                activity.startActivityForResult(
+                    documentPickerIntent(activity, "audio/*", allowMultiple = false),
+                    RINGTONE_FILE_REQUEST_CODE
+                )
             } catch (_: Throwable) {
                 val fallback =
                     Intent(Intent.ACTION_GET_CONTENT).apply {
                         addCategory(Intent.CATEGORY_OPENABLE)
-                        type = "*/*"
+                        type = "audio/*"
                         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                     }
                 activity.startActivityForResult(
@@ -1436,6 +1400,111 @@ private fun Intent.preferSystemDocumentsUi(context: Context): Intent {
     return this
 }
 
+private fun typedPickerIntent(
+    context: Context,
+    mimeType: String,
+    maxCount: Int = 1
+): Intent {
+    val visualMedia = isPhotoPickerMimeType(mimeType)
+    if (visualMedia && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        val picker = Intent(MediaStore.ACTION_PICK_IMAGES).setType(mimeType)
+        if (maxCount != 1) {
+            val systemLimit = runCatching { MediaStore.getPickImagesMaxLimit() }.getOrDefault(50).coerceAtLeast(1)
+            if (systemLimit == 1) return documentPickerIntent(context, mimeType, allowMultiple = true)
+            val requestedLimit = if (maxCount > 1) maxCount else systemLimit
+            picker.putExtra(MediaStore.EXTRA_PICK_IMAGES_MAX, requestedLimit.coerceIn(2, systemLimit))
+        }
+        return picker.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    return documentPickerIntent(context, mimeType, maxCount != 1)
+}
+
+private fun documentPickerIntent(context: Context, mimeType: String, allowMultiple: Boolean): Intent =
+    Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+        addCategory(Intent.CATEGORY_OPENABLE)
+        type = mimeType
+        if (allowMultiple) putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+    }.preferSystemDocumentsUi(context)
+
+private fun launchTypedPicker(activity: Activity, mimeType: String, maxCount: Int, requestCode: Int, title: String) {
+    val photoPicker = isPhotoPickerMimeType(mimeType)
+    try {
+        activity.startActivityForResult(typedPickerIntent(activity, mimeType, maxCount), requestCode)
+    } catch (photoPickerError: Throwable) {
+        if (!photoPicker || Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) throw photoPickerError
+        try {
+            activity.startActivityForResult(documentPickerIntent(activity, mimeType, maxCount != 1), requestCode)
+        } catch (_: Throwable) {
+            val fallback = Intent(Intent.ACTION_GET_CONTENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = mimeType
+                if (maxCount != 1) putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            activity.startActivityForResult(Intent.createChooser(fallback, title), requestCode)
+        }
+    }
+}
+
+private fun copyPickedUrisAsync(
+    activity: Activity,
+    uris: List<Uri>,
+    pickerName: String,
+    copyUri: (Uri) -> String?,
+    onResult: (List<String>) -> Unit
+) {
+    CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+        var failed = 0
+        val paths = uris.mapNotNull { uri ->
+            val path = runCatching { copyUri(uri) }.getOrNull()
+            if (path == null) failed++
+            path
+        }.distinct()
+        withContext(Dispatchers.Main) {
+            if (activity.isFinishing || activity.isDestroyed) return@withContext
+            if (paths.isEmpty()) {
+                Toast.makeText(activity, "读取所选${pickerName}失败，请重新选择", Toast.LENGTH_SHORT).show()
+            } else {
+                if (failed > 0) Toast.makeText(activity, "部分${pickerName}读取失败，已跳过 $failed 项", Toast.LENGTH_SHORT).show()
+                onResult(paths)
+            }
+        }
+    }
+}
+
+internal fun isPhotoPickerMimeType(mimeType: String): Boolean = mimeType == "image/*" || mimeType == "video/*"
+
+internal fun scheduledTaskFilePickerMimeType(taskType: Int): String = when (taskType) {
+    h.Hchat.hooks.items.scheduledtask.ScheduledTaskSettings.TYPE_IMAGE -> "image/*"
+    h.Hchat.hooks.items.scheduledtask.ScheduledTaskSettings.TYPE_VIDEO -> "video/*"
+    else -> "*/*"
+}
+
+internal fun scheduledTaskFilePickerMaxCount(taskType: Int, requested: Int? = null): Int =
+    requested ?: if (taskType == h.Hchat.hooks.items.scheduledtask.ScheduledTaskSettings.TYPE_VIDEO) 1 else 0
+
+internal fun replyPickerMimeType(replyMode: Int, autoReply: Boolean): String = when {
+    autoReply && replyMode == h.Hchat.hooks.items.autoreply.AutoReplySettings.REPLY_IMAGE -> "image/*"
+    autoReply && replyMode == h.Hchat.hooks.items.autoreply.AutoReplySettings.REPLY_EMOJI -> "image/*"
+    autoReply && replyMode == h.Hchat.hooks.items.autoreply.AutoReplySettings.REPLY_VIDEO -> "video/*"
+    autoReply && replyMode in setOf(
+        h.Hchat.hooks.items.autoreply.AutoReplySettings.REPLY_VOICE,
+        h.Hchat.hooks.items.autoreply.AutoReplySettings.REPLY_VOICE_RANDOM_FOLDER
+    ) -> "audio/*"
+    !autoReply && replyMode in setOf(
+        h.Hchat.hooks.items.payment.core.RedPacketRuleConfig.REPLY_IMAGE,
+        h.Hchat.hooks.items.payment.core.RedPacketRuleConfig.REPLY_EMOJI
+    ) -> "image/*"
+    !autoReply && replyMode == h.Hchat.hooks.items.payment.core.RedPacketRuleConfig.REPLY_VIDEO -> "video/*"
+    !autoReply && replyMode == h.Hchat.hooks.items.payment.core.RedPacketRuleConfig.REPLY_VOICE -> "audio/*"
+    else -> "*/*"
+}
+
+private fun replyPickerTitle(replyMode: Int, autoReply: Boolean): String =
+    if (autoReply) autoReplyPickerTitle(replyMode) else redPacketReplyPickerTitle(replyMode)
+
 internal object RedPacketReplyFilePickerBridge {
     private val resultHooks = SettingsActivityResultHooks { onPicked = null; currentActivity = null }
     private var onPicked: ((List<String>) -> Unit)? = null
@@ -1451,23 +1520,14 @@ internal object RedPacketReplyFilePickerBridge {
             currentActivity = activity
             hookActivityResult(activity.javaClass)
             hookActivityResult(Activity::class.java)
-            val intent =
-                Intent(Intent.ACTION_OPEN_DOCUMENT)
-                    .apply {
-                        addCategory(Intent.CATEGORY_OPENABLE)
-                        type = "*/*"
-                        putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
-                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                        addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
-                    }
-                    .preferSystemDocumentsUi(activity)
+            val mimeType = replyPickerMimeType(replyMode, autoReply = false)
             try {
-                activity.startActivityForResult(intent, REDPACKET_REPLY_FILE_REQUEST_CODE)
+                launchTypedPicker(activity, mimeType, 0, REDPACKET_REPLY_FILE_REQUEST_CODE, redPacketReplyPickerTitle(replyMode))
             } catch (_: Throwable) {
                 val fallback =
                     Intent(Intent.ACTION_GET_CONTENT).apply {
                         addCategory(Intent.CATEGORY_OPENABLE)
-                        type = "*/*"
+                        type = mimeType
                         putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
                         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                     }
@@ -1510,14 +1570,10 @@ internal object RedPacketReplyFilePickerBridge {
                             val data =
                                 chain.args.getOrNull(2) as? Intent ?: return@Hooker hostResult
                             val activity = currentActivity ?: return@Hooker hostResult
-                            val paths =
-                                pickedUris(data)
-                                    .mapNotNull { uri ->
-                                        takeReadPermission(activity, data, uri)
-                                        copyReplyFileToCache(activity, uri)
-                                    }
-                                    .distinct()
-                            if (paths.isNotEmpty()) onPicked?.invoke(paths)
+                            val callback = onPicked
+                            val uris = pickedUris(data)
+                            uris.forEach { uri -> takeReadPermission(activity, data, uri) }
+                            copyPickedUrisAsync(activity, uris, "回复素材", { uri -> copyReplyFileToCache(activity, uri) }) { paths -> callback?.invoke(paths) }
 
                             return@Hooker hostResult
                         } finally {
@@ -1600,23 +1656,14 @@ internal object AutoReplyFilePickerBridge {
             currentActivity = activity
             hookActivityResult(activity.javaClass)
             hookActivityResult(Activity::class.java)
-            val intent =
-                Intent(Intent.ACTION_OPEN_DOCUMENT)
-                    .apply {
-                        addCategory(Intent.CATEGORY_OPENABLE)
-                        type = "*/*"
-                        putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
-                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                        addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
-                    }
-                    .preferSystemDocumentsUi(activity)
+            val mimeType = replyPickerMimeType(replyMode, autoReply = true)
             try {
-                activity.startActivityForResult(intent, AUTO_REPLY_FILE_REQUEST_CODE)
+                launchTypedPicker(activity, mimeType, 0, AUTO_REPLY_FILE_REQUEST_CODE, autoReplyPickerTitle(replyMode))
             } catch (_: Throwable) {
                 val fallback =
                     Intent(Intent.ACTION_GET_CONTENT).apply {
                         addCategory(Intent.CATEGORY_OPENABLE)
-                        type = "*/*"
+                        type = mimeType
                         putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
                         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                     }
@@ -1659,14 +1706,10 @@ internal object AutoReplyFilePickerBridge {
                             val data =
                                 chain.args.getOrNull(2) as? Intent ?: return@Hooker hostResult
                             val activity = currentActivity ?: return@Hooker hostResult
-                            val paths =
-                                pickedUris(data)
-                                    .mapNotNull { uri ->
-                                        takeReadPermission(activity, data, uri)
-                                        copyReplyFileToCache(activity, uri)
-                                    }
-                                    .distinct()
-                            if (paths.isNotEmpty()) onPicked?.invoke(paths)
+                            val callback = onPicked
+                            val uris = pickedUris(data)
+                            uris.forEach { uri -> takeReadPermission(activity, data, uri) }
+                            copyPickedUrisAsync(activity, uris, "自动回复素材", { uri -> copyReplyFileToCache(activity, uri) }) { paths -> callback?.invoke(paths) }
 
                             return@Hooker hostResult
                         } finally {
@@ -1740,7 +1783,7 @@ internal object ScheduledTaskFilePickerBridge {
     private var currentActivity: Activity? = null
 
     @Synchronized
-    fun launch(activity: Activity, taskType: Int, onResult: (List<String>) -> Unit) {
+    fun launch(activity: Activity, taskType: Int, maxCount: Int? = null, onResult: (List<String>) -> Unit) {
         var requestGeneration: Long? = null
         try {
             resultHooks.attach(activity)
@@ -1749,24 +1792,16 @@ internal object ScheduledTaskFilePickerBridge {
             currentActivity = activity
             hookActivityResult(activity.javaClass)
             hookActivityResult(Activity::class.java)
-            val intent =
-                Intent(Intent.ACTION_OPEN_DOCUMENT)
-                    .apply {
-                        addCategory(Intent.CATEGORY_OPENABLE)
-                        type = "*/*"
-                        putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
-                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                        addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
-                    }
-                    .preferSystemDocumentsUi(activity)
+            val mimeType = scheduledTaskFilePickerMimeType(taskType)
+            val itemLimit = scheduledTaskFilePickerMaxCount(taskType, maxCount)
             try {
-                activity.startActivityForResult(intent, SCHEDULED_TASK_FILE_REQUEST_CODE)
+                launchTypedPicker(activity, mimeType, itemLimit, SCHEDULED_TASK_FILE_REQUEST_CODE, scheduledTaskPickerTitle(taskType))
             } catch (_: Throwable) {
                 val fallback =
                     Intent(Intent.ACTION_GET_CONTENT).apply {
                         addCategory(Intent.CATEGORY_OPENABLE)
-                        type = "*/*"
-                        putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+                        type = mimeType
+                        if (itemLimit != 1) putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
                         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                     }
                 activity.startActivityForResult(
@@ -1808,14 +1843,10 @@ internal object ScheduledTaskFilePickerBridge {
                             val data =
                                 chain.args.getOrNull(2) as? Intent ?: return@Hooker hostResult
                             val activity = currentActivity ?: return@Hooker hostResult
-                            val paths =
-                                scheduledTaskPickedUris(data)
-                                    .mapNotNull { uri ->
-                                        scheduledTaskTakeReadPermission(activity, data, uri)
-                                        copyScheduledTaskFileToCache(activity, uri)
-                                    }
-                                    .distinct()
-                            if (paths.isNotEmpty()) onPicked?.invoke(paths)
+                            val callback = onPicked
+                            val uris = scheduledTaskPickedUris(data)
+                            uris.forEach { uri -> scheduledTaskTakeReadPermission(activity, data, uri) }
+                            copyPickedUrisAsync(activity, uris, "任务素材", { uri -> copyScheduledTaskFileToCache(activity, uri) }) { paths -> callback?.invoke(paths) }
 
                             return@Hooker hostResult
                         } finally {
@@ -1937,7 +1968,7 @@ internal object ConfigImportExportBridge {
                 Intent(Intent.ACTION_OPEN_DOCUMENT)
                     .apply {
                         addCategory(Intent.CATEGORY_OPENABLE)
-                        type = "*/*"
+                        type = "application/json"
                         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                     }
                     .preferSystemDocumentsUi(activity)
@@ -1947,7 +1978,7 @@ internal object ConfigImportExportBridge {
                 val fallback =
                     Intent(Intent.ACTION_GET_CONTENT).apply {
                         addCategory(Intent.CATEGORY_OPENABLE)
-                        type = "*/*"
+                        type = "application/json"
                         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                     }
                 activity.startActivityForResult(

@@ -1,13 +1,18 @@
 package h.Hchat.ui.miuix
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -26,6 +31,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
+import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -79,15 +85,26 @@ internal fun SequenceItemActions(
 @Composable
 internal fun PrimaryFormAction(title: String, error: String?, onClick: () -> Unit) {
     Column(Modifier.fillMaxWidth().padding(top = 24.dp)) {
-        TextButton(
-            text = title,
-            onClick = onClick,
-            enabled = error == null,
-            modifier = Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp),
-            colors = ButtonDefaults.textButtonColorsPrimary()
-        )
+        if (error == null) {
+            Button(
+                onClick = onClick,
+                modifier = Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp),
+                colors = ButtonDefaults.buttonColorsPrimary()
+            ) { Text(title) }
+        } else {
+            Box(
+                modifier = Modifier.fillMaxWidth()
+                    .defaultMinSize(minHeight = 48.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(MiuixTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                    .padding(horizontal = 12.dp, vertical = 12.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(title, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+            }
+        }
         if (error != null) {
-            Text(error, modifier = Modifier.padding(top = 8.dp, start = 4.dp), color = MiuixTheme.colorScheme.onSurfaceVariantSummary, fontSize = 12.sp)
+            Text(error, modifier = Modifier.padding(top = 8.dp, start = 4.dp), color = MiuixTheme.colorScheme.error, fontSize = 12.sp)
         }
     }
 }
@@ -143,7 +160,7 @@ internal fun SequenceItemCard(
     onToggle: () -> Unit,
     content: @Composable () -> Unit
 ) {
-    SettingsCard(modifier.animateContentSize()) {
+    SettingsCard(modifier) {
         Column {
             Row(
                 modifier = Modifier.fillMaxWidth().defaultMinSize(minHeight = 56.dp)
@@ -166,7 +183,11 @@ internal fun SequenceItemCard(
                 }
                 Text(if (expanded) "⌃" else "⌄", color = MiuixTheme.colorScheme.onSurfaceVariantSummary, fontSize = 22.sp)
             }
-            AnimatedVisibility(visible = expanded) {
+            AnimatedVisibility(
+                visible = expanded,
+                enter = fadeIn(tween(durationMillis = 90)),
+                exit = fadeOut(tween(durationMillis = 70))
+            ) {
                 Column {
                     InsetDivider()
                     content()

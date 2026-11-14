@@ -751,7 +751,7 @@ private fun ConversationGroupEditorPage(
                 item { SettingsSectionTitle(text = "操作") }
                 item {
                     SettingsCard {
-                        ContentActionRow("创建") {
+                        ContentActionRow("创建", emphasis = ContentActionEmphasis.PRIMARY) {
                             if (draft.name.isBlank()) Toast.makeText(context, "请输入分组名称", Toast.LENGTH_SHORT).show()
                             else onSave(draft)
                         }
@@ -1434,10 +1434,10 @@ private fun GroupChatLabelEditorPage(
             item { SettingsSectionTitle(text = "操作") }
             item {
                 SettingsCard {
-                    if (!existing) ContentActionRow("创建") {
+                    if (!existing) ContentActionRow("创建", emphasis = ContentActionEmphasis.PRIMARY) {
                         if (draft.name.isBlank()) Toast.makeText(context, "请输入标签名称", Toast.LENGTH_SHORT).show()
                         else onSave(draft)
-                    } else ContentActionRow("删除", onClick = onDelete)
+                    } else ContentActionRow("删除", emphasis = ContentActionEmphasis.DANGER, onClick = onDelete)
                 }
             }
         }

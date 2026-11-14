@@ -129,7 +129,7 @@ internal fun RedPacketReplyStepsPage(
                                 }
                                 InsetDivider()
                                 if (entry.pending) {
-                                    ContentActionRow("添加此条") {
+                                    ContentActionRow("添加此条", emphasis = ContentActionEmphasis.PRIMARY) {
                                         if (session.commit(step.id)) publish() else Toast.makeText(context, "请填写有效的回复内容和延迟", Toast.LENGTH_SHORT).show()
                                     }
                                     ContentActionRow("放弃新增") { session.remove(step.id) }

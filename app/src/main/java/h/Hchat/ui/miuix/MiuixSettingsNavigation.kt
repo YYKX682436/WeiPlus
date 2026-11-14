@@ -170,6 +170,8 @@ import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.nav.core.NavKey
 import top.yukonga.miuix.kmp.nav.core.NavDisplay
+import top.yukonga.miuix.kmp.nav.core.NavDisplayEffects
+import top.yukonga.miuix.kmp.nav.transition.NavTransitions
 import top.yukonga.miuix.kmp.nav.core.navBackStackOf
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import java.text.SimpleDateFormat
@@ -1165,14 +1167,14 @@ internal sealed class GroupRenameRoute {
 internal sealed class ScheduledTaskRoute {
     object Main : ScheduledTaskRoute()
     object Editor : ScheduledTaskRoute()
-    object ContactPicker : ScheduledTaskRoute()
+    data class ContactPicker(val request: ContactPickerRequest) : ScheduledTaskRoute()
     data class FavoritePicker(val index: Int, val request: FavoritePickerRequest) : ScheduledTaskRoute()
 }
 
 internal sealed class SelectedMessagesRoute {
     object Main : SelectedMessagesRoute()
     object Editor : SelectedMessagesRoute()
-    object ContactPicker : SelectedMessagesRoute()
+    data class ContactPicker(val request: ContactPickerRequest) : SelectedMessagesRoute()
     data class FavoritePicker(val request: FavoritePickerRequest) : SelectedMessagesRoute()
 }
 
@@ -1316,14 +1318,14 @@ internal fun GroupLeaveRoute.depth(): Int = when (this) {
 internal fun ScheduledTaskRoute.depth(): Int = when (this) {
     ScheduledTaskRoute.Main -> 0
     ScheduledTaskRoute.Editor -> 1
-    ScheduledTaskRoute.ContactPicker,
+    is ScheduledTaskRoute.ContactPicker,
     is ScheduledTaskRoute.FavoritePicker -> 2
 }
 
 internal fun SelectedMessagesRoute.depth(): Int = when (this) {
     SelectedMessagesRoute.Main -> 0
     SelectedMessagesRoute.Editor -> 1
-    SelectedMessagesRoute.ContactPicker,
+    is SelectedMessagesRoute.ContactPicker,
     is SelectedMessagesRoute.FavoritePicker -> 2
 }
 
@@ -1445,8 +1447,8 @@ internal fun <T> SettingsRouteTransition(
     NavDisplay(
         backStack = routes,
         modifier = modifier.background(MiuixTheme.colorScheme.background),
-        transition = rememberSettingsNavTransition(),
-        effects = settingsNavEffects(),
+        transition = NavTransitions.MiuixDefault,
+        effects = NavDisplayEffects.None,
         onBack = {
             returning = true
             if (!dispatchBack()) returning = false

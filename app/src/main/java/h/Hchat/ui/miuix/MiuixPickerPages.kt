@@ -235,7 +235,7 @@ internal fun MessageBlockContactPickerPage(
                                 selectedIds = if (bottomVisibleAllSelected) selectedIds - bottomVisibleContactIds else selectedIds + bottomVisibleContactIds
                             }
                         }
-                        ContentActionRow("下一步") {
+                        ContentActionRow("下一步（${selectedIds.size}）", emphasis = ContentActionEmphasis.PRIMARY) {
                                 val picked = availableContacts.filter { selectedIds.contains(it.contact.id) }
                                 onConfirm(picked)
                         }
@@ -292,23 +292,26 @@ internal fun ContactPickerPage(
     onSelectionChange: ((Set<String>) -> Unit)? = null,
     onConfirm: (List<ContactOption>) -> Unit = {}
 ) {
-    var loading by remember(request) { mutableStateOf(true) }
-    var error by remember(request) { mutableStateOf("") }
-    var contacts by remember(request) { mutableStateOf(emptyList<ContactOption>()) }
-    var query by remember(request) { mutableStateOf("") }
-    val initialSelectedIds = remember(request) { parseIds(request.existingValue) }
+    // A request carries callbacks and a changing existingValue. Those are not session identity:
+    // they may change while a parent auto-saves selection. Freeze initialValue for this screen.
+    val sessionKey = remember(request.sessionKey()) { Any() }
+    var loading by remember(sessionKey) { mutableStateOf(true) }
+    var error by remember(sessionKey) { mutableStateOf("") }
+    var contacts by remember(sessionKey) { mutableStateOf(emptyList<ContactOption>()) }
+    var query by remember(sessionKey) { mutableStateOf("") }
+    val initialSelectedIds = remember(sessionKey) { parseIds(request.existingValue) }
     val batchCandidateMode = request.batchCandidateMode()
     val batchLabelFilterId = request.batchLabelFilterId()?.trim()?.takeIf { it.isNotEmpty() }
     val batchSelectionResetKey = request.batchSelectionResetKey()
-    val candidateLoadToken = remember(request, batchCandidateMode, batchLabelFilterId) { Any() }
+    val candidateLoadToken = remember(sessionKey, batchCandidateMode, batchLabelFilterId) { Any() }
     // Scope and action changes discard selection immediately; searches leave these keys unchanged.
-    var selectedIds by remember(request, candidateLoadToken, batchSelectionResetKey) {
+    var selectedIds by remember(sessionKey, candidateLoadToken, batchSelectionResetKey) {
         mutableStateOf(initialSelectedIds)
     }
-    var batchSelectionOrder by remember(request, candidateLoadToken, batchSelectionResetKey) {
+    var batchSelectionOrder by remember(sessionKey, candidateLoadToken, batchSelectionResetKey) {
         mutableStateOf(initialSelectedIds.toList())
     }
-    var loadedCandidateLoadToken by remember(request) { mutableStateOf<Any?>(null) }
+    var loadedCandidateLoadToken by remember(sessionKey) { mutableStateOf<Any?>(null) }
     val candidateStateFresh = !request.flatBatchSelection || loadedCandidateLoadToken === candidateLoadToken
     val candidateLoading = loading || (request.flatBatchSelection && !candidateStateFresh)
     val candidateContacts = if (request.flatBatchSelection && !candidateStateFresh) {
@@ -322,7 +325,7 @@ internal fun ContactPickerPage(
     }
     val batchSelectionOrderForUi = batchSelectionOrder.filter { it in selectableBatchContacts }
     val selectedIdsForUi = if (request.flatBatchSelection) batchSelectionOrderForUi.toSet() else selectedIds
-    val loadGate = remember(request) { BatchCandidateLoadGate() }
+    val loadGate = remember(sessionKey) { BatchCandidateLoadGate() }
 
     fun canUseBatchCandidates(): Boolean =
         !loading && error.isBlank() && loadedCandidateLoadToken === candidateLoadToken &&
@@ -346,9 +349,9 @@ internal fun ContactPickerPage(
     val scopeSelectionEnabled = !request.flatBatchSelection && request.enableScopeSelection &&
         request.multiSelect &&
         request.mode == ContactPickerMode.FRIENDS
-    var scopeTab by remember(request) { mutableStateOf(ContactPickerScopeTab.FRIENDS) }
-    var selectedConversationGroupId by remember(request) { mutableStateOf("") }
-    var contactFilter by remember(request) {
+    var scopeTab by remember(sessionKey) { mutableStateOf(ContactPickerScopeTab.FRIENDS) }
+    var selectedConversationGroupId by remember(sessionKey) { mutableStateOf("") }
+    var contactFilter by remember(sessionKey) {
         mutableStateOf(
             if (!request.flatBatchSelection && request.mode == ContactPickerMode.FRIENDS && request.enableLabels) {
                 ContactPickerFilter.FRIENDS
@@ -357,8 +360,8 @@ internal fun ContactPickerPage(
             }
         )
     }
-    var selectedLabel by remember(request) { mutableStateOf("") }
-    val groupLabels = remember(request) {
+    var selectedLabel by remember(sessionKey) { mutableStateOf("") }
+    val groupLabels = remember(sessionKey) {
         if (!request.flatBatchSelection && request.multiSelect && request.enableGroupLabels && request.mode.supportsGroups()) {
             GroupChatLabelStore.load(context)
         } else {
@@ -367,11 +370,21 @@ internal fun ContactPickerPage(
     }
     val listState = rememberLazyListState()
     val scrollBehavior = MiuixScrollBehavior()
+    LaunchedEffect(sessionKey) { listState.scrollToItem(0) }
 
     DisposableEffect(loadGate) {
         onDispose { loadGate.invalidate() }
     }
-    LaunchedEffect(request, candidateLoadToken) {
+    LaunchedEffect(
+        sessionKey,
+        candidateLoadToken,
+        request.mode,
+        request.enableLabels,
+        request.onlyExistingConversations,
+        request.strictFriendsOnly,
+        request.strictFriendsAndGroupsOnly,
+        request.nativeHomeConversationList
+    ) {
         val generation = loadGate.beginLoad()
         loading = true
         error = ""
@@ -704,7 +717,8 @@ internal fun ContactPickerPage(
                     if (onSelectionChange == null) {
                         val action = request.multiSelectConfirmPrefix
                             ?: if (request.showSelectedCount) "下一步" else if (request.multiSelect) "完成" else request.singleConfirmText
-                        ContentActionRow(action, enabled = batchConfirmEnabled, onClick = confirm@{
+                        val actionLabel = if (request.multiSelect) "$action（$selectedContactCount）" else action
+                        ContentActionRow(actionLabel, enabled = batchConfirmEnabled, emphasis = ContentActionEmphasis.PRIMARY, disabledReason = "请先选择有效对象或完成必要条件", onClick = confirm@{
                             val picked = if (request.flatBatchSelection) {
                                 if (!canUseBatchCandidates()) return@confirm
                                 batchSelectionOrder.mapNotNull(selectableBatchContacts::get)
@@ -1145,12 +1159,12 @@ internal fun GroupMemberPickerPage(
                 }
                 if (selectedEntries.isNotEmpty() || onSelectionChange == null) item {
                     SettingsCard {
-                        if (selectedEntries.isNotEmpty()) ContentActionRow("清空") {
+                        if (selectedEntries.isNotEmpty()) ContentActionRow("清空", emphasis = ContentActionEmphasis.DANGER) {
                             selectedEntries = emptySet()
                             selectionEdited = true
                             onSelectionChange?.invoke(selectedEntries)
                         }
-                        if (onSelectionChange == null) ContentActionRow("完成") {
+                        if (onSelectionChange == null) ContentActionRow("完成", emphasis = ContentActionEmphasis.PRIMARY) {
                                 if (selectedGroup == null && selectedEntries.isEmpty() && !selectionEdited) {
                                     Toast.makeText(context, "请先选择群聊", Toast.LENGTH_SHORT).show()
                                 } else {

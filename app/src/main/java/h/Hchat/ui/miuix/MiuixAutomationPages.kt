@@ -842,7 +842,7 @@ private fun AutoMessageForwardRuleListPage(
                         if (visibleIds.isNotEmpty()) ContentActionRow(if (allVisibleSelected) "取消全选" else "全选") {
                             selectedIds = if (allVisibleSelected) selectedIds - visibleIds else selectedIds + visibleIds
                         }
-                        ContentActionRow("删除（${selected.size}）") {
+                        ContentActionRow("删除（${selected.size}）", emphasis = ContentActionEmphasis.DANGER) {
                             if (selected.isEmpty()) Toast.makeText(context, "请先选择规则", Toast.LENGTH_SHORT).show()
                             else showDeleteConfirm = true
                         }
@@ -1220,7 +1220,7 @@ private fun AutoReplyRuleListPage(
                         if (visibleIds.isNotEmpty()) ContentActionRow(if (allVisibleSelected) "取消全选" else "全选") {
                             selectedIds = if (allVisibleSelected) selectedIds - visibleIds else selectedIds + visibleIds
                         }
-                        ContentActionRow("删除（${selectedRules.size}）") {
+                        ContentActionRow("删除（${selectedRules.size}）", emphasis = ContentActionEmphasis.DANGER) {
                             if (selectedRules.isEmpty()) Toast.makeText(context, "请先选择规则", Toast.LENGTH_SHORT).show()
                             else showDeleteConfirm = true
                         }
@@ -2185,7 +2185,7 @@ private fun AutoReplyAiPage(context: Context, sp: SharedPreferences, onBack: () 
                                     configs = settings.zhiliaConfigs()
                                     zhiliaPendingName = newName
                                 }
-                                if (configs.size > 1) ContentActionRow("删除") {
+                                if (configs.size > 1) ContentActionRow("删除", emphasis = ContentActionEmphasis.DANGER) {
                                     val next = configs.filterNot { it.name == activeName }
                                     val nextActive = next.firstOrNull()?.name ?: AutoReplySettings.DEFAULT_ZHILIA_CONFIG_NAME
                                     settings.saveZhiliaConfigs(next, nextActive)
@@ -2393,7 +2393,7 @@ private fun NewZhiliaConfigPage(
             item { SettingsSectionTitle(text = "操作") }
             item {
                 SettingsCard {
-                    ContentActionRow("创建", enabled = valid) {
+                    ContentActionRow("创建", enabled = valid, emphasis = ContentActionEmphasis.PRIMARY) {
                         onCreate(AutoReplyZhiliaConfig(name.trim(), apiKey.trim(), apiBase.trim(), apiPath.trim(), model.trim(), prompt, contextLimit.toInt()))
                     }
                 }
@@ -2517,7 +2517,7 @@ private fun LazyListScope.autoReplySequenceSection(
                     }
                     InsetDivider()
                     if (entry.pending) {
-                        ContentActionRow("添加此条") {
+                        ContentActionRow("添加此条", emphasis = ContentActionEmphasis.PRIMARY) {
                             if (session.commit(step.id)) publish()
                             else Toast.makeText(context, "请填写有效的回复内容和延迟", Toast.LENGTH_SHORT).show()
                         }

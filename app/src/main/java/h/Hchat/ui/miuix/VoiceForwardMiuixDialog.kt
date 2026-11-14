@@ -79,6 +79,7 @@ import androidx.lifecycle.ViewModelStoreOwner
 import androidx.navigationevent.NavigationEventDispatcher
 import androidx.navigationevent.NavigationEventDispatcherOwner
 import androidx.navigationevent.NavigationEventInfo
+import androidx.navigationevent.DirectNavigationEventInput
 import androidx.navigationevent.compose.LocalNavigationEventDispatcherOwner
 import androidx.navigationevent.compose.NavigationBackHandler
 import androidx.navigationevent.compose.rememberNavigationEventState
@@ -1925,7 +1926,10 @@ object VoiceForwardMiuixDialog {
     ): DialogHandle {
         val decor = activity.window?.decorView as? ViewGroup ?: return EmptyHandle
         val owner = DialogComposeOwner()
+        val directBackInput = DirectNavigationEventInput()
+        owner.navigationEventDispatcher.addInput(directBackInput)
         val closed = AtomicBoolean(false)
+        var completedBackCallbackCleanup: (() -> Unit)? = null
         val root = FrameLayout(activity).apply {
             setBackgroundColor(AndroidColor.TRANSPARENT)
             isClickable = true
@@ -1943,6 +1947,8 @@ object VoiceForwardMiuixDialog {
         val closeDialog = close@{
             if (!closed.compareAndSet(false, true)) return@close
             val cleanup = {
+                completedBackCallbackCleanup?.invoke()
+                completedBackCallbackCleanup = null
                 runCatching { compose.disposeComposition() }
                 runCatching { (root.parent as? ViewGroup)?.removeView(root) }
                 runCatching { owner.clear(root) }
@@ -1976,7 +1982,9 @@ object VoiceForwardMiuixDialog {
             )
         )
         decor.addView(root)
-        attachEmbeddedBackInput(root, owner.navigationEventDispatcher)
+        completedBackCallbackCleanup = attachCompletedBackCallback(root) {
+            completeStandardBack(directBackInput)
+        }
         root.requestFocus()
         return object : DialogHandle {
             override fun close() = closeDialog()

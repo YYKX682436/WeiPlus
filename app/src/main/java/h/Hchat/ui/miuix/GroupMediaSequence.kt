@@ -113,7 +113,7 @@ internal fun GroupMediaSequenceEditor(
             ) {
                 if (entry.pending) {
                     InfoRow("素材", "沿用此类型现有的进群和退群素材")
-                    ContentActionRow("添加此条") { session.commit(entry.key); onChange(session.value()) }
+                    ContentActionRow("添加此条", emphasis = ContentActionEmphasis.PRIMARY) { session.commit(entry.key); onChange(session.value()) }
                     ContentActionRow("放弃新增") { session.remove(entry.key) }
                 } else {
                     if (definition != null) {

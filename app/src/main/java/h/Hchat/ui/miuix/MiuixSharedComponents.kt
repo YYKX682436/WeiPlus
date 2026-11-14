@@ -58,15 +58,19 @@ import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -88,12 +92,14 @@ import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -106,6 +112,7 @@ import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.ViewModelStoreOwner
 import androidx.navigationevent.NavigationEventDispatcher
 import androidx.navigationevent.NavigationEventDispatcherOwner
+import androidx.navigationevent.OnBackCompletedFallback
 import androidx.savedstate.SavedStateRegistry
 import androidx.savedstate.SavedStateRegistryController
 import androidx.savedstate.SavedStateRegistryOwner
@@ -135,6 +142,7 @@ import h.Hchat.hooks.items.realtail.RealNameTailStore
 import h.Hchat.hooks.items.roundavatar.RoundAvatarSettings
 import h.Hchat.ui.FeatureSettingsProvider
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
+import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.Checkbox
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
@@ -150,9 +158,12 @@ import top.yukonga.miuix.kmp.blur.layerBackdrop
 import top.yukonga.miuix.kmp.blur.rememberLayerBackdrop
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import androidx.compose.runtime.withFrameNanos
 import java.io.File
 import java.net.URL
 import java.security.MessageDigest
@@ -397,6 +408,62 @@ internal fun PopupOptionRow(
     )
 }
 
+internal class InputEditCompletionController(private val scope: CoroutineScope) {
+    private var latestValue: String = ""
+    private var onFinished: ((String) -> Unit)? = null
+    private var edited = false
+    private var focused = false
+    private var pendingFinish: Job? = null
+
+    fun update(value: String, callback: ((String) -> Unit)?) {
+        latestValue = value
+        onFinished = callback
+    }
+
+    fun markEdited() {
+        edited = true
+    }
+
+    fun onFocusChanged(hasFocus: Boolean) {
+        focused = hasFocus
+        pendingFinish?.cancel()
+        pendingFinish = null
+        if (!hasFocus && edited) {
+            pendingFinish = scope.launch {
+                withFrameNanos { }
+                if (!focused) finish()
+            }
+        }
+    }
+
+    fun finish() {
+        pendingFinish?.cancel()
+        pendingFinish = null
+        if (!edited) return
+        edited = false
+        onFinished?.invoke(latestValue)
+    }
+
+    fun dispose() {
+        pendingFinish?.cancel()
+        pendingFinish = null
+    }
+}
+
+@Composable
+private fun rememberEditCompletionController(
+    value: String,
+    onFinished: ((String) -> Unit)?
+): InputEditCompletionController {
+    val scope = rememberCoroutineScope()
+    val latestValue by rememberUpdatedState(value)
+    val latestFinished by rememberUpdatedState(onFinished)
+    val controller = remember(scope) { InputEditCompletionController(scope) }
+    SideEffect { controller.update(latestValue, latestFinished) }
+    DisposableEffect(controller) { onDispose { controller.dispose() } }
+    return controller
+}
+
 @Composable
 internal fun InputRow(
     title: String,
@@ -406,12 +473,8 @@ internal fun InputRow(
     onEditingFinished: ((String) -> Unit)? = null,
     onValueChange: (String) -> Unit
 ) {
-    val currentValue by rememberUpdatedState(value)
-    val currentFinished by rememberUpdatedState(onEditingFinished)
-    var textEdited by remember { mutableStateOf(false) }
-    DisposableEffect(Unit) {
-        onDispose { if (textEdited) currentFinished?.invoke(currentValue) }
-    }
+    val editCompletion = rememberEditCompletionController(value, onEditingFinished)
+    val focusManager = LocalFocusManager.current
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp)) {
         Text(text = title, color = MiuixTheme.colorScheme.onSurface, fontWeight = FontWeight.Medium)
         if (summary.isNotBlank()) {
@@ -419,7 +482,9 @@ internal fun InputRow(
         }
         BasicTextField(
             value = value,
-            onValueChange = { textEdited = true; onValueChange(it) },
+            onValueChange = { editCompletion.markEdited(); onValueChange(it) },
+            keyboardOptions = KeyboardOptions(imeAction = if (minLines == 1) ImeAction.Done else ImeAction.Default),
+            keyboardActions = KeyboardActions(onDone = { editCompletion.finish(); focusManager.clearFocus() }),
             textStyle = TextStyle(
                 color = MiuixTheme.colorScheme.onSurface,
                 fontSize = 14.sp
@@ -427,10 +492,7 @@ internal fun InputRow(
             minLines = minLines,
             modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
                 .onFocusChanged { focus ->
-                    if (!focus.isFocused && textEdited) {
-                        textEdited = false
-                        currentFinished?.invoke(currentValue)
-                    }
+                    editCompletion.onFocusChanged(focus.isFocused)
                 }
                 .clip(RoundedCornerShape(10.dp))
                 .background(MiuixTheme.colorScheme.secondaryVariant)
@@ -478,14 +540,8 @@ internal fun ColorPickerRow(
     onValueChange: (String) -> Unit
 ) {
     var expanded by remember { mutableStateOf(false) }
-    val currentValue by rememberUpdatedState(value)
-    val currentFinished by rememberUpdatedState(onEditingFinished)
-    var textEdited by remember { mutableStateOf(false) }
-    DisposableEffect(Unit) {
-        onDispose {
-            if (textEdited) currentFinished?.invoke(currentValue)
-        }
-    }
+    val editCompletion = rememberEditCompletionController(value, onEditingFinished)
+    val focusManager = LocalFocusManager.current
     val colorParts = if (allowGradient) {
         colorSpecParts(value)
     } else {
@@ -531,19 +587,18 @@ internal fun ColorPickerRow(
             BasicTextField(
                 value = value,
                 onValueChange = {
-                    textEdited = true
+                    editCompletion.markEdited()
                     onValueChange(it.take(if (allowGradient) 19 else 9))
                 },
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { editCompletion.finish(); focusManager.clearFocus() }),
                 textStyle = TextStyle(
                     color = MiuixTheme.colorScheme.onSurface,
                     fontSize = 14.sp
                 ),
                 modifier = Modifier.weight(1f)
                     .onFocusChanged { focus ->
-                        if (!focus.isFocused && textEdited) {
-                            textEdited = false
-                            currentFinished?.invoke(currentValue)
-                        }
+                        editCompletion.onFocusChanged(focus.isFocused)
                     }
                     .clip(RoundedCornerShape(10.dp))
                     .background(MiuixTheme.colorScheme.secondaryVariant)
@@ -593,8 +648,9 @@ internal fun ColorPickerRow(
             PsColorPicker(
                 value = selectedColor,
                 onValueChange = { picked ->
+                    editCompletion.markEdited()
                     val next = if (allowGradient) {
-                        val latestParts = colorSpecParts(currentValue)
+                        val latestParts = colorSpecParts(value)
                         if (editEnd) {
                             composeColorSpec(latestParts.first.ifEmpty { picked }, picked)
                         } else {
@@ -891,16 +947,12 @@ internal fun VariableInputRow(
     fieldState: MutableState<TextFieldValue>? = null,
     onValueChange: (String) -> Unit
 ) {
+    val editCompletion = rememberEditCompletionController(value, onEditingFinished)
+    val focusManager = LocalFocusManager.current
     val localFieldState = remember {
         mutableStateOf(TextFieldValue(value, TextRange(value.length)))
     }
     var fieldValue by (fieldState ?: localFieldState)
-    val currentValue by rememberUpdatedState(value)
-    val currentFinished by rememberUpdatedState(onEditingFinished)
-    var textEdited by remember { mutableStateOf(false) }
-    DisposableEffect(Unit) {
-        onDispose { if (textEdited) currentFinished?.invoke(currentValue) }
-    }
     LaunchedEffect(value) {
         if (value != fieldValue.text) {
             fieldValue = TextFieldValue(value, TextRange(value.length))
@@ -915,10 +967,12 @@ internal fun VariableInputRow(
             value = fieldValue,
             onValueChange = {
                 val changed = it.text != fieldValue.text
-                if (changed) textEdited = true
+                if (changed) editCompletion.markEdited()
                 fieldValue = it
                 if (changed) onValueChange(it.text)
             },
+            keyboardOptions = KeyboardOptions(imeAction = if (minLines == 1) ImeAction.Done else ImeAction.Default),
+            keyboardActions = KeyboardActions(onDone = { editCompletion.finish(); focusManager.clearFocus() }),
             textStyle = TextStyle(
                 color = MiuixTheme.colorScheme.onSurface,
                 fontSize = 14.sp
@@ -926,10 +980,7 @@ internal fun VariableInputRow(
             minLines = minLines,
             modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
                 .onFocusChanged { focus ->
-                    if (!focus.isFocused && textEdited) {
-                        textEdited = false
-                        currentFinished?.invoke(currentValue)
-                    }
+                    editCompletion.onFocusChanged(focus.isFocused)
                 }
                 .clip(RoundedCornerShape(10.dp))
                 .background(MiuixTheme.colorScheme.secondaryVariant)
@@ -939,7 +990,7 @@ internal fun VariableInputRow(
             variables = variables,
             onInsert = { token ->
                 val next = fieldValue.insertToken(token)
-                textEdited = true
+                editCompletion.markEdited()
                 fieldValue = next
                 onValueChange(next.text)
             }
@@ -1682,12 +1733,58 @@ internal fun AddActionRow(title: String, onClick: () -> Unit) {
     SelectRow(title, "", NavIcons.Add, false, onClick)
 }
 
+internal enum class ContentActionEmphasis { PRIMARY, SECONDARY, DANGER }
+
 @Composable
-internal fun ContentActionRow(text: String, enabled: Boolean = true, onClick: () -> Unit) {
+internal fun ContentActionRow(
+    text: String,
+    enabled: Boolean = true,
+    emphasis: ContentActionEmphasis = ContentActionEmphasis.SECONDARY,
+    disabledReason: String = "当前条件未满足",
+    onClick: () -> Unit
+) {
     if (!enabled) {
-        InfoRow(text, "当前条件未满足")
-    } else {
-        SelectRow(text, "", null, false, onClick)
+        Column(Modifier.fillMaxWidth()) {
+            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                Box(
+                    modifier = Modifier.fillMaxWidth()
+                        .defaultMinSize(minHeight = 48.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(MiuixTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                        .padding(horizontal = 12.dp, vertical = 12.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(text, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                }
+            }
+            Text(disabledReason, modifier = Modifier.padding(start = 12.dp, top = 2.dp, bottom = 6.dp),
+                color = MiuixTheme.colorScheme.error, fontSize = 12.sp)
+        }
+        return
+    }
+    when (emphasis) {
+        ContentActionEmphasis.PRIMARY -> Button(
+            onClick = onClick,
+            modifier = Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp),
+            colors = ButtonDefaults.buttonColorsPrimary()
+        ) { Text(text) }
+        ContentActionEmphasis.SECONDARY -> Box(
+            modifier = Modifier.fillMaxWidth()
+                .defaultMinSize(minHeight = 48.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .clickable(onClick = onClick)
+                .padding(horizontal = 12.dp, vertical = 12.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(text, color = MiuixTheme.colorScheme.primary, fontWeight = FontWeight.Medium)
+        }
+        ContentActionEmphasis.DANGER -> Box(
+            modifier = Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp)
+                .clickable(onClick = onClick).padding(horizontal = 12.dp, vertical = 12.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(text, color = MiuixTheme.colorScheme.error, fontWeight = FontWeight.Medium)
+        }
     }
 }
 
@@ -2325,7 +2422,10 @@ internal class EmbeddedComposeOwner : LifecycleOwner, SavedStateRegistryOwner, V
     private val lifecycleRegistry = LifecycleRegistry(this)
     private val savedStateRegistryController = SavedStateRegistryController.create(this)
     private val store = ViewModelStore()
-    private val navigationDispatcher = NavigationEventDispatcher()
+    private var onBackCompletedFallback: (() -> Unit)? = null
+    private val navigationDispatcher = NavigationEventDispatcher(
+        OnBackCompletedFallback { onBackCompletedFallback?.invoke() }
+    )
     private val composeRuntime = lazy(LazyThreadSafetyMode.NONE) {
         EmbeddedComposeRuntime(lifecycleRegistry)
     }
@@ -2342,6 +2442,10 @@ internal class EmbeddedComposeOwner : LifecycleOwner, SavedStateRegistryOwner, V
 
     override val navigationEventDispatcher: NavigationEventDispatcher
         get() = navigationDispatcher
+
+    fun setBackFallback(onBack: () -> Unit) {
+        onBackCompletedFallback = onBack
+    }
 
     fun install(view: View) {
         EmbeddedComposeOwnerInstaller.install(view, this, this, this, this)
@@ -2510,6 +2614,38 @@ internal data class ContactPickerRequest(
     val batchLabelFilterId: () -> String? = { null },
     val batchSelectionResetKey: () -> String? = { null },
     val hideSearch: Boolean = false
+)
+
+internal data class ContactPickerSessionKey(
+    val title: String,
+    val mode: ContactPickerMode,
+    val multiSelect: Boolean,
+    val enableLabels: Boolean,
+    val enableGroupLabels: Boolean,
+    val enableScopeSelection: Boolean,
+    val onlyExistingConversations: Boolean,
+    val strictFriendsOnly: Boolean,
+    val strictFriendsAndGroupsOnly: Boolean,
+    val showSelectedCount: Boolean,
+    val nativeHomeConversationList: Boolean,
+    val flatBatchSelection: Boolean,
+    val hideSearch: Boolean
+)
+
+internal fun ContactPickerRequest.sessionKey() = ContactPickerSessionKey(
+    title = title,
+    mode = mode,
+    multiSelect = multiSelect,
+    enableLabels = enableLabels,
+    enableGroupLabels = enableGroupLabels,
+    enableScopeSelection = enableScopeSelection,
+    onlyExistingConversations = onlyExistingConversations,
+    strictFriendsOnly = strictFriendsOnly,
+    strictFriendsAndGroupsOnly = strictFriendsAndGroupsOnly,
+    showSelectedCount = showSelectedCount,
+    nativeHomeConversationList = nativeHomeConversationList,
+    flatBatchSelection = flatBatchSelection,
+    hideSearch = hideSearch
 )
 
 internal enum class AutoMessageForwardRoute {

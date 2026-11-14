@@ -274,7 +274,9 @@ internal fun BatchMomentsPickerPage(
                     InsetDivider()
                     ContentActionRow(
                         "$action（${selectedIds.size}）",
-                        enabled = selectedIds.isNotEmpty() && taskSnapshot.status != BatchTaskStatus.RUNNING && taskSnapshot.status != BatchTaskStatus.STOPPING
+                        enabled = selectedIds.isNotEmpty() && taskSnapshot.status != BatchTaskStatus.RUNNING && taskSnapshot.status != BatchTaskStatus.STOPPING,
+                        emphasis = ContentActionEmphasis.PRIMARY,
+                        disabledReason = if (selectedIds.isEmpty()) "请先选择动态" else "已有批量任务正在执行"
                     ) {
                         if (selectedIds.isNotEmpty()) {
                             pendingAction = BatchMomentsSelection.selectable(posts, forLike).filter { it.snsId in selectedIds }

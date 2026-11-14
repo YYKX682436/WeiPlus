@@ -254,7 +254,7 @@ internal fun CustomNotificationRuleListPage(
                         if (visibleTalkers.isNotEmpty()) ContentActionRow(if (allVisibleSelected) "取消全选" else "全选") {
                             selectedTalkers = if (allVisibleSelected) selectedTalkers - visibleTalkers else selectedTalkers + visibleTalkers
                         }
-                        ContentActionRow("删除（${selectedRules.size}）") {
+                        ContentActionRow("删除（${selectedRules.size}）", emphasis = ContentActionEmphasis.DANGER) {
                             if (selectedRules.isEmpty()) Toast.makeText(context, "请先选择会话规则", Toast.LENGTH_SHORT).show()
                             else showDeleteConfirm = true
                         }
@@ -724,7 +724,7 @@ internal fun CustomNotificationRuleEditorPage(
 
             if (!isDefault) item {
                 SettingsCard(modifier = Modifier.padding(top = 24.dp)) {
-                    ContentActionRow("删除", onClick = onDelete)
+                    ContentActionRow("删除", emphasis = ContentActionEmphasis.DANGER, onClick = onDelete)
                 }
             }
         }
@@ -1930,7 +1930,7 @@ private fun KeywordNotificationKeywordListPage(
                         EmptyText("暂无关键词。")
                         InsetDivider()
                     }
-                    if (keywords.isNotEmpty()) ContentActionRow("清空", onClick = onClear)
+                    if (keywords.isNotEmpty()) ContentActionRow("清空", emphasis = ContentActionEmphasis.DANGER, onClick = onClear)
                     AddActionRow("添加关键词", onClick = onAdd)
                 }
             }
@@ -2002,8 +2002,8 @@ private fun KeywordNotificationKeywordEditorPage(
             item { SettingsSectionTitle(text = "操作") }
             item {
                 SettingsCard {
-                    if (isNew) ContentActionRow("创建") { onSave(KeywordRule(keyword.trim(), wholeWord)) }
-                    else if (onDelete != null) ContentActionRow("删除", onClick = onDelete)
+                    if (isNew) ContentActionRow("创建", emphasis = ContentActionEmphasis.PRIMARY) { onSave(KeywordRule(keyword.trim(), wholeWord)) }
+                    else if (onDelete != null) ContentActionRow("删除", emphasis = ContentActionEmphasis.DANGER, onClick = onDelete)
                 }
             }
         }

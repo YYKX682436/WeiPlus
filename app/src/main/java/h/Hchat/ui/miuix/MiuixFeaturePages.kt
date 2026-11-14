@@ -103,7 +103,18 @@ internal fun SelectedMessagesMiuixPage(
             Toast.makeText(context, it, Toast.LENGTH_SHORT).show()
             return
         }
-        route = SelectedMessagesRoute.ContactPicker
+        val official = channel == SelectedMessagesRuntimeCoordinator.CHANNEL_OFFICIAL
+        route = SelectedMessagesRoute.ContactPicker(
+            ContactPickerRequest(
+                title = if (official) "选择官方群发好友" else "选择群发对象",
+                mode = if (official) ContactPickerMode.FRIENDS else ContactPickerMode.ALL_CHATS,
+                multiSelect = true,
+                existingValue = formatIds(draft.targetIds),
+                onValue = {},
+                enableLabels = true,
+                showSelectedCount = true
+            )
+        )
     }
 
     fun startSend() {
@@ -198,18 +209,10 @@ internal fun SelectedMessagesMiuixPage(
                     onSend = ::startSend
                 )
             }
-            SelectedMessagesRoute.ContactPicker -> {
-                val official = channel == SelectedMessagesRuntimeCoordinator.CHANNEL_OFFICIAL
+            is SelectedMessagesRoute.ContactPicker -> {
                 ContactPickerPage(
                     context = context,
-                    request = ContactPickerRequest(
-                        title = if (official) "选择官方群发好友" else "选择群发对象",
-                        mode = if (official) ContactPickerMode.FRIENDS else ContactPickerMode.ALL_CHATS,
-                        multiSelect = true,
-                        existingValue = formatIds(draft.targetIds),
-                        onValue = {},
-                        enableLabels = true
-                    ),
+                    request = currentRoute.request,
                     onBack = { route = SelectedMessagesRoute.Editor },
                     onConfirm = { selected ->
                         draft = draft.copy(targetIds = selected.map { it.id })

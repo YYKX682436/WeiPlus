@@ -913,7 +913,7 @@ private fun RedPacketBindingListPage(
                         if (visibleIds.isNotEmpty()) ContentActionRow(if (allVisibleSelected) "取消全选" else "全选") {
                             selectedIds = if (allVisibleSelected) selectedIds - visibleIds else selectedIds + visibleIds
                         }
-                        ContentActionRow("删除（${selectedBindings.size}）") {
+                        ContentActionRow("删除（${selectedBindings.size}）", emphasis = ContentActionEmphasis.DANGER) {
                             if (selectedBindings.isEmpty()) Toast.makeText(context, "请先选择适用聊天", Toast.LENGTH_SHORT).show()
                             else showDeleteConfirm = true
                         }
@@ -1556,8 +1556,8 @@ private fun RedPacketTemplatePage(
             item { SettingsSectionTitle(text = "操作") }
             item {
                 SettingsCard {
-                    if (!request.canDelete) ContentActionRow("创建") { persist(create = true) }
-                    else ContentActionRow("删除") {
+                    if (!request.canDelete) ContentActionRow("创建", emphasis = ContentActionEmphasis.PRIMARY) { persist(create = true) }
+                    else ContentActionRow("删除", emphasis = ContentActionEmphasis.DANGER) {
                         onDelete()
                         Toast.makeText(context, "模板已删除", Toast.LENGTH_SHORT).show()
                     }
@@ -1648,8 +1648,8 @@ private fun RedPacketBindingPage(
             item { SettingsSectionTitle(text = "操作") }
             item {
                 SettingsCard {
-                    if (!request.canDelete) ContentActionRow("创建") { persist(create = true) }
-                    else ContentActionRow("移除") {
+                    if (!request.canDelete) ContentActionRow("创建", emphasis = ContentActionEmphasis.PRIMARY) { persist(create = true) }
+                    else ContentActionRow("移除", emphasis = ContentActionEmphasis.DANGER) {
                         onDelete()
                         Toast.makeText(context, "适用聊天已移除", Toast.LENGTH_SHORT).show()
                     }

@@ -73,6 +73,7 @@ internal fun ScheduledTaskMiuixPage(
     var lastSavedDraft by remember { mutableStateOf<ScheduledTaskItem?>(null) }
     var draftError by remember { mutableStateOf<String?>(null) }
     var showDiscardPending by remember { mutableStateOf(false) }
+    var showDeleteTaskConfirm by remember { mutableStateOf(false) }
     val mainListState = rememberLazyListState()
     val editorListState = rememberLazyListState()
     val editorScope = rememberCoroutineScope()
@@ -155,6 +156,21 @@ internal fun ScheduledTaskMiuixPage(
     fun updateContent(key: String, item: ScheduledTaskContentItem) {
         if (!contentSession.update(key, item)) return
         if (contentSession.find(key)?.pending == false) updateDraft(contentSession.applyTo(draft))
+    }
+
+    fun openTargetPicker() {
+        val official = draft.sendChannel == ScheduledTaskSettings.SEND_CHANNEL_OFFICIAL
+        route = ScheduledTaskRoute.ContactPicker(
+            ContactPickerRequest(
+                title = if (official) "选择原生群发好友" else "选择发送对象",
+                mode = if (official) ContactPickerMode.FRIENDS else ContactPickerMode.ALL_CHATS,
+                multiSelect = true,
+                existingValue = formatIds(draft.targetIds),
+                onValue = {},
+                enableLabels = true,
+                showSelectedCount = true
+            )
+        )
     }
 
     fun commitContent(key: String) {
@@ -260,7 +276,7 @@ internal fun ScheduledTaskMiuixPage(
                         }
                     },
                     validationError = draftError,
-                    onPickTargets = { route = ScheduledTaskRoute.ContactPicker },
+                    onPickTargets = ::openTargetPicker,
                     onPickFiles = { itemKey, itemType ->
                         val activity = context as? Activity
                         if (activity == null) {
@@ -279,7 +295,8 @@ internal fun ScheduledTaskMiuixPage(
                         if (activity == null) {
                             Toast.makeText(context, "当前页面无法打开文件选择器", Toast.LENGTH_SHORT).show()
                         } else {
-                            ScheduledTaskFilePickerBridge.launch(activity, itemType) { paths ->
+                            val itemLimit = if (itemType == ScheduledTaskSettings.TYPE_IMAGE) 9 else 1
+                            ScheduledTaskFilePickerBridge.launch(activity, itemType, maxCount = itemLimit) { paths ->
                                 if (itemType == ScheduledTaskSettings.TYPE_IMAGE && paths.size > 9) {
                                     Toast.makeText(context, "朋友圈最多保留前 9 张图片", Toast.LENGTH_SHORT).show()
                                 } else if (itemType == ScheduledTaskSettings.TYPE_VIDEO && paths.size > 1) {
@@ -311,13 +328,7 @@ internal fun ScheduledTaskMiuixPage(
                     onDelete = if (editingTaskId == null) {
                         null
                     } else {
-                        {
-                            settings.saveTasks(settings.tasks().filterNot { it.id == draft.id })
-                            reloadTasks()
-                            ScheduledTaskRuntimeCoordinator.refreshTask(draft.id)
-                            route = ScheduledTaskRoute.Main
-                            Toast.makeText(context, "任务已删除", Toast.LENGTH_SHORT).show()
-                        }
+                        { showDeleteTaskConfirm = true }
                     },
                     onExecuteNow = if (editingTaskId == null) {
                         null
@@ -334,21 +345,14 @@ internal fun ScheduledTaskMiuixPage(
                     }
                 )
             }
-            ScheduledTaskRoute.ContactPicker -> {
-                val official = draft.sendChannel == ScheduledTaskSettings.SEND_CHANNEL_OFFICIAL
+            is ScheduledTaskRoute.ContactPicker -> {
                 ContactPickerPage(
                     context = context,
-                    request = ContactPickerRequest(
-                        title = if (official) "选择原生群发好友" else "选择发送对象",
-                        mode = if (official) ContactPickerMode.FRIENDS else ContactPickerMode.ALL_CHATS,
-                        multiSelect = true,
-                        existingValue = formatIds(draft.targetIds),
-                        onValue = {},
-                        enableLabels = true
-                    ),
+                    request = currentRoute.request,
                     onBack = { route = ScheduledTaskRoute.Editor },
-                    onSelectionChange = { selected ->
-                        updateDraft(draft.copy(targetIds = selected.toList()))
+                    onConfirm = { selected ->
+                        updateDraft(draft.copy(targetIds = selected.map { it.id }))
+                        route = ScheduledTaskRoute.Editor
                     }
                 )
             }
@@ -368,6 +372,22 @@ internal fun ScheduledTaskMiuixPage(
         confirmText = "放弃并返回",
         onDismiss = { showDiscardPending = false },
         onConfirm = { showDiscardPending = false; route = ScheduledTaskRoute.Main }
+    )
+    BatchDeleteConfirmDialog(
+        show = showDeleteTaskConfirm,
+        title = "删除定时任务？",
+        message = "该任务会从列表中移除，之后不会再执行。",
+        labels = emptyList(),
+        confirmText = "删除任务",
+        onDismiss = { showDeleteTaskConfirm = false },
+        onConfirm = {
+            showDeleteTaskConfirm = false
+            settings.saveTasks(settings.tasks().filterNot { it.id == draft.id })
+            reloadTasks()
+            ScheduledTaskRuntimeCoordinator.refreshTask(draft.id)
+            route = ScheduledTaskRoute.Main
+            Toast.makeText(context, "任务已删除", Toast.LENGTH_SHORT).show()
+        }
     )
 }
 
@@ -453,9 +473,14 @@ private fun ScheduledTaskMainPage(
             item { SettingsSectionTitle(text = "任务列表") }
             item {
                 SettingsCard {
-                    tasks.forEach { task ->
-                        ActionRow(scheduledTaskTitle(task), scheduledTaskSummary(task)) { onEdit(task) }
+                    if (tasks.isEmpty()) {
+                        EmptyText("暂无定时任务，新增后会显示在这里")
                         InsetDivider()
+                    } else {
+                        tasks.forEach { task ->
+                            ActionRow(scheduledTaskTitle(task), scheduledTaskSummary(task)) { onEdit(task) }
+                            InsetDivider()
+                        }
                     }
                     AddActionRow("新增任务", onAdd)
                 }
@@ -758,9 +783,9 @@ private fun ScheduledTaskEditorPage(
             }
             if (isEditing) item {
                 SettingsCard(modifier = Modifier.padding(top = 24.dp)) {
-                    if (onExecuteNow != null) ContentActionRow("立即执行", enabled = intervalsValid, onClick = onExecuteNow)
+                    if (onExecuteNow != null) ContentActionRow("立即执行", enabled = intervalsValid, emphasis = ContentActionEmphasis.PRIMARY, onClick = onExecuteNow)
                     if (onExecuteNow != null && onDelete != null) InsetDivider()
-                    if (onDelete != null) ContentActionRow("删除任务", onClick = onDelete)
+                    if (onDelete != null) ContentActionRow("删除任务", emphasis = ContentActionEmphasis.DANGER, onClick = onDelete)
                 }
             }
         }
@@ -850,21 +875,21 @@ internal fun ScheduledContentCard(
                     ActionRow(scheduledTaskPickerTitle(item.type), favoriteSummary(item.value)) { onPickFavorite(entry.key) }
                     if (item.value.isNotBlank()) {
                         InsetDivider()
-                        ContentActionRow("清空收藏") { onChange(entry.key, item.copy(value = "")) }
+                        ContentActionRow("清空收藏", emphasis = ContentActionEmphasis.DANGER) { onChange(entry.key, item.copy(value = "")) }
                     }
                 }
                 else -> {
                     ActionRow("选择文件", scheduledTaskMediaSummary(item.type, listOf(item.value))) { onPickFiles(entry.key, item.type) }
                     if (item.value.isNotBlank()) {
                         InsetDivider()
-                        ContentActionRow("清空文件") { onChange(entry.key, item.copy(value = "")) }
+                        ContentActionRow("清空文件", emphasis = ContentActionEmphasis.DANGER) { onChange(entry.key, item.copy(value = "")) }
                     }
                 }
             }
         }
         InsetDivider()
         if (entry.pending) {
-            ContentActionRow("添加此条") { onCommit(entry.key) }
+            ContentActionRow("添加此条", emphasis = ContentActionEmphasis.PRIMARY) { onCommit(entry.key) }
             ContentActionRow("放弃新增") { onRemove(entry.key) }
         } else {
             SequenceItemActions(

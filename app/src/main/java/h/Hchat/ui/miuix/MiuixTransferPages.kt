@@ -604,7 +604,7 @@ private fun TransferBindingListPage(
                         if (visibleIds.isNotEmpty()) ContentActionRow(if (allVisibleSelected) "取消全选" else "全选") {
                             selectedIds = if (allVisibleSelected) selectedIds - visibleIds else selectedIds + visibleIds
                         }
-                        ContentActionRow("删除（${selectedBindings.size}）") {
+                        ContentActionRow("删除（${selectedBindings.size}）", emphasis = ContentActionEmphasis.DANGER) {
                             if (selectedBindings.isEmpty()) Toast.makeText(context, "请先选择适用聊天", Toast.LENGTH_SHORT).show()
                             else showDeleteConfirm = true
                         }
@@ -719,8 +719,8 @@ private fun TransferBindingEditorPage(
             item { SettingsSectionTitle(text = "操作") }
             item {
                 SettingsCard {
-                    if (!request.canDelete) ContentActionRow("创建") { persist(create = true) }
-                    else ContentActionRow("移除", onClick = onDelete)
+                    if (!request.canDelete) ContentActionRow("创建", emphasis = ContentActionEmphasis.PRIMARY) { persist(create = true) }
+                    else ContentActionRow("移除", emphasis = ContentActionEmphasis.DANGER, onClick = onDelete)
                 }
             }
         }
@@ -966,7 +966,7 @@ private fun TransferTemplateEditorPage(
             item { SettingsSectionTitle(text = "操作") }
             item {
                 SettingsCard {
-                    if (!request.canDelete) ContentActionRow("创建") {
+                    if (!request.canDelete) ContentActionRow("创建", emphasis = ContentActionEmphasis.PRIMARY) {
                         val validDelay = when (value.delayMode) {
                             TransferRuleConfig.DELAY_CUSTOM -> delayText.toLongOrNull()?.let { it in 0L..600000L } == true
                             TransferRuleConfig.DELAY_RANDOM -> minText.toLongOrNull()?.let { min -> min in 0L..600000L && maxText.toLongOrNull()?.let { it in min..600000L } == true } == true
@@ -975,7 +975,7 @@ private fun TransferTemplateEditorPage(
                         if ((value.replySteps + groupReplySteps).any { it.content.isBlank() }) Toast.makeText(context, "请完善或移除未完成的回复", Toast.LENGTH_SHORT).show()
                         else if (!validDelay || (amountText.isNotBlank() && !isCompleteTransferAmount(amountText))) Toast.makeText(context, "请输入有效金额和延迟", Toast.LENGTH_SHORT).show()
                         else onSave(value.copy(name = value.name.ifBlank { "收款模板" }, amountValue = amountText))
-                    } else ContentActionRow("删除", onClick = onDelete)
+                    } else ContentActionRow("删除", emphasis = ContentActionEmphasis.DANGER, onClick = onDelete)
                 }
             }
         }

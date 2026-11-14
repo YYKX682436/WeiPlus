@@ -423,7 +423,7 @@ private fun GroupRenameGroupManagerPage(
                         if (visibleIds.isNotEmpty()) ContentActionRow(if (allVisibleSelected) "取消全选" else "全选") {
                             selectedForDelete = if (allVisibleSelected) selectedForDelete - visibleIds else selectedForDelete + visibleIds
                         }
-                        ContentActionRow("删除（${selectedGroups.size}）") {
+                        ContentActionRow("删除（${selectedGroups.size}）", emphasis = ContentActionEmphasis.DANGER) {
                             if (selectedGroups.isEmpty()) Toast.makeText(context, "请先选择监听群", Toast.LENGTH_SHORT).show()
                             else showDeleteConfirm = true
                         }
@@ -667,8 +667,8 @@ private fun GroupRenameTemplateEditorPage(
             item { SettingsSectionTitle(text = "操作") }
             item {
                 SettingsCard {
-                    if (!canDelete) ContentActionRow("创建") { validText = text; validCardTitle = cardTitle; validCardDesc = cardDesc; persist(create = true) }
-                    else ContentActionRow("删除", onClick = onDelete)
+                    if (!canDelete) ContentActionRow("创建", emphasis = ContentActionEmphasis.PRIMARY) { validText = text; validCardTitle = cardTitle; validCardDesc = cardDesc; persist(create = true) }
+                    else ContentActionRow("删除", emphasis = ContentActionEmphasis.DANGER, onClick = onDelete)
                 }
             }
         }
@@ -931,7 +931,7 @@ private fun GroupRenameGroupEditorPage(
                             .putString(GroupRenameMonitorSettings.groupKey(GroupRenameMonitorSettings.KEY_CARD_DESC, groupId), globalCardDesc)
                             .apply()
                     }
-                    ContentActionRow("移除", onClick = onDelete)
+                    ContentActionRow("移除", emphasis = ContentActionEmphasis.DANGER, onClick = onDelete)
                 }
             }
         }
@@ -1693,7 +1693,7 @@ private fun GroupMemberGroupManagerPage(
                         if (visibleIds.isNotEmpty()) ContentActionRow(if (allVisibleSelected) "取消全选" else "全选") {
                             selectedForDelete = if (allVisibleSelected) selectedForDelete - visibleIds else selectedForDelete + visibleIds
                         }
-                        ContentActionRow("删除（${selectedGroups.size}）") {
+                        ContentActionRow("删除（${selectedGroups.size}）", emphasis = ContentActionEmphasis.DANGER) {
                             if (selectedGroups.isEmpty()) Toast.makeText(context, "请先选择监听群", Toast.LENGTH_SHORT).show()
                             else showDeleteConfirm = true
                         }
@@ -2172,7 +2172,7 @@ private fun GroupLeaveTemplateEditorPage(
                 item { SettingsSectionTitle(text = "操作") }
                 item {
                     SettingsCard {
-                        if (!request.canDelete) ContentActionRow("创建") {
+                        if (!request.canDelete) ContentActionRow("创建", emphasis = ContentActionEmphasis.PRIMARY) {
                             val delays = listOf(promptDelay, imageDelay, voiceDelay, emojiDelay, videoDelay, fileDelay, favoriteDelay)
                             if (delayMode == GroupLeaveMonitorSettings.MODE_CUSTOM && delays.any { it.toIntOrNull()?.let { n -> n >= 0 } != true }) {
                                 Toast.makeText(context, "请输入有效的延迟", Toast.LENGTH_SHORT).show()
@@ -2185,7 +2185,7 @@ private fun GroupLeaveTemplateEditorPage(
                                     mediaSequence = mediaSequence
                                 ))
                             }
-                        } else ContentActionRow("删除", onClick = onDelete)
+                        } else ContentActionRow("删除", emphasis = ContentActionEmphasis.DANGER, onClick = onDelete)
                     }
                 }
             }
@@ -2539,7 +2539,7 @@ private fun GroupMemberGroupEditorPage(
             item { SettingsSectionTitle(text = "操作") }
             item {
                 SettingsCard {
-                    ContentActionRow("移除", onClick = onDelete)
+                    ContentActionRow("移除", emphasis = ContentActionEmphasis.DANGER, onClick = onDelete)
                     if (promptType != GroupLeaveMonitorSettings.MODE_GLOBAL) ContentMoreActions(listOf(
                         "恢复全局文本" to {
                             joinText = globalJoinText
