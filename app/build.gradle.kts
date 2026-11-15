@@ -218,17 +218,28 @@ dependencies {
     }
 }
 
-// 构建完成后自动复制 APK 到 dist/
+// Never overwrite a previously delivered APK. A clean commit is included in the default name.
+val releaseApkName = providers.environmentVariable("HCAT_APK_NAME").orElse(providers.provider {
+    fun git(vararg args: String): String = runCatching {
+        val process = ProcessBuilder("git", *args).directory(rootDir).redirectErrorStream(true).start()
+        val output = process.inputStream.bufferedReader().readText().trim()
+        if (process.waitFor() == 0) output else ""
+    }.getOrDefault("")
+    val revision = git("rev-parse", "--short=12", "HEAD").ifBlank { "unknown" }
+    val dirty = if (git("status", "--porcelain", "--untracked-files=no").isNotBlank()) "-dirty" else ""
+    val edition = if (withMyKey) "-sales" else ""
+    "Hchat-${providers.gradleProperty("HCAT_VERSION_NAME").get()}-$revision$dirty$edition-release-signed.apk"
+})
 tasks.register<Copy>("copyToDist") {
     from(layout.buildDirectory.file("outputs/apk/release/app-release.apk"))
     into(rootProject.layout.projectDirectory.dir("dist"))
-    rename {
-        if (withMyKey) {
-            "Hchat-${providers.gradleProperty("HCAT_VERSION_NAME").get()}-sales-release-signed.apk"
-        } else {
-            providers.environmentVariable("HCAT_APK_NAME")
-                .orElse("Hchat-${providers.gradleProperty("HCAT_VERSION_NAME").get()}-release-signed.apk")
-                .get()
+    rename { releaseApkName.get() }
+    outputs.upToDateWhen { false }
+    doFirst {
+        val name = releaseApkName.get()
+        require(name.isNotBlank() && File(name).name == name) { "HCAT_APK_NAME 必须是普通文件名" }
+        check(!rootProject.layout.projectDirectory.file("dist/$name").asFile.exists()) {
+            "目标 APK 已存在，未覆盖：$name；请指定新的 HCAT_APK_NAME"
         }
     }
 }

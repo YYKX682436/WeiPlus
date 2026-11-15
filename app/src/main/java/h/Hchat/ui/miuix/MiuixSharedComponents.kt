@@ -1934,7 +1934,8 @@ internal fun ContactListCard(
     option: ContactOption,
     selected: Boolean,
     multiSelect: Boolean,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onDetails: (() -> Unit)? = null
 ) {
     Card(
         modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
@@ -1944,7 +1945,8 @@ internal fun ContactListCard(
             option = option,
             selected = selected,
             multiSelect = multiSelect,
-            onClick = onClick
+            onClick = onClick,
+            onDetails = onDetails
         )
     }
 }
@@ -2162,8 +2164,24 @@ private fun ContactRow(
     option: ContactOption,
     selected: Boolean,
     multiSelect: Boolean,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onDetails: (() -> Unit)? = null
 ) {
+    if (onDetails != null) {
+        Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(modifier = Modifier.weight(1f).clickable(onClick = onDetails).padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                ContactAvatar(option)
+                Column(modifier = Modifier.weight(1f).padding(start = 12.dp)) {
+                    Text(option.label, color = MiuixTheme.colorScheme.onSurface, fontWeight = FontWeight.Medium)
+                    Text(option.id, color = MiuixTheme.colorScheme.onSurfaceVariantSummary, fontSize = 12.sp)
+                }
+            }
+            Box(Modifier.clickable { if (option.selectable || selected) onClick() }.padding(12.dp)) {
+                SelectionMark(selected = selected, multiSelect = multiSelect)
+            }
+        }
+        return
+    }
     var pressed by remember { mutableStateOf(false) }
     val pressFeedbackColor = rememberPressFeedbackColor(pressed)
     Row(
@@ -2613,7 +2631,9 @@ internal data class ContactPickerRequest(
     val batchCandidateMode: () -> BatchCandidateMode? = { null },
     val batchLabelFilterId: () -> String? = { null },
     val batchSelectionResetKey: () -> String? = { null },
-    val hideSearch: Boolean = false
+    val hideSearch: Boolean = false,
+    val onDetails: ((ContactOption) -> Unit)? = null,
+    val preserveScrollOnOpen: Boolean = false
 )
 
 internal data class ContactPickerSessionKey(

@@ -14,6 +14,7 @@ import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
 import me.yun.silk.SilkCodec
+import h.Hchat.utils.HLog
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
@@ -31,7 +32,7 @@ internal object AiChatMedia {
     }
 
     /** WeChat 8.0.80/3220: opcode 0 asks the native listener, which refuses when busy. */
-    fun transcribeVoice(context: Context, message: WeChatMessage): String {
+    @Synchronized fun transcribeVoice(context: Context, message: WeChatMessage): String {
         cachedVoice(message).takeIf { it.isNotBlank() }?.let { return it }
         val info = runCatching { context.packageManager.getPackageInfo("com.tencent.mm", 0) }.getOrNull()
         @Suppress("DEPRECATION")
@@ -42,6 +43,9 @@ internal object AiChatMedia {
         val result = AtomicReference<String>()
         val failure = AtomicReference<String>()
         val responseCode = java.util.concurrent.atomic.AtomicInteger(0)
+        val errorCode = java.util.concurrent.atomic.AtomicInteger(0)
+        val errorType = java.util.concurrent.atomic.AtomicInteger(0)
+        val scene = if (message.isGroupChat()) 2 else 1
         Handler(Looper.getMainLooper()).post {
             try {
                 val cls = context.classLoader.loadClass("com.tencent.mm.autogen.events.ExtTranslateVoiceEvent")
@@ -53,22 +57,35 @@ internal object AiChatMedia {
                 request.javaClass.getField("g").set(request, message.talker)
                 request.javaClass.getField("c").setInt(request, 0)
                 request.javaClass.getField("d").setInt(request, 1)
-                request.javaClass.getField("f").setInt(request, if (message.isGroupChat()) 2 else 1)
+                request.javaClass.getField("f").setInt(request, scene)
                 request.javaClass.getField("e").set(request, Runnable {
                     runCatching {
                         if (response.javaClass.getField("b").getBoolean(response)) {
                             result.set(response.javaClass.getField("a").get(response) as? String ?: "")
                             responseCode.set(response.javaClass.getField("c").getInt(response))
+                            val detail = response.javaClass.getField("d").get(response)
+                            if (detail != null) {
+                                errorCode.set(runCatching { detail.javaClass.getField("d").getInt(detail) }.getOrDefault(0))
+                                errorType.set(runCatching { detail.javaClass.getField("e").getInt(detail) }.getOrDefault(0))
+                            }
                             done.countDown()
                         }
                     }.onFailure { failure.set("微信转写回调不可用"); done.countDown() }
                 })
-                if (cls.getMethod("e").invoke(event) != true) { failure.set("微信转写服务不可用"); done.countDown() }
+                // IEvent.e() reports whether listeners exist, not the listener's acceptance result.
+                val listenerPresent = cls.getMethod("e").invoke(event) == true
+                HLog.i("[Hchat:AI-Voice] scene=$scene listenerPresent=$listenerPresent idPresent=${message.msgId > 0} fileIdPresent=${message.imagePath.isNotBlank()}")
+                if (!listenerPresent) { failure.set("微信转写服务未注册"); done.countDown() }
             } catch (_: Throwable) { failure.set("微信原生转写接口不可用"); done.countDown() }
         }
-        if (!done.await(45, TimeUnit.SECONDS)) throw AiRequestException("微信转写服务忙碌或超时，未取消其他转写")
+        if (!done.await(45, TimeUnit.SECONDS)) {
+            HLog.i("[Hchat:AI-Voice] scene=$scene timedOut=true")
+            throw AiRequestException("微信转写未完成：服务可能忙碌，受理状态未知；未取消其他转写")
+        }
         failure.get()?.let { throw AiRequestException(it) }
-        return result.get()?.takeIf { it.isNotBlank() } ?: throw AiRequestException(
+        val text = result.get()?.takeIf { it.isNotBlank() } ?: cachedVoice(message)
+        HLog.i("[Hchat:AI-Voice] scene=$scene completed=true state=${responseCode.get()} errorType=${errorType.get()} errorCode=${errorCode.get()} textLength=${text?.length ?: 0}")
+        return text?.takeIf { it.isNotBlank() } ?: throw AiRequestException(
             when (responseCode.get()) { 1 -> "微信语音转写被取消"; 2 -> "微信原生语音转写失败"; else -> "微信未能转写该语音" }
         )
     }
@@ -110,12 +127,59 @@ internal object AiChatMedia {
             } else file
             val format = when (if (type == 1) 2 else type) { 2 -> "mp3"; 3 -> "wav"; else -> throw AiRequestException("语音格式不受支持") }
             if (source.length() > 12L * 1024 * 1024) throw AiRequestException("转换后音频超过 12 MB")
-            val encoded = Base64.encodeToString(source.readBytes(), Base64.NO_WRAP)
-            val mime = if (format == "mp3") "audio/mpeg" else "audio/wav"
-            val payload = if (provider == AiProvider.MIMO) JSONObject().put("data", "data:$mime;base64,$encoded")
-                else JSONObject().put("data", encoded).put("format", format)
-            return JSONObject().put("type", "input_audio").put("input_audio", payload)
+            return audioPayload(source.readBytes(), format, provider)
         } finally { temporary?.delete() }
+    }
+
+    fun isAudioFile(message: WeChatMessage): Boolean = message.isFile() &&
+        message.getFileMsg()?.ext?.lowercase() in setOf("mp3", "wav", "flac", "m4a", "ogg")
+
+    /** A received audio attachment is different from a WeChat voice message. */
+    fun audioFile(message: WeChatMessage, provider: AiProvider): JSONObject {
+        val format = message.getFileMsg()?.ext?.lowercase().orEmpty()
+        if (!isAudioFile(message) || (provider != AiProvider.MIMO && format !in setOf("mp3", "wav"))) {
+            throw AiRequestException("当前音频文件格式不受支持")
+        }
+        val path = WeChatRetransmitPayloadFactory.build(message, null)?.fileName.orEmpty()
+        val file = File(path)
+        if (!file.isFile || file.length() <= 0 || file.length() > 12L * 1024 * 1024) {
+            throw AiRequestException("微信音频文件尚不可用或超过 12 MB")
+        }
+        val retriever = MediaMetadataRetriever()
+        val valid = try {
+            retriever.setDataSource(file.absolutePath)
+            val duration = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()
+            val mime = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_MIMETYPE).orEmpty()
+            duration != null && duration in 1..60_000 && mime.startsWith("audio/")
+        } catch (_: Exception) { false } finally { retriever.release() }
+        if (!valid) throw AiRequestException("音频文件不可解码或时长超过 60 秒")
+        val bytes = file.readBytes()
+        if (!audioHeaderMatches(bytes, format)) throw AiRequestException("音频内容与文件格式不匹配")
+        return audioPayload(bytes, format, provider)
+    }
+
+    internal fun audioHeaderMatches(bytes: ByteArray, format: String): Boolean {
+        fun matches(offset: Int, value: String) = bytes.size >= offset + value.length &&
+            value.indices.all { bytes[offset + it].toInt() == value[it].code }
+        return when (format) {
+            "mp3" -> matches(0, "ID3") || (bytes.size >= 2 && (bytes[0].toInt() and 255) == 255 && (bytes[1].toInt() and 224) == 224)
+            "wav" -> matches(0, "RIFF") && matches(8, "WAVE")
+            "flac" -> matches(0, "fLaC")
+            "m4a" -> matches(4, "ftyp")
+            "ogg" -> matches(0, "OggS")
+            else -> false
+        }
+    }
+
+    internal fun audioPayload(bytes: ByteArray, format: String, provider: AiProvider): JSONObject {
+        val mime = when (format) {
+            "mp3" -> "audio/mpeg"; "wav" -> "audio/wav"; "flac" -> "audio/flac"
+            "m4a" -> "audio/mp4"; "ogg" -> "audio/ogg"; else -> throw AiRequestException("音频格式不受支持")
+        }
+        val encoded = Base64.encodeToString(bytes, Base64.NO_WRAP)
+        val payload = if (provider == AiProvider.MIMO) JSONObject().put("data", "data:$mime;base64,$encoded")
+            else JSONObject().put("data", encoded).put("format", format)
+        return JSONObject().put("type", "input_audio").put("input_audio", payload)
     }
 
     fun video(message: WeChatMessage): JSONObject {
@@ -129,7 +193,7 @@ internal object AiChatMedia {
             retriever.setDataSource(file.absolutePath)
             retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()
         } catch (_: Exception) { null } finally { retriever.release() }
-        if (duration == null || duration > 60_000L) throw AiRequestException("视频时长不可读或超过 60 秒")
+        if (duration == null || duration !in 1..60_000L) throw AiRequestException("视频时长不可读或超过 60 秒")
         val data = "data:$mime;base64," + Base64.encodeToString(file.readBytes(), Base64.NO_WRAP)
         return JSONObject().put("type", "video_url").put("video_url", JSONObject().put("url", data)).put("fps", 1)
     }

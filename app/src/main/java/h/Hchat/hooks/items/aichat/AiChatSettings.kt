@@ -28,6 +28,7 @@ internal data class AiChatConfig(
     val image: Boolean = false,
     val audio: Boolean = false,
     val video: Boolean = false,
+    val webSearch: Boolean = false,
     val models: List<AiModel> = emptyList()
 ) {
     fun endpoint(): String = when (provider) {
@@ -39,9 +40,12 @@ internal data class AiChatConfig(
     fun supports(modality: String): Boolean = when (provider) {
         AiProvider.CUSTOM -> when (modality) { "image" -> image; "audio" -> audio; "video" -> video; else -> false }
         AiProvider.DEEPSEEK -> models.firstOrNull { it.id == model }?.modalities?.contains(modality) == true
-        // MiMo's model list currently omits modalities. Only documented V2.6 chat IDs are known.
-        AiProvider.MIMO -> model.lowercase() in setOf("mimo-v2.6-flash", "mimo-v2.6-pro", "mimo-v2.6-pro-ultraspeed") &&
-            modality in setOf("image", "audio", "video")
+        AiProvider.MIMO -> {
+            val metadata = models.firstOrNull { it.id == model }?.modalities.orEmpty()
+            if (metadata.isNotEmpty()) modality in metadata
+            else model.lowercase() in setOf("mimo-v2.6-flash", "mimo-v2.6-pro", "mimo-v2.6-pro-ultraspeed", "mimo-v2.5") &&
+                modality in setOf("image", "audio", "video")
+        }
     }
 }
 
@@ -58,7 +62,17 @@ internal class AiChatSettings(context: Context) {
     val prefs: SharedPreferences = HchatStorage.preferences(context, PREFS_NAME)
     private val legacy = AutoReplySettings(context)
 
-    init { migrateLegacy() }
+    init { migrateLegacy(); upgradeDefaultPrompt() }
+
+    private fun upgradeDefaultPrompt() {
+        synchronized(migrationLock) {
+            if (prefs.getBoolean(KEY_PROMPT_UPGRADED, false)) return
+            val current = prefs.getString(KEY_PROMPT, "").orEmpty()
+            val edit = prefs.edit()
+            if (current == OLD_DEFAULT_PROMPT || current == AutoReplySettings.DEFAULT_AI_SYSTEM_PROMPT) edit.putString(KEY_PROMPT, DEFAULT_PROMPT)
+            edit.putBoolean(KEY_PROMPT_UPGRADED, true).apply()
+        }
+    }
 
     private fun migrateLegacy() {
         synchronized(migrationLock) {
@@ -82,11 +96,14 @@ internal class AiChatSettings(context: Context) {
                 val value = oldConfigs.optJSONObject(name) ?: return@forEach
                 val base = value.optString("apiUrl", AutoReplySettings.DEFAULT_AI_API_BASE)
                 val path = value.optString("apiPath", AutoReplySettings.DEFAULT_AI_API_PATH)
-                configs += AiChatConfig(
+                val candidate = AiChatConfig(
                     name = name, provider = providerForUrl(base, path), apiKey = value.optString("apiKey", ""),
                     baseUrl = base, chatPath = path,
                     model = value.optString("modelName", AutoReplySettings.DEFAULT_AI_MODEL)
                 )
+                val prompt = value.optString("systemPrompt", AutoReplySettings.DEFAULT_AI_SYSTEM_PROMPT)
+                val limit = value.optInt("contextLimit", AutoReplySettings.DEFAULT_AI_CONTEXT_LIMIT)
+                if (!legacyPlaceholder(candidate) || !isKnownDefaultPrompt(prompt) || limit != AutoReplySettings.DEFAULT_AI_CONTEXT_LIMIT) configs += candidate
                 if (name == oldActive) {
                     activePrompt = value.optString("systemPrompt", activePrompt)
                     activeLimit = value.optInt("contextLimit", activeLimit)
@@ -95,15 +112,18 @@ internal class AiChatSettings(context: Context) {
             if (configs.isEmpty()) {
                 val base = legacy.getString(AutoReplySettings.KEY_AI_API_BASE, AutoReplySettings.DEFAULT_AI_API_BASE)
                 val path = legacy.getString(AutoReplySettings.KEY_AI_API_PATH, AutoReplySettings.DEFAULT_AI_API_PATH)
-                configs += AiChatConfig(
+                val candidate = AiChatConfig(
                     name = oldActive, provider = providerForUrl(base, path),
                     apiKey = legacy.getString(AutoReplySettings.KEY_AI_API_KEY, ""), baseUrl = base,
                     chatPath = path,
                     model = legacy.getString(AutoReplySettings.KEY_AI_MODEL, AutoReplySettings.DEFAULT_AI_MODEL)
                 )
+                if (!legacyPlaceholder(candidate) || !isKnownDefaultPrompt(activePrompt) || activeLimit != AutoReplySettings.DEFAULT_AI_CONTEXT_LIMIT) configs += candidate
             }
             editor.putString(KEY_CONFIGS, encodeConfigs(configs))
-            editor.putString(KEY_ACTIVE, (configs.firstOrNull { it.name == oldActive } ?: configs.first()).id)
+            val selected = configs.firstOrNull { it.name == oldActive }
+                ?: if (oldConfigs?.has(oldActive) == true) null else configs.firstOrNull()
+            editor.putString(KEY_ACTIVE, selected?.id.orEmpty())
             editor.putString(KEY_PROMPT, activePrompt)
             editor.putInt(KEY_CONTEXT, if (activeLimit <= 0) 0 else (activeLimit.coerceAtMost(50) * 700).coerceAtMost(16000))
             val rawFavorites = legacy.getString(AutoReplySettings.KEY_ZHILIA_MODEL_FAVORITES, "")
@@ -124,9 +144,34 @@ internal class AiChatSettings(context: Context) {
         }
     }
 
-    fun configs(): List<AiChatConfig> = decodeConfigs(prefs.getString(KEY_CONFIGS, "").orEmpty())
+    fun configs(): List<AiChatConfig> {
+        val prompt = prefs.getString(KEY_PROMPT, DEFAULT_PROMPT).orEmpty()
+        val defaultContext = prefs.getInt(KEY_CONTEXT, 7000) == 7000
+        return decodeConfigs(prefs.getString(KEY_CONFIGS, "").orEmpty()).filterNot {
+            legacyPlaceholder(it) && isKnownDefaultPrompt(prompt) && defaultContext && confirmedOldPlaceholder(it)
+        }
+    }
+    private fun confirmedOldPlaceholder(config: AiChatConfig): Boolean {
+        val old = legacy.getHostPreferences() ?: return false
+        val raw = legacy.getString(AutoReplySettings.KEY_ZHILIA_CONFIGS, "")
+        val all = runCatching { JSONObject(raw) }.getOrNull()
+        val item = all?.optJSONObject(config.name)
+        if (item != null) return item.optString("apiKey", "").isBlank() &&
+            item.optString("apiUrl", AutoReplySettings.DEFAULT_AI_API_BASE) == AutoReplySettings.DEFAULT_AI_API_BASE &&
+            item.optString("apiPath", AutoReplySettings.DEFAULT_AI_API_PATH) == AutoReplySettings.DEFAULT_AI_API_PATH &&
+            item.optString("modelName", AutoReplySettings.DEFAULT_AI_MODEL) == AutoReplySettings.DEFAULT_AI_MODEL &&
+            isKnownDefaultPrompt(item.optString("systemPrompt", AutoReplySettings.DEFAULT_AI_SYSTEM_PROMPT)) &&
+            item.optInt("contextLimit", AutoReplySettings.DEFAULT_AI_CONTEXT_LIMIT) == AutoReplySettings.DEFAULT_AI_CONTEXT_LIMIT
+        if (all != null && all.length() > 0) return false
+        return listOf(AutoReplySettings.KEY_AI_API_KEY, AutoReplySettings.KEY_AI_API_BASE, AutoReplySettings.KEY_AI_MODEL).any { old.contains(it) } &&
+            legacy.getString(AutoReplySettings.KEY_AI_API_KEY, "").isBlank() &&
+            legacy.getString(AutoReplySettings.KEY_AI_API_BASE, AutoReplySettings.DEFAULT_AI_API_BASE) == AutoReplySettings.DEFAULT_AI_API_BASE &&
+            legacy.getString(AutoReplySettings.KEY_AI_MODEL, AutoReplySettings.DEFAULT_AI_MODEL) == AutoReplySettings.DEFAULT_AI_MODEL &&
+            isKnownDefaultPrompt(legacy.getString(AutoReplySettings.KEY_AI_SYSTEM_PROMPT, AutoReplySettings.DEFAULT_AI_SYSTEM_PROMPT)) &&
+            legacy.getInt(AutoReplySettings.KEY_AI_CONTEXT_LIMIT, AutoReplySettings.DEFAULT_AI_CONTEXT_LIMIT) == AutoReplySettings.DEFAULT_AI_CONTEXT_LIMIT
+    }
     fun activeConfig(): AiChatConfig? = configs().let { values ->
-        values.firstOrNull { it.id == prefs.getString(KEY_ACTIVE, "") } ?: values.firstOrNull()
+        values.firstOrNull { it.id == prefs.getString(KEY_ACTIVE, "") }
     }
     fun saveConfigs(values: List<AiChatConfig>, active: String) {
         prefs.edit().putString(KEY_CONFIGS, encodeConfigs(values)).putString(KEY_ACTIVE, active).apply()
@@ -177,9 +222,17 @@ internal class AiChatSettings(context: Context) {
         const val KEY_ACTIVE = "active"
         const val KEY_FAVORITES = "favorites"
         private const val KEY_MIGRATED = "legacy_migrated_v1"
+        private const val KEY_PROMPT_UPGRADED = "chat_default_prompt_v2"
         private val migrationLock = Any()
         const val DEFAULT_TAIL = "本消息为AI回复"
-        const val DEFAULT_PROMPT = "你是一个自然、简洁、有帮助的微信聊天助手。"
+        private const val OLD_DEFAULT_PROMPT = "你是一个自然、简洁、有帮助的微信聊天助手。"
+        const val DEFAULT_PROMPT = "你是微信里的 AI 聊天助手。先回应对方实际表达和情绪，玩笑就自然地接话。通常用一两句话、约20到80个中文字符；跟随会话语言，对方要求英文时可以用英文。不要习惯性列清单、写标题、表格、粗体或代码块，不要每次总结、追问或用客服式结尾。表情适量。可以简短聊技术，但完整项目、长篇代写和重复刷屏请求要简短收住。不要主动推销能力，不编造身份、经历、现实行动或已经完成的操作。"
+        private fun isKnownDefaultPrompt(prompt: String): Boolean = prompt.isBlank() || prompt == OLD_DEFAULT_PROMPT ||
+            prompt == DEFAULT_PROMPT || prompt == AutoReplySettings.DEFAULT_AI_SYSTEM_PROMPT
+        private fun legacyPlaceholder(config: AiChatConfig): Boolean =
+            config.name == AutoReplySettings.DEFAULT_ZHILIA_CONFIG_NAME && config.apiKey.isBlank() &&
+                config.provider == AiProvider.CUSTOM && config.baseUrl.trim().trimEnd('/') == AutoReplySettings.DEFAULT_AI_API_BASE &&
+                config.chatPath.trim() == AutoReplySettings.DEFAULT_AI_API_PATH && config.model == AutoReplySettings.DEFAULT_AI_MODEL
         private fun targetKey(account: String) = "targets:$account"
         private fun providerForUrl(base: String, path: String): AiProvider {
             if (path.trim().trimEnd('/') !in setOf("/chat/completions", "chat/completions", "")) return AiProvider.CUSTOM
@@ -194,6 +247,7 @@ internal class AiChatSettings(context: Context) {
                 put("id", c.id); put("name", c.name); put("provider", c.provider.name); put("key", c.apiKey)
                 put("base", c.baseUrl); put("path", c.chatPath); put("model", c.model)
                 put("image", c.image); put("audio", c.audio); put("video", c.video)
+                put("webSearch", c.webSearch)
                 put("models", JSONArray().apply { c.models.forEach { m -> put(JSONObject().apply {
                     put("id", m.id); put("modalities", JSONArray(m.modalities.toList())); put("context", m.contextWindow)
                     put("output", m.maxOutputTokens)
@@ -207,7 +261,7 @@ internal class AiChatSettings(context: Context) {
                 AiChatConfig(id = o.optString("id"), name = o.optString("name"),
                     provider = runCatching { AiProvider.valueOf(o.optString("provider")) }.getOrDefault(AiProvider.CUSTOM),
                     apiKey = o.optString("key"), baseUrl = o.optString("base"), chatPath = o.optString("path", "/chat/completions"),
-                    model = o.optString("model"), image = o.optBoolean("image"), audio = o.optBoolean("audio"), video = o.optBoolean("video"),
+                    model = o.optString("model"), image = o.optBoolean("image"), audio = o.optBoolean("audio"), video = o.optBoolean("video"), webSearch = o.optBoolean("webSearch"),
                     models = (0 until models.length()).mapNotNull { n -> models.optJSONObject(n)?.let { m ->
                         val modalities = m.optJSONArray("modalities") ?: JSONArray()
                         AiModel(m.optString("id"), (0 until modalities.length()).map { modalities.optString(it) }.toSet(),

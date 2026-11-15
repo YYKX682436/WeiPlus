@@ -12,6 +12,7 @@ import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Executors
 import java.util.regex.Pattern
 import kotlin.random.Random
@@ -19,32 +20,75 @@ import kotlin.random.Random
 object AutoReplyRuntime {
     private const val TAG = "[Hchat:AutoReply]"
     private const val AT_ALL_WXID = "notify@all"
-    private val executor = Executors.newSingleThreadExecutor { runnable ->
+    private val executor = Executors.newFixedThreadPool(3) { runnable ->
         Thread(runnable, "Hchat-AutoReply").apply { isDaemon = true }
     }
     private val replyCounts = ConcurrentHashMap<String, Int>()
     private val lastReplyTimes = ConcurrentHashMap<String, Long>()
+    private data class Decision(val created: Long, val result: CompletableFuture<Boolean>)
+    private class Lane { val pending = ArrayDeque<() -> Unit>(); var running = false }
+    private val decisions = ConcurrentHashMap<String, Decision>()
+    private val lanes = ConcurrentHashMap<String, Lane>()
+    @Volatile private var active = false
 
-    fun handleMessage(context: Context, message: WeChatMessageObserveApi.ObservedMessage) {
-        val settings = AutoReplySettings(context)
-        if (!settings.isEnabled()) return
-        if (shouldSkipMessage(message)) return
-        val talker = message.talker.ifBlank { message.getTalker() }
-        if (settings.shouldExcludeTalker(talker)) return
-        executor.execute {
-            runCatching {
-                handleFriendAccepted(context, settings, message)
-                handleAutoReply(context, settings, message)
-            }.onFailure {
-                HLog.e("$TAG 处理消息失败: ${it.message}", it)
+    internal fun setActive(value: Boolean) { active = value }
+
+    private fun enqueue(talker: String, action: () -> Unit) {
+        val lane = lanes.computeIfAbsent(talker) { Lane() }
+        synchronized(lane) {
+            lane.pending.addLast(action)
+            if (lane.running) return
+            lane.running = true
+            executor.execute {
+                while (true) {
+                    val next = synchronized(lane) {
+                        if (lane.pending.isEmpty()) { lane.running = false; null } else lane.pending.removeFirst()
+                    } ?: break
+                    runCatching { next() }
+                }
             }
         }
+    }
+
+    fun handleMessage(context: Context, message: WeChatMessageObserveApi.ObservedMessage) {
+        decision(context, message)
+    }
+
+    /** Both observers share the actual execution decision, including cooldown and count checks. */
+    internal fun decision(context: Context, message: WeChatMessageObserveApi.ObservedMessage): CompletableFuture<Boolean> {
+        val talker = message.talker.ifBlank { message.getTalker() }
+        val account = WeChatApis.account()?.selfWxId().orEmpty()
+        val native = message.message
+        val key = when {
+            native != null && native.msgSvrId > 0 -> "$account/$talker:s${native.msgSvrId}"
+            native != null && native.msgId > 0 -> "$account/$talker:m${native.msgId}"
+            else -> "$account/$talker:${message.sender}:${native?.createTime}:${message.content.hashCode()}"
+        }
+        decisions[key]?.let { return it.result }
+        val settings = AutoReplySettings(context)
+        if (!active || !settings.isEnabled() || shouldSkipMessage(message) || talker.isBlank() || settings.shouldExcludeTalker(talker)) {
+            return CompletableFuture.completedFuture(false)
+        }
+        val now = System.currentTimeMillis()
+        if (decisions.size > 2048) decisions.entries.removeAll { now - it.value.created > 600_000 && it.value.result.isDone }
+        return decisions.computeIfAbsent(key) {
+            val result = CompletableFuture<Boolean>()
+            enqueue(talker) {
+                try {
+                    handleFriendAccepted(context, settings, message)
+                    handleAutoReply(context, settings, message) { result.complete(true) }
+                } catch (error: Throwable) {
+                    HLog.e("$TAG 处理消息失败: ${error.message}", error)
+                } finally { result.complete(false) }
+            }
+            Decision(now, result)
+        }.result
     }
 
     fun handleNewFriend(context: Context, wxid: String, ticket: String, scene: Int) {
         val settings = AutoReplySettings(context)
         if (!settings.getBoolean(AutoReplySettings.KEY_AUTO_ACCEPT_ENABLE, false)) return
-        executor.execute {
+        enqueue(wxid) {
             runCatching {
                 val verifyWxid = AutoReplyFriendRequestHook.resolveVerifyUsername(wxid, ticket, scene)
                 WeChatApis.contact().verifyUser()?.verifyUser(verifyWxid, ticket, scene)
@@ -87,7 +131,8 @@ object AutoReplyRuntime {
     private fun handleAutoReply(
         context: Context,
         settings: AutoReplySettings,
-        message: WeChatMessageObserveApi.ObservedMessage
+        message: WeChatMessageObserveApi.ObservedMessage,
+        onOwnership: () -> Unit
     ) {
         val talker = message.talker.ifBlank { message.getTalker() }
         if (talker.isBlank()) return
@@ -119,30 +164,10 @@ object AutoReplyRuntime {
             if (!keywordMatches(rule, content, isText, isPat)) continue
             if (isReplyCoolingDown(rule, ctx.talker)) continue
             if (!countAndCheck(rule, ctx)) continue
+            onOwnership()
             if (executeFilteredSteps(context, talker, executableSteps, ctx, 0L, rule.replyAsQuote)) {
                 markReplyCooldown(rule, ctx.talker)
             }
-        }
-    }
-
-    /** Conservative coordination: a matching enabled rule owns the message even if it is cooling down. */
-    internal fun ownsMessage(context: Context, message: WeChatMessageObserveApi.ObservedMessage): Boolean {
-        val settings = AutoReplySettings(context)
-        if (!settings.isEnabled() || shouldSkipMessage(message)) return false
-        val talker = message.talker.ifBlank { message.getTalker() }
-        if (talker.isBlank() || settings.shouldExcludeTalker(talker)) return false
-        val group = message.group || message.isGroupChat() || talker.endsWith("@chatroom") || talker.endsWith("@im.chatroom")
-        val content = plainContent(message)
-        val isPat = message.isPat()
-        val isText = message.isText()
-        if ((message.isSystem() && !isPat) || (isText && content.isBlank() && !isPat)) return false
-        val ctx = MessageContext(talker = talker, sender = resolveSender(message, talker, group), content = content,
-            msgId = message.getMsgId(), group = group, atMe = message.isAtMe(), atAll = message.isNotifyAll(),
-            patMe = isPat && message.getPatMsg()?.pattedUser == WeChatApis.contact().account()?.selfWxId())
-        return settings.rules().any { rule ->
-            rule.enabled && filterRemovedReplySteps(rule.steps).isNotEmpty() &&
-                inTimeRange(rule.startTime, rule.endTime) && targetMatches(rule, ctx, message) &&
-                triggerMatches(rule, ctx, isPat) && keywordMatches(rule, content, isText, isPat)
         }
     }
 

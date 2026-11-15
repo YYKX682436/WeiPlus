@@ -41,6 +41,7 @@ class AutoReplyFeature : BaseFeature() {
     }
 
     override fun onFeatureInstall(context: FeatureContext) {
+        AutoReplyRuntime.setActive(true)
         observationState.startFallback()
         retryBudget.reset()
         messageDeduplicator.clear()
@@ -62,6 +63,7 @@ class AutoReplyFeature : BaseFeature() {
     }
 
     override fun onFeatureDestroy(context: FeatureContext) {
+        AutoReplyRuntime.setActive(false)
         synchronized(observationLock) {
             DexInstallScheduler.cancel(FRIEND_REQUEST_INSTALL_KEY)
             retryHandler.removeCallbacks(retryObserver)

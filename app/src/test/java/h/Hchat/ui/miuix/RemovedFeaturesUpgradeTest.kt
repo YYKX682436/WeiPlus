@@ -141,10 +141,13 @@ class RemovedFeaturesUpgradeTest {
         val countKey = "${rule.id}|$talker|$sender"
         counts.remove(countKey)
         val handle = runtime.javaClass.getDeclaredMethod(
-            "handleAutoReply", Context::class.java, AutoReplySettings::class.java, WeChatMessageObserveApi.ObservedMessage::class.java
+            "handleAutoReply", Context::class.java, AutoReplySettings::class.java, WeChatMessageObserveApi.ObservedMessage::class.java,
+            kotlin.jvm.functions.Function0::class.java
         ).apply { isAccessible = true }
         try {
-            handle.invoke(runtime, context, settings, observed)
+            var owned = false
+            handle.invoke(runtime, context, settings, observed, { owned = true })
+            assertFalse("A removed-only rule must not take ownership", owned)
             assertFalse("A rule with only removed steps must not increment its reply count", counts.containsKey(countKey))
         } finally {
             counts.remove(countKey)

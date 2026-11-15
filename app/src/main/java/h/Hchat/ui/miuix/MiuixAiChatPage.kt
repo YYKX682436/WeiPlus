@@ -6,9 +6,12 @@ import android.os.Handler
 import android.os.Looper
 import android.widget.Toast
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -16,18 +19,25 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.unit.dp
 import h.Hchat.hooks.api.core.WeChatApis
 import h.Hchat.hooks.items.aichat.*
+import h.Hchat.hooks.items.autoreply.AutoReplySettings
+import h.Hchat.hooks.items.autoreply.AutoReplySettingsProvider
 import h.Hchat.ui.FeatureSettingsProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.Calendar
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
 
 @Composable
@@ -43,9 +53,7 @@ internal fun AiChatMiuixPage(context: Context, provider: FeatureSettingsProvider
     var creating by remember { mutableStateOf(false) }
     var targetId by remember { mutableStateOf("") }
     var targets by remember(self) { mutableStateOf(settings.targets(self)) }
-    var pickerMode by remember { mutableStateOf(ContactPickerMode.FRIENDS) }
-    var pickerExisting by remember { mutableStateOf(false) }
-    var contactNames by remember(self) { mutableStateOf<Map<String, String>>(emptyMap()) }
+    val pickerStateHolder = rememberSaveableStateHolder()
     var prompt by remember { mutableStateOf(prefs.getString(AiChatSettings.KEY_PROMPT, AiChatSettings.DEFAULT_PROMPT).orEmpty()) }
     var tail by remember { mutableStateOf(prefs.getString(AiChatSettings.KEY_TAIL, AiChatSettings.DEFAULT_TAIL).orEmpty()) }
     var historyBudget by remember { mutableStateOf(prefs.getInt(AiChatSettings.KEY_CONTEXT, 7000).toString()) }
@@ -58,20 +66,28 @@ internal fun AiChatMiuixPage(context: Context, provider: FeatureSettingsProvider
     var confirmClear by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
     var preferencesVersion by remember { mutableStateOf(0) }
-    var favoriteVersion by remember { mutableStateOf(0) }
+    var showModels by remember { mutableStateOf(false) }
+    var modelRefresh by remember { mutableStateOf(0) }
+    var showSearchFee by remember { mutableStateOf(false) }
+    var legacyAiCount by remember { mutableStateOf(0) }
+    var legacyAiRunning by remember { mutableStateOf(false) }
+    val todayStart = remember(route) { Calendar.getInstance().apply { set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0) }.timeInMillis }
     DisposableEffect(prefs) {
         val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ -> Handler(Looper.getMainLooper()).post { preferencesVersion++ } }
         prefs.registerOnSharedPreferenceChangeListener(listener)
         onDispose { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
     }
     val latestStatus = remember(preferencesVersion) { prefs.getString(AiChatSettings.KEY_STATUS, "暂无请求").orEmpty() }
-    val latestUsage = remember(preferencesVersion) {
-        "输入 ${prefs.getLong("usage_input", 0)} · 输出 ${prefs.getLong("usage_output", 0)} · 缓存 ${if (prefs.getBoolean("usage_cache_unknown", false)) "部分未知" else prefs.getLong("usage_cached", 0).toString()}"
-    }
-    val favorites = remember(draft.endpoint(), favoriteVersion) { settings.favorites(draft.endpoint()) }
-    LaunchedEffect(self, targets.map { it.talker }) {
-        contactNames = withContext(Dispatchers.IO) {
-            targets.associate { target -> target.talker to WeChatApis.contacts()?.getDisplayName(target.talker).orEmpty() }
+    var usageRows by remember { mutableStateOf<List<AiUsageRecord>>(emptyList()) }
+    LaunchedEffect(route) {
+        if (route == "main") {
+            val old = AutoReplySettings(context)
+            val rules = old.rules().filter { rule -> rule.steps.any { it.mode == AutoReplySettings.REPLY_ZHILIA_AI } }
+            val accepting = old.autoAcceptSteps().any { it.mode == AutoReplySettings.REPLY_ZHILIA_AI }
+            val greeting = old.greetAcceptedSteps().any { it.mode == AutoReplySettings.REPLY_ZHILIA_AI }
+            legacyAiCount = rules.size + (if (accepting) 1 else 0) + (if (greeting) 1 else 0)
+            legacyAiRunning = (old.isEnabled() && (rules.any { it.enabled } || (greeting && old.getBoolean(AutoReplySettings.KEY_GREET_ACCEPTED_ENABLE, false)))) ||
+                (accepting && old.getBoolean(AutoReplySettings.KEY_AUTO_ACCEPT_ENABLE, false))
         }
     }
     LaunchedEffect(route, targetId) {
@@ -80,6 +96,23 @@ internal fun AiChatMiuixPage(context: Context, provider: FeatureSettingsProvider
             progress = "已处理 ${state.count} 条 · ${if (state.initialDone) "等待增量" else "回填中"} · 记忆整理输入 ${state.input} / 输出 ${state.output} token" +
                 if (state.pending) "\n请求正在处理或上次结果未确认" else if (state.error.isNotBlank()) "\n${state.error}" else ""
             delay(5000)
+        }
+    }
+    LaunchedEffect(route, self) {
+        if (route == "usage") usageRows = withContext(Dispatchers.IO) { AiChatMemory.get(context).usage(self) }
+    }
+    LaunchedEffect(showModels, modelRefresh, draft.id, draft.provider, draft.baseUrl, draft.apiKey) {
+        if (showModels) {
+            val current = draft
+            modelStatus = "正在拉取模型"
+            val result = withContext(Dispatchers.IO) { runCatching { AiChatClient.fetchModels(current) } }
+            if (showModels && draft.id == current.id && draft.provider == current.provider && draft.endpoint() == current.endpoint() && draft.apiKey == current.apiKey) {
+                result.onSuccess { models ->
+                    draft = draft.copy(models = models)
+                    if (!creating) { configs = configs.map { if (it.id == draft.id) draft else it }; settings.saveConfigs(configs, active) }
+                    modelStatus = "已获取 ${models.size} 个模型"
+                }.onFailure { modelStatus = it.message ?: "拉取失败，当前模型已保留" }
+            }
         }
     }
 
@@ -111,24 +144,36 @@ internal fun AiChatMiuixPage(context: Context, provider: FeatureSettingsProvider
         draft = value; creating = isNew; modelStatus = ""; testStatus = ""; modelQuery = ""; route = "config"
     }
     fun goBack() {
-        route = when (route) { "main" -> { onBack(); "main" }; "models" -> "config"; "config" -> "configs"; "memory" -> "target"; else -> "main" }
+        route = when (route) { "main" -> { onBack(); "main" }; "config" -> "configs"; "memory" -> "target"; "target" -> "picker"; else -> "main" }
     }
     val target = targets.firstOrNull { it.talker == targetId }
     SettingsRouteTransition(targetState = route, label = "AiChatRoute", depthOf = {
-        when (it) { "main" -> 0; "configs", "picker", "target" -> 1; else -> 2 }
+        when (it) { "main" -> 0; "configs", "picker", "usage", "legacyRules" -> 1; "memory" -> 3; else -> 2 }
     }) { page ->
         if (page == "picker") {
-            val request = ContactPickerRequest("添加聊天对象", pickerMode, true, "", onValue = {}, strictFriendsOnly = pickerMode == ContactPickerMode.FRIENDS,
-                onlyExistingConversations = pickerExisting, strictFriendsAndGroupsOnly = pickerExisting, nativeHomeConversationList = pickerExisting)
-            ContactPickerPage(context, request, onBack = { route = "main" }, onConfirm = { selected ->
-                val additions = selected.map { AiChatTarget(it.id) }.filter { t -> targets.none { it.talker == t.talker } }
-                targets = targets + additions
-                settings.saveTargets(self, targets)
-                AiChatRuntime.scheduleMemory(context)
-                route = "main"
-            })
+            val request = ContactPickerRequest("聊天对象", ContactPickerMode.BOTH, true,
+                formatIds(targets.filter { it.enabled }.map { it.talker }), onValue = {}, strictFriendsAndGroupsOnly = true,
+                showSelectedCount = true, preserveScrollOnOpen = true, onDetails = { option ->
+                    if (targets.none { it.talker == option.id }) {
+                        targets = targets + AiChatTarget(option.id, enabled = false)
+                        settings.saveTargets(self, targets)
+                    }
+                    targetId = option.id; route = "target"
+                })
+            pickerStateHolder.SaveableStateProvider("ai-chat-contacts") {
+                ContactPickerPage(context, request, onBack = { route = "main" }, onSelectionChange = { selected ->
+                    val oldIds = targets.mapTo(HashSet()) { it.talker }
+                    targets = targets.map { it.copy(enabled = it.talker in selected) } +
+                        selected.filterNot { it in oldIds }.map { AiChatTarget(it) }
+                    settings.saveTargets(self, targets)
+                    AiChatRuntime.scheduleMemory(context)
+                })
+            }
+        } else if (page == "legacyRules") {
+            AutoReplyMiuixPage(context, remember { AutoReplySettingsProvider() }, onBack = { route = "main" },
+                initialScene = AutoReplyInitialScene.MAIN, relatedProviders = emptyList(), onOpenProvider = {})
         } else {
-            val title = when (page) { "configs" -> "模型服务"; "config" -> if (creating) "新增模型配置" else "编辑模型配置"; "models" -> "选择模型"; "target" -> "聊天对象"; "memory" -> "记忆管理"; else -> provider.title() }
+            val title = when (page) { "configs" -> "模型服务"; "config" -> if (creating) "新增模型配置" else "编辑模型配置"; "target" -> "聊天对象"; "memory" -> "记忆管理"; "usage" -> "用量与费用"; else -> provider.title() }
             val scroll = MiuixScrollBehavior()
             PageScaffold(title, title, scroll, onBack = ::goBack, showBackIcon = false) { padding ->
                 LazyColumn(modifier = Modifier.fillMaxSize().nestedScroll(scroll.nestedScrollConnection),
@@ -139,23 +184,14 @@ internal fun AiChatMiuixPage(context: Context, provider: FeatureSettingsProvider
                             item { SettingsCard {
                                 SwitchRow(prefs, AiChatSettings.KEY_ENABLE, "AI 聊天", "仅回复已开启的聊天对象", false)
                                 InsetDivider()
-                                ActionRow("模型服务", settings.activeConfig()?.let { "${it.name} · ${it.model}" } ?: "尚未配置") { route = "configs" }
+                                ActionRow("模型服务", configs.firstOrNull { it.id == active }?.let { "${providerName(it.provider)} · ${it.model.ifBlank { "未选择模型" }}" } ?: "尚未配置") { route = "configs" }
                             } }
                             item { SettingsSectionTitle("全局指令") }
                             item { SettingsCard { InputRow("全局指令", "会话独立指令优先", prompt, minLines = 3) { prompt = it; prefs.edit().putString(AiChatSettings.KEY_PROMPT, it).apply() } } }
                             item { SettingsSectionTitle("聊天对象") }
-                            item { SettingsCard {
-                                ActionRow("添加好友", "多选好友") { if (self.isNotBlank()) { pickerExisting = false; pickerMode = ContactPickerMode.FRIENDS; route = "picker" } else Toast.makeText(context, "微信账号尚未就绪", Toast.LENGTH_SHORT).show() }
-                                InsetDivider()
-                                ActionRow("添加群聊", "多选群聊") { if (self.isNotBlank()) { pickerExisting = false; pickerMode = ContactPickerMode.GROUPS; route = "picker" } else Toast.makeText(context, "微信账号尚未就绪", Toast.LENGTH_SHORT).show() }
-                                InsetDivider()
-                                ActionRow("从会话添加", "选择已有好友或群聊") { if (self.isNotBlank()) { pickerExisting = true; pickerMode = ContactPickerMode.BOTH; route = "picker" } else Toast.makeText(context, "微信账号尚未就绪", Toast.LENGTH_SHORT).show() }
-                            } }
-                            targets.forEach { itemTarget -> item {
-                                SettingsCard(modifier = Modifier.padding(top = 8.dp)) {
-                                    ActionRow(contactNames[itemTarget.talker].orEmpty().ifBlank { itemTarget.talker }, if (itemTarget.enabled) "已开启" else "已关闭") { targetId = itemTarget.talker; route = "target" }
-                                }
-                            } }
+                            item { SettingsCard { ActionRow("聊天对象", "已启用 ${targets.count { it.enabled }} 个好友或群聊") {
+                                if (self.isNotBlank()) route = "picker" else Toast.makeText(context, "微信账号尚未就绪", Toast.LENGTH_SHORT).show()
+                            } } }
                             item { SettingsSectionTitle("记忆与上下文") }
                             item { SettingsCard {
                                 InputRow("输入预算", "token 估算；0 表示不带历史，当前问题仍会发送", historyBudget) {
@@ -163,34 +199,30 @@ internal fun AiChatMiuixPage(context: Context, provider: FeatureSettingsProvider
                                     it.toIntOrNull()?.takeIf { n -> n in 0..16000 }?.let { n -> prefs.edit().putInt(AiChatSettings.KEY_CONTEXT, n).apply() }
                                 }
                             } }
-                            item { SettingsSectionTitle("媒体") }
-                            item { SettingsCard {
-                                SwitchRow(prefs, AiChatSettings.KEY_IMAGE, "图片理解", "", false); InsetDivider()
-                                SwitchRow(prefs, AiChatSettings.KEY_VOICE, "语音理解", "优先微信转文字", false); InsetDivider()
-                                SwitchRow(prefs, AiChatSettings.KEY_NATIVE_AUDIO, "模型直接理解音频", "启用时将语音转换为兼容格式", false); InsetDivider()
-                                SwitchRow(prefs, AiChatSettings.KEY_VIDEO, "视频理解", "", false)
-                            } }
                             item { SettingsSectionTitle("其他") }
                             item { SettingsCard {
                                 InputRow("AI 引用小尾巴", "", tail) { tail = it; prefs.edit().putString(AiChatSettings.KEY_TAIL, it).apply() }
                                 InsetDivider()
                                 InfoRow("最近状态", latestStatus)
                                 InsetDivider()
-                                InfoRow("用量", latestUsage)
+                                ActionRow("用量与费用", "查看今日和累计预估") { route = "usage" }
+                                if (legacyAiCount > 0) {
+                                    InsetDivider(); ActionRow("旧自动回复 AI 规则", "${legacyAiCount} 条 · ${if (legacyAiRunning) "仍由自动回复控制" else "当前未启用"}") { route = "legacyRules" }
+                                }
                             } }
                         }
                         "configs" -> {
                             item { SettingsSectionTitle("配置") }
-                            configs.forEach { config -> item { SettingsCard(modifier = Modifier.padding(bottom = 8.dp)) {
-                                ActionRow(config.name, "${config.model.ifBlank { "未选择模型" }}${if (active == config.id) " · 当前" else ""}") { selectConfig(config, false) }
-                                ContentActionRow("设为当前") { active = config.id; settings.saveConfigs(configs, active) }
+                            configs.forEach { config -> item(key = config.id) { SettingsCard(modifier = Modifier.padding(bottom = 8.dp)) {
+                                ContentActionRow("${if (active == config.id) "●" else "○"} ${config.name}${if (active == config.id) " · 当前使用" else ""}") { active = config.id; settings.saveConfigs(configs, active) }
+                                InsetDivider(); ActionRow("编辑配置", "${providerName(config.provider)} · ${config.model.ifBlank { "未选择模型" }}") { selectConfig(config, false) }
                             } } }
                             item { SettingsCard { AddActionRow("新增配置") { selectConfig(AiChatConfig(), true) } } }
                         }
                         "config" -> {
                             item { SettingsSectionTitle("服务商") }
                             item { SettingsCard {
-                                AiProvider.entries.forEach { p -> ContentActionRow((if (draft.provider == p) "✓ " else "") + when (p) { AiProvider.DEEPSEEK -> "DeepSeek"; AiProvider.MIMO -> "小米 MiMo"; AiProvider.CUSTOM -> "第三方中转站" }) { updateDraft(draft.copy(provider = p, model = "", models = emptyList())) } }
+                                AiProvider.entries.forEach { p -> ContentActionRow((if (draft.provider == p) "✓ " else "") + when (p) { AiProvider.DEEPSEEK -> "DeepSeek"; AiProvider.MIMO -> "小米 MiMo"; AiProvider.CUSTOM -> "第三方中转站" }) { if (p != draft.provider) updateDraft(draft.copy(provider = p, model = "", models = emptyList(), webSearch = false)) } }
                             } }
                             item { SettingsSectionTitle("配置") }
                             item { SettingsCard {
@@ -204,12 +236,20 @@ internal fun AiChatMiuixPage(context: Context, provider: FeatureSettingsProvider
                                     SwitchRow(draft.audio, "原生音频能力", "由中转站实际支持情况决定") { updateDraft(draft.copy(audio = it)) }; InsetDivider()
                                     SwitchRow(draft.video, "视频能力", "由中转站实际支持情况决定") { updateDraft(draft.copy(video = it)) }; InsetDivider()
                                 }
-                                ActionRow("选择模型", draft.model.ifBlank { "尚未选择" }) { route = "models" }; InsetDivider()
+                                ActionRow("选择模型", draft.model.ifBlank { "尚未选择" }) { modelQuery = ""; showModels = true }; InsetDivider()
+                                InfoRow("媒体能力", buildList { if (draft.supports("image")) add("图片"); add("微信语音转文字"); if (draft.supports("audio")) add("模型理解音频文件"); if (draft.supports("video")) add("视频") }.joinToString(" / ")); InsetDivider()
+                                if (draft.provider != AiProvider.CUSTOM) {
+                                    SwitchRow(draft.webSearch, "联网搜索", if (AiChatClient.supportsWebSearch(draft)) "按需搜索，可能产生额外费用" else "当前模型不支持官方联网") {
+                                        if (!it) updateDraft(draft.copy(webSearch = false))
+                                        else if (AiChatClient.supportsWebSearch(draft)) showSearchFee = true
+                                        else Toast.makeText(context, "当前模型不支持官方联网搜索", Toast.LENGTH_SHORT).show()
+                                    }; InsetDivider()
+                                }
                                 ActionRow("测试连通性", testStatus.ifBlank { "发送一次短请求" }) {
                                     val current = draft; testStatus = "正在测试"
                                     scope.launch { testStatus = withContext(Dispatchers.IO) { runCatching {
-                                        val result = AiChatClient.complete(current, listOf(AiInput("user", "请只回复 OK")), 16)
-                                        AiChatRuntime.recordUsage(context, result.usage); "连接成功"
+                                        AiChatRuntime.complete(context, self, current, AiPurpose.TEST, listOf(AiInput("user", "请只回复 OK")), 16)
+                                        "连接成功"
                                     }.getOrElse { it.message ?: "连接失败" } } }
                                 }
                             } }
@@ -234,27 +274,17 @@ internal fun AiChatMiuixPage(context: Context, provider: FeatureSettingsProvider
                                 }
                             } }
                         }
-                        "models" -> {
-                            item { SettingsSectionTitle("模型") }
-                            item { SettingsCard {
-                                ActionRow("拉取模型列表", modelStatus.ifBlank { "从当前服务获取 /models" }) {
-                                    val current = draft; modelStatus = "正在拉取"
-                                    scope.launch {
-                                        val result = withContext(Dispatchers.IO) { runCatching { AiChatClient.fetchModels(current) } }
-                                        if (draft.id == current.id && draft.provider == current.provider && draft.endpoint() == current.endpoint() && draft.apiKey == current.apiKey) {
-                                            result.onSuccess { models -> updateDraft(draft.copy(models = models)); modelStatus = "已获取 ${models.size} 个模型" }
-                                                .onFailure { modelStatus = it.message ?: "拉取失败，可手动输入第三方模型" }
-                                        }
-                                    }
-                                }
-                                InsetDivider(); InputRow("搜索", "", modelQuery) { modelQuery = it }
+                        "usage" -> {
+                            item { SettingsSectionTitle("预估费用") }
+                            item { SettingsCard { InfoRow("今日", AiChatUsage.description(usageRows.filter { it.started >= todayStart })); InsetDivider(); InfoRow("累计", AiChatUsage.description(usageRows)) } }
+                            item { SettingsCard(modifier = Modifier.padding(top = 8.dp)) {
+                                InfoRow("统计开始", usageRows.minOfOrNull { it.started }?.let { SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(it)) } ?: "等待首次新请求")
+                                InsetDivider(); InfoRow("口径", "按 2026-11-16 官方按量价格估算；DeepSeek 为峰谷区间，MiMo 分国内 CNY 与海外 USD。未知字段和优惠未计入，非官方账单。")
                             } }
-                            draft.models.filter { it.id.contains(modelQuery, true) }.sortedWith(compareByDescending<AiModel> { it.id in favorites }.thenBy { it.id }).forEach { model -> item {
-                                SettingsCard(modifier = Modifier.padding(top = 8.dp)) {
-                                    ActionRow(model.id, if (model.id == draft.model) "当前模型" else model.modalities.joinToString(" / ")) { updateDraft(draft.copy(model = model.id)); route = "config" }
-                                    ContentActionRow(if (model.id in favorites) "取消收藏" else "收藏") { settings.saveFavorites(draft.endpoint(), if (model.id in favorites) favorites - model.id else favorites + model.id); favoriteVersion++ }
-                                }
+                            usageRows.groupBy { Triple(it.provider, it.model, it.purpose) }.forEach { (key, rows) -> item(key = "${key.first}:${key.second}:${key.third}") {
+                                SettingsCard(modifier = Modifier.padding(top = 8.dp)) { InfoRow("${providerName(key.first)} · ${key.second} · ${purposeName(key.third)}", AiChatUsage.description(rows)) }
                             } }
+                            item { SettingsCard(modifier = Modifier.padding(top = 8.dp)) { InfoRow("旧版未分类用量", "输入 ${prefs.getLong("usage_input", 0)} / 输出 ${prefs.getLong("usage_output", 0)} / 缓存 ${prefs.getLong("usage_cached", 0)}${if (prefs.getBoolean("usage_cache_unknown", false)) "（部分未知）" else ""}；无法反推模型") } }
                         }
                         "target" -> if (target != null) {
                             item { SettingsSectionTitle(target.talker) }
@@ -295,6 +325,27 @@ internal fun AiChatMiuixPage(context: Context, provider: FeatureSettingsProvider
             }
         }
     }
+    SettingsWindowDialog(show = showModels, title = "选择模型", onDismissRequest = { showModels = false }) {
+        Column {
+            InfoRow("状态", modelStatus)
+            ContentActionRow("刷新模型列表") { modelRefresh++ }
+            if (draft.provider == AiProvider.CUSTOM && draft.models.size > 30) InputRow("搜索", "模型名称", modelQuery) { modelQuery = it }
+            LazyColumn(Modifier.heightIn(max = 400.dp)) {
+                items(draft.models.filter { it.id.contains(modelQuery, true) }, key = { it.id }) { model ->
+                    ContentActionRow("${if (model.id == draft.model) "●" else "○"} ${model.id}") {
+                        updateDraft(draft.copy(model = model.id)); showModels = false
+                    }
+                }
+            }
+        }
+    }
+    SettingsWindowDialog(show = showSearchFee, title = "启用联网搜索", onDismissRequest = { showSearchFee = false }) {
+        Column {
+            InfoRow("费用", if (draft.provider == AiProvider.MIMO) "按需联网可能产生额外费用，请先在 MiMo 控制台开通联网服务插件。" else "按需联网可能产生额外搜索和网页读取费用。")
+            ContentActionRow("启用") { updateDraft(draft.copy(webSearch = true)); showSearchFee = false }
+            ContentActionRow("取消") { showSearchFee = false }
+        }
+    }
     BatchDeleteConfirmDialog(show = confirmDelete, message = "将删除该模型配置。", labels = listOf(draft.name), onDismiss = { confirmDelete = false }, onConfirm = {
         configs = configs.filterNot { it.id == draft.id }; if (active == draft.id) active = configs.firstOrNull()?.id.orEmpty()
         settings.saveConfigs(configs, active); confirmDelete = false; route = "configs"
@@ -312,4 +363,16 @@ internal fun AiChatMiuixPage(context: Context, provider: FeatureSettingsProvider
             if (ok) loadMemory(targetId) else Toast.makeText(context, "微信历史尚不可读取，未清空", Toast.LENGTH_SHORT).show()
         }
     })
+}
+
+private fun providerName(provider: AiProvider): String = when (provider) {
+    AiProvider.DEEPSEEK -> "DeepSeek"
+    AiProvider.MIMO -> "小米 MiMo"
+    AiProvider.CUSTOM -> "第三方"
+}
+
+private fun purposeName(purpose: AiPurpose): String = when (purpose) {
+    AiPurpose.CHAT -> "聊天"
+    AiPurpose.MEMORY -> "记忆整理"
+    AiPurpose.TEST -> "连通性测试"
 }

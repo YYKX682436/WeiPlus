@@ -18,6 +18,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
@@ -302,7 +303,7 @@ internal fun ContactPickerPage(
     var loading by remember(sessionKey) { mutableStateOf(true) }
     var error by remember(sessionKey) { mutableStateOf("") }
     var contacts by remember(sessionKey) { mutableStateOf(emptyList<ContactOption>()) }
-    var query by remember(sessionKey) { mutableStateOf("") }
+    var query by if (request.preserveScrollOnOpen) rememberSaveable { mutableStateOf("") } else remember(sessionKey) { mutableStateOf("") }
     val initialSelectedIds = remember(sessionKey) { parseIds(request.existingValue) }
     val batchCandidateMode = request.batchCandidateMode()
     val batchLabelFilterId = request.batchLabelFilterId()?.trim()?.takeIf { it.isNotEmpty() }
@@ -353,18 +354,12 @@ internal fun ContactPickerPage(
     val scopeSelectionEnabled = !request.flatBatchSelection && request.enableScopeSelection &&
         request.multiSelect &&
         request.mode == ContactPickerMode.FRIENDS
-    var scopeTab by remember(sessionKey) { mutableStateOf(ContactPickerScopeTab.FRIENDS) }
-    var selectedConversationGroupId by remember(sessionKey) { mutableStateOf("") }
-    var contactFilter by remember(sessionKey) {
-        mutableStateOf(
-            if (!request.flatBatchSelection && request.mode == ContactPickerMode.FRIENDS && request.enableLabels) {
-                ContactPickerFilter.FRIENDS
-            } else {
-                ContactPickerFilter.ALL
-            }
-        )
-    }
-    var selectedLabel by remember(sessionKey) { mutableStateOf("") }
+    var scopeTab by if (request.preserveScrollOnOpen) rememberSaveable { mutableStateOf(ContactPickerScopeTab.FRIENDS) } else remember(sessionKey) { mutableStateOf(ContactPickerScopeTab.FRIENDS) }
+    var selectedConversationGroupId by if (request.preserveScrollOnOpen) rememberSaveable { mutableStateOf("") } else remember(sessionKey) { mutableStateOf("") }
+    val defaultContactFilter = if (!request.flatBatchSelection && request.mode == ContactPickerMode.FRIENDS && request.enableLabels) ContactPickerFilter.FRIENDS else ContactPickerFilter.ALL
+    var contactFilter by if (request.preserveScrollOnOpen) rememberSaveable { mutableStateOf(defaultContactFilter) }
+        else remember(sessionKey) { mutableStateOf(defaultContactFilter) }
+    var selectedLabel by if (request.preserveScrollOnOpen) rememberSaveable { mutableStateOf("") } else remember(sessionKey) { mutableStateOf("") }
     val groupLabels = remember(sessionKey) {
         if (!request.flatBatchSelection && request.multiSelect && request.enableGroupLabels && request.mode.supportsGroups()) {
             GroupChatLabelStore.load(context)
@@ -374,6 +369,7 @@ internal fun ContactPickerPage(
     }
     val listState = rememberLazyListState()
     val scrollBehavior = MiuixScrollBehavior()
+    var previousFilter by rememberSaveable { mutableStateOf("") }
     LaunchedEffect(
         sessionKey,
         candidateLoadToken,
@@ -383,7 +379,9 @@ internal fun ContactPickerPage(
         contactFilter,
         selectedLabel
     ) {
-        listState.scrollToItem(0)
+        val filter = "$scopeTab|$selectedConversationGroupId|$contactFilter|$selectedLabel"
+        if (!request.preserveScrollOnOpen || previousFilter != filter) listState.scrollToItem(0)
+        previousFilter = filter
     }
 
     DisposableEffect(loadGate) {
@@ -878,7 +876,8 @@ internal fun ContactPickerPage(
                                 setOf(option.id)
                             }
                             updateSelection(next)
-                        }
+                        },
+                        onDetails = request.onDetails?.let { action -> { action(option) } }
                     )
                 }
             }
