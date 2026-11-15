@@ -38,6 +38,7 @@ import h.Hchat.hooks.items.inputhint.InputHintSettings
 import h.Hchat.hooks.items.inputhint.InputHintStats
 import h.Hchat.hooks.items.inputhint.OutgoingMessageStatsRepository
 import h.Hchat.hooks.items.messageaffix.MessageAffixSettings
+import h.Hchat.hooks.items.quotetail.ChatQuoteTailSettings
 import h.Hchat.hooks.items.messageforward.MessageForwardSettings
 import h.Hchat.hooks.items.hchatextra.HchatExtraSettings
 import h.Hchat.hooks.items.miniprogrambaselib.FakeMiniProgramBaseLibSettings
@@ -860,6 +861,59 @@ internal fun MessageAffixMiuixPage(
                             .putString(MessageAffixSettings.KEY_TEXT_FORMAT, textFormat)
                             .putString(MessageAffixSettings.KEY_TIME_FORMAT, timeFormat)
                             .apply()
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun ChatQuoteTailMiuixPage(
+    context: Context,
+    provider: FeatureSettingsProvider,
+    onBack: () -> Unit
+) {
+    val sp = remember { ChatQuoteTailSettings.preferences(context) }
+    var enabled by remember {
+        mutableStateOf(sp.getBoolean(ChatQuoteTailSettings.KEY_ENABLE, ChatQuoteTailSettings.DEFAULT_ENABLE))
+    }
+    var quoteContent by remember {
+        mutableStateOf(sp.getString(ChatQuoteTailSettings.KEY_CONTENT, ChatQuoteTailSettings.DEFAULT_CONTENT).orEmpty())
+    }
+    val listState = rememberLazyListState()
+    val scrollBehavior = MiuixScrollBehavior()
+
+    PageScaffold(
+        title = provider.title(),
+        largeTitle = provider.title(),
+        scrollBehavior = scrollBehavior,
+        onBack = onBack,
+        showBackIcon = false
+    ) { padding ->
+        LazyColumn(
+            modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
+            state = listState,
+            contentPadding = PaddingValues(
+                top = padding.calculateTopPadding() + 8.dp,
+                bottom = padding.calculateBottomPadding() + 16.dp
+            )
+        ) {
+            item { SettingsSectionTitle(text = "聊天消息") }
+            item {
+                SettingsCard {
+                    SwitchRow(
+                        checked = enabled,
+                        title = "聊天引用小尾巴",
+                        summary = "普通文字发送时附带一条微信原生引用"
+                    ) {
+                        enabled = it
+                        sp.edit().putBoolean(ChatQuoteTailSettings.KEY_ENABLE, it).apply()
+                    }
+                    InsetDivider()
+                    InputRow("引用内容", "显示在引用区域的内容", quoteContent, minLines = 2) {
+                        quoteContent = it
+                        sp.edit().putString(ChatQuoteTailSettings.KEY_CONTENT, it).apply()
                     }
                 }
             }

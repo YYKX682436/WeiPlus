@@ -65,6 +65,7 @@ import h.Hchat.hooks.items.payment.transfer.AutoTransferFeature
 import h.Hchat.hooks.items.patblock.PatBlockFeature
 import h.Hchat.hooks.items.profileid.ProfileIdFeature
 import h.Hchat.hooks.items.quoteclear.QuoteDeleteClearFeature
+import h.Hchat.hooks.items.quotetail.ChatQuoteTailFeature
 import h.Hchat.hooks.items.quickcontactedit.QuickContactEditFeature
 import h.Hchat.hooks.items.quickmoments.QuickMomentsFeature
 import h.Hchat.hooks.items.quickread.QuickMarkReadFeature
@@ -147,6 +148,7 @@ object FeatureRegistry {
             .register(SkipMiniProgramVideoAdsFeature())
             .register(SkipGlobalMiniProgramSplashAdsFeature())
             .register(QQMusicOrderFeature())
+            .register(ChatQuoteTailFeature())
             .register(LinkParseFeature())
             .register(SportStepFeature())
             .register(MomentsAutoLikeFeature())

@@ -5219,7 +5219,7 @@ public class DexFinder {
         if (!"android.util.Pair".equals(method.getReturnType().getName())) return false;
         if (!KavaReflector.isStatic(method)) return false;
         Class<?>[] params = method.getParameterTypes();
-        if (params.length != 10 && params.length != 12) return false;
+        if (params.length != 10 && params.length != 12 && params.length != 13) return false;
         if (params[0].isPrimitive()) return false;
         return params[1] == String.class
                 && params[2] == String.class
@@ -5230,10 +5230,11 @@ public class DexFinder {
                 && params[7] == String.class
                 && params[8] == String.class
                 && ((params.length == 10 && (params[9] == long.class || params[9] == Long.class))
-                || (params.length == 12
+                || ((params.length == 12 || params.length == 13)
                 && !params[9].isPrimitive()
                 && (params[10] == boolean.class || params[10] == Boolean.class)
-                && params[11] == String.class));
+                && params[11] == String.class
+                && (params.length == 12 || params[12] == String.class)));
     }
 
     private boolean isAppMsgParseMethod(Method method, Class<?> appMsgClass) {

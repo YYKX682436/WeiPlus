@@ -66,6 +66,12 @@ object NativeSendButtonHook {
         return Subscription(unsubscribe)
     }
 
+    /** Returns null when the host does not expose this quote state on the active footer. */
+    internal fun currentQuoteMessageId(): Long? {
+        val footer = lastChatFooter.get() ?: return null
+        return (invokeNoArg(footer, "getLastQuoteMsgId") as? Number)?.toLong()
+    }
+
     @Synchronized
     fun resetForGeneration() {
         val watchers = synchronized(inputWatchers) {

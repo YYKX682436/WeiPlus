@@ -877,7 +877,7 @@ public final class WeChatMessageApi {
 
             String msgSource = extractMsgSource(xml);
             Object[] args = buildSendAppMsgArgs(sendMethod, appMessage, talker, xml, msgSource);
-            if (args.length == 12 && args[9] == null) {
+            if ((args.length == 12 || args.length == 13) && args[9] == null) {
                 log("发送XML失败: MsgIdTalker参数创建失败");
                 return false;
             }
@@ -941,16 +941,20 @@ public final class WeChatMessageApi {
         args[3] = talker;
         args[4] = "";
         args[5] = cachedThumbData(xml);
-        args[6] = "Hchat_xml_" + System.currentTimeMillis();
+        args[6] = params.length == 13 ? null : "Hchat_xml_" + System.currentTimeMillis();
         args[7] = "";
         args[8] = msgSource != null ? msgSource : "";
 
         if (params.length == 10) {
             args[9] = 0L;
-        } else if (params.length == 12) {
-            args[9] = newMsgIdTalker(params[9], talker);
+        } else if (params.length == 12 || params.length == 13) {
+            args[9] = params.length == 13
+                    ? staticInstance(params[9])
+                    : newMsgIdTalker(params[9], talker);
+            if (args[9] == null) args[9] = newMsgIdTalker(params[9], talker);
             args[10] = false;
-            args[11] = "";
+            args[11] = params.length == 13 ? null : "";
+            if (params.length == 13) args[12] = null;
         }
         return args;
     }

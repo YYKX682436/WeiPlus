@@ -108,6 +108,7 @@ import h.Hchat.hooks.items.keywordnotify.KeywordNotificationFeature
 import h.Hchat.hooks.items.zombiecheck.ZombieCheckFeature
 import h.Hchat.hooks.items.membertitle.MemberTitleFeature
 import h.Hchat.hooks.items.messageaffix.MessageAffixFeature
+import h.Hchat.hooks.items.quotetail.ChatQuoteTailFeature
 import h.Hchat.hooks.items.messagebubble.MessageBubbleFeature
 import h.Hchat.hooks.items.messagetextcolor.MessageTextColorFeature
 import h.Hchat.hooks.items.messageblock.MessageBlockFeature
@@ -898,6 +899,7 @@ private fun featureSubSearchTerms(featureId: String): List<String> {
         MessageAffixFeature.ID -> listOf(
             "发送文本格式", "消息格式", "消息前后缀", "消息前缀", "消息后缀", "固定文字", "发送时间", "换行"
         )
+        ChatQuoteTailFeature.ID -> listOf("聊天引用小尾巴", "自定义引用", "引用内容")
         InputHintFeature.ID -> listOf(
             "输入框提示", "聊天输入框", "默认提示", "占位文字", "发送统计", "消息数量", "文字字数",
             "恢复旧版输入框", "长按语音输入"
@@ -1584,6 +1586,7 @@ internal fun FeatureSettingsPage(
         CallRingtoneBlockFeature.ID -> CallRingtoneBlockMiuixPage(context, provider, onBack)
         HideChatMenuFeature.ID -> HideChatMenuMiuixPage(context, provider, onBack)
         MessageAffixFeature.ID -> MessageAffixMiuixPage(context, provider, onBack)
+        ChatQuoteTailFeature.ID -> ChatQuoteTailMiuixPage(context, provider, onBack)
         SettingsFeature.ID -> SettingsEntryMiuixPage(context, provider, onBack)
         MessageDetailsSettingsProvider.FEATURE_ID -> MessageDetailsConfigPage(
             context = context,

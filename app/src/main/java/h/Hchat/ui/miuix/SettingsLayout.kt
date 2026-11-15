@@ -35,7 +35,7 @@ internal object SettingsLayout {
             "group_nickname_color", "member_title", "hchat_group_member_history"
         )),
         SettingsGroupSpec("chat", "聊天", listOf(
-            "anti_recall", "multi_recall", "message_affix", "block_typing_report", "disable_pat",
+            "anti_recall", "multi_recall", "message_affix", "chat_quote_tail", "block_typing_report", "disable_pat",
             "auto_original_image", "auto_view_original", "quick_mark_read", "hchat_message_time",
             "quote_delete_clear", "swipe_quote", "emoji_save", "call_media_limit", "call_ringtone_block",
             "fake_voice_duration", "voice_forward", "edit_message",
