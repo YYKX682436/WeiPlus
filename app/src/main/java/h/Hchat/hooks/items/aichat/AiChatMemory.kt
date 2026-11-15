@@ -18,8 +18,9 @@ internal data class AiMemoryState(
 internal data class AiSent(val source: String, val body: String, val configId: String, val model: String, val metadata: String)
 internal data class AiUsageRecord(val account: String, val configId: String, val provider: AiProvider, val model: String,
                                   val purpose: AiPurpose, val started: Long, val usage: AiUsage?, val status: String)
+internal data class AiSearchUsage(val account: String, val started: Long, val credits: Long?, val status: String)
 
-internal class AiChatMemory private constructor(context: Context) : SQLiteOpenHelper(context, "Hchat_ai_chat.db", null, 2) {
+internal class AiChatMemory private constructor(context: Context) : SQLiteOpenHelper(context, "Hchat_ai_chat.db", null, 3) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE state (account TEXT NOT NULL, talker TEXT NOT NULL, cursor_time INTEGER NOT NULL DEFAULT 0, cursor_id INTEGER NOT NULL DEFAULT 0, processed INTEGER NOT NULL DEFAULT 0, facts TEXT NOT NULL DEFAULT '', revision INTEGER NOT NULL DEFAULT 0, memory_input INTEGER NOT NULL DEFAULT 0, memory_output INTEGER NOT NULL DEFAULT 0, pending INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '', initial_done INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(account,talker))")
         db.execSQL("CREATE TABLE summaries (account TEXT NOT NULL, talker TEXT NOT NULL, start_time INTEGER NOT NULL, end_time INTEGER NOT NULL, end_id INTEGER NOT NULL, text TEXT NOT NULL, PRIMARY KEY(account,talker,end_time,end_id))")
@@ -28,6 +29,7 @@ internal class AiChatMemory private constructor(context: Context) : SQLiteOpenHe
         indexSentIds(db)
         db.execSQL("CREATE TABLE media (account TEXT NOT NULL, talker TEXT NOT NULL, msg_id INTEGER NOT NULL, description TEXT NOT NULL, PRIMARY KEY(account,talker,msg_id))")
         createUsage(db)
+        createSearchUsage(db)
     }
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         if (oldVersion < 2) {
@@ -37,6 +39,7 @@ internal class AiChatMemory private constructor(context: Context) : SQLiteOpenHe
             indexSentIds(db)
             createUsage(db)
         }
+        if (oldVersion < 3 && newVersion >= 3) createSearchUsage(db)
     }
     private fun indexSentIds(db: SQLiteDatabase) {
         db.execSQL("CREATE INDEX sent_local_id ON sent(account,talker,local_id)")
@@ -45,6 +48,10 @@ internal class AiChatMemory private constructor(context: Context) : SQLiteOpenHe
     private fun createUsage(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE usage (id INTEGER PRIMARY KEY AUTOINCREMENT, account TEXT NOT NULL, config_id TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL, purpose TEXT NOT NULL, started INTEGER NOT NULL, input INTEGER, output INTEGER, cached INTEGER, search INTEGER, fetch INTEGER, image_search INTEGER, status TEXT NOT NULL)")
         db.execSQL("CREATE INDEX usage_account_time ON usage(account,started)")
+    }
+    private fun createSearchUsage(db: SQLiteDatabase) {
+        db.execSQL("CREATE TABLE search_usage (id INTEGER PRIMARY KEY AUTOINCREMENT, account TEXT NOT NULL, started INTEGER NOT NULL, credits INTEGER, status TEXT NOT NULL)")
+        db.execSQL("CREATE INDEX search_usage_account_time ON search_usage(account,started)")
     }
 
     @Synchronized fun state(account: String, talker: String): AiMemoryState = state(readableDatabase, account, talker)
@@ -193,6 +200,19 @@ internal class AiChatMemory private constructor(context: Context) : SQLiteOpenHe
             put("status", if (usage == null || (usage.input == null && usage.output == null)) "用量未知" else "已返回")
         }
         writableDatabase.insertOrThrow("usage", null, values)
+    }
+    @Synchronized fun recordSearchUsage(account: String, started: Long, credits: Long?, status: String) {
+        val values = ContentValues().apply {
+            put("account", account); put("started", started); credits?.let { put("credits", it) }; put("status", status)
+        }
+        writableDatabase.insertOrThrow("search_usage", null, values)
+    }
+    @Synchronized fun searchUsage(account: String): List<AiSearchUsage> {
+        val rows = mutableListOf<AiSearchUsage>()
+        readableDatabase.rawQuery("SELECT account,started,credits,status FROM search_usage WHERE account=? ORDER BY started DESC", arrayOf(account)).use { c ->
+            while (c.moveToNext()) rows += AiSearchUsage(c.getString(0), c.getLong(1), if (c.isNull(2)) null else c.getLong(2), c.getString(3))
+        }
+        return rows
     }
     @Synchronized fun usage(account: String, since: Long = 0): List<AiUsageRecord> {
         val rows = mutableListOf<AiUsageRecord>()

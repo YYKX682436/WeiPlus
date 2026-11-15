@@ -1,6 +1,8 @@
 package h.Hchat.hooks.items.aichat
 
 import java.util.Locale
+import java.math.BigDecimal
+import java.math.RoundingMode
 
 /** Official pay-as-you-go prices checked on 2026-11-16; amounts are estimates, not invoices. */
 internal object AiChatUsage {
@@ -83,5 +85,26 @@ internal object AiChatUsage {
         }.ifBlank { "暂无费用" }
         val extraTools = if (t.deepseekRequests > 0) "；读网页 ${t.fetch} 次、图片搜索 ${t.imageSearch} 次，${t.deepseekToolUnknown} 次未知" else ""
         return "${t.requests} 次 · 输入 ${t.input} / 输出 ${t.output}\n缓存命中 ${t.cacheHit} / 可统计输入 ${t.cacheInput}（$rate），${t.unknown} 次不完整\n搜索 ${t.search} 次，${t.searchUnknown} 次未知$extraTools\n预估 $costs"
+    }
+
+    fun costSummary(records: List<AiUsageRecord>): String {
+        if (records.isEmpty()) return "暂无"
+        fun amount(value: Double): String = when {
+            value > 0 && value < .0001 -> "<0.0001"
+            else -> BigDecimal.valueOf(value).setScale(4, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString()
+        }
+        val estimates = estimate(records)
+        val unknown = estimates.any { it.currency == "未计价" || it.incomplete }
+        val values = estimates.filter { it.currency != "未计价" }.joinToString(" · ") {
+            val low = amount(it.minimum); val high = amount(it.maximum)
+            "${it.currency} $low${if (low == high) "" else "–$high"}"
+        }
+        return (values.ifBlank { "未知" }) + if (unknown && values.isNotBlank()) "（部分未计入）" else ""
+    }
+
+    fun cacheSummary(records: List<AiUsageRecord>): String {
+        val t = totals(records)
+        if (t.cacheInput <= 0) return "未知"
+        return String.format(Locale.ROOT, "%.1f%%", 100.0 * t.cacheHit / t.cacheInput) + if (t.unknown > 0) "（部分未计入）" else ""
     }
 }

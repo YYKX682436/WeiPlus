@@ -15,14 +15,15 @@ internal data class AiUsage(val input: Long?, val output: Long?, val cached: Lon
                             val search: Long? = null, val fetch: Long? = null, val imageSearch: Long? = null,
                             val reasoning: Long? = null)
 internal data class AiCompletion(val text: String, val usage: AiUsage, val finishReason: String = "",
-                                 val source: String = "", val toolState: String = "", val serverToolCalls: String = "")
+                                 val source: String = "", val toolState: String = "", val serverToolCalls: String = "",
+                                 val webSucceeded: Boolean = false)
 internal data class AiInput(val role: String, val content: Any, val name: String = "", val serverToolCalls: String = "")
 internal enum class AiPurpose { CHAT, MEMORY, TEST }
 internal class AiRequestException(message: String, val usage: AiUsage? = null) : Exception(message)
 
 /** Shared non-streaming client for both the new feature and legacy rule steps. */
 internal object AiChatClient {
-    private val http = OkHttpClient.Builder()
+    internal val http = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS).readTimeout(90, TimeUnit.SECONDS)
         .retryOnConnectionFailure(false).followRedirects(false).followSslRedirects(false).build()
     private val jsonType = "application/json; charset=utf-8".toMediaType()
@@ -37,7 +38,7 @@ internal object AiChatClient {
     }
 
     fun complete(config: AiChatConfig, messages: List<AiInput>, maxOutput: Int = 256,
-                 purpose: AiPurpose = AiPurpose.CHAT, onUsage: (AiUsage?) -> Unit = {}): AiCompletion {
+                 purpose: AiPurpose = AiPurpose.CHAT, externalSources: Boolean = false, onUsage: (AiUsage?) -> Unit = {}): AiCompletion {
         if (config.apiKey.isBlank() || config.endpoint().isBlank() || config.model.isBlank()) {
             throw AiRequestException("请先填写 API Key、地址和模型")
         }
@@ -48,7 +49,8 @@ internal object AiChatClient {
         val request = request(config, url).post(requestBody(config, messages, maxOutput, purpose).toString().toRequestBody(jsonType)).build()
         val safePath = if (config.provider == AiProvider.CUSTOM) "/<custom-path>" else request.url.encodedPath
         val safeEndpoint = redact("${request.url.scheme}://${request.url.host}$safePath", config.apiKey)
-        runCatching { HLog.i("[Hchat:AI-Request] provider=${config.provider} config=${config.id} model=${redact(config.model, config.apiKey)} endpoint=$safeEndpoint purpose=$purpose thinking=${if (config.provider == AiProvider.CUSTOM) "upstream-default" else "disabled"} maxOutput=$maxOutput history=${messages.any { it.role == "assistant" }} web=${config.webSearch && purpose == AiPurpose.CHAT}") }
+        val parts = messages.mapNotNull { it.content as? JSONArray }.flatMap { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it)?.optString("type") } }
+        runCatching { HLog.i("[Hchat:AI-Request] provider=${config.provider} config=${config.id} model=${redact(config.model, config.apiKey)} endpoint=$safeEndpoint purpose=$purpose thinking=${if (config.provider == AiProvider.CUSTOM) "upstream-default" else "disabled"} maxOutput=$maxOutput history=${messages.any { it.role == "assistant" }} web=${config.webSearch && purpose == AiPurpose.CHAT} images=${parts.count { it == "image_url" }} videos=${parts.count { it == "video_url" }}") }
         var reported = false
         fun report(usage: AiUsage?) { if (!reported) { reported = true; runCatching { onUsage(usage) } } }
         try {
@@ -56,7 +58,7 @@ internal object AiChatClient {
                 catch (_: Exception) { throw AiRequestException("上游响应不是有效 JSON") }
             val usage = parseUsage(result.optJSONObject("usage"), config.provider, config.webSearch && purpose == AiPurpose.CHAT)
             report(usage)
-            return parseResponse(config, result, purpose, request.url.host, usage)
+            return parseResponse(config, result, purpose, request.url.host, usage, externalSources)
         } catch (e: Exception) {
             report((e as? AiRequestException)?.usage)
             throw e
@@ -64,7 +66,8 @@ internal object AiChatClient {
     }
 
     internal fun parseResponse(config: AiChatConfig, result: JSONObject, purpose: AiPurpose = AiPurpose.CHAT,
-                               host: String = "", usage: AiUsage = parseUsage(result.optJSONObject("usage"), config.provider, config.webSearch)): AiCompletion {
+                               host: String = "", usage: AiUsage = parseUsage(result.optJSONObject("usage"), config.provider, config.webSearch),
+                               externalSources: Boolean = false): AiCompletion {
         val error = result.optJSONObject("error")
         if (error != null) {
             val hint = if (config.provider == AiProvider.MIMO && config.webSearch && purpose == AiPurpose.CHAT) "；请确认控制台已开通联网服务插件" else ""
@@ -86,10 +89,10 @@ internal object AiChatClient {
         val toolState = toolState(calls)
         if (toolState == "failed") throw AiRequestException("联网工具执行失败，请检查服务和模型", usage)
         val source = firstSource(message.optJSONArray("annotations"))
-        val toolUsed = hasToolResult(calls) || (source.isNotBlank() && (toolState == "completed" || (usage.search ?: 0L) > 0))
+        val toolUsed = externalSources || hasToolResult(calls) || (source.isNotBlank() && (toolState == "completed" || (usage.search ?: 0L) > 0))
         val visible = if (!toolUsed) answer.replace(Regex("(?:我|已|刚刚|刚才)?(?:查到了|搜索到了|检索到了|查阅了)"), "暂时没有查到") else answer
         runCatching { HLog.i("[Hchat:AI-Tool] provider=${config.provider} config=${config.id} model=${redact(config.model, config.apiKey)} state=$toolState hasResult=$toolUsed") }
-        return AiCompletion(visible, usage, finish, if (toolUsed) source else "", toolState, calls?.toString().orEmpty())
+        return AiCompletion(visible, usage, finish, if (toolUsed) source else "", toolState, calls?.toString().orEmpty(), toolUsed)
     }
 
     internal fun supportsWebSearch(config: AiChatConfig): Boolean = when (config.provider) {
@@ -202,6 +205,7 @@ internal object AiChatClient {
     private fun execute(request: Request, provider: AiProvider, searchEnabled: Boolean): String {
         try {
             http.newCall(request).execute().use { response ->
+                runCatching { HLog.i("[Hchat:AI-HTTP] provider=$provider status=${response.code}") }
                 val body = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
                     val rawDetail = runCatching { JSONObject(body).optJSONObject("error")?.optString("message").orEmpty() }.getOrDefault("")

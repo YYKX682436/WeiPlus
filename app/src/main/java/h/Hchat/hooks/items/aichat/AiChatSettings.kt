@@ -39,7 +39,10 @@ internal data class AiChatConfig(
 
     fun supports(modality: String): Boolean = when (provider) {
         AiProvider.CUSTOM -> when (modality) { "image" -> image; "audio" -> audio; "video" -> video; else -> false }
-        AiProvider.DEEPSEEK -> models.firstOrNull { it.id == model }?.modalities?.contains(modality) == true
+        AiProvider.DEEPSEEK -> {
+            val metadata = models.firstOrNull { it.id == model }?.modalities.orEmpty()
+            if (metadata.isNotEmpty()) modality in metadata else model == "deepseek-flash" && modality == "image"
+        }
         AiProvider.MIMO -> {
             val metadata = models.firstOrNull { it.id == model }?.modalities.orEmpty()
             if (metadata.isNotEmpty()) modality in metadata
@@ -69,7 +72,7 @@ internal class AiChatSettings(context: Context) {
             if (prefs.getBoolean(KEY_PROMPT_UPGRADED, false)) return
             val current = prefs.getString(KEY_PROMPT, "").orEmpty()
             val edit = prefs.edit()
-            if (current == OLD_DEFAULT_PROMPT || current == AutoReplySettings.DEFAULT_AI_SYSTEM_PROMPT) edit.putString(KEY_PROMPT, DEFAULT_PROMPT)
+            if (current == OLD_DEFAULT_PROMPT || current == OLD_CHAT_PROMPT || current == AutoReplySettings.DEFAULT_AI_SYSTEM_PROMPT) edit.putString(KEY_PROMPT, DEFAULT_PROMPT)
             edit.putBoolean(KEY_PROMPT_UPGRADED, true).apply()
         }
     }
@@ -221,14 +224,20 @@ internal class AiChatSettings(context: Context) {
         const val KEY_CONFIGS = "configs"
         const val KEY_ACTIVE = "active"
         const val KEY_FAVORITES = "favorites"
+        const val KEY_SEARCH_ENABLED = "search_enabled"
+        const val KEY_SEARCH_SOURCE = "search_source"
+        const val KEY_TAVILY_KEY = "tavily_api_key"
+        const val SEARCH_TAVILY = "tavily"
+        const val SEARCH_OFFICIAL = "official"
         private const val KEY_MIGRATED = "legacy_migrated_v1"
-        private const val KEY_PROMPT_UPGRADED = "chat_default_prompt_v2"
+        private const val KEY_PROMPT_UPGRADED = "chat_default_prompt_v3"
         private val migrationLock = Any()
         const val DEFAULT_TAIL = "本消息为AI回复"
         private const val OLD_DEFAULT_PROMPT = "你是一个自然、简洁、有帮助的微信聊天助手。"
-        const val DEFAULT_PROMPT = "你是微信里的 AI 聊天助手。先回应对方实际表达和情绪，玩笑就自然地接话。通常用一两句话、约20到80个中文字符；跟随会话语言，对方要求英文时可以用英文。不要习惯性列清单、写标题、表格、粗体或代码块，不要每次总结、追问或用客服式结尾。表情适量。可以简短聊技术，但完整项目、长篇代写和重复刷屏请求要简短收住。不要主动推销能力，不编造身份、经历、现实行动或已经完成的操作。"
+        private const val OLD_CHAT_PROMPT = "你是微信里的 AI 聊天助手。先回应对方实际表达和情绪，玩笑就自然地接话。通常用一两句话、约20到80个中文字符；跟随会话语言，对方要求英文时可以用英文。不要习惯性列清单、写标题、表格、粗体或代码块，不要每次总结、追问或用客服式结尾。表情适量。可以简短聊技术，但完整项目、长篇代写和重复刷屏请求要简短收住。不要主动推销能力，不编造身份、经历、现实行动或已经完成的操作。"
+        const val DEFAULT_PROMPT = ""
         private fun isKnownDefaultPrompt(prompt: String): Boolean = prompt.isBlank() || prompt == OLD_DEFAULT_PROMPT ||
-            prompt == DEFAULT_PROMPT || prompt == AutoReplySettings.DEFAULT_AI_SYSTEM_PROMPT
+            prompt == OLD_CHAT_PROMPT || prompt == AutoReplySettings.DEFAULT_AI_SYSTEM_PROMPT
         private fun legacyPlaceholder(config: AiChatConfig): Boolean =
             config.name == AutoReplySettings.DEFAULT_ZHILIA_CONFIG_NAME && config.apiKey.isBlank() &&
                 config.provider == AiProvider.CUSTOM && config.baseUrl.trim().trimEnd('/') == AutoReplySettings.DEFAULT_AI_API_BASE &&

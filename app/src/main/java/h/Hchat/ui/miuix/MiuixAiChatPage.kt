@@ -69,6 +69,11 @@ internal fun AiChatMiuixPage(context: Context, provider: FeatureSettingsProvider
     var showModels by remember { mutableStateOf(false) }
     var modelRefresh by remember { mutableStateOf(0) }
     var showSearchFee by remember { mutableStateOf(false) }
+    var searchEnabled by remember { mutableStateOf(prefs.getBoolean(AiChatSettings.KEY_SEARCH_ENABLED, false)) }
+    var searchSource by remember { mutableStateOf(prefs.getString(AiChatSettings.KEY_SEARCH_SOURCE, AiChatSettings.SEARCH_TAVILY).orEmpty()) }
+    var tavilyKey by remember { mutableStateOf(prefs.getString(AiChatSettings.KEY_TAVILY_KEY, "").orEmpty()) }
+    var searchTestStatus by remember { mutableStateOf("") }
+    var usageExpanded by remember { mutableStateOf(false) }
     var legacyAiCount by remember { mutableStateOf(0) }
     var legacyAiRunning by remember { mutableStateOf(false) }
     val todayStart = remember(route) { Calendar.getInstance().apply { set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0) }.timeInMillis }
@@ -79,6 +84,7 @@ internal fun AiChatMiuixPage(context: Context, provider: FeatureSettingsProvider
     }
     val latestStatus = remember(preferencesVersion) { prefs.getString(AiChatSettings.KEY_STATUS, "暂无请求").orEmpty() }
     var usageRows by remember { mutableStateOf<List<AiUsageRecord>>(emptyList()) }
+    var searchRows by remember { mutableStateOf<List<AiSearchUsage>>(emptyList()) }
     LaunchedEffect(route) {
         if (route == "main") {
             val old = AutoReplySettings(context)
@@ -99,7 +105,10 @@ internal fun AiChatMiuixPage(context: Context, provider: FeatureSettingsProvider
         }
     }
     LaunchedEffect(route, self) {
-        if (route == "usage") usageRows = withContext(Dispatchers.IO) { AiChatMemory.get(context).usage(self) }
+        if (route == "usage") {
+            val result = withContext(Dispatchers.IO) { AiChatMemory.get(context).let { it.usage(self) to it.searchUsage(self) } }
+            usageRows = result.first; searchRows = result.second
+        }
     }
     LaunchedEffect(showModels, modelRefresh, draft.id, draft.provider, draft.baseUrl, draft.apiKey) {
         if (showModels) {
@@ -148,7 +157,7 @@ internal fun AiChatMiuixPage(context: Context, provider: FeatureSettingsProvider
     }
     val target = targets.firstOrNull { it.talker == targetId }
     SettingsRouteTransition(targetState = route, label = "AiChatRoute", depthOf = {
-        when (it) { "main" -> 0; "configs", "picker", "usage", "legacyRules" -> 1; "memory" -> 3; else -> 2 }
+        when (it) { "main" -> 0; "configs", "picker", "usage", "search", "legacyRules" -> 1; "memory" -> 3; else -> 2 }
     }) { page ->
         if (page == "picker") {
             val request = ContactPickerRequest("聊天对象", ContactPickerMode.BOTH, true,
@@ -173,7 +182,7 @@ internal fun AiChatMiuixPage(context: Context, provider: FeatureSettingsProvider
             AutoReplyMiuixPage(context, remember { AutoReplySettingsProvider() }, onBack = { route = "main" },
                 initialScene = AutoReplyInitialScene.MAIN, relatedProviders = emptyList(), onOpenProvider = {})
         } else {
-            val title = when (page) { "configs" -> "模型服务"; "config" -> if (creating) "新增模型配置" else "编辑模型配置"; "target" -> "聊天对象"; "memory" -> "记忆管理"; "usage" -> "用量与费用"; else -> provider.title() }
+            val title = when (page) { "configs" -> "模型服务"; "config" -> if (creating) "新增模型配置" else "编辑模型配置"; "target" -> "聊天对象"; "memory" -> "记忆管理"; "usage" -> "用量与费用"; "search" -> "联网搜索"; else -> provider.title() }
             val scroll = MiuixScrollBehavior()
             PageScaffold(title, title, scroll, onBack = ::goBack, showBackIcon = false) { padding ->
                 LazyColumn(modifier = Modifier.fillMaxSize().nestedScroll(scroll.nestedScrollConnection),
@@ -187,7 +196,7 @@ internal fun AiChatMiuixPage(context: Context, provider: FeatureSettingsProvider
                                 ActionRow("模型服务", configs.firstOrNull { it.id == active }?.let { "${providerName(it.provider)} · ${it.model.ifBlank { "未选择模型" }}" } ?: "尚未配置") { route = "configs" }
                             } }
                             item { SettingsSectionTitle("全局指令") }
-                            item { SettingsCard { InputRow("全局指令", "会话独立指令优先", prompt, minLines = 3) { prompt = it; prefs.edit().putString(AiChatSettings.KEY_PROMPT, it).apply() } } }
+                            item { SettingsCard { InputRow("全局指令", "留空即可；会话独立指令优先", prompt, minLines = 3) { prompt = it; prefs.edit().putString(AiChatSettings.KEY_PROMPT, it).apply() } } }
                             item { SettingsSectionTitle("聊天对象") }
                             item { SettingsCard { ActionRow("聊天对象", "已启用 ${targets.count { it.enabled }} 个好友或群聊") {
                                 if (self.isNotBlank()) route = "picker" else Toast.makeText(context, "微信账号尚未就绪", Toast.LENGTH_SHORT).show()
@@ -202,6 +211,8 @@ internal fun AiChatMiuixPage(context: Context, provider: FeatureSettingsProvider
                             item { SettingsSectionTitle("其他") }
                             item { SettingsCard {
                                 InputRow("AI 引用小尾巴", "", tail) { tail = it; prefs.edit().putString(AiChatSettings.KEY_TAIL, it).apply() }
+                                InsetDivider()
+                                ActionRow("联网搜索", if (!searchEnabled) "已关闭" else if (searchSource == AiChatSettings.SEARCH_OFFICIAL) "官方搜索 · 可能额外收费" else "Tavily · 按需搜索") { route = "search" }
                                 InsetDivider()
                                 InfoRow("最近状态", latestStatus)
                                 InsetDivider()
@@ -238,13 +249,6 @@ internal fun AiChatMiuixPage(context: Context, provider: FeatureSettingsProvider
                                 }
                                 ActionRow("选择模型", draft.model.ifBlank { "尚未选择" }) { modelQuery = ""; showModels = true }; InsetDivider()
                                 InfoRow("媒体能力", buildList { if (draft.supports("image")) add("图片"); add("微信语音转文字"); if (draft.supports("audio")) add("模型理解音频文件"); if (draft.supports("video")) add("视频") }.joinToString(" / ")); InsetDivider()
-                                if (draft.provider != AiProvider.CUSTOM) {
-                                    SwitchRow(draft.webSearch, "联网搜索", if (AiChatClient.supportsWebSearch(draft)) "按需搜索，可能产生额外费用" else "当前模型不支持官方联网") {
-                                        if (!it) updateDraft(draft.copy(webSearch = false))
-                                        else if (AiChatClient.supportsWebSearch(draft)) showSearchFee = true
-                                        else Toast.makeText(context, "当前模型不支持官方联网搜索", Toast.LENGTH_SHORT).show()
-                                    }; InsetDivider()
-                                }
                                 ActionRow("测试连通性", testStatus.ifBlank { "发送一次短请求" }) {
                                     val current = draft; testStatus = "正在测试"
                                     scope.launch { testStatus = withContext(Dispatchers.IO) { runCatching {
@@ -274,17 +278,58 @@ internal fun AiChatMiuixPage(context: Context, provider: FeatureSettingsProvider
                                 }
                             } }
                         }
+                        "search" -> {
+                            item { SettingsCard {
+                                SwitchRow(searchEnabled, "联网搜索", "仅在需要当前信息或使用 #搜索 时调用") {
+                                    searchEnabled = it; prefs.edit().putBoolean(AiChatSettings.KEY_SEARCH_ENABLED, it).apply()
+                                }
+                            } }
+                            item { SettingsSectionTitle("搜索来源") }
+                            item { SettingsCard {
+                                ContentActionRow("${if (searchSource == AiChatSettings.SEARCH_TAVILY) "●" else "○"} Tavily") {
+                                    searchSource = AiChatSettings.SEARCH_TAVILY; prefs.edit().putString(AiChatSettings.KEY_SEARCH_SOURCE, searchSource).apply()
+                                }
+                                ContentActionRow("${if (searchSource == AiChatSettings.SEARCH_OFFICIAL) "●" else "○"} 模型服务商官方搜索 · 可能额外收费") {
+                                    if (searchSource != AiChatSettings.SEARCH_OFFICIAL) showSearchFee = true
+                                }
+                            } }
+                            if (searchSource == AiChatSettings.SEARCH_TAVILY) {
+                                item { SettingsCard(modifier = Modifier.padding(top = 8.dp)) {
+                                    InputRow("Tavily API Key", "", tavilyKey) { tavilyKey = it.trim(); prefs.edit().putString(AiChatSettings.KEY_TAVILY_KEY, tavilyKey).apply(); searchTestStatus = "" }
+                                    InsetDivider(); InfoRow("免费额度", "免费方案每月 1,000 credits；basic 搜索通常消耗 1 credit。额度以 Tavily 账户为准。")
+                                    InsetDivider(); ActionRow("测试连接", searchTestStatus.ifBlank { "查询账户额度，不执行搜索" }) {
+                                        val key = tavilyKey; searchTestStatus = "正在测试"
+                                        scope.launch {
+                                            val result = withContext(Dispatchers.IO) { runCatching { "连接成功 · 可用额度 ${AiChatSearch.remaining(key)} credits" }.getOrElse { it.message ?: "连接失败" } }
+                                            if (key == tavilyKey) searchTestStatus = result
+                                        }
+                                    }
+                                } }
+                            }
+                        }
                         "usage" -> {
                             item { SettingsSectionTitle("预估费用") }
-                            item { SettingsCard { InfoRow("今日", AiChatUsage.description(usageRows.filter { it.started >= todayStart })); InsetDivider(); InfoRow("累计", AiChatUsage.description(usageRows)) } }
-                            item { SettingsCard(modifier = Modifier.padding(top = 8.dp)) {
-                                InfoRow("统计开始", usageRows.minOfOrNull { it.started }?.let { SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(it)) } ?: "等待首次新请求")
-                                InsetDivider(); InfoRow("口径", "按 2026-11-16 官方按量价格估算；DeepSeek 为峰谷区间，MiMo 分国内 CNY 与海外 USD。未知字段和优惠未计入，非官方账单。")
+                            item { SettingsCard {
+                                InfoRow("今日", AiChatUsage.costSummary(usageRows.filter { it.started >= todayStart })); InsetDivider()
+                                InfoRow("累计", AiChatUsage.costSummary(usageRows)); InsetDivider()
+                                InfoRow("缓存命中率", AiChatUsage.cacheSummary(usageRows)); InsetDivider()
+                                InfoRow("模型请求", "${usageRows.size} 次"); InsetDivider()
+                                ActionRow(if (usageExpanded) "收起详细统计" else "详细统计", "") { usageExpanded = !usageExpanded }
                             } }
-                            usageRows.groupBy { Triple(it.provider, it.model, it.purpose) }.forEach { (key, rows) -> item(key = "${key.first}:${key.second}:${key.third}") {
-                                SettingsCard(modifier = Modifier.padding(top = 8.dp)) { InfoRow("${providerName(key.first)} · ${key.second} · ${purposeName(key.third)}", AiChatUsage.description(rows)) }
-                            } }
-                            item { SettingsCard(modifier = Modifier.padding(top = 8.dp)) { InfoRow("旧版未分类用量", "输入 ${prefs.getLong("usage_input", 0)} / 输出 ${prefs.getLong("usage_output", 0)} / 缓存 ${prefs.getLong("usage_cached", 0)}${if (prefs.getBoolean("usage_cache_unknown", false)) "（部分未知）" else ""}；无法反推模型") } }
+                            if (usageExpanded) {
+                                val totals = AiChatUsage.totals(usageRows)
+                                item { SettingsCard(modifier = Modifier.padding(top = 8.dp)) {
+                                    InfoRow("Token", "输入 ${totals.input} · 输出 ${totals.output} · 命中 ${totals.cacheHit}")
+                                    InsetDivider(); InfoRow("官方搜索", "${totals.search} 次；网页读取 ${totals.fetch} 次")
+                                    InsetDivider(); InfoRow("Tavily", "${searchRows.sumOf { it.credits ?: 0L }} credits${if (searchRows.any { it.credits == null }) "（部分未知）" else ""}；不计入模型费用")
+                                    InsetDivider(); InfoRow("统计开始", usageRows.minOfOrNull { it.started }?.let { SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(it)) } ?: "等待首次请求")
+                                    InsetDivider(); InfoRow("说明", "按 2026-11-16 官方按量价格估算，未知部分未计入；非官方账单。")
+                                } }
+                                usageRows.groupBy { it.provider }.forEach { (provider, rows) -> item(key = provider.name) {
+                                    SettingsCard(modifier = Modifier.padding(top = 8.dp)) { InfoRow(providerName(provider), "${rows.size} 次 · ${AiChatUsage.costSummary(rows)}") }
+                                } }
+                                item { SettingsCard(modifier = Modifier.padding(top = 8.dp)) { InfoRow("旧版未分类用量", "输入 ${prefs.getLong("usage_input", 0)} / 输出 ${prefs.getLong("usage_output", 0)} / 缓存 ${prefs.getLong("usage_cached", 0)}${if (prefs.getBoolean("usage_cache_unknown", false)) "（部分未知）" else ""}") } }
+                            }
                         }
                         "target" -> if (target != null) {
                             item { SettingsSectionTitle(target.talker) }
@@ -341,8 +386,8 @@ internal fun AiChatMiuixPage(context: Context, provider: FeatureSettingsProvider
     }
     SettingsWindowDialog(show = showSearchFee, title = "启用联网搜索", onDismissRequest = { showSearchFee = false }) {
         Column {
-            InfoRow("费用", if (draft.provider == AiProvider.MIMO) "按需联网可能产生额外费用，请先在 MiMo 控制台开通联网服务插件。" else "按需联网可能产生额外搜索和网页读取费用。")
-            ContentActionRow("启用") { updateDraft(draft.copy(webSearch = true)); showSearchFee = false }
+            InfoRow("费用", "官方联网可能产生额外搜索和网页读取费用。MiMo 需要先在控制台开通联网插件。")
+            ContentActionRow("选择官方搜索") { searchSource = AiChatSettings.SEARCH_OFFICIAL; prefs.edit().putString(AiChatSettings.KEY_SEARCH_SOURCE, searchSource).apply(); showSearchFee = false }
             ContentActionRow("取消") { showSearchFee = false }
         }
     }

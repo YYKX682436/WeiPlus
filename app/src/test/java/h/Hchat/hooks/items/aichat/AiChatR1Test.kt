@@ -76,10 +76,10 @@ class AiChatR1Test {
         assertEquals("Hello there!", AiChatOutput.finalText("Hello there!"))
         assertNull(AiChatOutput.finalText("<think>not finished"))
         assertNull(AiChatOutput.finalText("<think>only thought</think>"))
-        val limited = AiChatOutput.finalText("好".repeat(199) + "👨‍👩‍👧‍👦" + "多".repeat(300))!!
+        val limited = AiChatOutput.finalText("好".repeat(199) + "👨‍👩‍👧‍👦" + "多".repeat(300), 200)!!
         assertTrue(limited.codePointCount(0, limited.length) <= 200)
         assertFalse(limited.endsWith("‍"))
-        assertEquals("一 二\n\n三 四", AiChatOutput.finalText("一\n二\n\n三\n四\n\n五"))
+        assertEquals("一 二\n\n三 四\n\n五", AiChatOutput.finalText("一\n二\n\n三\n四\n\n五"))
         val db = AiChatMemory.get(context); val account = UUID.randomUUID().toString()
         db.saveMedia(account, "friend", 1, "[AI回复][AI回复] 一张图片")
         assertEquals("一张图片", db.media(account, "friend", 1))
@@ -195,10 +195,10 @@ class AiChatR1Test {
     @Test fun defaultPromptUpgradesWithoutOverwritingCustomInstruction() {
         val prefs = HchatStorage.preferences(context, AiChatSettings.PREFS_NAME)
         prefs.edit().putString(AiChatSettings.KEY_PROMPT, "你是一个自然、简洁、有帮助的微信聊天助手。").commit()
-        assertTrue(AiChatSettings(context).prefs.getString(AiChatSettings.KEY_PROMPT, "")!!.contains("玩笑"))
+        assertEquals("", AiChatSettings(context).prefs.getString(AiChatSettings.KEY_PROMPT, ""))
         prefs.edit().clear().putString(AiChatSettings.KEY_PROMPT, "我的自定义人设").commit()
         assertEquals("我的自定义人设", AiChatSettings(context).prefs.getString(AiChatSettings.KEY_PROMPT, ""))
-        assertTrue(AiChatSettings.DEFAULT_PROMPT.contains("对方要求英文"))
+        assertEquals("", AiChatSettings.DEFAULT_PROMPT)
     }
 
     @Test fun usageRemainsBoundToOriginalConfigurationAndSurvivesMemoryClear() {

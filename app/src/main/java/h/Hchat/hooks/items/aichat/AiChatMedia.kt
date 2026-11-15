@@ -18,6 +18,8 @@ import h.Hchat.utils.HLog
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.atomic.AtomicBoolean
+import java.security.MessageDigest
 
 internal object AiChatMedia {
     fun cachedVoice(message: WeChatMessage): String {
@@ -90,20 +92,68 @@ internal object AiChatMedia {
         )
     }
 
-    fun image(message: WeChatMessage): JSONObject {
-        val path = WeChatRetransmitPayloadFactory.build(message, null)?.fileName.orEmpty()
-        val file = File(path)
-        if (!file.isFile) throw AiRequestException("微信图片文件尚不可用")
+    fun image(context: Context, message: WeChatMessage): JSONObject {
+        val images = WeChatApis.media()?.images()
+        var sawFile = false
+        diagnostic("type=image ref=${messageRef(message)} idPresent=${message.msgId > 0} serverIdPresent=${message.msgSvrId > 0}")
+        // The database notification can precede the end of WeChat's download.
+        repeat(4) { attempt ->
+            val current = WeChatApis.messageStore()?.getMessageById(message.msgId)?.takeIf { it.talker == message.talker } ?: message
+            val native = WeChatApis.database()?.nativeMessageById(current.msgId)
+            val paths = listOf(
+                WeChatRetransmitPayloadFactory.build(current, native)?.fileName,
+                images?.resolveBestAvailablePath(native), images?.resolvePathToken(current.imagePath), current.imagePath
+            ).filterNotNull().filter { it.isNotBlank() }.distinct()
+            for (path in paths) {
+                val file = File(path)
+                if (!file.isFile || file.length() <= 0) continue
+                sawFile = true
+                if (isStable(file)) encodeImage(file)?.let { return it }
+            }
+            if (attempt < 3) Thread.sleep(500)
+        }
+        val info = message.getImageMsg()
+        val url = info?.bigImgUrl?.ifBlank { info.midImgUrl }.orEmpty()
+        if (images != null && info != null && url.isNotBlank() && info.key.isNotBlank() && images.canDownloadCdn()) {
+            val file = File.createTempFile("hchat-ai-image-", ".tmp", context.cacheDir)
+            file.delete()
+            val done = CountDownLatch(1)
+            val active = AtomicBoolean(true)
+            val downloaded = AtomicBoolean(false)
+            val original = info.bigImgUrl.isNotBlank()
+            val size = if (original) info.bigLength else info.midLength
+            try {
+                val submitted = images.downloadCdn(info.md5, url, info.key, file.absolutePath,
+                    if (original) 1 else 2, size, object : h.Hchat.hooks.api.media.WeChatImageApi.DownloadCallback {
+                        override fun onSuccess(result: File) {
+                            if (active.get()) downloaded.set(true) else result.delete()
+                            done.countDown()
+                        }
+                        override fun onError(message: String) { if (!active.get()) file.delete(); done.countDown() }
+                    })
+                diagnostic("type=image cdnSubmitted=$submitted")
+                if (submitted && done.await(15, TimeUnit.SECONDS) && downloaded.get() && (size <= 0 || file.length() >= size)) {
+                    sawFile = true
+                    encodeImage(file)?.let { return it }
+                }
+            } finally { active.set(false); file.delete() }
+        }
+        diagnostic("type=image decoded=false filePresent=$sawFile")
+        throw AiRequestException(if (sawFile) "微信图片文件无法解码或尚未下载完整" else "微信图片尚未下载或本地文件不可用")
+    }
+
+    private fun encodeImage(file: File): JSONObject? {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(file.absolutePath, bounds)
-        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) throw AiRequestException("图片格式无法识别")
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
         var sample = 1
         while (maxOf(bounds.outWidth, bounds.outHeight) / sample > 1280) sample *= 2
         val bitmap = BitmapFactory.decodeFile(file.absolutePath, BitmapFactory.Options().apply { inSampleSize = sample })
-            ?: throw AiRequestException("图片无法解码")
+            ?: return null
         val output = ByteArrayOutputStream()
-        try { if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 82, output)) throw AiRequestException("图片无法编码") }
+        try { if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 82, output)) return null }
         finally { bitmap.recycle() }
+        diagnostic("type=image decoded=true encodedBytes=${output.size()}")
         val data = "data:image/jpeg;base64," + Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP)
         return JSONObject().put("type", "image_url").put("image_url", JSONObject().put("url", data))
     }
@@ -182,19 +232,75 @@ internal object AiChatMedia {
         return JSONObject().put("type", "input_audio").put("input_audio", payload)
     }
 
-    fun video(message: WeChatMessage): JSONObject {
-        val path = WeChatRetransmitPayloadFactory.build(message, null)?.fileName.orEmpty()
-        val file = File(path)
-        if (!file.isFile) throw AiRequestException("微信视频文件尚不可用")
-        if (file.length() <= 0 || file.length() > 12L * 1024 * 1024) throw AiRequestException("视频超过 12 MB 限制")
-        val mime = when (file.extension.lowercase()) { "mp4" -> "video/mp4"; "mov" -> "video/quicktime"; else -> throw AiRequestException("视频格式不受支持") }
+    fun video(context: Context, message: WeChatMessage): JSONObject {
+        diagnostic("type=video ref=${messageRef(message)} idPresent=${message.msgId > 0} serverIdPresent=${message.msgSvrId > 0}")
+        var sawFile = false
+        repeat(4) { attempt ->
+            val current = WeChatApis.messageStore()?.getMessageById(message.msgId)?.takeIf { it.talker == message.talker } ?: message
+            val path = WeChatRetransmitPayloadFactory.build(current, null)?.fileName.orEmpty()
+            val file = File(path)
+            if (file.isFile && file.length() > 0) {
+                sawFile = true
+                val expected = current.getVideoMsg()?.length ?: 0L
+                if ((expected <= 0 || file.length() >= expected) && isStable(file)) encodeVideo(file)?.let { return it }
+            }
+            if (attempt < 3) Thread.sleep(500)
+        }
+        val videos = WeChatApis.media()?.videos()
+        val native = videos?.resolveDownloadInfo(message.imagePath)
+        val info = message.getVideoMsg()
+        val url = native?.cdnUrl?.takeIf { it.isNotBlank() } ?: info?.cdnVideoUrl.orEmpty()
+        val key = native?.aesKey?.takeIf { it.isNotBlank() } ?: info?.aesKey.orEmpty()
+        val length = native?.totalLength?.takeIf { it > 0 } ?: info?.length ?: 0L
+        if (length > 12L * 1024 * 1024) throw AiRequestException("视频超过 12 MB 限制")
+        if (videos != null && url.isNotBlank() && key.isNotBlank()) {
+            val file = File.createTempFile("hchat-ai-video-", ".mp4", context.cacheDir)
+            file.delete()
+            val done = CountDownLatch(1)
+            val active = AtomicBoolean(true)
+            val downloaded = AtomicBoolean(false)
+            try {
+                val submitted = videos.downloadCdn(native?.md5?.takeIf { it.isNotBlank() } ?: info?.md5.orEmpty(),
+                    url, key, file.absolutePath, object : h.Hchat.hooks.api.media.WeChatVideoApi.DownloadCallback {
+                        override fun onSuccess(result: File) {
+                            if (active.get()) downloaded.set(true) else result.delete()
+                            done.countDown()
+                        }
+                        override fun onError(message: String) { if (!active.get()) file.delete(); done.countDown() }
+                    })
+                diagnostic("type=video cdnSubmitted=$submitted")
+                if (submitted && done.await(15, TimeUnit.SECONDS) && downloaded.get() && (length <= 0 || file.length() >= length)) {
+                    sawFile = true
+                    encodeVideo(file)?.let { return it }
+                }
+            } finally { active.set(false); file.delete() }
+        }
+        diagnostic("type=video decoded=false filePresent=$sawFile")
+        throw AiRequestException(if (sawFile) "视频尚未下载完整或格式无法解码" else "微信视频文件尚未下载或本地不可用")
+    }
+    private fun encodeVideo(file: File): JSONObject? {
+        if (file.length() > 12L * 1024 * 1024) throw AiRequestException("视频超过 12 MB 限制")
         val retriever = MediaMetadataRetriever()
-        val duration = try {
+        val metadata = try {
             retriever.setDataSource(file.absolutePath)
-            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()
+            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() to
+                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_MIMETYPE).orEmpty()
         } catch (_: Exception) { null } finally { retriever.release() }
-        if (duration == null || duration !in 1..60_000L) throw AiRequestException("视频时长不可读或超过 60 秒")
+        val duration = metadata?.first
+        val mime = metadata?.second.orEmpty()
+        if (duration != null && duration > 60_000) throw AiRequestException("视频超过 60 秒限制")
+        if (duration == null || duration <= 0 || mime !in setOf("video/mp4", "video/quicktime")) return null
         val data = "data:$mime;base64," + Base64.encodeToString(file.readBytes(), Base64.NO_WRAP)
+        diagnostic("type=video available=true bytes=${file.length()} durationMs=$duration")
         return JSONObject().put("type", "video_url").put("video_url", JSONObject().put("url", data)).put("fps", 1)
     }
+    private fun messageRef(message: WeChatMessage): String = MessageDigest.getInstance("SHA-256")
+        .digest("${message.msgId}/${message.msgSvrId}".toByteArray()).take(6).joinToString("") { "%02x".format(it) }
+    private fun isStable(file: File): Boolean {
+        val size = file.length()
+        if (size <= 0) return false
+        Thread.sleep(200)
+        return file.isFile && file.length() == size
+    }
+    private fun diagnostic(value: String) { runCatching { HLog.i("[Hchat:AI-Media] $value") } }
 }
