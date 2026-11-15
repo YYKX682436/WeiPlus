@@ -20,6 +20,7 @@ internal object SettingsLayout {
         )),
         SettingsGroupSpec("scheduled", "定时任务", listOf("scheduled_task"), "scheduled_task"),
         SettingsGroupSpec("auto_reply", "自动回复", listOf("auto_reply", "qq_music_order", "link_parse"), "auto_reply"),
+        SettingsGroupSpec("ai_chat", "AI 聊天", listOf("ai_chat"), "ai_chat"),
         SettingsGroupSpec("contacts", "通讯录", listOf("zombie_check", "custom_friend_avatar")),
         SettingsGroupSpec("moments", "朋友圈", listOf(
             "moments_auto_like", "moments_auto_comment", "moments_auto_forward", "moments_auto_refresh",

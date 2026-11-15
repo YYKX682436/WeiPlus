@@ -263,8 +263,8 @@ class RemovedFeaturesUpgradeTest {
 
     @Test fun registeredFeaturesKeepTheRetainedEntries() {
         val ids = h.Hchat.hooks.core.FeatureRegistry.createDefaultManager().features().map { it.featureId() }.toSet()
-        assertEquals(83, ids.size)
-        assertTrue(ids.containsAll(listOf("auto_reply", "conversation_group", "voice_forward", "custom_notification", "keyword_notification")))
+        assertEquals(85, ids.size)
+        assertTrue(ids.containsAll(listOf("auto_reply", "ai_chat", "chat_quote_tail", "conversation_group", "voice_forward", "custom_notification", "keyword_notification")))
         assertTrue(ids.intersect(setOf("text_voice", "text_speech", "audio_transform", "voice_preview", "conversation_tabs", "floating_shortcut_menu")).isEmpty())
     }
 

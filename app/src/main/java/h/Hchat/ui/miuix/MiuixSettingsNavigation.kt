@@ -1594,6 +1594,7 @@ internal fun FeatureSettingsPage(
             onBack = onBack
         )
         QuickMarkReadFeature.ID -> QuickMarkReadMiuixPage(context, provider, onBack)
+        "ai_chat" -> AiChatMiuixPage(context, provider, onBack)
         AutoReplyFeature.ID -> AutoReplyMiuixPage(
             context, provider, onBack, initialScene,
             listOfNotNull(providers.firstOrNull { it.featureId() == QQMusicOrderFeature.ID }, providers.firstOrNull { it.featureId() == LinkParseFeature.ID }),

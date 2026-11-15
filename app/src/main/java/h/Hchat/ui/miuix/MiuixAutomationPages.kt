@@ -53,10 +53,8 @@ import h.Hchat.hooks.api.core.WeChatApis
 import h.Hchat.hooks.api.message.WeChatMessageObserveApi
 import h.Hchat.hooks.api.model.ContactLabelBean
 import h.Hchat.hooks.items.autoreply.AutoReplyRule
-import h.Hchat.hooks.items.autoreply.AutoReplyRuntime
 import h.Hchat.hooks.items.autoreply.AutoReplySettings
 import h.Hchat.hooks.items.autoreply.AutoReplyStep
-import h.Hchat.hooks.items.autoreply.AutoReplyZhiliaConfig
 import h.Hchat.hooks.items.automessageforward.AutoMessageForwardRule
 import h.Hchat.hooks.items.automessageforward.AutoMessageForwardSettings
 import h.Hchat.hooks.items.customnotify.CustomNotificationRule
@@ -401,7 +399,6 @@ internal fun AutoReplyMiuixPage(
             onQueryChange = { ruleQuery = it },
             listState = ruleListState,
             onBack = onBack,
-            onOpenAi = { route = "ai" },
             relatedProviders = relatedProviders,
             onOpenProvider = onOpenProvider,
             onAdd = {
@@ -521,7 +518,6 @@ internal fun AutoReplyMiuixPage(
             listState = greetAcceptedLabelListState,
             onBack = { route = "greetAccepted" }
         )
-        "ai" -> AutoReplyAiPage(context, sp, onBack = { route = "main" })
         else -> Unit
         }
         }
@@ -1122,7 +1118,6 @@ private fun AutoReplyRuleListPage(
     onQueryChange: (String) -> Unit,
     listState: LazyListState,
     onBack: () -> Unit,
-    onOpenAi: () -> Unit,
     relatedProviders: List<FeatureSettingsProvider>,
     onOpenProvider: (FeatureSettingsProvider) -> Unit,
     onAdd: () -> Unit,
@@ -1177,8 +1172,6 @@ private fun AutoReplyRuleListPage(
             item {
                 SettingsCard {
                     SwitchRow(sp, AutoReplySettings.KEY_ENABLE, "自动回复", "开启后按规则回复收到的消息", AutoReplySettings.DEFAULT_ENABLE)
-                    InsetDivider()
-                    ActionRow("AI 配置", "配置智聊 AI，可切换多个模型", onOpenAi)
                 }
             }
             item {
@@ -1939,470 +1932,6 @@ private fun splitAutoReplyNames(value: String): List<String> =
         .distinct()
 
 @Composable
-private fun AutoReplyAiPage(context: Context, sp: SharedPreferences, onBack: () -> Unit) {
-    val settings = remember { AutoReplySettings(context) }
-    val scope = rememberCoroutineScope()
-    var configs by remember { mutableStateOf(settings.zhiliaConfigs()) }
-    var activeName by remember {
-        mutableStateOf(sp.getString(AutoReplySettings.KEY_ZHILIA_ACTIVE_CONFIG, AutoReplySettings.DEFAULT_ZHILIA_CONFIG_NAME).orEmpty().ifBlank { AutoReplySettings.DEFAULT_ZHILIA_CONFIG_NAME })
-    }
-    val activeConfig = configs.firstOrNull { it.name == activeName } ?: configs.first()
-    var cfgName by remember(activeName) { mutableStateOf(activeConfig.name) }
-    var apiKey by remember(activeName) { mutableStateOf(activeConfig.apiKey) }
-    var apiBase by remember(activeName) { mutableStateOf(activeConfig.apiBaseUrl) }
-    var apiPath by remember(activeName) { mutableStateOf(activeConfig.apiPath) }
-    var model by remember(activeName) { mutableStateOf(activeConfig.model) }
-    var prompt by remember(activeName) { mutableStateOf(activeConfig.systemPrompt) }
-    var contextLimit by remember(activeName) { mutableStateOf(activeConfig.contextLimit.toString()) }
-    var streamEnabled by remember { mutableStateOf(sp.getBoolean(AutoReplySettings.KEY_AI_STREAM, AutoReplySettings.DEFAULT_AI_STREAM)) }
-    var edited by remember { mutableStateOf(false) }
-    var modelQuery by remember { mutableStateOf("") }
-    var fetchedModels by remember { mutableStateOf<List<String>>(emptyList()) }
-    var favoriteModels by remember(apiBase) { mutableStateOf(settings.favoriteModels(apiBase)) }
-    var loadingText by remember { mutableStateOf("") }
-    var testResult by remember { mutableStateOf("") }
-    var route by remember { mutableStateOf<AutoReplyAiRoute>(AutoReplyAiRoute.Zhilia) }
-    var zhiliaPendingName by remember { mutableStateOf(activeName) }
-    var pendingModel by remember { mutableStateOf(model) }
-    val zhiliaListState = rememberLazyListState()
-    val zhiliaConfigListState = rememberLazyListState()
-    val zhiliaModelListState = rememberLazyListState()
-
-    fun currentZhiliaConfig(): AutoReplyZhiliaConfig {
-        return AutoReplyZhiliaConfig(
-            name = cfgName,
-            apiKey = apiKey.trim(),
-            apiBaseUrl = apiBase.trim(),
-            apiPath = apiPath.trim(),
-            model = model.trim(),
-            systemPrompt = prompt,
-            contextLimit = contextLimit.toIntOrNull() ?: AutoReplySettings.DEFAULT_AI_CONTEXT_LIMIT
-        ).normalized()
-    }
-
-    fun finishZhiliaEdits() {
-        if (edited && sp.getBoolean(AutoReplySettings.KEY_AI_CLEAR_CONTEXT_ON_SAVE, AutoReplySettings.DEFAULT_AI_CLEAR_CONTEXT_ON_SAVE)) {
-            AutoReplyRuntime.clearAiHistories()
-        }
-        edited = false
-    }
-
-    DisposableEffect(Unit) {
-        onDispose { finishZhiliaEdits() }
-    }
-
-    fun updateZhilia(change: (AutoReplyZhiliaConfig) -> AutoReplyZhiliaConfig) {
-        val currentConfigs = settings.zhiliaConfigs()
-        val current = currentConfigs.firstOrNull { it.name == activeName } ?: currentConfigs.first()
-        val nextConfig = change(current).normalized()
-        if (nextConfig == current || currentConfigs.any { it.name == nextConfig.name && it.name != current.name }) return
-        settings.saveZhiliaConfigs(currentConfigs.map { if (it.name == current.name) nextConfig else it }, nextConfig.name)
-        configs = settings.zhiliaConfigs()
-        activeName = nextConfig.name
-        edited = true
-    }
-
-    fun switchZhiliaTo(name: String) {
-        if (name.isBlank()) {
-            Toast.makeText(context, "请选择配置", Toast.LENGTH_SHORT).show()
-            return
-        }
-        if (name == activeName) {
-            zhiliaPendingName = activeName
-            Toast.makeText(context, "已是当前配置", Toast.LENGTH_SHORT).show()
-            return
-        }
-        settings.saveZhiliaConfigs(settings.zhiliaConfigs(), name)
-        configs = settings.zhiliaConfigs()
-        activeName = settings.activeZhiliaName()
-        zhiliaPendingName = activeName
-        edited = true
-        finishZhiliaEdits()
-    }
-
-    fun uniqueConfigName(base: String): String {
-        val names = configs.map { it.name }.toSet()
-        if (base !in names) return base
-        var index = 2
-        while ("$base$index" in names) index++
-        return "$base$index"
-    }
-
-    val visibleModels = remember(fetchedModels, modelQuery, favoriteModels) {
-        val keyword = modelQuery.trim().lowercase(Locale.US)
-        fetchedModels
-            .filter { keyword.isBlank() || it.lowercase(Locale.US).contains(keyword) }
-            .sortedWith(compareByDescending<String> { it in favoriteModels }.thenBy { it.lowercase(Locale.US) })
-    }
-
-    SettingsRouteTransition(
-        targetState = route,
-        label = "AutoReplyAiRoute",
-        depthOf = { it.depth() }
-    ) { currentRoute ->
-        when (currentRoute) {
-            AutoReplyAiRoute.Zhilia -> {
-                val scrollBehavior = MiuixScrollBehavior()
-                PageScaffold(
-                    title = "智聊AI配置",
-                    largeTitle = "智聊AI配置",
-                    scrollBehavior = scrollBehavior,
-                    onBack = onBack,
-                    showBackIcon = false
-                ) { padding ->
-                    LazyColumn(
-                        modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
-                        state = zhiliaListState,
-                        contentPadding = PaddingValues(top = padding.calculateTopPadding() + 8.dp, bottom = padding.calculateBottomPadding() + 16.dp)
-                    ) {
-                        item { SettingsSectionTitle(text = "当前配置") }
-                        item {
-                            SettingsCard {
-                                InfoRow("当前启用", activeName)
-                                InsetDivider()
-                                InputRow("配置名称", if (cfgName.isBlank() || configs.any { it.name == cfgName.trim() && it.name != activeName }) "名称不能为空或与其他配置重复" else "例如 DeepSeek 主账号", cfgName,
-                                    onEditingFinished = { value -> if (value.isNotBlank()) updateZhilia { it.copy(name = value.trim()) } }) { cfgName = it }
-                                InsetDivider()
-                                InputRow("API Key", "OpenAI 兼容接口密钥", apiKey, onEditingFinished = { value -> if (value.isBlank()) updateZhilia { it.copy(apiKey = "") } }) {
-                                    apiKey = it
-                                    if (it.isNotBlank()) updateZhilia { config -> config.copy(apiKey = it.trim()) }
-                                }
-                                InsetDivider()
-                                InputRow("API 地址", "例如 https://api.xxx.com/v1", apiBase, onEditingFinished = { value -> if (value.isBlank()) updateZhilia { it.copy(apiBaseUrl = AutoReplySettings.DEFAULT_AI_API_BASE) } }) {
-                                    apiBase = it
-                                    if (it.isNotBlank()) updateZhilia { config -> config.copy(apiBaseUrl = it.trim()) }
-                                }
-                                InsetDivider()
-                                InputRow("API 路径", "默认 /chat/completions", apiPath, onEditingFinished = { value -> if (value.isBlank()) updateZhilia { it.copy(apiPath = AutoReplySettings.DEFAULT_AI_API_PATH) } }) {
-                                    apiPath = it
-                                    if (it.isNotBlank()) updateZhilia { config -> config.copy(apiPath = it.trim()) }
-                                }
-                                InsetDivider()
-                                InputRow("模型", "例如 deepseek-ai/DeepSeek-V3", model, onEditingFinished = { value -> if (value.isBlank()) updateZhilia { it.copy(model = AutoReplySettings.DEFAULT_AI_MODEL) } }) {
-                                    model = it
-                                    if (it.isNotBlank()) updateZhilia { config -> config.copy(model = it.trim()) }
-                                }
-                                InsetDivider()
-                                InputRow("系统指令", "AI 角色设定和回复要求", prompt, minLines = 4, onEditingFinished = { value -> if (value.isBlank()) updateZhilia { it.copy(systemPrompt = value) } }) {
-                                    prompt = it
-                                    if (it.isNotBlank()) updateZhilia { config -> config.copy(systemPrompt = it) }
-                                }
-                                InsetDivider()
-                                NumberInputRow("上下文轮数", if (contextLimit.toIntOrNull()?.let { it in 0..50 } != true) "请输入 0-50；保留上次保存的值" else "0 表示不保留上下文", contextLimit) {
-                                    contextLimit = it
-                                    it.toIntOrNull()?.takeIf { value -> value in 0..50 }?.let { value -> updateZhilia { config -> config.copy(contextLimit = value) } }
-                                }
-                                InsetDivider()
-                                SwitchRow(streamEnabled, "流式请求", "失败时会自动尝试非流式") {
-                                    streamEnabled = it
-                                    sp.edit().putBoolean(AutoReplySettings.KEY_AI_STREAM, it).apply()
-                                    edited = true
-                                }
-                                InsetDivider()
-                                SwitchRow(sp, AutoReplySettings.KEY_AI_CLEAR_CONTEXT_ON_SAVE, "编辑完成后清空上下文", "修改配置后避免继续沿用旧对话", AutoReplySettings.DEFAULT_AI_CLEAR_CONTEXT_ON_SAVE)
-                            }
-                        }
-                        item { SettingsSectionTitle(text = "配置管理") }
-                        item {
-                            SettingsCard {
-                                ActionRow("配置列表", "${configs.size} 个配置，当前启用：$activeName") {
-                                    zhiliaPendingName = activeName
-                                    route = AutoReplyAiRoute.ZhiliaConfigs
-                                }
-                            }
-                        }
-                        item { SettingsSectionTitle(text = "模型工具") }
-                        item {
-                            SettingsCard {
-                                ActionRow("模型选择", model.ifBlank { "未设置模型" }) {
-                                    pendingModel = model
-                                    route = AutoReplyAiRoute.ZhiliaModels
-                                }
-                                InsetDivider()
-                                ActionRow("测试连通性", testResult.ifBlank { "测试当前模型的流式和非流式请求" }) {
-                                    val config = currentZhiliaConfig().toAiConfig(sp.getBoolean(AutoReplySettings.KEY_AI_STREAM, AutoReplySettings.DEFAULT_AI_STREAM))
-                                    testResult = "正在测试..."
-                                    scope.launch {
-                                        testResult = withContext(Dispatchers.IO) {
-                                            AutoReplyRuntime.testAiConnectivity(config)
-                                        }
-                                        Toast.makeText(context, testResult, Toast.LENGTH_SHORT).show()
-                                    }
-                                }
-                            }
-                        }
-                        item { SettingsSectionTitle(text = "运行状态") }
-                        item {
-                            SettingsCard {
-                                SecondaryActionRow("立即清空上下文", "清除当前运行中的 AI 对话记忆") {
-                                    AutoReplyRuntime.clearAiHistories()
-                                    Toast.makeText(context, "AI 上下文已清空", Toast.LENGTH_SHORT).show()
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            AutoReplyAiRoute.ZhiliaConfigs -> {
-                val scrollBehavior = MiuixScrollBehavior()
-                PageScaffold(
-                    title = "智聊配置列表",
-                    largeTitle = "智聊配置列表",
-                    scrollBehavior = scrollBehavior,
-                    onBack = { route = AutoReplyAiRoute.Zhilia },
-                    showBackIcon = false
-                ) { padding ->
-                    LazyColumn(
-                        modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
-                        state = zhiliaConfigListState,
-                        contentPadding = PaddingValues(top = padding.calculateTopPadding() + 8.dp, bottom = padding.calculateBottomPadding() + 16.dp)
-                    ) {
-                        item { SettingsSectionTitle(text = "配置") }
-                        configs.forEach { config ->
-                            item {
-                                SettingsCard(modifier = Modifier.padding(bottom = 8.dp)) {
-                                    ActionRow(
-                                        title = config.name,
-                                        summary = buildString {
-                                            append(config.model.ifBlank { "未设置模型" })
-                                            if (config.name == activeName) append(" · 当前")
-                                            if (config.name == zhiliaPendingName && config.name != activeName) append(" · 已选择")
-                                        }
-                                    ) {
-                                        switchZhiliaTo(config.name)
-                                    }
-                                }
-                            }
-                        }
-
-                        item { SettingsSectionTitle(text = "操作") }
-                        item {
-                            SettingsCard {
-                                ContentActionRow("复制") {
-                                    val source = settings.zhiliaConfigs().firstOrNull { it.name == activeName } ?: activeConfig
-                                    val newName = uniqueConfigName("${source.name}_副本")
-                                    settings.saveZhiliaConfigs(configs + source.copy(name = newName), activeName)
-                                    configs = settings.zhiliaConfigs()
-                                    zhiliaPendingName = newName
-                                }
-                                if (configs.size > 1) ContentActionRow("删除", emphasis = ContentActionEmphasis.DANGER) {
-                                    val next = configs.filterNot { it.name == activeName }
-                                    val nextActive = next.firstOrNull()?.name ?: AutoReplySettings.DEFAULT_ZHILIA_CONFIG_NAME
-                                    settings.saveZhiliaConfigs(next, nextActive)
-                                    configs = settings.zhiliaConfigs()
-                                    activeName = settings.activeZhiliaName()
-                                    zhiliaPendingName = activeName
-                                    edited = true
-                                }
-                                AddActionRow("新增配置") { route = AutoReplyAiRoute.ZhiliaNew }
-                            }
-                        }
-                    }
-                }
-            }
-            AutoReplyAiRoute.ZhiliaNew -> NewZhiliaConfigPage(
-                existingNames = configs.mapTo(hashSetOf()) { it.name },
-                onBack = { route = AutoReplyAiRoute.ZhiliaConfigs },
-                onCreate = { config ->
-                    settings.saveZhiliaConfigs(configs + config, activeName)
-                    configs = settings.zhiliaConfigs()
-                    zhiliaPendingName = config.name
-                    route = AutoReplyAiRoute.ZhiliaConfigs
-                }
-            )
-            AutoReplyAiRoute.ZhiliaModels -> {
-                val scrollBehavior = MiuixScrollBehavior()
-                PageScaffold(
-                    title = "智聊模型选择",
-                    largeTitle = "智聊模型选择",
-                    scrollBehavior = scrollBehavior,
-                    onBack = { route = AutoReplyAiRoute.Zhilia },
-                    showBackIcon = false
-                ) { padding ->
-                    LazyColumn(
-                        modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
-                        state = zhiliaModelListState,
-                        contentPadding = PaddingValues(top = padding.calculateTopPadding() + 8.dp, bottom = padding.calculateBottomPadding() + 16.dp)
-                    ) {
-                        item { SettingsSectionTitle(text = "拉取模型") }
-                        item {
-                            SettingsCard {
-                                ActionRow("拉取模型列表", if (loadingText.isBlank()) "从当前 API 地址获取 /models" else loadingText) {
-                                    val base = apiBase
-                                    val key = apiKey
-                                    loadingText = "正在拉取模型..."
-                                    scope.launch {
-                                        val models = withContext(Dispatchers.IO) {
-                                            AutoReplyRuntime.fetchAiModels(base, key)
-                                        }
-                                        fetchedModels = models
-                                        loadingText = ""
-                                        Toast.makeText(context, if (models.isEmpty()) "未获取到模型" else "已获取 ${models.size} 个模型", Toast.LENGTH_SHORT).show()
-                                    }
-                                }
-                            }
-                        }
-                        if (visibleModels.isNotEmpty()) {
-                            item { SettingsSectionTitle(text = "模型列表 · ${visibleModels.size}") }
-                            item {
-                                SettingsCard(modifier = Modifier.padding(bottom = 8.dp)) {
-                                    InputRow("搜索", "输入模型名过滤", modelQuery) { modelQuery = it }
-                                }
-                            }
-                            visibleModels.take(80).forEach { itemModel ->
-                                item {
-                                    ZhiliaModelSelectCard(
-                                        modelName = itemModel,
-                                        currentModel = model,
-                                        pendingModel = pendingModel,
-                                        favorite = itemModel in favoriteModels,
-                                        onSelect = {
-                                            pendingModel = itemModel
-                                            model = itemModel
-                                            updateZhilia { it.copy(model = itemModel) }
-                                        },
-                                        onToggleFavorite = {
-                                            val next = if (itemModel in favoriteModels) favoriteModels - itemModel else favoriteModels + itemModel
-                                            favoriteModels = next
-                                            settings.saveFavoriteModels(apiBase, next)
-                                            Toast.makeText(context, if (itemModel in next) "已收藏模型" else "已取消收藏", Toast.LENGTH_SHORT).show()
-                                        }
-                                    )
-                                }
-                            }
-                        } else {
-                            item { SettingsCard { EmptyText("暂无模型列表，先点击“拉取模型列表”。") } }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun ZhiliaModelSelectCard(
-    modelName: String,
-    currentModel: String,
-    pendingModel: String,
-    favorite: Boolean,
-    onSelect: () -> Unit,
-    onToggleFavorite: () -> Unit
-) {
-    val selected = modelName == pendingModel
-    val current = modelName == currentModel
-    Card(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 3.dp),
-        cornerRadius = 14.dp
-    ) {
-        var pressed by remember { mutableStateOf(false) }
-        val pressFeedbackColor = rememberPressFeedbackColor(pressed)
-        Column(
-            modifier = Modifier.fillMaxWidth()
-                .clip(RoundedCornerShape(12.dp))
-                .background(pressFeedbackColor)
-                .responsiveTap(
-                    onClick = onSelect,
-                    onPressedChange = { pressed = it }
-                )
-                .padding(horizontal = 16.dp, vertical = 13.dp)
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(text = modelName, color = MiuixTheme.colorScheme.onSurface, fontWeight = FontWeight.Medium)
-                    val state = buildString {
-                        if (current) append("当前")
-                        if (selected && !current) {
-                            if (isNotEmpty()) append(" · ")
-                            append("已选择")
-                        }
-                        if (favorite) {
-                            if (isNotEmpty()) append(" · ")
-                            append("已收藏")
-                        }
-                        if (isEmpty()) append("点击选择")
-                    }
-                    Text(text = state, color = MiuixTheme.colorScheme.onSurfaceVariantSummary, fontSize = 12.sp)
-                }
-                Text(
-                    text = if (selected) "已选" else "选择",
-                    color = if (selected) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Medium
-                )
-            }
-            InsetDivider()
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End
-            ) {
-                Text(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(10.dp))
-                        .clickable { onToggleFavorite() }
-                        .padding(horizontal = 10.dp, vertical = 6.dp),
-                    text = if (favorite) "取消收藏" else "收藏",
-                    color = MiuixTheme.colorScheme.primary,
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Medium
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun NewZhiliaConfigPage(
-    existingNames: Set<String>,
-    onBack: () -> Unit,
-    onCreate: (AutoReplyZhiliaConfig) -> Unit
-) {
-    var name by remember { mutableStateOf("") }
-    var apiKey by remember { mutableStateOf("") }
-    var apiBase by remember { mutableStateOf(AutoReplySettings.DEFAULT_AI_API_BASE) }
-    var apiPath by remember { mutableStateOf(AutoReplySettings.DEFAULT_AI_API_PATH) }
-    var model by remember { mutableStateOf(AutoReplySettings.DEFAULT_AI_MODEL) }
-    var prompt by remember { mutableStateOf("") }
-    var contextLimit by remember { mutableStateOf(AutoReplySettings.DEFAULT_AI_CONTEXT_LIMIT.toString()) }
-    val valid = name.isNotBlank() && name.trim() !in existingNames && apiBase.isNotBlank() && apiPath.isNotBlank() && model.isNotBlank() && contextLimit.toIntOrNull()?.let { it in 0..50 } == true
-    val scrollBehavior = MiuixScrollBehavior()
-    PageScaffold(
-        title = "新增智聊配置",
-        largeTitle = "新增智聊配置",
-        scrollBehavior = scrollBehavior,
-        onBack = onBack,
-        showBackIcon = false
-    ) { padding ->
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
-            contentPadding = PaddingValues(top = padding.calculateTopPadding() + 8.dp, bottom = padding.calculateBottomPadding() + 16.dp)
-        ) {
-            item { SettingsSectionTitle(text = "配置") }
-            item {
-                SettingsCard {
-                    InputRow("配置名称", if (name.trim() in existingNames) "名称已存在" else "用于区分智聊配置", name) { name = it }
-                    InsetDivider(); InputRow("API Key", "OpenAI 兼容接口密钥", apiKey) { apiKey = it }
-                    InsetDivider(); InputRow("API 地址", "例如 https://api.xxx.com/v1", apiBase) { apiBase = it }
-                    InsetDivider(); InputRow("API 路径", "默认 /chat/completions", apiPath) { apiPath = it }
-                    InsetDivider(); InputRow("模型", "例如 deepseek-ai/DeepSeek-V3", model) { model = it }
-                    InsetDivider(); InputRow("系统指令", "AI 角色设定和回复要求", prompt, minLines = 4) { prompt = it }
-                    InsetDivider(); NumberInputRow("上下文轮数", if (contextLimit.toIntOrNull()?.let { it in 0..50 } != true) "请输入 0–50" else "0 表示不保留上下文", contextLimit) { contextLimit = it }
-                }
-            }
-
-            item { SettingsSectionTitle(text = "操作") }
-            item {
-                SettingsCard {
-                    ContentActionRow("创建", enabled = valid, emphasis = ContentActionEmphasis.PRIMARY) {
-                        onCreate(AutoReplyZhiliaConfig(name.trim(), apiKey.trim(), apiBase.trim(), apiPath.trim(), model.trim(), prompt, contextLimit.toInt()))
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
 private fun AutoReplySequenceAutoScroll(session: AutoReplySequenceSession, listState: LazyListState, firstItemIndex: Int) {
     val scrollOffset = with(LocalDensity.current) { 80.dp.roundToPx() }
     LaunchedEffect(session.scrollRequest) {
@@ -2785,12 +2314,12 @@ private fun autoReplyStepOptions(): List<OptionItem> = listOf(
     OptionItem("发送文件", AutoReplySettings.REPLY_FILE, "从系统文件管理器选择"),
     OptionItem("发送收藏", AutoReplySettings.REPLY_FAVORITE, "从最近收藏选择"),
     OptionItem("邀请进群", AutoReplySettings.REPLY_INVITE_GROUP, "从群聊列表选择"),
-    OptionItem("发送 XML", AutoReplySettings.REPLY_XML, "AppMsg/XML 原文"),
-    OptionItem("智聊AI回复", AutoReplySettings.REPLY_ZHILIA_AI, "使用智聊/OpenAI 兼容配置生成回复")
+    OptionItem("发送 XML", AutoReplySettings.REPLY_XML, "AppMsg/XML 原文")
 )
 
 private fun autoReplyStepLabel(value: Int): String =
     if (AutoReplySettings.isRemovedReplyMode(value)) "已移除的回复类型"
+    else if (AutoReplySettings.isAiReplyMode(value)) "旧版 AI 回复"
     else autoReplyStepOptions().firstOrNull { it.value == value }?.label ?: "未知回复类型"
 
 private fun autoReplyStepContentHint(value: Int): String = when (value) {

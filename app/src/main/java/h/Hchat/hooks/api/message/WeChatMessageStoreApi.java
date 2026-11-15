@@ -453,8 +453,8 @@ public final class WeChatMessageStoreApi {
         if (!TextUtils.isEmpty(table)) {
             List<WeChatMessage> rows = queryMessages(
                     "SELECT " + selectColumns() + " FROM " + table
-                            + " ORDER BY createTime DESC, msgId DESC LIMIT ?",
-                    new String[]{String.valueOf(safeLimit)});
+                            + " WHERE talker=? ORDER BY createTime DESC, msgId DESC LIMIT ?",
+                    new String[]{talker, String.valueOf(safeLimit)});
             if (!rows.isEmpty()) return rows;
         }
         return queryMessages("SELECT " + selectColumns()
@@ -564,6 +564,61 @@ public final class WeChatMessageStoreApi {
                 new String[]{talker, String.valueOf(createTime), String.valueOf(safeLimit)});
     }
 
+    /** A stable ascending cursor, including messages that share the preceding timestamp. */
+    public List<WeChatMessage> getMessagesAfter(String talker, long createTime, long msgId, int limit) {
+        if (TextUtils.isEmpty(talker)) return new ArrayList<>();
+        int safeLimit = clamp(limit, 1, 200);
+        String predicate = "(createTime>? OR (createTime=? AND msgId>?))";
+        String[] cursor = new String[]{String.valueOf(createTime), String.valueOf(createTime),
+                String.valueOf(msgId), String.valueOf(safeLimit)};
+        String table = messageTable(talker);
+        if (!TextUtils.isEmpty(table)) {
+            List<WeChatMessage> rows = queryMessages("SELECT " + selectColumns() + " FROM " + table
+                    + " WHERE talker=? AND " + predicate + " ORDER BY createTime ASC, msgId ASC LIMIT ?",
+                    new String[]{talker, cursor[0], cursor[1], cursor[2], cursor[3]});
+            if (!rows.isEmpty()) return rows;
+        }
+        return queryMessages("SELECT " + selectColumns() + " FROM message WHERE talker=? AND " + predicate
+                        + " ORDER BY createTime ASC, msgId ASC LIMIT ?",
+                new String[]{talker, cursor[0], cursor[1], cursor[2], cursor[3]});
+    }
+
+    /** Null means the database could not establish whether more rows exist. */
+    public Boolean hasMessagesAfterState(String talker, long createTime, long msgId) {
+        if (databaseApi == null || TextUtils.isEmpty(talker)) return null;
+        String[] args = new String[]{talker, String.valueOf(createTime), String.valueOf(createTime), String.valueOf(msgId)};
+        String where = " WHERE talker=? AND (createTime>? OR (createTime=? AND msgId>?)) LIMIT 1";
+        String rawTable = rawMessageTable(talker);
+        String table = quoteMessageTable(rawTable);
+        WeChatDatabaseApi.QueryResult partition = null;
+        if (!TextUtils.isEmpty(table)) {
+            partition = databaseApi.queryWithStatus("SELECT 1 FROM " + table + where, args);
+            if (partition.success && !partition.rows.isEmpty()) return true;
+        }
+        if (!"message".equalsIgnoreCase(rawTable)) {
+            WeChatDatabaseApi.QueryResult main = databaseApi.queryWithStatus("SELECT 1 FROM message" + where, args);
+            if (main.success) return !main.rows.isEmpty();
+        }
+        return partition != null && partition.success ? false : null;
+    }
+
+    /** Stable descending cursor for token-budgeted context reads. */
+    public List<WeChatMessage> getMessagesBefore(String talker, long createTime, long msgId, int limit) {
+        if (TextUtils.isEmpty(talker)) return new ArrayList<>();
+        int safeLimit = clamp(limit, 1, 200);
+        String predicate = "(createTime<? OR (createTime=? AND msgId<?))";
+        String[] args = new String[]{talker, String.valueOf(createTime), String.valueOf(createTime),
+                String.valueOf(msgId), String.valueOf(safeLimit)};
+        String table = messageTable(talker);
+        if (!TextUtils.isEmpty(table)) {
+            List<WeChatMessage> rows = queryMessages("SELECT " + selectColumns() + " FROM " + table
+                    + " WHERE talker=? AND " + predicate + " ORDER BY createTime DESC, msgId DESC LIMIT ?", args);
+            if (!rows.isEmpty()) return rows;
+        }
+        return queryMessages("SELECT " + selectColumns() + " FROM message WHERE talker=? AND " + predicate
+                + " ORDER BY createTime DESC, msgId DESC LIMIT ?", args);
+    }
+
     public List<WeChatMessage> getMessagesBefore(String talker, long createTime, int limit) {
         if (TextUtils.isEmpty(talker)) return new ArrayList<>();
         int safeLimit = clamp(limit, 1, 200);
@@ -620,8 +675,8 @@ public final class WeChatMessageStoreApi {
         if (!TextUtils.isEmpty(table)) {
             List<WeChatMessage> rows = queryMessages(
                     "SELECT " + selectColumns() + " FROM " + table
-                            + " WHERE content LIKE ? ORDER BY createTime DESC, msgId DESC LIMIT ?",
-                    new String[]{like, String.valueOf(safeLimit)});
+                            + " WHERE talker=? AND content LIKE ? ORDER BY createTime DESC, msgId DESC LIMIT ?",
+                    new String[]{talker, like, String.valueOf(safeLimit)});
             if (!rows.isEmpty()) return rows;
         }
         return queryMessages(

@@ -2,16 +2,10 @@ package h.Hchat.hooks.items.autoreply
 
 import android.content.Context
 import android.os.SystemClock
-import android.widget.Toast
 import h.Hchat.hooks.api.core.WeChatApis
+import h.Hchat.hooks.items.aichat.AiChatRuntime
 import h.Hchat.hooks.api.message.WeChatMessageObserveApi
 import h.Hchat.utils.HLog
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONArray
-import org.json.JSONObject
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -19,7 +13,6 @@ import java.util.Date
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
 import java.util.regex.Pattern
 import kotlin.random.Random
 
@@ -29,60 +22,8 @@ object AutoReplyRuntime {
     private val executor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "Hchat-AutoReply").apply { isDaemon = true }
     }
-    private val httpClient = OkHttpClient.Builder()
-        .pingInterval(30, TimeUnit.SECONDS)
-        .build()
     private val replyCounts = ConcurrentHashMap<String, Int>()
     private val lastReplyTimes = ConcurrentHashMap<String, Long>()
-    private val aiHistories = ConcurrentHashMap<String, MutableList<AiMessage>>()
-
-    fun clearAiHistories() {
-        aiHistories.clear()
-    }
-
-    fun fetchAiModels(apiBaseUrl: String, apiKey: String): List<String> {
-        val urls = candidateModelUrls(apiBaseUrl)
-        for (url in urls) {
-            val models = runCatching {
-                val request = Request.Builder()
-                    .url(url)
-                    .addHeader("Content-Type", "application/json")
-                    .apply {
-                        if (apiKey.isNotBlank()) addHeader("Authorization", "Bearer $apiKey")
-                    }
-                    .get()
-                    .build()
-                httpClient.newCall(request).execute().use { response ->
-                    val text = response.body?.string().orEmpty()
-                    if (!response.isSuccessful || text.isBlank()) return@use emptyList<String>()
-                    parseModelList(text)
-                }
-            }.getOrElse {
-                HLog.e("$TAG 拉取模型列表失败: ${it.message}", it)
-                emptyList()
-            }
-            if (models.isNotEmpty()) return models
-        }
-        return emptyList()
-    }
-
-    fun testAiConnectivity(config: AutoReplyAiConfig): String {
-        if (config.apiKey.isBlank() || config.apiBaseUrl.isBlank() || config.model.isBlank()) {
-            return "请先填写 API Key、API 地址和模型"
-        }
-        val history = listOf(
-            AiMessage("system", config.systemPrompt.ifBlank { AutoReplySettings.DEFAULT_AI_SYSTEM_PROMPT }),
-            AiMessage("user", "请只回复 OK")
-        )
-        val nonStreamOk = callAiOnce(config.copy(stream = false), history).orEmpty().isNotBlank()
-        val streamOk = callAiStream(config.copy(stream = true), history).orEmpty().isNotBlank()
-        return when {
-            nonStreamOk && streamOk -> "流式、非流式都可用"
-            nonStreamOk -> "非流式可用，流式不可用"
-            streamOk -> "流式可用，非流式不可用"
-            else -> "流式、非流式都不可用"
-        }
-    }
 
     fun handleMessage(context: Context, message: WeChatMessageObserveApi.ObservedMessage) {
         val settings = AutoReplySettings(context)
@@ -184,6 +125,27 @@ object AutoReplyRuntime {
         }
     }
 
+    /** Conservative coordination: a matching enabled rule owns the message even if it is cooling down. */
+    internal fun ownsMessage(context: Context, message: WeChatMessageObserveApi.ObservedMessage): Boolean {
+        val settings = AutoReplySettings(context)
+        if (!settings.isEnabled() || shouldSkipMessage(message)) return false
+        val talker = message.talker.ifBlank { message.getTalker() }
+        if (talker.isBlank() || settings.shouldExcludeTalker(talker)) return false
+        val group = message.group || message.isGroupChat() || talker.endsWith("@chatroom") || talker.endsWith("@im.chatroom")
+        val content = plainContent(message)
+        val isPat = message.isPat()
+        val isText = message.isText()
+        if ((message.isSystem() && !isPat) || (isText && content.isBlank() && !isPat)) return false
+        val ctx = MessageContext(talker = talker, sender = resolveSender(message, talker, group), content = content,
+            msgId = message.getMsgId(), group = group, atMe = message.isAtMe(), atAll = message.isNotifyAll(),
+            patMe = isPat && message.getPatMsg()?.pattedUser == WeChatApis.contact().account()?.selfWxId())
+        return settings.rules().any { rule ->
+            rule.enabled && filterRemovedReplySteps(rule.steps).isNotEmpty() &&
+                inTimeRange(rule.startTime, rule.endTime) && targetMatches(rule, ctx, message) &&
+                triggerMatches(rule, ctx, isPat) && keywordMatches(rule, content, isText, isPat)
+        }
+    }
+
     internal fun filterRemovedReplySteps(steps: List<AutoReplyStep>): List<AutoReplyStep> =
         steps.filterNot { AutoReplySettings.isRemovedReplyMode(it.mode) }
 
@@ -240,9 +202,11 @@ object AutoReplyRuntime {
                     var sent = false
                     parts.forEachIndexed { index, text ->
                         val currentSent = if (replyAsQuote && message.msgId > 0 && !text.contains("[AtWx=")) {
-                            messageApi?.sendQuote(target, message.msgId, text) == true
+                            (messageApi?.sendQuote(target, message.msgId, text) == true).also {
+                                if (it) AiChatRuntime.recordOrdinaryReply(context, target, text)
+                            }
                         } else {
-                            sendText(target, text)
+                            sendText(context, target, text)
                         }
                         sent = currentSent || sent
                         if (index < parts.lastIndex) sleep(300L)
@@ -283,176 +247,8 @@ object AutoReplyRuntime {
         message: MessageContext,
         replyAsQuote: Boolean
     ): Boolean {
-        val config = AutoReplySettings(context).aiConfig()
-        if (config.apiKey.isBlank()) {
-            showToast(context, "请先配置自动回复 AI Key")
-            return false
-        }
-        val question = aiQuestion(message)
-        if (question.isBlank()) return false
-        val answer = requestAi(target, config, question)
-        if (answer.isBlank()) return false
-        val sender = WeChatApis.message().sender() ?: return false
-        return if (replyAsQuote && message.msgId > 0L) {
-            sender.sendQuote(target, message.msgId, answer)
-        } else {
-            sendText(target, answer)
-        }
-    }
-
-    private fun aiQuestion(message: MessageContext): String =
-        message.content.replace(Regex("""@[^\s]+\s+"""), "").trim()
-
-    private fun requestAi(talker: String, config: AutoReplyAiConfig, question: String): String {
-        val history = aiHistories.getOrPut(talker) {
-            mutableListOf<AiMessage>().also {
-                if (config.systemPrompt.isNotBlank()) it += AiMessage("system", config.systemPrompt)
-            }
-        }
-        synchronized(history) {
-            if (history.firstOrNull()?.role == "system" && history.first().content != config.systemPrompt) {
-                if (config.systemPrompt.isBlank()) history.removeAt(0) else history[0] = AiMessage("system", config.systemPrompt)
-            } else if (history.none { it.role == "system" } && config.systemPrompt.isNotBlank()) {
-                history.add(0, AiMessage("system", config.systemPrompt))
-            }
-            history += AiMessage("user", question)
-            trimHistory(history, config.contextLimit)
-            val answer = if (config.stream) {
-                callAiStream(config, history) ?: callAiOnce(config, history)
-            } else {
-                callAiOnce(config, history) ?: callAiStream(config, history)
-            }.orEmpty().cleanAiText()
-            if (answer.isNotBlank()) {
-                history += AiMessage("assistant", answer)
-                trimHistory(history, config.contextLimit)
-            }
-            return answer
-        }
-    }
-
-    private fun callAiOnce(config: AutoReplyAiConfig, history: List<AiMessage>): String? {
-        return runCatching {
-            val body = aiRequestBody(config, history, false)
-            val response = httpClient.newCall(
-                Request.Builder()
-                    .url(finalAiUrl(config))
-                    .addHeader("Content-Type", "application/json")
-                    .addHeader("Authorization", "Bearer ${config.apiKey}")
-                    .post(body.toString().toRequestBody("application/json".toMediaType()))
-                    .build()
-            ).execute()
-            response.use {
-                val text = it.body?.string().orEmpty()
-                if (!it.isSuccessful || text.isBlank()) return@runCatching null
-                JSONObject(text).optJSONArray("choices")
-                    ?.optJSONObject(0)
-                    ?.optJSONObject("message")
-                    ?.optString("content")
-                    ?.takeIf { value -> value.isNotBlank() }
-            }
-        }.getOrNull()
-    }
-
-    private fun callAiStream(config: AutoReplyAiConfig, history: List<AiMessage>): String? {
-        return runCatching {
-            val body = aiRequestBody(config, history, true)
-            val response = httpClient.newCall(
-                Request.Builder()
-                    .url(finalAiUrl(config))
-                    .addHeader("Content-Type", "application/json")
-                    .addHeader("Authorization", "Bearer ${config.apiKey}")
-                    .post(body.toString().toRequestBody("application/json".toMediaType()))
-                    .build()
-            ).execute()
-            response.use {
-                if (!it.isSuccessful) return@runCatching null
-                val reader = it.body?.byteStream()?.bufferedReader(Charsets.UTF_8) ?: return@runCatching null
-                val out = StringBuilder()
-                reader.useLines { lines ->
-                    lines.forEach { line ->
-                        val data = line.trim().removePrefix("data:").trim()
-                        if (data.isBlank() || data == line.trim() || data == "[DONE]") return@forEach
-                        val obj = runCatching { JSONObject(data) }.getOrNull() ?: return@forEach
-                        val choice = obj.optJSONArray("choices")?.optJSONObject(0) ?: return@forEach
-                        val delta = choice.optJSONObject("delta")
-                        val piece = delta?.optString("content").orEmpty()
-                        if (piece.isNotBlank() && !piece.equals("null", ignoreCase = true)) out.append(piece)
-                    }
-                }
-                out.toString().takeIf { value -> value.isNotBlank() }
-            }
-        }.getOrNull()
-    }
-
-    private fun aiRequestBody(config: AutoReplyAiConfig, history: List<AiMessage>, stream: Boolean): JSONObject {
-        return JSONObject().apply {
-            put("model", config.model)
-            put("temperature", 0.7)
-            put("stream", stream)
-            put("messages", JSONArray().apply {
-                history.forEach { msg ->
-                    put(JSONObject().apply {
-                        put("role", msg.role)
-                        put("content", msg.content)
-                    })
-                }
-            })
-        }
-    }
-
-    private fun finalAiUrl(config: AutoReplyAiConfig): String {
-        val base = config.apiBaseUrl.trim().trimEnd('/')
-        val path = config.apiPath.trim().ifBlank { AutoReplySettings.DEFAULT_AI_API_PATH }
-        return base + if (path.startsWith("/")) path else "/$path"
-    }
-
-    private fun candidateModelUrls(apiBaseUrl: String): List<String> {
-        val base = apiBaseUrl.trim().trimEnd('/')
-        if (base.isBlank()) return emptyList()
-        val primary = if (base.endsWith("/chat/completions")) {
-            base.removeSuffix("/chat/completions") + "/models"
-        } else if (base.endsWith("/models")) {
-            base
-        } else {
-            "$base/models"
-        }
-        val alt = primary.removeSuffix("/models").removeSuffix("/v1") + "/v1/models"
-        return listOf(primary, alt).distinct()
-    }
-
-    private fun parseModelList(text: String): List<String> {
-        return runCatching {
-            val obj = JSONObject(text)
-            val result = linkedSetOf<String>()
-            fun addArray(array: JSONArray?) {
-                if (array == null) return
-                for (i in 0 until array.length()) {
-                    val item = array.opt(i)
-                    val id = when (item) {
-                        is JSONObject -> item.optString("id").ifBlank { item.optString("name") }
-                        is String -> item
-                        else -> ""
-                    }.trim()
-                    if (id.isNotEmpty()) result += id
-                }
-            }
-            addArray(obj.optJSONArray("data"))
-            addArray(obj.optJSONArray("models"))
-            addArray(obj.optJSONArray("result"))
-            result.sorted()
-        }.getOrDefault(emptyList())
-    }
-
-    private fun trimHistory(history: MutableList<AiMessage>, contextLimit: Int) {
-        val max = contextLimit.coerceAtLeast(0) * 2 + if (history.firstOrNull()?.role == "system") 1 else 0
-        if (max <= 0) {
-            history.clear()
-            return
-        }
-        while (history.size > max) {
-            val removeIndex = if (history.firstOrNull()?.role == "system") 1 else 0
-            if (removeIndex in history.indices) history.removeAt(removeIndex) else break
-        }
+        val question = message.content.replace(Regex("""@[^\s]+\s+"""), "").trim()
+        return question.isNotBlank() && AiChatRuntime.replyLegacy(context, target, question, message.msgId)
     }
 
     private fun targetMatches(
@@ -610,7 +406,7 @@ object AutoReplyRuntime {
             .replace("%atAll%", if (ctx.group) "[AtWx=$AT_ALL_WXID]" else "@所有人")
     }
 
-    private fun sendText(talker: String, content: String): Boolean {
+    private fun sendText(context: Context, talker: String, content: String): Boolean {
         if (talker.isBlank() || content.isBlank()) return false
         val sender = WeChatApis.message().sender() ?: return false
         val atRegex = Regex("""\[AtWx=([^\]]+)]""")
@@ -627,7 +423,9 @@ object AutoReplyRuntime {
             }
             "@$name\u2005"
         }
-        return if (atList.isEmpty()) sender.sendText(talker, text) else sender.sendTextWithAtList(talker, text, atList)
+        val sent = if (atList.isEmpty()) sender.sendText(talker, text) else sender.sendTextWithAtList(talker, text, atList)
+        if (sent) AiChatRuntime.recordOrdinaryReply(context, talker, text)
+        return sent
     }
 
     private fun sendPaths(value: String, sender: (String) -> Boolean): Boolean {
@@ -775,19 +573,10 @@ object AutoReplyRuntime {
             .getOrElse { SimpleDateFormat(fallback, Locale.getDefault()).format(Date()) }
     }
 
-    private fun showToast(context: Context, text: String) {
-        runCatching { Toast.makeText(context, text, Toast.LENGTH_SHORT).show() }
-    }
-
     private fun sleep(ms: Long) {
         if (ms <= 0L) return
         runCatching { Thread.sleep(ms) }
     }
-
-    private fun String.cleanAiText(): String = replace("\u0000", "")
-        .replace(Regex("(?i)^null"), "")
-        .replace(Regex("(?i)null$"), "")
-        .trim()
 
     private data class MessageContext(
         val talker: String,
@@ -799,8 +588,6 @@ object AutoReplyRuntime {
         val atAll: Boolean = false,
         val patMe: Boolean = false
     )
-
-    private data class AiMessage(val role: String, val content: String)
 
     private data class FriendAutomationKeys(
         val labelNewFriendEnable: String,

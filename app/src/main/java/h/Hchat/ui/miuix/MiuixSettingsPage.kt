@@ -2104,6 +2104,7 @@ internal object HchatConfigBackup {
         CustomNotificationSettings.PREFS_NAME,
         ConversationGroupStore.PREFS_NAME,
         AutoReplySettings.PREFS_NAME,
+        h.Hchat.hooks.items.aichat.AiChatSettings.PREFS_NAME,
         MessageAffixSettings.PREFS_NAME,
         InputHintSettings.PREFS_NAME,
         AutoOriginalImageSettings.PREFS_NAME,
