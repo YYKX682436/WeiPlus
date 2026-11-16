@@ -75,7 +75,9 @@ class AiChatR2Test {
             file.outputStream().use { assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
             bitmap.recycle()
             val message = WeChatMessage(123, 456, 3, 0, 0, 1000, "friend", "", file.absolutePath, "", "", 0, "", "self")
-            val data = AiChatMedia.image(context, message).getJSONObject("image_url").getString("url")
+            val image = AiChatMedia.imageWithDetails(context, message)
+            assertEquals(8, image.width); assertEquals(8, image.height); assertTrue(image.lowResolution)
+            val data = image.content.getJSONObject("image_url").getString("url")
             assertTrue(data.startsWith("data:image/jpeg;base64,"))
             val bytes = android.util.Base64.decode(data.substringAfter(','), android.util.Base64.DEFAULT)
             assertTrue(bytes.size > 2); assertEquals(255, bytes[0].toInt() and 255); assertEquals(216, bytes[1].toInt() and 255)

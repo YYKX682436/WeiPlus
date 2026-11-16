@@ -228,7 +228,7 @@ internal class AiChatMemory private constructor(context: Context) : SQLiteOpenHe
             db.insertOrThrow("recent_images", null, values)
             db.execSQL("DELETE FROM recent_images WHERE account=? AND talker=? AND participant=? AND rowid NOT IN (SELECT rowid FROM recent_images WHERE account=? AND talker=? AND participant=? ORDER BY last_used DESC LIMIT ?)",
                 arrayOf<Any>(account, talker, participant, account, talker, participant, AiImageContext.MAX_SAVED))
-            db.execSQL("DELETE FROM recent_images WHERE account=? AND image_time<?", arrayOf<Any>(account, lastUsed - AiImageContext.MAX_AGE_MS))
+            db.execSQL("DELETE FROM recent_images WHERE account=? AND last_used<?", arrayOf<Any>(account, lastUsed - AiImageContext.MAX_AGE_MS))
             db.setTransactionSuccessful()
         } finally { db.endTransaction() }
     }

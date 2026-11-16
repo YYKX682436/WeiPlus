@@ -170,7 +170,8 @@ internal object AiChatRuntime {
         val memory = AiChatMemory.get(context)
         val media = mutableListOf<Pair<Long, JSONObject>>()
         val current = mutableListOf<Pair<String, String>>()
-        data class ImageUse(val message: WeChatMessage, val participant: String?, val origin: String, val mode: String)
+        data class ImageUse(val message: WeChatMessage, val participant: String?, val origin: String, val mode: String,
+                            val lowResolution: Boolean = false)
         val images = mutableListOf<ImageUse>()
         val participant = AiImageContext.sender(batch.last())
         val queryText = batch.filter { it.isText() || it.isQuote() }.joinToString("\n") { AiChatHistory.plain(it) }
@@ -201,14 +202,15 @@ internal object AiChatRuntime {
                         runCatching { HLog.i("[Hchat:AI-Image] phase=media ref=$ref source=$origin result=unsupported") }
                         throw AiRequestException("当前模型不支持图片")
                     }
-                    val image = try { AiChatMedia.image(context, msg) } catch (error: Exception) {
+                    val image = try { AiChatMedia.imageWithDetails(context, msg) } catch (error: Exception) {
                         runCatching { HLog.i("[Hchat:AI-Image] phase=media ref=$ref source=$origin result=unavailable") }
                         throw error
                     }
-                    media += msg.msgId to image
-                    images += ImageUse(msg, participant, origin, "payload")
+                    media += msg.msgId to image.content
+                    images += ImageUse(msg, participant, origin, "payload", image.lowResolution)
                     runCatching { HLog.i("[Hchat:AI-Image] phase=media ref=$ref source=$origin result=prepared") }
-                    current += speaker to if (origin == "batch") "收到一张图片" else "此前讨论的图片，供回答当前问题"
+                    val label = if (origin == "batch") "收到一张图片" else "此前讨论的图片，供回答当前问题"
+                    current += speaker to (label + if (image.lowResolution) "（目前只有低分辨率图片，细节看不清时请如实说明，不要猜测。）" else "")
                 }
                 msg.isVideo() -> {
                     val supported = config.supports("video")
@@ -251,9 +253,10 @@ internal object AiChatRuntime {
         }
         if (images.isEmpty() && participant != null && queryText.isNotBlank() && store != null) {
             val first = batch.first()
-            val history = store.getMessagesBefore(talker, first.createTime,
-                if (first.msgId > 0) first.msgId else Long.MAX_VALUE, AiImageContext.HISTORY_LIMIT).filter { old ->
-                batch.none { (it.msgId > 0 && it.msgId == old.msgId) || (it.msgSvrId > 0 && it.msgSvrId == old.msgSvrId) }
+            val history = store.getMessagesByType(talker, WeChatMessageTypes.IMAGE, AiImageContext.HISTORY_IMAGE_LIMIT).filter { old ->
+                old.talker == talker && old.createTime <= first.createTime &&
+                    first.createTime - old.createTime <= AiImageContext.MAX_AGE_MS &&
+                    batch.none { (it.msgId > 0 && it.msgId == old.msgId) || (it.msgSvrId > 0 && it.msgSvrId == old.msgSvrId) }
             }
             val match = AiImageContext.choose(talker, participant, queryText, first.createTime, history,
                 memory.recentImages(self, talker, participant)) { ref ->
@@ -265,6 +268,17 @@ internal object AiChatRuntime {
         }
         if (current.isEmpty() && media.isEmpty()) return
         if (media.size > 4) throw AiRequestException("单次最多处理 4 个媒体文件")
+        if (images.any { it.lowResolution } && AiImageContext.asksForImageText(queryText)) {
+            val answer = "这张图目前只拿到缩略图，小字看不清，暂时不能准确辨认。"
+            if (enabled(settings, self, talker) != null) {
+                submitAnswer(context, self, talker, answer, settings, memory, config, AiCompletion(answer, AiUsage(null, null, null)))
+                images.forEach { image -> image.participant?.let { owner ->
+                    runCatching { memory.rememberImage(self, talker, owner, image.message, batch.last().createTime, "") }
+                } }
+            }
+            status(context, "图片只有缩略图，未向模型提交小字辨认请求")
+            return
+        }
         val instruction = target.prompt.ifBlank { settings.prefs.getString(AiChatSettings.KEY_PROMPT, AiChatSettings.DEFAULT_PROMPT).orEmpty() }
         val budget = settings.prefs.getInt(AiChatSettings.KEY_CONTEXT, 7000).coerceIn(0, 16000)
         val modelLimit = config.models.firstOrNull { it.id == config.model }?.contextWindow ?: 0

@@ -3,6 +3,7 @@ package h.Hchat.hooks.items.aichat
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import h.Hchat.hooks.api.model.WeChatMessage
 import org.json.JSONArray
 import org.json.JSONObject
@@ -86,6 +87,9 @@ class AiChatImageContextTest {
         assertTrue(AiImageContext.canUseDescription("那只猫呢", "一只灰白色小猫"))
         assertFalse(AiImageContext.canUseDescription("它是什么颜色", "一只猫"))
         assertFalse(AiImageContext.canUseDescription("图片里有几只猫", "一只灰白色小猫"))
+        assertTrue(AiImageContext.asksForImageText("那图片右下角的地区写在哪里呀？"))
+        assertTrue(AiImageContext.asksForImageText("水印里的小字是什么"))
+        assertFalse(AiImageContext.asksForImageText("那只猫是什么颜色？"))
     }
 
     @Test fun associationIsBoundedAndIsolatedByAccountConversationAndGroupSender() {
@@ -101,9 +105,9 @@ class AiChatImageContextTest {
         assertTrue(AiImageContext.includeInRecent(aliceImage, "alice"))
         assertFalse(AiImageContext.includeInRecent(bobImage, "alice"))
         assertFalse(AiImageContext.includeInRecent(aliceImage, null))
-        assertNull(match("alice", 401_000))
-        val turns = (1..7).map { message((30 + it).toLong(), 101_000 + it * 1000L, "闲聊", talker = room, sender = "alice") }.reversed()
-        assertNull(match("alice", 120_000, turns + aliceImage))
+        assertNull(match("alice", aliceImage.createTime + AiImageContext.MAX_AGE_MS + 1))
+        val turns = (1..120).map { message((300 + it).toLong(), 101_000 + it * 100L, "闲聊", talker = room, sender = "alice") }.reversed()
+        assertEquals(aliceImage.msgId, match("alice", 120_000, turns + aliceImage)?.message?.msgId)
         val secondAliceImage = message(23, 102_000, type = 3, talker = room, sender = "alice")
         val refs = listOf(aliceImage, secondAliceImage).map { AiRecentImage(it.msgId, it.msgSvrId, it.createTime, 105_000) }
         val latest = AiImageContext.choose(room, "alice", "它是什么颜色", 120_000,
@@ -133,6 +137,26 @@ class AiChatImageContextTest {
         assertEquals(0L, onlyServerId.msgId); assertEquals(999L, onlyServerId.serverId)
         assertEquals(999L, AiImageContext.choose(room, "alice", "现在能看到吗", 132_000,
             listOf(transient), listOf(onlyServerId)) { transient }?.message?.msgSvrId)
+    }
+
+    @Test fun elapsedTimeNotConversationCountControlsAssociationAndQuotedOldImagesCanBecomeRecent() {
+        val image = message(120, 100_000, type = 3)
+        val ref = AiRecentImage(image.msgId, image.msgSvrId, image.createTime, image.createTime, "一只小猫")
+        val messages = (1..120).map { message(1000L + it, 100_000L + it * 1000, "随便聊聊") }.reversed()
+        fun match(now: Long, references: List<AiRecentImage> = listOf(ref)) =
+            AiImageContext.choose("friend", "friend", "那只猫呢", now, messages, references) { image }
+        assertEquals(image.msgId, match(image.createTime + 60 * 60_000L)?.message?.msgId)
+        assertNull(match(image.createTime + AiImageContext.MAX_AGE_MS + 1))
+        assertNull(match(image.createTime + 24 * 60 * 60_000L))
+
+        val reintroduced = image.createTime + 24 * 60 * 60_000L
+        val account = UUID.randomUUID().toString()
+        val memory = AiChatMemory.get(context)
+        memory.rememberImage(account, "friend", "friend", image, reintroduced, "一只猫")
+        memory.close()
+        val saved = AiChatMemory.get(context).recentImages(account, "friend", "friend")
+        assertEquals(image.msgId, match(reintroduced + 1000, saved)?.message?.msgId)
+        assertNull(match(reintroduced + AiImageContext.MAX_AGE_MS + 1, saved))
     }
 
     @Test @GraphicsMode(GraphicsMode.Mode.NATIVE) fun actualImagePayloadIsResentAfterRestartWithoutInventingADescription() {
@@ -168,6 +192,43 @@ class AiChatImageContextTest {
             assertEquals(1, AiChatRuntime.imagePayloadCount(next))
             assertNull(AiChatMemory.get(context).media(account, "friend", image.msgId))
         } finally { file.delete() }
+    }
+
+    @Test @GraphicsMode(GraphicsMode.Mode.NATIVE) fun imageQualityUsesPixelDimensionsRatherThanCompressedByteCount() {
+        val file = File.createTempFile("ai-image-quality-", ".png", context.cacheDir)
+        try {
+            val bitmap = Bitmap.createBitmap(640, 960, Bitmap.Config.ARGB_8888)
+            file.outputStream().use { assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
+            bitmap.recycle()
+            val image = AiChatMedia.imageWithDetails(context, message(180, 100_000, type = 3, imagePath = file.absolutePath))
+            assertEquals(640, image.width); assertEquals(960, image.height); assertFalse(image.lowResolution)
+            assertTrue(image.content.getJSONObject("image_url").getString("url").startsWith("data:image/jpeg;base64,"))
+            // Native CDN completion may return a different rendition length from the XML metadata.
+            assertTrue(file.length() < 155_551)
+            val downloaded = AiChatMedia.completedImage(file, true, 81L * 120)
+            assertNotNull(downloaded); assertEquals(640, downloaded!!.width); assertEquals(960, downloaded.height)
+            assertNull(AiChatMedia.completedImage(file, false, 0))
+            assertNull(AiChatMedia.completedImage(file, true, 640L * 960))
+            val large = Bitmap.createBitmap(1282, 1282, Bitmap.Config.ARGB_8888)
+            file.outputStream().use { assertTrue(large.compress(Bitmap.CompressFormat.PNG, 100, it)) }
+            large.recycle()
+            val scaled = AiChatMedia.imageWithDetails(context, message(181, 100_000, type = 3, imagePath = file.absolutePath))
+            val encoded = scaled.content.getJSONObject("image_url").getString("url").substringAfter(',')
+            val bytes = android.util.Base64.decode(encoded, android.util.Base64.DEFAULT)
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+            assertEquals(bounds.outWidth, scaled.width); assertEquals(bounds.outHeight, scaled.height)
+            assertTrue(maxOf(scaled.width, scaled.height) <= 1280)
+        } finally { file.delete() }
+    }
+
+    @Test fun imageDownloadMetadataCanComeFromNativeReservedFields() {
+        val image = WeChatMessage(301, 401, 3, 0, 0, 100_000, "friend", "", "",
+            "<msg><img cdnmidimgurl=\"mock-id\" aeskey=\"mock-key\" length=\"12345\"/></msg>", "", 0, "", "self")
+        assertEquals("mock-id", AiChatMedia.imageMeta(image, "cdnmidimgurl"))
+        assertEquals("mock-key", AiChatMedia.imageMeta(image, "aeskey"))
+        assertEquals("12345", AiChatMedia.imageMeta(image, "length"))
+        assertEquals("", AiChatMedia.imageMeta(image, "cdnbigimgurl"))
     }
 
     @Test fun databaseUpgradeAddsAssociationWithoutChangingExistingData() {

@@ -22,6 +22,13 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.security.MessageDigest
 
 internal object AiChatMedia {
+    internal data class ImagePayload(val content: JSONObject, val width: Int, val height: Int) {
+        val lowResolution: Boolean get() = maxOf(width, height) < 640 || minOf(width, height) < 320
+    }
+    private data class ImageFile(val file: File, val width: Int, val height: Int) {
+        val pixels: Long get() = width.toLong() * height
+        val lowResolution: Boolean get() = maxOf(width, height) < 640 || minOf(width, height) < 320
+    }
     fun cachedVoice(message: WeChatMessage): String {
         message.translatedContent.takeIf { it.isNotBlank() && !it.trim().startsWith("<") }?.let { return it }
         val db = WeChatApis.database() ?: return ""
@@ -92,13 +99,18 @@ internal object AiChatMedia {
         )
     }
 
-    fun image(context: Context, message: WeChatMessage): JSONObject {
+    fun image(context: Context, message: WeChatMessage): JSONObject = imageWithDetails(context, message).content
+
+    fun imageWithDetails(context: Context, message: WeChatMessage): ImagePayload {
         val images = WeChatApis.media()?.images()
         var sawFile = false
+        var best: ImageFile? = null
+        val candidates = linkedMapOf<String, ImageFile>()
+        var current = message
         diagnostic("type=image ref=${messageRef(message)} idPresent=${message.msgId > 0} serverIdPresent=${message.msgSvrId > 0}")
         // The database notification can precede the end of WeChat's download.
         repeat(4) { attempt ->
-            val current = WeChatApis.messageStore()?.getMessageById(message.msgId)?.takeIf { it.talker == message.talker } ?: message
+            current = WeChatApis.messageStore()?.getMessageById(message.msgId)?.takeIf { it.talker == message.talker } ?: message
             val native = WeChatApis.database()?.nativeMessageById(current.msgId)
             val paths = listOf(
                 WeChatRetransmitPayloadFactory.build(current, native)?.fileName,
@@ -108,54 +120,93 @@ internal object AiChatMedia {
                 val file = File(path)
                 if (!file.isFile || file.length() <= 0) continue
                 sawFile = true
-                if (isStable(file)) encodeImage(file)?.let { return it }
+                val candidate = imageFile(file) ?: continue
+                candidates[path] = candidate
+                if (best == null || candidate.pixels > best!!.pixels) best = candidate
             }
+            best?.takeIf { !it.lowResolution && isStable(it.file) }?.let { encodeImage(it)?.let { result -> return result } }
             if (attempt < 3) Thread.sleep(500)
         }
-        val info = message.getImageMsg()
-        val url = info?.bigImgUrl?.ifBlank { info.midImgUrl }.orEmpty()
-        if (images != null && info != null && url.isNotBlank() && info.key.isNotBlank() && images.canDownloadCdn()) {
+        val info = current.getImageMsg()
+        val bigUrl = info?.bigImgUrl.orEmpty().ifBlank { imageMeta(current, "cdnbigimgurl") }
+        val midUrl = info?.midImgUrl.orEmpty().ifBlank { imageMeta(current, "cdnmidimgurl") }
+        val url = bigUrl.ifBlank { midUrl }
+        val key = info?.key.orEmpty().ifBlank { imageMeta(current, "aeskey") }
+        val md5 = info?.md5.orEmpty().ifBlank { imageMeta(current, "md5") }
+        val cdnReady = images != null && url.isNotBlank() && key.isNotBlank() && images.canDownloadCdn()
+        diagnostic("type=image localWidth=${best?.width ?: 0} localHeight=${best?.height ?: 0} hasCdn=${url.isNotBlank()} hasKey=${key.isNotBlank()} cdnReady=$cdnReady")
+        if (cdnReady && images != null) {
             val file = File.createTempFile("hchat-ai-image-", ".tmp", context.cacheDir)
             file.delete()
             val done = CountDownLatch(1)
             val active = AtomicBoolean(true)
             val downloaded = AtomicBoolean(false)
-            val original = info.bigImgUrl.isNotBlank()
-            val size = if (original) info.bigLength else info.midLength
+            val original = bigUrl.isNotBlank()
+            val size = (if (original) info?.bigLength else info?.midLength)?.takeIf { it > 0 }
+                ?: imageMeta(current, if (original) "hdlength" else "length").toIntOrNull() ?: 0
             try {
-                val submitted = images.downloadCdn(info.md5, url, info.key, file.absolutePath,
+                val submitted = images.downloadCdn(md5, url, key, file.absolutePath,
                     if (original) 1 else 2, size, object : h.Hchat.hooks.api.media.WeChatImageApi.DownloadCallback {
                         override fun onSuccess(result: File) {
                             if (active.get()) downloaded.set(true) else result.delete()
                             done.countDown()
                         }
-                        override fun onError(message: String) { if (!active.get()) file.delete(); done.countDown() }
+                        override fun onError(message: String) { diagnostic("type=image cdnResult=error"); if (!active.get()) file.delete(); done.countDown() }
                     })
                 diagnostic("type=image cdnSubmitted=$submitted")
-                if (submitted && done.await(15, TimeUnit.SECONDS) && downloaded.get() && (size <= 0 || file.length() >= size)) {
+                val finished = submitted && done.await(15, TimeUnit.SECONDS)
+                diagnostic("type=image cdnFinished=$finished cdnSuccess=${downloaded.get()} downloadedBytes=${file.length()} expectedBytes=$size")
+                if (finished && downloaded.get()) {
                     sawFile = true
-                    encodeImage(file)?.let { return it }
+                    // The XML length may describe a different rendition; the native completion and
+                    // a stable, decodable image are the evidence that this download succeeded.
+                    completedImage(file, true, best?.pixels ?: 0)?.let {
+                        diagnostic("type=image source=cdn width=${it.width} height=${it.height}")
+                        return it
+                    }
                 }
             } finally { active.set(false); file.delete() }
+        }
+        for (candidate in candidates.values.sortedByDescending { it.pixels }) {
+            if (!isStable(candidate.file)) continue
+            diagnostic("type=image source=local width=${candidate.width} height=${candidate.height} lowResolution=${candidate.lowResolution}")
+            encodeImage(candidate)?.let { result -> return result }
         }
         diagnostic("type=image decoded=false filePresent=$sawFile")
         throw AiRequestException(if (sawFile) "微信图片文件无法解码或尚未下载完整" else "微信图片尚未下载或本地文件不可用")
     }
 
-    private fun encodeImage(file: File): JSONObject? {
+    private fun imageFile(file: File): ImageFile? {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(file.absolutePath, bounds)
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        return ImageFile(file, bounds.outWidth, bounds.outHeight)
+    }
+
+    internal fun completedImage(file: File, successful: Boolean, minimumPixels: Long): ImagePayload? {
+        if (!successful || !isStable(file)) return null
+        val image = imageFile(file) ?: return null
+        return if (image.pixels > minimumPixels) encodeImage(image) else null
+    }
+
+    internal fun imageMeta(message: WeChatMessage, name: String): String = sequenceOf(
+        message.bodyContent(), message.reserved, message.translatedContent, message.msgSource
+    ).map { source -> WeChatMessage.xmlAttr(source, name).ifBlank { WeChatMessage.xmlTag(source, name) } }
+        .firstOrNull { it.isNotBlank() }.orEmpty()
+
+    private fun encodeImage(image: ImageFile): ImagePayload? {
         var sample = 1
-        while (maxOf(bounds.outWidth, bounds.outHeight) / sample > 1280) sample *= 2
-        val bitmap = BitmapFactory.decodeFile(file.absolutePath, BitmapFactory.Options().apply { inSampleSize = sample })
+        while (maxOf(image.width, image.height) / sample > 1280) sample *= 2
+        val bitmap = BitmapFactory.decodeFile(image.file.absolutePath, BitmapFactory.Options().apply { inSampleSize = sample })
             ?: return null
+        val encodedWidth = bitmap.width
+        val encodedHeight = bitmap.height
         val output = ByteArrayOutputStream()
         try { if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 82, output)) return null }
         finally { bitmap.recycle() }
-        diagnostic("type=image decoded=true encodedBytes=${output.size()}")
+        diagnostic("type=image decoded=true sourceWidth=${image.width} sourceHeight=${image.height} encodedWidth=$encodedWidth encodedHeight=$encodedHeight encodedBytes=${output.size()}")
         val data = "data:image/jpeg;base64," + Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP)
-        return JSONObject().put("type", "image_url").put("image_url", JSONObject().put("url", data))
+        return ImagePayload(JSONObject().put("type", "image_url").put("image_url", JSONObject().put("url", data)), encodedWidth, encodedHeight)
     }
 
     fun audio(context: Context, message: WeChatMessage, provider: AiProvider): JSONObject {

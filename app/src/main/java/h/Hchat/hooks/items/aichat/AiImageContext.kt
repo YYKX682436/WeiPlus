@@ -8,9 +8,8 @@ internal data class AiRecentImage(val msgId: Long, val serverId: Long, val image
 internal data class AiImageMatch(val message: WeChatMessage, val origin: String)
 
 internal object AiImageContext {
-    const val MAX_AGE_MS = 5 * 60_000L
-    const val MAX_TURNS = 6
-    const val HISTORY_LIMIT = 80
+    const val MAX_AGE_MS = 2 * 60 * 60_000L
+    const val HISTORY_IMAGE_LIMIT = 200
     const val MAX_SAVED = 3
 
     fun sender(message: WeChatMessage): String? {
@@ -43,16 +42,12 @@ internal object AiImageContext {
             if (candidates.any { sameMessage(it.message, message) }) continue
             candidates += Candidate(message, message.createTime, "", "history")
         }
-        val oldestScanned = history.lastOrNull()?.createTime ?: 0
         return candidates.mapNotNull { candidate ->
             val image = candidate.message
-            if (image.createTime <= 0 || now - image.createTime !in 0..MAX_AGE_MS || candidate.lastUsed !in image.createTime..now) return@mapNotNull null
-            // A full page that starts after last use cannot establish the turn limit safely.
-            if (history.size >= HISTORY_LIMIT && oldestScanned > candidate.lastUsed) return@mapNotNull null
-            val turns = history.count { it.createTime > candidate.lastUsed && it.createTime <= now && sender(it) == participant }
-            if (turns > MAX_TURNS) return@mapNotNull null
+            if (image.createTime <= 0 || candidate.lastUsed !in image.createTime..now ||
+                now - candidate.lastUsed > MAX_AGE_MS) return@mapNotNull null
             val overlap = overlap(question, candidate.hint)
-            if (!related(question, now - candidate.lastUsed, turns, overlap)) return@mapNotNull null
+            if (!related(question, now - candidate.lastUsed, overlap)) return@mapNotNull null
             Triple(candidate, overlap, candidate.lastUsed)
         }.maxWithOrNull(compareBy<Triple<Candidate, Int, Long>> { it.second }.thenBy { it.third }
             .thenBy { it.first.message.createTime }.thenBy { it.first.message.msgId })
@@ -62,7 +57,7 @@ internal object AiImageContext {
     private fun sameMessage(a: WeChatMessage, b: WeChatMessage): Boolean =
         (a.msgId > 0 && a.msgId == b.msgId) || (a.msgSvrId > 0 && a.msgSvrId == b.msgSvrId)
 
-    private fun related(text: String, elapsed: Long, turns: Int, overlap: Int): Boolean {
+    private fun related(text: String, elapsed: Long, overlap: Int): Boolean {
         val question = text.trim().take(500)
         val visual = Regex("(?i)图片|照片|相片|画面|图里|图上|看图|\\b(?:image|picture|photo)\\b|刚才.{0,12}看|(?:看到|看见).{0,8}(?:吗|没|呢)")
             .containsMatchIn(question)
@@ -71,11 +66,16 @@ internal object AiImageContext {
         if (overlap == 0 && Regex("天气|股票|股价|汇率|新闻|路况|航班|火车|工资|房价|彩票|比赛比分").containsMatchIn(question)) return false
         if (Regex("(?i)它|那只|这只|that one|this one|its colou?r").containsMatchIn(question) && question.length <= 100) return true
         if (overlap > 0) return true
-        if (elapsed <= 60_000 && turns <= 2 && question.length <= 30 &&
+        if (elapsed <= 60_000 && question.length <= 30 &&
             Regex("真的吗|真的是|是吗|那样|这样|然后呢|继续|刚才|之前|上次").containsMatchIn(question)) return true
-        return elapsed <= 20_000 && turns <= 1 && question.length <= 30 &&
+        return elapsed <= 20_000 && question.length <= 30 &&
             Regex("(?i)(?:这个|那个|this|that).{0,12}(?:什么|是啥|是什么|what)").containsMatchIn(question)
     }
+
+    fun asksForImageText(question: String): Boolean = Regex(
+        "(?i)文字|小字|字迹|字体|字母|字符|水印|标识|二维码|条码|型号|编号|号码|地址|日期|" +
+            "(?:写|印|标).{0,8}(?:什么|哪里|在哪|是|看|字|地区)|(?:what.*(?:text|word|written))|read.*(?:text|word)"
+    ).containsMatchIn(question)
 
     /** Reuse a real saved description only when it contains the detail being asked about. */
     fun canUseDescription(question: String, description: String): Boolean {
