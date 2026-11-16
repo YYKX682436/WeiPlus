@@ -23,11 +23,9 @@ internal object AiChatRuntime {
     private val workers = Executors.newFixedThreadPool(3) { r -> Thread(r, "Hchat-AI-chat").apply { isDaemon = true } }
     private val memoryWorker = Executors.newSingleThreadExecutor { r -> Thread(r, "Hchat-AI-memory").apply { isDaemon = true } }
     private class Queue {
-        val pending = mutableListOf<WeChatMessage>()
+        val pending = AiChatBatch()
         var future: ScheduledFuture<*>? = null
         var running = false
-        var lastAddedAt = 0L
-        var firstAddedAt = 0L
     }
     private val queues = ConcurrentHashMap<String, Queue>()
     private val seen = ConcurrentHashMap<String, Long>()
@@ -77,11 +75,9 @@ internal object AiChatRuntime {
         val q = queues.computeIfAbsent(qKey) { Queue() }
         synchronized(q) {
             val elapsed = android.os.SystemClock.elapsedRealtime()
-            if (q.pending.isEmpty()) q.firstAddedAt = elapsed
-            q.pending += message
-            q.lastAddedAt = elapsed
+            q.pending.add(message, elapsed)
             q.future?.cancel(false)
-            val wait = debounceWait(q.firstAddedAt, q.lastAddedAt, elapsed)
+            val wait = q.pending.waitMillis(elapsed)
             q.future = timer.schedule({ drain(context, self, talker, q) }, wait, TimeUnit.MILLISECONDS)
         }
     }
@@ -102,9 +98,14 @@ internal object AiChatRuntime {
     }
     private fun drain(context: Context, self: String, talker: String, q: Queue) {
         val batch = synchronized(q) {
-            if (q.running || q.pending.isEmpty()) return
+            if (q.running || !q.pending.isNotEmpty()) return
+            val wait = q.pending.waitMillis(android.os.SystemClock.elapsedRealtime())
+            if (wait > 0) {
+                q.future = timer.schedule({ drain(context, self, talker, q) }, wait, TimeUnit.MILLISECONDS)
+                return
+            }
             q.running = true
-            q.pending.toList().also { q.pending.clear(); q.firstAddedAt = 0L }
+            q.pending.take()
         }
         workers.execute {
             try { process(context, self, talker, batch) }
@@ -115,20 +116,18 @@ internal object AiChatRuntime {
                     if (q.pending.isNotEmpty() && running) {
                         q.future?.cancel(false)
                         val now = android.os.SystemClock.elapsedRealtime()
-                        val wait = debounceWait(q.firstAddedAt, q.lastAddedAt, now)
+                        val wait = q.pending.waitMillis(now)
                         q.future = timer.schedule({ drain(context, self, talker, q) }, wait, TimeUnit.MILLISECONDS)
                     }
                 }
             }
         }
     }
-    internal fun debounceWait(first: Long, last: Long, now: Long): Long =
-        minOf((1500L - (now - last)).coerceAtLeast(0L), (6000L - (now - first)).coerceAtLeast(0L))
-    internal fun shouldAttachPreviousImage(first: WeChatMessage, previous: WeChatMessage?): Boolean {
-        val sameSender = previous != null && !previous.isSend() && previous.talker == first.talker &&
-            (!first.isGroupChat() || previous.sendTalker() == first.sendTalker())
-        val refersToImage = Regex("这个|这张|图片|照片|图里|图上|看看|(?i:what.{0,12}(this|picture|image))").containsMatchIn(first.bodyContent())
-        return previous?.isImage() == true && sameSender && refersToImage && first.createTime - previous.createTime in 0..10_000
+    internal fun debounceWait(first: Long, last: Long, now: Long, lastImage: Long? = null): Long {
+        val idle = (1500L - (now - last)).coerceAtLeast(0L)
+        val image = lastImage?.let { (4200L - (now - it)).coerceAtLeast(0L) } ?: 0L
+        val maximum = ((if (lastImage == null) 6000L else 7500L) - (now - first)).coerceAtLeast(0L)
+        return minOf(maxOf(idle, image), maximum)
     }
     internal fun missingQuotedMedia(message: WeChatMessage, source: WeChatMessage?): Boolean {
         if (!message.isQuote() || source != null) return false
@@ -145,6 +144,14 @@ internal object AiChatRuntime {
                 ?.let(AiChatOutput::visibleAnswer)?.let { runCatching { save(id, it) } }
         }
         return reply
+    }
+    internal fun imagePayloadCount(request: List<AiInput>): Int = request.sumOf { input ->
+        val parts = input.content as? JSONArray ?: return@sumOf 0
+        (0 until parts.length()).count { index ->
+            val part = parts.optJSONObject(index)
+            val data = part?.optJSONObject("image_url")?.optString("url").orEmpty()
+            part?.optString("type") == "image_url" && data.startsWith("data:image/") && data.substringAfter(',', "").isNotBlank()
+        }
     }
     private fun enabled(settings: AiChatSettings, self: String, talker: String): AiChatTarget? {
         if (!running || account() != self || !settings.prefs.getBoolean(AiChatSettings.KEY_ENABLE, false)) return null
@@ -163,18 +170,45 @@ internal object AiChatRuntime {
         val memory = AiChatMemory.get(context)
         val media = mutableListOf<Pair<Long, JSONObject>>()
         val current = mutableListOf<Pair<String, String>>()
-        fun addMedia(msg: WeChatMessage, requestedBy: String? = null) {
+        data class ImageUse(val message: WeChatMessage, val participant: String?, val origin: String, val mode: String)
+        val images = mutableListOf<ImageUse>()
+        val participant = AiImageContext.sender(batch.last())
+        val queryText = batch.filter { it.isText() || it.isQuote() }.joinToString("\n") { AiChatHistory.plain(it) }
+        fun addMedia(msg: WeChatMessage, requestedBy: String? = null, origin: String = "batch") {
             val speaker = requestedBy ?: AiChatHistory.speaker(msg, self, memory)
-            val cached = memory.media(self, talker, msg.msgId)
-            if (!cached.isNullOrBlank()) { current += speaker to "此前针对该媒体的识别结果：$cached"; return }
+            val ref = AiChatMedia.messageRef(msg)
+            if (msg.isImage() && images.any {
+                    (msg.msgId > 0 && it.message.msgId == msg.msgId) ||
+                        (msg.msgSvrId > 0 && it.message.msgSvrId == msg.msgSvrId)
+                }) return
+            val cached = if (msg.msgId > 0) memory.media(self, talker, msg.msgId) else null
+            val usableCache = !cached.isNullOrBlank() && (!msg.isImage() || queryText.isBlank() ||
+                AiImageContext.canUseDescription(queryText, cached))
+            if (usableCache) {
+                current += speaker to "此前针对该媒体的识别结果：$cached"
+                if (msg.isImage()) {
+                    images += ImageUse(msg, participant, origin, "description")
+                    runCatching { HLog.i("[Hchat:AI-Image] phase=media ref=$ref source=$origin result=cached_description") }
+                }
+                return
+            }
             when {
                 msg.isImage() -> {
                     val safeModel = if (config.apiKey.isBlank()) config.model else config.model.replace(config.apiKey, "***")
                     val supported = config.supports("image")
                     runCatching { HLog.i("[Hchat:AI-Media] provider=${config.provider} model=$safeModel imageSupported=$supported") }
-                    if (!supported) throw AiRequestException("当前模型不支持图片")
-                    media += msg.msgId to AiChatMedia.image(context, msg)
-                    current += speaker to "收到一张图片"
+                    if (!supported) {
+                        runCatching { HLog.i("[Hchat:AI-Image] phase=media ref=$ref source=$origin result=unsupported") }
+                        throw AiRequestException("当前模型不支持图片")
+                    }
+                    val image = try { AiChatMedia.image(context, msg) } catch (error: Exception) {
+                        runCatching { HLog.i("[Hchat:AI-Image] phase=media ref=$ref source=$origin result=unavailable") }
+                        throw error
+                    }
+                    media += msg.msgId to image
+                    images += ImageUse(msg, participant, origin, "payload")
+                    runCatching { HLog.i("[Hchat:AI-Image] phase=media ref=$ref source=$origin result=prepared") }
+                    current += speaker to if (origin == "batch") "收到一张图片" else "此前讨论的图片，供回答当前问题"
                 }
                 msg.isVideo() -> {
                     val supported = config.supports("video")
@@ -208,12 +242,26 @@ internal object AiChatRuntime {
             if (msg.isImage() || msg.isVideo() || msg.isVoice() || AiChatMedia.isAudioFile(msg)) addMedia(msg)
             if (msg.isQuote()) {
                 val asker = if (msg.isGroupChat()) msg.sendTalker().ifBlank { "未知群成员" } else talker
-                if (source != null && (source.isImage() || source.isVideo() || source.isVoice() || AiChatMedia.isAudioFile(source))) addMedia(source, asker)
+                if (source != null && (source.isImage() || source.isVideo() || source.isVoice() || AiChatMedia.isAudioFile(source))) addMedia(source, asker, "quote")
                 else if (source != null) {
                     val quoted = AiChatHistory.content(source, self, memory)
                     if (quoted.isNotBlank() && !plain.contains(quoted)) current += asker to "所引用的原消息：$quoted"
                 }
             }
+        }
+        if (images.isEmpty() && participant != null && queryText.isNotBlank() && store != null) {
+            val first = batch.first()
+            val history = store.getMessagesBefore(talker, first.createTime,
+                if (first.msgId > 0) first.msgId else Long.MAX_VALUE, AiImageContext.HISTORY_LIMIT).filter { old ->
+                batch.none { (it.msgId > 0 && it.msgId == old.msgId) || (it.msgSvrId > 0 && it.msgSvrId == old.msgSvrId) }
+            }
+            val match = AiImageContext.choose(talker, participant, queryText, first.createTime, history,
+                memory.recentImages(self, talker, participant)) { ref ->
+                (if (ref.msgId > 0) store.getMessageById(ref.msgId)?.takeIf { it.talker == talker } else null)
+                    ?: (if (ref.serverId > 0) store.getMessageBySvrId(talker, ref.serverId) else null)
+            }
+            runCatching { HLog.i("[Hchat:AI-Image] phase=association result=${if (match == null) "none" else "matched"} source=${match?.origin ?: "none"} ref=${match?.message?.let(AiChatMedia::messageRef) ?: "none"}") }
+            if (match != null) addMedia(match.message, participant, match.origin)
         }
         if (current.isEmpty() && media.isEmpty()) return
         if (media.size > 4) throw AiRequestException("单次最多处理 4 个媒体文件")
@@ -225,13 +273,7 @@ internal object AiChatRuntime {
             batch.none { (it.msgId > 0 && it.msgId == old.msgId) || (it.msgSvrId > 0 && it.msgSvrId == old.msgSvrId) } &&
                 old.createTime <= batch.last().createTime
         }
-        if (budget > 0 && media.isEmpty() && batch.all { it.isText() } && config.supports("image")) {
-            val previous = recentRows.lastOrNull()
-            val first = batch.first()
-            if (previous != null && shouldAttachPreviousImage(first, previous)) addMedia(previous)
-        }
         val question = current.joinToString("\n") { it.second }.ifBlank { "请理解并回答收到的媒体消息。" }
-        val queryText = batch.filter { it.isText() || it.isQuote() }.joinToString("\n") { AiChatHistory.plain(it) }
         val searchQuery = AiChatSearch.query(queryText)
         val searchEnabled = settings.prefs.getBoolean(AiChatSettings.KEY_SEARCH_ENABLED, false)
         val searchSource = settings.prefs.getString(AiChatSettings.KEY_SEARCH_SOURCE, AiChatSettings.SEARCH_TAVILY).orEmpty()
@@ -280,7 +322,8 @@ internal object AiChatRuntime {
         val limit = (allowed - reserved).coerceAtLeast(0)
         val memoryReserve = if (state.facts.isNotBlank()) minOf(1200, allowed / 5, limit) else 0
         val summaryReserve = minOf(400, allowed / 12, (limit - memoryReserve).coerceAtLeast(0))
-        val recent = AiChatHistory.recent(recentRows, self, memory, limit - memoryReserve - summaryReserve, config)
+        val recent = AiChatHistory.recent(recentRows.filter { AiImageContext.includeInRecent(it, participant) },
+            self, memory, limit - memoryReserve - summaryReserve, config)
         val facts = cleanFacts.takeLast((memoryReserve - 8).coerceAtLeast(0))
         val summaries = AiChatOutput.memoryText(memory.summaries(self, talker, 4).joinToString("\n")).takeLast((summaryReserve - 8).coerceAtLeast(0))
         val prompt = buildString {
@@ -301,15 +344,20 @@ internal object AiChatRuntime {
             }
             request += AiInput("user", input, AiChatHistory.participant(who))
         }
+        val imageCount = imagePayloadCount(request)
+        val imageRefs = images.joinToString(",") { "${AiChatMedia.messageRef(it.message)}:${it.origin}:${it.mode}" }.ifBlank { "none" }
+        runCatching { HLog.i("[Hchat:AI-Image] phase=request images=$imageCount refs=$imageRefs") }
         status(context, "正在生成回复")
         val completion = try { complete(context, self, requestConfig, AiPurpose.CHAT, request, 256, webResult != null) }
             catch (error: AiRequestException) {
+                runCatching { HLog.i("[Hchat:AI-Image] phase=response result=error images=$imageCount refs=$imageRefs") }
                 if (!requestConfig.webSearch) throw error
                 val answer = "暂时没能联网查到，稍后再试吧。"
                 if (enabled(settings, self, talker) != null) submitAnswer(context, self, talker, answer, settings, memory, config, AiCompletion(answer, AiUsage(null, null, null)))
                 status(context, error.message ?: "官方联网失败")
                 return
             }.let { if (webResult != null) it.copy(source = webResult!!.source, toolState = "completed") else it }
+        runCatching { HLog.i("[Hchat:AI-Image] phase=response result=received images=$imageCount refs=$imageRefs") }
         if (requestConfig.webSearch && !completion.webSucceeded) {
             val answer = "暂时没能联网查到，稍后再试吧。"
             if (enabled(settings, self, talker) != null) submitAnswer(context, self, talker, answer, settings, memory, config, AiCompletion(answer, AiUsage(null, null, null)))
@@ -321,6 +369,14 @@ internal object AiChatRuntime {
         status(context, "模型生成成功，等待微信发送提交")
         if (enabled(settings, self, talker) == null) { status(context, "会话已关闭，未提交回复"); return }
         submitAnswer(context, self, talker, answer, settings, memory, config, completion)
+        images.forEach { image ->
+            val owner = image.participant ?: return@forEach
+            if (image.mode == "payload" && imageCount == 0) return@forEach
+            // A joint answer to multiple images cannot safely be attributed to any one of them.
+            val matchHint = if (images.size == 1) answer else ""
+            runCatching { memory.rememberImage(self, talker, owner, image.message, batch.last().createTime, matchHint) }
+                .onFailure { runCatching { HLog.i("[Hchat:AI-Image] phase=association result=store_failed ref=${AiChatMedia.messageRef(image.message)}") } }
+        }
     }
 
     /** Legacy rule steps retain their existing matching conditions but share the new client. */

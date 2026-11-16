@@ -20,7 +20,7 @@ internal data class AiUsageRecord(val account: String, val configId: String, val
                                   val purpose: AiPurpose, val started: Long, val usage: AiUsage?, val status: String)
 internal data class AiSearchUsage(val account: String, val started: Long, val credits: Long?, val status: String)
 
-internal class AiChatMemory private constructor(context: Context) : SQLiteOpenHelper(context, "Hchat_ai_chat.db", null, 3) {
+internal class AiChatMemory private constructor(context: Context) : SQLiteOpenHelper(context, "Hchat_ai_chat.db", null, 4) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE state (account TEXT NOT NULL, talker TEXT NOT NULL, cursor_time INTEGER NOT NULL DEFAULT 0, cursor_id INTEGER NOT NULL DEFAULT 0, processed INTEGER NOT NULL DEFAULT 0, facts TEXT NOT NULL DEFAULT '', revision INTEGER NOT NULL DEFAULT 0, memory_input INTEGER NOT NULL DEFAULT 0, memory_output INTEGER NOT NULL DEFAULT 0, pending INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '', initial_done INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(account,talker))")
         db.execSQL("CREATE TABLE summaries (account TEXT NOT NULL, talker TEXT NOT NULL, start_time INTEGER NOT NULL, end_time INTEGER NOT NULL, end_id INTEGER NOT NULL, text TEXT NOT NULL, PRIMARY KEY(account,talker,end_time,end_id))")
@@ -30,6 +30,7 @@ internal class AiChatMemory private constructor(context: Context) : SQLiteOpenHe
         db.execSQL("CREATE TABLE media (account TEXT NOT NULL, talker TEXT NOT NULL, msg_id INTEGER NOT NULL, description TEXT NOT NULL, PRIMARY KEY(account,talker,msg_id))")
         createUsage(db)
         createSearchUsage(db)
+        createRecentImages(db)
     }
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         if (oldVersion < 2) {
@@ -40,6 +41,7 @@ internal class AiChatMemory private constructor(context: Context) : SQLiteOpenHe
             createUsage(db)
         }
         if (oldVersion < 3 && newVersion >= 3) createSearchUsage(db)
+        if (oldVersion < 4 && newVersion >= 4) createRecentImages(db)
     }
     private fun indexSentIds(db: SQLiteDatabase) {
         db.execSQL("CREATE INDEX sent_local_id ON sent(account,talker,local_id)")
@@ -52,6 +54,10 @@ internal class AiChatMemory private constructor(context: Context) : SQLiteOpenHe
     private fun createSearchUsage(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE search_usage (id INTEGER PRIMARY KEY AUTOINCREMENT, account TEXT NOT NULL, started INTEGER NOT NULL, credits INTEGER, status TEXT NOT NULL)")
         db.execSQL("CREATE INDEX search_usage_account_time ON search_usage(account,started)")
+    }
+    private fun createRecentImages(db: SQLiteDatabase) {
+        db.execSQL("CREATE TABLE recent_images (account TEXT NOT NULL, talker TEXT NOT NULL, participant TEXT NOT NULL, msg_id INTEGER NOT NULL, server_id INTEGER NOT NULL, image_time INTEGER NOT NULL, last_used INTEGER NOT NULL, match_hint TEXT NOT NULL DEFAULT '')")
+        db.execSQL("CREATE INDEX recent_images_lookup ON recent_images(account,talker,participant,last_used)")
     }
 
     @Synchronized fun state(account: String, talker: String): AiMemoryState = state(readableDatabase, account, talker)
@@ -151,6 +157,7 @@ internal class AiChatMemory private constructor(context: Context) : SQLiteOpenHe
             db.execSQL("UPDATE state SET cursor_time=?,cursor_id=?,processed=0,facts='',revision=revision+1,memory_input=0,memory_output=0,pending=0,error='',initial_done=1 WHERE account=? AND talker=?", arrayOf<Any>(latestTime, latestId, account, talker))
             db.delete("summaries", "account=? AND talker=?", arrayOf(account, talker))
             db.delete("media", "account=? AND talker=?", arrayOf(account, talker))
+            db.delete("recent_images", "account=? AND talker=?", arrayOf(account, talker))
             db.setTransactionSuccessful()
         } finally { db.endTransaction() }
     }
@@ -190,6 +197,40 @@ internal class AiChatMemory private constructor(context: Context) : SQLiteOpenHe
         if (id <= 0 || description.isBlank()) return
         val values = ContentValues().apply { put("account", account); put("talker", talker); put("msg_id", id); put("description", description) }
         writableDatabase.insertWithOnConflict("media", null, values, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+    @Synchronized fun recentImages(account: String, talker: String, participant: String): List<AiRecentImage> {
+        if (account.isBlank() || talker.isBlank() || participant.isBlank()) return emptyList()
+        val result = mutableListOf<AiRecentImage>()
+        readableDatabase.rawQuery("SELECT msg_id,server_id,image_time,last_used,match_hint FROM recent_images WHERE account=? AND talker=? AND participant=? ORDER BY last_used DESC LIMIT ?",
+            arrayOf(account, talker, participant, AiImageContext.MAX_SAVED.toString())).use { c ->
+            while (c.moveToNext()) result += AiRecentImage(c.getLong(0), c.getLong(1), c.getLong(2), c.getLong(3), c.getString(4))
+        }
+        return result
+    }
+    @Synchronized fun rememberImage(account: String, talker: String, participant: String,
+                                    image: WeChatMessage, lastUsed: Long, reply: String) {
+        if (account.isBlank() || talker.isBlank() || participant.isBlank() || image.talker != talker ||
+            !image.isImage() || (image.msgId <= 0 && image.msgSvrId <= 0) || image.createTime <= 0 || lastUsed < image.createTime) return
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val args = arrayOf(account, talker, participant, image.msgId.toString(), image.msgSvrId.toString())
+            val predicate = "account=? AND talker=? AND participant=? AND ((msg_id>0 AND msg_id=?) OR (server_id>0 AND server_id=?))"
+            var prior = ""
+            db.rawQuery("SELECT match_hint FROM recent_images WHERE $predicate LIMIT 1", args).use { if (it.moveToFirst()) prior = it.getString(0).orEmpty() }
+            db.delete("recent_images", predicate, args)
+            val hint = listOf(prior, reply.trim().take(200)).filter { it.isNotBlank() }.joinToString("\n").takeLast(400)
+            val values = ContentValues().apply {
+                put("account", account); put("talker", talker); put("participant", participant)
+                put("msg_id", image.msgId); put("server_id", image.msgSvrId); put("image_time", image.createTime)
+                put("last_used", lastUsed); put("match_hint", hint)
+            }
+            db.insertOrThrow("recent_images", null, values)
+            db.execSQL("DELETE FROM recent_images WHERE account=? AND talker=? AND participant=? AND rowid NOT IN (SELECT rowid FROM recent_images WHERE account=? AND talker=? AND participant=? ORDER BY last_used DESC LIMIT ?)",
+                arrayOf<Any>(account, talker, participant, account, talker, participant, AiImageContext.MAX_SAVED))
+            db.execSQL("DELETE FROM recent_images WHERE account=? AND image_time<?", arrayOf<Any>(account, lastUsed - AiImageContext.MAX_AGE_MS))
+            db.setTransactionSuccessful()
+        } finally { db.endTransaction() }
     }
     @Synchronized fun recordUsage(account: String, config: AiChatConfig, purpose: AiPurpose, started: Long, usage: AiUsage?) {
         val values = ContentValues().apply {

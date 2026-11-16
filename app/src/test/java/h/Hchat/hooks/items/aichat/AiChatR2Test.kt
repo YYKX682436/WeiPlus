@@ -93,15 +93,11 @@ class AiChatR2Test {
         } finally { file.delete() }
     }
 
-    @Test fun imageFollowupRequiresSameSenderAndOldImageQuoteKeepsItsReference() {
+    @Test fun oldImageQuoteKeepsItsReference() {
         val room = "room@chatroom"
         fun message(sender: String, text: String, time: Long, type: Int, outgoing: Boolean = false) =
             WeChatMessage.fromTransient(room, sender, text, time, outgoing, type, time, "", "self")
         val image = message("alice", "<msg><img/></msg>", 1000, 3)
-        assertTrue(AiChatRuntime.shouldAttachPreviousImage(message("alice", "这个是什么", 2000, 1), image))
-        assertFalse(AiChatRuntime.shouldAttachPreviousImage(message("bob", "这个是什么", 2000, 1), image))
-        assertFalse(AiChatRuntime.shouldAttachPreviousImage(message("alice", "明天见", 2000, 1), image))
-        assertFalse(AiChatRuntime.shouldAttachPreviousImage(message("alice", "这个是什么", 20_000, 1), image))
         val quote = message("alice", "<msg><appmsg><title>这是什么</title><type>57</type><refermsg><type>3</type><svrid>12345</svrid><fromusr>$room</fromusr><chatusr>bob</chatusr></refermsg></appmsg></msg>", 3000, 49)
         assertEquals(12345L, quote.getQuoteMsg()!!.svrId)
         assertEquals("bob", quote.getQuoteMsg()!!.sendTalker)

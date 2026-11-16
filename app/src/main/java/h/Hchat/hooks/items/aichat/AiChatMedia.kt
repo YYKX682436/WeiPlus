@@ -294,7 +294,7 @@ internal object AiChatMedia {
         diagnostic("type=video available=true bytes=${file.length()} durationMs=$duration")
         return JSONObject().put("type", "video_url").put("video_url", JSONObject().put("url", data)).put("fps", 1)
     }
-    private fun messageRef(message: WeChatMessage): String = MessageDigest.getInstance("SHA-256")
+    internal fun messageRef(message: WeChatMessage): String = MessageDigest.getInstance("SHA-256")
         .digest("${message.msgId}/${message.msgSvrId}".toByteArray()).take(6).joinToString("") { "%02x".format(it) }
     private fun isStable(file: File): Boolean {
         val size = file.length()
