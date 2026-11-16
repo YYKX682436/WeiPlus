@@ -174,19 +174,63 @@ internal object AiChatRuntime {
                             val lowResolution: Boolean = false)
         val images = mutableListOf<ImageUse>()
         val participant = AiImageContext.sender(batch.last())
+        val group = batch.first().isGroupChat()
+        val groupInputs = mutableListOf<AiInput>()
+        val groupPayloads = mutableSetOf<JSONObject>()
+        val groupMedia = mutableListOf<WeChatMessage>()
         val queryText = batch.filter { it.isText() || it.isQuote() }.joinToString("\n") { AiChatHistory.plain(it) }
+        var unresolvedGroupQuote = false
+        fun groupReply(answer: String) {
+            if (enabled(settings, self, talker) != null)
+                submitAnswer(context, self, talker, answer, settings, memory, config, AiCompletion(answer, AiUsage(null, null, null)))
+        }
+        if (group) {
+            val quoted = batch.filter { it.isQuote() }.map { message ->
+                AiGroupMediaContext.quoted(message) { id -> store?.getMessageBySvrId(talker, id) }
+            }
+            unresolvedGroupQuote = quoted.any { it.unresolved }
+            if (quoted.any { it.unavailable }) {
+                groupReply("这条引用的媒体在本地找不到，请重新引用那条消息。")
+                status(context, "引用媒体无法定位，未替换为其他媒体")
+                return
+            }
+            val explicitMedia = quoted.mapNotNull { it.message } + batch.filter { AiGroupMediaContext.kind(it) != null }
+            val explicitIds = explicitMedia.map { if (it.msgSvrId > 0) "s${it.msgSvrId}" else "m${it.msgId}" }.distinct()
+            if (explicitIds.size > 1) {
+                groupReply("你想让我看哪一条？请引用对应的消息。")
+                return
+            }
+        }
         fun addMedia(msg: WeChatMessage, requestedBy: String? = null, origin: String = "batch") {
             val speaker = requestedBy ?: AiChatHistory.speaker(msg, self, memory)
             val ref = AiChatMedia.messageRef(msg)
+            val groupKind = if (group) AiGroupMediaContext.kind(msg) else null
+            val author = if (groupKind != null) AiGroupMediaContext.sender(msg, self) else null
+            if (groupKind != null && author == null) throw AiRequestException("无法确定媒体发送者，请重新引用那条消息")
+            if (groupKind != null && groupMedia.any { (msg.msgId > 0 && it.msgId == msg.msgId) ||
+                    (msg.msgSvrId > 0 && it.msgSvrId == msg.msgSvrId) }) return
+            if (groupKind == AiGroupMediaKind.VIDEO && !config.supports("video"))
+                throw AiRequestException("当前模型不支持视频")
+            fun addContent(label: String, payload: JSONObject? = null) {
+                if (groupKind != null && author != null) {
+                    val display = runCatching { WeChatApis.users()?.displayNameInGroup(talker, author) }.getOrNull()
+                        ?.takeIf { it.isNotBlank() } ?: author
+                    groupInputs += AiGroupMediaContext.input(author, "群成员 $display 发送的${groupKind.label}：$label", payload)
+                    if (payload != null) groupPayloads += payload
+                    runCatching { HLog.i("[Hchat:AI-GroupMedia] phase=media ref=$ref source=$origin type=${groupKind.name} result=${if (payload != null) "prepared" else "text"}") }
+                } else current += speaker to label
+            }
             if (msg.isImage() && images.any {
                     (msg.msgId > 0 && it.message.msgId == msg.msgId) ||
                         (msg.msgSvrId > 0 && it.message.msgSvrId == msg.msgSvrId)
                 }) return
             val cached = if (msg.msgId > 0) memory.media(self, talker, msg.msgId) else null
-            val usableCache = !cached.isNullOrBlank() && (!msg.isImage() || queryText.isBlank() ||
-                AiImageContext.canUseDescription(queryText, cached))
+            val usableCache = !cached.isNullOrBlank() && if (groupKind != null)
+                AiGroupMediaContext.canReuse(groupKind, queryText, cached)
+            else (!msg.isImage() || queryText.isBlank() || AiImageContext.canUseDescription(queryText, cached))
             if (usableCache) {
-                current += speaker to "此前针对该媒体的识别结果：$cached"
+                addContent("此前针对该媒体的识别结果：$cached")
+                if (groupKind != null) groupMedia += msg
                 if (msg.isImage()) {
                     images += ImageUse(msg, participant, origin, "description")
                     runCatching { HLog.i("[Hchat:AI-Image] phase=media ref=$ref source=$origin result=cached_description") }
@@ -208,16 +252,19 @@ internal object AiChatRuntime {
                     }
                     media += msg.msgId to image.content
                     images += ImageUse(msg, participant, origin, "payload", image.lowResolution)
+                    if (groupKind != null) groupMedia += msg
                     runCatching { HLog.i("[Hchat:AI-Image] phase=media ref=$ref source=$origin result=prepared") }
                     val label = if (origin == "batch") "收到一张图片" else "此前讨论的图片，供回答当前问题"
-                    current += speaker to (label + if (image.lowResolution) "（目前只有低分辨率图片，细节看不清时请如实说明，不要猜测。）" else "")
+                    addContent(label + if (image.lowResolution) "（目前只有低分辨率图片，细节看不清时请如实说明，不要猜测。）" else "", image.content)
                 }
-                msg.isVideo() -> {
+                msg.isVideo() || groupKind == AiGroupMediaKind.VIDEO -> {
                     val supported = config.supports("video")
                     runCatching { HLog.i("[Hchat:AI-Media] provider=${config.provider} videoSupported=$supported") }
                     if (!supported) throw AiRequestException("当前模型不支持视频")
-                    media += msg.msgId to AiChatMedia.video(context, msg)
-                    current += speaker to "收到一个视频"
+                    val video = AiChatMedia.video(context, msg)
+                    media += msg.msgId to video
+                    if (groupKind != null) groupMedia += msg
+                    addContent("收到一个视频", video)
                 }
                 AiChatMedia.isAudioFile(msg) -> {
                     if (!config.supports("audio")) throw AiRequestException("当前模型不支持原生音频")
@@ -226,11 +273,15 @@ internal object AiChatRuntime {
                 }
                 msg.isVoice() -> {
                     val text = AiChatMedia.transcribeVoice(context, msg)
-                    current += speaker to "语音转写：$text"
+                    if (groupKind != null) {
+                        groupMedia += msg
+                        memory.saveMedia(self, talker, msg.msgId, text)
+                    }
+                    addContent("语音转写：$text")
                 }
             }
         }
-        for (msg in batch) {
+        try { for (msg in batch) {
             val quote = if (msg.isQuote()) msg.getQuoteMsg() else null
             val source = quote?.takeIf { it.svrId > 0 }?.let { store?.getMessageBySvrId(talker, it.svrId) }
             if (missingQuotedMedia(msg, source)) throw AiRequestException("引用的图片、语音或视频在本地不可读取")
@@ -240,18 +291,47 @@ internal object AiChatRuntime {
                     listOf(quote?.title.orEmpty(), "引用原回答：${AiChatHistory.content(source, self, memory)}").filter { it.isNotBlank() }.joinToString("\n")
                 else -> AiChatHistory.plain(msg)
             }
-            if (plain.isNotBlank()) current += (if (msg.isGroupChat()) msg.sendTalker().ifBlank { "未知群成员" } else talker) to plain
-            if (msg.isImage() || msg.isVideo() || msg.isVoice() || AiChatMedia.isAudioFile(msg)) addMedia(msg)
+            if (plain.isNotBlank()) current += (if (msg.isGroupChat()) AiImageContext.sender(msg) ?: "未知群成员" else talker) to plain
+            if (msg.isImage() || msg.isVideo() || msg.isVoice() || (group && AiGroupMediaContext.kind(msg) != null) || AiChatMedia.isAudioFile(msg)) addMedia(msg)
             if (msg.isQuote()) {
-                val asker = if (msg.isGroupChat()) msg.sendTalker().ifBlank { "未知群成员" } else talker
-                if (source != null && (source.isImage() || source.isVideo() || source.isVoice() || AiChatMedia.isAudioFile(source))) addMedia(source, asker, "quote")
+                val asker = if (msg.isGroupChat()) AiImageContext.sender(msg) ?: "未知群成员" else talker
+                if (source != null && (source.isImage() || source.isVideo() || source.isVoice() ||
+                        (group && AiGroupMediaContext.kind(source) != null) || AiChatMedia.isAudioFile(source))) addMedia(source, asker, "quote")
                 else if (source != null) {
                     val quoted = AiChatHistory.content(source, self, memory)
                     if (quoted.isNotBlank() && !plain.contains(quoted)) current += asker to "所引用的原消息：$quoted"
                 }
             }
+        } } catch (error: AiRequestException) {
+            if (!group) throw error
+            groupReply(error.message ?: "这条媒体暂时无法处理，请稍后再试。")
+            status(context, error.message ?: "群媒体处理失败")
+            return
         }
-        if (images.isEmpty() && participant != null && queryText.isNotBlank() && store != null) {
+        if (group && !unresolvedGroupQuote && groupMedia.isEmpty() && media.isEmpty() && queryText.isNotBlank() && store != null) {
+            val first = batch.first()
+            val history = store.getMessagesBefore(talker, first.createTime, first.msgId.takeIf { it > 0 } ?: Long.MAX_VALUE,
+                AiGroupMediaContext.HISTORY_LIMIT)
+            val choice = AiGroupMediaContext.choose(talker, self, queryText, first.createTime, history,
+                memory.recentGroupMedia(self, talker), batch.flatMap { it.getAtUserList() }.toSet()) { ref ->
+                (if (ref.msgId > 0) store.getMessageById(ref.msgId)?.takeIf { it.talker == talker } else null)
+                    ?: (if (ref.serverId > 0) store.getMessageBySvrId(talker, ref.serverId) else null)
+            }
+            runCatching { HLog.i("[Hchat:AI-GroupMedia] phase=association result=${if (choice.ambiguous) "ambiguous" else if (choice.match != null) "matched" else "none"} source=${choice.match?.origin ?: "none"} ref=${choice.match?.message?.let(AiChatMedia::messageRef) ?: "none"}") }
+            if (choice.ambiguous) {
+                groupReply("你想让我看哪一条？请引用对应的消息。")
+                return
+            }
+            choice.match?.let { match ->
+                try { addMedia(match.message, participant, match.origin) }
+                catch (error: AiRequestException) {
+                    groupReply(error.message ?: "这条媒体暂时无法处理，请稍后再试。")
+                    status(context, error.message ?: "群媒体处理失败")
+                    return
+                }
+            }
+        }
+        if (!group && images.isEmpty() && participant != null && queryText.isNotBlank() && store != null) {
             val first = batch.first()
             val history = store.getMessagesByType(talker, WeChatMessageTypes.IMAGE, AiImageContext.HISTORY_IMAGE_LIMIT).filter { old ->
                 old.talker == talker && old.createTime <= first.createTime &&
@@ -266,13 +346,17 @@ internal object AiChatRuntime {
             runCatching { HLog.i("[Hchat:AI-Image] phase=association result=${if (match == null) "none" else "matched"} source=${match?.origin ?: "none"} ref=${match?.message?.let(AiChatMedia::messageRef) ?: "none"}") }
             if (match != null) addMedia(match.message, participant, match.origin)
         }
+        if (groupInputs.isNotEmpty() && current.isEmpty()) current += (participant ?: "未知群成员") to "请理解并回答收到的媒体消息。"
         if (current.isEmpty() && media.isEmpty()) return
         if (media.size > 4) throw AiRequestException("单次最多处理 4 个媒体文件")
         if (images.any { it.lowResolution } && AiImageContext.asksForImageText(queryText)) {
             val answer = "这张图目前只拿到缩略图，小字看不清，暂时不能准确辨认。"
             if (enabled(settings, self, talker) != null) {
                 submitAnswer(context, self, talker, answer, settings, memory, config, AiCompletion(answer, AiUsage(null, null, null)))
-                images.forEach { image -> image.participant?.let { owner ->
+                if (group) groupMedia.forEach { message -> participant?.let { owner ->
+                    runCatching { memory.rememberMedia(self, talker, owner, message, batch.last().createTime, "",
+                        AiGroupMediaContext.sender(message, self).orEmpty()) }
+                } } else images.forEach { image -> image.participant?.let { owner ->
                     runCatching { memory.rememberImage(self, talker, owner, image.message, batch.last().createTime, "") }
                 } }
             }
@@ -349,18 +433,23 @@ internal object AiChatRuntime {
         }
         val request = mutableListOf(AiInput("system", prompt))
         request += recent
+        request += groupInputs
+        val remainingMedia = if (group) media.filterNot { (_, payload) -> payload in groupPayloads } else media
         current.forEachIndexed { index, (who, text) ->
             val last = index == current.lastIndex
             val promptText = text + if (last) extra else ""
-            val input: Any = if (!last || media.isEmpty()) promptText else JSONArray().apply {
+            val input: Any = if (!last || remainingMedia.isEmpty()) promptText else JSONArray().apply {
                 put(JSONObject().put("type", "text").put("text", promptText + if (batch.none { it.isText() || it.isQuote() }) "\n请根据收到的媒体自然地简短回应。" else ""))
-                media.forEach { put(it.second) }
+                remainingMedia.forEach { put(it.second) }
             }
             request += AiInput("user", input, AiChatHistory.participant(who))
         }
         val imageCount = imagePayloadCount(request)
         val imageRefs = images.joinToString(",") { "${AiChatMedia.messageRef(it.message)}:${it.origin}:${it.mode}" }.ifBlank { "none" }
         runCatching { HLog.i("[Hchat:AI-Image] phase=request images=$imageCount refs=$imageRefs") }
+        if (groupMedia.isNotEmpty()) runCatching {
+            HLog.i("[Hchat:AI-GroupMedia] phase=request refs=${groupMedia.joinToString(",") { "${AiChatMedia.messageRef(it)}:${AiGroupMediaContext.kind(it)?.name}" }} images=$imageCount")
+        }
         status(context, "正在生成回复")
         val completion = try { complete(context, self, requestConfig, AiPurpose.CHAT, request, 256, webResult != null) }
             catch (error: AiRequestException) {
@@ -383,7 +472,11 @@ internal object AiChatRuntime {
         status(context, "模型生成成功，等待微信发送提交")
         if (enabled(settings, self, talker) == null) { status(context, "会话已关闭，未提交回复"); return }
         submitAnswer(context, self, talker, answer, settings, memory, config, completion)
-        images.forEach { image ->
+        if (group) groupMedia.forEach { message -> participant?.let { owner ->
+            runCatching { memory.rememberMedia(self, talker, owner, message, batch.last().createTime, answer,
+                AiGroupMediaContext.sender(message, self).orEmpty()) }
+                .onFailure { runCatching { HLog.i("[Hchat:AI-GroupMedia] phase=association result=store_failed ref=${AiChatMedia.messageRef(message)}") } }
+        } } else images.forEach { image ->
             val owner = image.participant ?: return@forEach
             if (image.mode == "payload" && imageCount == 0) return@forEach
             // A joint answer to multiple images cannot safely be attributed to any one of them.

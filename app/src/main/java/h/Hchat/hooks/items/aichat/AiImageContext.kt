@@ -57,7 +57,7 @@ internal object AiImageContext {
     private fun sameMessage(a: WeChatMessage, b: WeChatMessage): Boolean =
         (a.msgId > 0 && a.msgId == b.msgId) || (a.msgSvrId > 0 && a.msgSvrId == b.msgSvrId)
 
-    private fun related(text: String, elapsed: Long, overlap: Int): Boolean {
+    internal fun related(text: String, elapsed: Long, overlap: Int): Boolean {
         val question = text.trim().take(500)
         val visual = Regex("(?i)图片|照片|相片|画面|图里|图上|看图|\\b(?:image|picture|photo)\\b|刚才.{0,12}看|(?:看到|看见).{0,8}(?:吗|没|呢)")
             .containsMatchIn(question)
@@ -89,7 +89,7 @@ internal object AiImageContext {
         return overlap(question, description) > 0
     }
 
-    private fun overlap(question: String, hint: String): Int {
+    internal fun overlap(question: String, hint: String): Int {
         if (hint.isBlank()) return 0
         val stop = "的一了是在有和与这那你我他她它的呢吗啊呀吧嗯很就还都好可爱漂亮看到只什么怎么颜色照片图片画面"
         val chars = question.filter { it in '\u4e00'..'\u9fff' && it !in stop }.toSet()
