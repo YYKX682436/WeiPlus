@@ -191,7 +191,8 @@ internal class LinkParseRuntime(private val context: FeatureContext) {
         try {
             executor.execute {
                 try {
-                    if (!stopped && (key == null || claims.claim(key, expiry, System.currentTimeMillis()))) {
+                    if (!stopped && settings.allows(match.platform, talker, outgoing) &&
+                        (key == null || claims.claim(key, expiry, System.currentTimeMillis()))) {
                         val queueWaitMs = (SystemClock.elapsedRealtime() - enqueuedAt).coerceAtLeast(0L)
                         process(talker, match, outgoing, enqueuedAt, queueWaitMs)
                     }
@@ -273,6 +274,10 @@ internal class LinkParseRuntime(private val context: FeatureContext) {
             val digestMs = (SystemClock.elapsedRealtime() - digestStart).coerceAtLeast(0L)
             val taskId = nextTaskId.incrementAndGet()
             tracked = fileMd5?.let { registerUpload(talker, UploadKind.VIDEO, it, taskId, enqueuedAt, target) }
+            if (stopped || !settings.allows(match.platform, talker, outgoing)) {
+                tracked?.let(::removeUpload)
+                return
+            }
             val submitStart = SystemClock.elapsedRealtime()
             submitted = if (videos.canSendSilently()) videos.send(talker, target.absolutePath) else {
                 val sender = modern ?: WeChatModernVideoSender(context.dexBridgeHolder(), videos).also { modern = it }
@@ -384,11 +389,16 @@ internal class LinkParseRuntime(private val context: FeatureContext) {
                 if (!allowed()) return
                 val first = segment.indices.first
                 if (items[first].isGif) {
-                    if (!sendGif(emoji, talker, items[first].cover.file, checkNotNull(gifDigests[first]))) return
+                    if (!allowed()) return
+                    if (!sendGif(
+                            emoji, talker, items[first].cover.file, checkNotNull(gifDigests[first]),
+                            match.platform, outgoing
+                        )) return
                     continue
                 }
                 val receipts = ArrayList<GalleryPhotoReceipt>()
                 for (index in segment.indices) {
+                    if (!allowed()) return
                     val item = items[index]
                     val submission = checkNotNull(submissions[index])
                     val receipt = GalleryPhotoReceipt(talker, item.files, SystemClock.elapsedRealtime(), index + 1)
@@ -476,7 +486,15 @@ internal class LinkParseRuntime(private val context: FeatureContext) {
         }
     }
 
-    private fun sendGif(emoji: WeChatEmojiApi, talker: String, file: File, digest: String): Boolean {
+    private fun sendGif(
+        emoji: WeChatEmojiApi,
+        talker: String,
+        file: File,
+        digest: String,
+        platform: WorkLinkMatcher.Platform,
+        outgoing: Boolean
+    ): Boolean {
+        if (stopped || !settings.allows(platform, talker, outgoing)) return false
         val receipt = GifReceipt(talker, digest, System.currentTimeMillis())
         gifReceipt = receipt
         return try {

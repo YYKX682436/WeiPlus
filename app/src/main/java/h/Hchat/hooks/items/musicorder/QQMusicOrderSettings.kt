@@ -2,10 +2,17 @@ package h.Hchat.hooks.items.musicorder
 
 import android.content.Context
 import h.Hchat.preferences.HchatStorage
+import h.Hchat.hooks.items.talkerlist.TalkerListMode
+import h.Hchat.hooks.items.talkerlist.TalkerListPolicy
 import org.json.JSONArray
 
 class QQMusicOrderSettings(context: Context?) {
     private val prefs = context?.let { HchatStorage.preferences(it, PREFS_NAME) }
+    private val lock = prefs ?: Any()
+
+    init {
+        listMode()
+    }
 
     fun isEnabled(): Boolean = boolean(KEY_ENABLE, DEFAULT_ENABLE)
 
@@ -34,10 +41,89 @@ class QQMusicOrderSettings(context: Context?) {
             .ifEmpty { listOf(DEFAULT_TRIGGERS) }
     }
 
-    fun allowedTalkers(): Set<String> = parseStringSet(string(KEY_ALLOWED_TALKERS, ""))
+    internal fun listMode(): TalkerListMode = synchronized(lock) { readListModeLocked() }
 
-    fun saveAllowedTalkers(values: Set<String>) {
-        prefs?.edit()?.putString(KEY_ALLOWED_TALKERS, encodeStringSet(values))?.commit()
+    internal fun saveListMode(mode: TalkerListMode) {
+        synchronized(lock) {
+            prefs?.edit()?.putString(KEY_LIST_MODE, mode.preferenceValue)?.commit()
+        }
+    }
+
+    internal fun talkersFor(mode: TalkerListMode): Set<String> = synchronized(lock) {
+        readTalkersLocked(mode).orEmpty()
+    }
+
+    internal fun isTalkerListValid(mode: TalkerListMode): Boolean = synchronized(lock) {
+        readTalkersLocked(mode) != null
+    }
+
+    internal fun saveTalkers(mode: TalkerListMode, values: Set<String>) {
+        val key = keyFor(mode)
+        synchronized(lock) {
+            prefs?.edit()?.putString(key, encodeStringSet(values))?.commit()
+        }
+    }
+
+    internal fun setTalkerAllowed(talker: String, allowed: Boolean): Boolean = synchronized(lock) {
+        if (!TalkerListPolicy.isValidChatId(talker)) return@synchronized false
+        val mode = readListModeLocked()
+        val current = readTalkersLocked(mode) ?: return@synchronized false
+        val next = TalkerListPolicy.update(mode, current, talker, allowed)
+        prefs?.edit()?.putString(keyFor(mode), encodeStringSet(next))?.commit() ?: false
+    }
+
+    internal fun allows(talker: String, outgoing: Boolean): Boolean = synchronized(lock) {
+        if (!isEnabled() || !TalkerListPolicy.isValidChatId(talker)) return@synchronized false
+        val mode = readListModeLocked()
+        if (outgoing) return@synchronized true
+        val talkers = readTalkersLocked(mode) ?: return@synchronized false
+        TalkerListPolicy.allows(mode, talker, outgoing = false, listedTalkers = talkers)
+    }
+
+    internal fun allowedTalkers(): Set<String> = talkersFor(TalkerListMode.WHITELIST)
+
+    internal fun saveAllowedTalkers(values: Set<String>) {
+        saveTalkers(TalkerListMode.WHITELIST, values)
+    }
+
+    private fun readListModeLocked(): TalkerListMode {
+        val stored = try {
+            prefs?.getString(KEY_LIST_MODE, null)
+        } catch (_: Throwable) {
+            return TalkerListMode.WHITELIST
+        }
+        if (stored != null) {
+            return TalkerListMode.fromPreferenceValue(stored) ?: TalkerListMode.WHITELIST
+        }
+        val inferred = if (hasLegacyConfigurationLocked()) TalkerListMode.WHITELIST else TalkerListMode.BLACKLIST
+        runCatching { prefs?.edit()?.putString(KEY_LIST_MODE, inferred.preferenceValue)?.commit() }
+        return inferred
+    }
+
+    private fun hasLegacyConfigurationLocked(): Boolean = runCatching {
+        prefs?.all?.keys?.any { it in LEGACY_CONFIGURATION_KEYS } == true
+    }.getOrElse { true }
+
+    private fun readTalkersLocked(mode: TalkerListMode): Set<String>? {
+        val raw = try {
+            prefs?.getString(keyFor(mode), if (mode == TalkerListMode.WHITELIST) "" else "[]").orEmpty()
+        } catch (_: Throwable) {
+            return null
+        }
+        if (raw.isBlank()) return emptySet()
+        return runCatching {
+            val array = JSONArray(raw)
+            buildSet {
+                for (index in 0 until array.length()) {
+                    array.optString(index).trim().takeIf(TalkerListPolicy::isValidChatId)?.let(::add)
+                }
+            }
+        }.getOrNull()
+    }
+
+    private fun keyFor(mode: TalkerListMode): String = when (mode) {
+        TalkerListMode.BLACKLIST -> KEY_BLOCKED_TALKERS
+        TalkerListMode.WHITELIST -> KEY_ALLOWED_TALKERS
     }
 
     private fun boolean(key: String, defaultValue: Boolean): Boolean = runCatching {
@@ -61,7 +147,10 @@ class QQMusicOrderSettings(context: Context?) {
         const val KEY_TRIGGERS = "qq_music_order_triggers"
         const val KEY_REPLACE_COVER_WITH_AVATAR = "qq_music_order_replace_cover_with_avatar"
         const val KEY_REPLACE_SINGER_WITH_NICKNAME = "qq_music_order_replace_singer_with_nickname"
+        // Legacy whitelist storage; keep reading and writing it as the whitelist source.
         const val KEY_ALLOWED_TALKERS = "qq_music_order_allowed_talkers"
+        const val KEY_BLOCKED_TALKERS = "qq_music_order_blocked_talkers"
+        const val KEY_LIST_MODE = "qq_music_order_list_mode"
 
         const val DEFAULT_ENABLE = false
         const val DEFAULT_INTERCEPT_OWN_COMMAND = false
@@ -74,6 +163,20 @@ class QQMusicOrderSettings(context: Context?) {
         const val DEFAULT_REPLACE_COVER_WITH_AVATAR = false
         const val DEFAULT_REPLACE_SINGER_WITH_NICKNAME = false
 
+        private val LEGACY_CONFIGURATION_KEYS = setOf(
+            KEY_ENABLE,
+            KEY_INTERCEPT_OWN_COMMAND,
+            KEY_SEND_AS_CARD,
+            KEY_SEND_AS_VOICE,
+            KEY_CUSTOM_SINGER,
+            KEY_DEFAULT_SINGER,
+            KEY_APP_ID,
+            KEY_TRIGGERS,
+            KEY_REPLACE_COVER_WITH_AVATAR,
+            KEY_REPLACE_SINGER_WITH_NICKNAME,
+            KEY_ALLOWED_TALKERS
+        )
+
         @JvmStatic
         fun parseStringSet(value: String?): Set<String> {
             if (value.isNullOrBlank()) return emptySet()
@@ -81,7 +184,7 @@ class QQMusicOrderSettings(context: Context?) {
                 val array = JSONArray(value)
                 buildSet {
                     for (index in 0 until array.length()) {
-                        array.optString(index).trim().takeIf { it.isNotEmpty() }?.let(::add)
+                        array.optString(index).trim().takeIf(TalkerListPolicy::isValidChatId)?.let(::add)
                     }
                 }
             }.getOrDefault(emptySet())
@@ -91,7 +194,7 @@ class QQMusicOrderSettings(context: Context?) {
         fun encodeStringSet(values: Set<String>): String {
             return JSONArray().apply {
                 values.map { it.trim() }
-                    .filter { it.isNotEmpty() }
+                    .filter(TalkerListPolicy::isValidChatId)
                     .distinct()
                     .forEach(::put)
             }.toString()

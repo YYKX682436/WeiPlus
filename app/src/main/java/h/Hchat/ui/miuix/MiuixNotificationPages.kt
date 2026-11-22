@@ -75,6 +75,8 @@ import h.Hchat.hooks.items.miniprogrambaselib.FakeMiniProgramBaseLibSettings
 import h.Hchat.hooks.items.miniprogramsplashad.SkipGlobalMiniProgramSplashAdsSettings
 import h.Hchat.hooks.items.miniprogramvideoad.SkipMiniProgramVideoAdsSettings
 import h.Hchat.hooks.items.musicorder.QQMusicOrderSettings
+import h.Hchat.hooks.items.talkerlist.TalkerListMode
+import h.Hchat.hooks.items.talkerlist.TalkerListPolicy
 import h.Hchat.hooks.items.payment.core.RedPacketSettings
 import h.Hchat.hooks.items.quoteclear.QuoteDeleteClearSettings
 import h.Hchat.hooks.items.roundavatar.RoundAvatarSettings
@@ -1488,7 +1490,9 @@ internal fun QQMusicOrderMiuixPage(
     val settings = remember { QQMusicOrderSettings(context) }
     val sp = remember { HchatStorage.preferences(context, QQMusicOrderSettings.PREFS_NAME) }
     var route by remember { mutableStateOf<QQMusicOrderRoute>(QQMusicOrderRoute.Main) }
-    var allowedTalkers by remember { mutableStateOf(settings.allowedTalkers()) }
+    var listMode by remember { mutableStateOf(settings.listMode()) }
+    var listTalkers by remember { mutableStateOf(settings.talkersFor(listMode)) }
+    var listIsValid by remember { mutableStateOf(settings.isTalkerListValid(listMode)) }
 
     SettingsRouteTransition(
         targetState = route,
@@ -1499,15 +1503,25 @@ internal fun QQMusicOrderMiuixPage(
             QQMusicOrderRoute.Main -> QQMusicOrderMainPage(
                 provider = provider,
                 sp = sp,
-                allowedTalkers = allowedTalkers,
+                listMode = listMode,
+                listTalkers = listTalkers,
+                listIsValid = listIsValid,
                 onBack = onBack,
+                onListModeChanged = { value ->
+                    TalkerListMode.fromPreferenceValue(value)?.let { selectedMode ->
+                        settings.saveListMode(selectedMode)
+                        listMode = selectedMode
+                        listTalkers = settings.talkersFor(selectedMode)
+                        listIsValid = settings.isTalkerListValid(selectedMode)
+                    }
+                },
                 onPickTalkers = {
                     route = QQMusicOrderRoute.ContactPicker(
                         ContactPickerRequest(
-                            title = "允许他人点歌的聊天",
+                            title = listMode.title,
                             mode = ContactPickerMode.BOTH,
                             multiSelect = true,
-                            existingValue = allowedTalkers.joinToString("|"),
+                            existingValue = listTalkers.joinToString("|"),
                             onValue = {},
                             enableLabels = true
                         )
@@ -1519,8 +1533,9 @@ internal fun QQMusicOrderMiuixPage(
                 request = currentRoute.request,
                 onBack = { route = QQMusicOrderRoute.Main },
                 onSelectionChange = { selected ->
-                    allowedTalkers = selected.filter { it.isNotBlank() }.toSet()
-                    settings.saveAllowedTalkers(allowedTalkers)
+                    listTalkers = selected.filter(TalkerListPolicy::isValidChatId).toSet()
+                    settings.saveTalkers(listMode, listTalkers)
+                    listIsValid = settings.isTalkerListValid(listMode)
                 }
             )
         }
@@ -1531,8 +1546,11 @@ internal fun QQMusicOrderMiuixPage(
 private fun QQMusicOrderMainPage(
     provider: FeatureSettingsProvider,
     sp: SharedPreferences,
-    allowedTalkers: Set<String>,
+    listMode: TalkerListMode,
+    listTalkers: Set<String>,
+    listIsValid: Boolean,
     onBack: () -> Unit,
+    onListModeChanged: (String) -> Unit,
     onPickTalkers: () -> Unit
 ) {
     val listState = rememberLazyListState()
@@ -1600,9 +1618,24 @@ private fun QQMusicOrderMainPage(
                         QQMusicOrderSettings.DEFAULT_SEND_AS_VOICE
                     )
                     InsetDivider()
+                    PopupChoiceRow(
+                        title = "名单模式",
+                        summary = if (listMode == TalkerListMode.BLACKLIST) {
+                            "默认允许所有有效聊天，名单中的聊天禁止他人使用"
+                        } else {
+                            "仅允许名单中的聊天使用，其他聊天禁止"
+                        },
+                        options = listOf(
+                            PopupChoice("黑名单", TalkerListMode.BLACKLIST.preferenceValue),
+                            PopupChoice("白名单", TalkerListMode.WHITELIST.preferenceValue)
+                        ),
+                        currentValue = listMode.preferenceValue,
+                        onValueChanged = onListModeChanged
+                    )
+                    InsetDivider()
                     ActionRow(
-                        "允许他人点歌的聊天",
-                        if (allowedTalkers.isEmpty()) "未选择" else "已选 ${allowedTalkers.size} 个聊天",
+                        listMode.title,
+                        talkerListSummary(listMode, listTalkers.size, listIsValid),
                         onPickTalkers
                     )
                 }
@@ -1659,6 +1692,13 @@ private fun QQMusicOrderMainPage(
             }
         }
     }
+}
+
+private fun talkerListSummary(mode: TalkerListMode, count: Int, isValid: Boolean): String = when {
+    !isValid -> "名单配置异常，当前已拒绝他人使用 · $count 个聊天"
+    count > 0 -> "名单内 $count 个聊天"
+    mode == TalkerListMode.BLACKLIST -> "所有聊天均可使用 · 0 个聊天"
+    else -> "尚未允许任何聊天 · 0 个聊天"
 }
 
 @Composable

@@ -5,6 +5,7 @@ import android.media.MediaMetadataRetriever
 import h.Hchat.hooks.api.core.WeChatApis
 import h.Hchat.hooks.api.message.WeChatMessageChangeApi
 import h.Hchat.hooks.items.sendbutton.NativeSendButtonHook
+import h.Hchat.hooks.items.talkerlist.TalkerListPolicy
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -39,7 +40,7 @@ internal class QQMusicOrderRuntime(
     private fun onSendButton(text: String): Boolean {
         if (!settings.isEnabled()) return false
         val talker = WeChatApis.interaction().chatPage()?.currentTalker().orEmpty()
-        if (talker.isBlank()) return false
+        if (!TalkerListPolicy.isValidChatId(talker)) return false
         when (text.trim()) {
             ENABLE_CURRENT_CHAT_COMMAND -> {
                 setCurrentChatAllowed(talker, true)
@@ -52,19 +53,17 @@ internal class QQMusicOrderRuntime(
         }
         if (!settings.interceptOwnCommand()) return false
         val command = parseCommand(text) ?: return false
-        submit(talker, 0L, WeChatApis.contact().account()?.selfWxId().orEmpty(), command)
+        submit(talker, 0L, WeChatApis.contact().account()?.selfWxId().orEmpty(), command, outgoing = true)
         return true
     }
 
     private fun setCurrentChatAllowed(talker: String, allowed: Boolean) {
-        val next = settings.allowedTalkers().toMutableSet().apply {
-            if (allowed) add(talker) else remove(talker)
-        }
-        settings.saveAllowedTalkers(next)
-        val content = if (allowed) {
+        settings.setTalkerAllowed(talker, allowed)
+        val isAllowed = settings.allows(talker, outgoing = false)
+        val content = if (isAllowed) {
             "该聊天点歌开关已开启，其他人可以点歌了"
         } else {
-            "该聊天点歌开关已关闭，只有你能点歌了"
+            "该聊天点歌开关已关闭，其他人不能点歌了"
         }
         WeChatApis.message().local()?.insertSystemMessage(talker, content, System.currentTimeMillis())
     }
@@ -78,43 +77,47 @@ internal class QQMusicOrderRuntime(
         if (createTime > 0L && System.currentTimeMillis() - normalizeTime(createTime) >= MESSAGE_MAX_AGE_MS) return
         val talker = message.talker
         if (talker.isBlank()) return
-        if (!message.isOutgoing() && !settings.allowedTalkers().contains(talker)) return
+        val outgoing = message.isOutgoing()
+        if (!settings.allows(talker, outgoing)) return
         val content = normalizeContent(message.content, message.isGroupChat())
         val command = parseCommand(content) ?: return
-        val sender = if (message.isOutgoing()) {
+        val sender = if (outgoing) {
             WeChatApis.contact().account()?.selfWxId().orEmpty()
         } else {
             message.getSendTalker()
         }
-        submit(talker, message.msgId, sender, command)
+        submit(talker, message.msgId, sender, command, outgoing)
     }
 
-    private fun submit(talker: String, msgId: Long, sender: String, command: MusicCommand) {
+    private fun submit(talker: String, msgId: Long, sender: String, command: MusicCommand, outgoing: Boolean) {
         executor.execute {
-            runCatching { process(talker, msgId, sender, command) }
+            if (!canRespond(talker, outgoing)) return@execute
+            runCatching { process(talker, msgId, sender, command, outgoing) }
                 .onFailure {
                     logError("QQ点歌处理异常", it)
-                    sendReply(talker, msgId, "处理失败")
+                    sendReplyIfAllowed(talker, msgId, "处理失败", outgoing)
                 }
         }
     }
 
-    private fun process(talker: String, msgId: Long, sender: String, command: MusicCommand) {
+    private fun process(talker: String, msgId: Long, sender: String, command: MusicCommand, outgoing: Boolean) {
+        if (!canRespond(talker, outgoing)) return
         val track = when (val result = client.search(command.keyword)) {
             is QQMusicSearchResult.Success -> result.track
             QQMusicSearchResult.NotFound -> {
-                sendReply(talker, msgId, "未搜到")
+                sendReplyIfAllowed(talker, msgId, "未搜到", outgoing)
                 return
             }
             QQMusicSearchResult.Unavailable -> {
-                sendReply(talker, msgId, "获取失败，可能是版权限制或数字专辑")
+                sendReplyIfAllowed(talker, msgId, "获取失败，可能是版权限制或数字专辑", outgoing)
                 return
             }
         }
+        if (!canRespond(talker, outgoing)) return
         val sendCard = settings.sendAsCard()
         val sendVoice = settings.sendAsVoice()
         if (!sendCard && !sendVoice) {
-            sendReply(talker, msgId, "请至少开启音乐卡片或歌曲语音发送")
+            sendReplyIfAllowed(talker, msgId, "请至少开启音乐卡片或歌曲语音发送", outgoing)
             return
         }
         val sentCard = if (sendCard) {
@@ -125,6 +128,7 @@ internal class QQMusicOrderRuntime(
                 track.coverUrl
             }
             val thumbData = downloadThumb(albumUrl.replace("R500x500", "R300x300"))
+            if (!canRespond(talker, outgoing)) return
             WeChatApis.interaction().media()?.shareMusicWithMetadata(
                 talker,
                 track.title,
@@ -140,19 +144,20 @@ internal class QQMusicOrderRuntime(
             null
         }
         val sentVoice = if (sendVoice) {
-            sendTrackAsVoice(talker, track)
+            sendTrackAsVoice(talker, track, outgoing)
         } else {
             null
         }
         when {
             sentCard != false && sentVoice != false -> Unit
-            sentCard == false && sentVoice == false -> sendReply(talker, msgId, "音乐卡片和歌曲语音发送失败")
-            sentCard == false -> sendReply(talker, msgId, "音乐卡片发送失败")
-            sentVoice == false -> sendReply(talker, msgId, "歌曲语音发送失败")
+            sentCard == false && sentVoice == false -> sendReplyIfAllowed(talker, msgId, "音乐卡片和歌曲语音发送失败", outgoing)
+            sentCard == false -> sendReplyIfAllowed(talker, msgId, "音乐卡片发送失败", outgoing)
+            sentVoice == false -> sendReplyIfAllowed(talker, msgId, "歌曲语音发送失败", outgoing)
         }
     }
 
-    private fun sendTrackAsVoice(talker: String, track: QQMusicTrack): Boolean {
+    private fun sendTrackAsVoice(talker: String, track: QQMusicTrack, outgoing: Boolean): Boolean {
+        if (!canRespond(talker, outgoing)) return false
         val voiceApi = WeChatApis.media()?.voices()
         if (voiceApi == null || !voiceApi.canSendSilently()) {
             return false
@@ -164,7 +169,7 @@ internal class QQMusicOrderRuntime(
         val target = File(cacheDir, "qq_music_${System.currentTimeMillis()}_${System.nanoTime()}${audioSuffix(track.playUrl)}")
         val part = File(target.absolutePath + ".part")
         return try {
-            downloadAudio(track.playUrl, part, target) &&
+            downloadAudio(track.playUrl, part, target) && canRespond(talker, outgoing) &&
                 voiceApi.send(talker, target.absolutePath)
         } finally {
             deleteFile(part)
@@ -210,6 +215,13 @@ internal class QQMusicOrderRuntime(
         if (msgId > 0L && sender.sendQuote(talker, msgId, content)) return
         sender.sendText(talker, content)
     }
+
+    private fun sendReplyIfAllowed(talker: String, msgId: Long, content: String, outgoing: Boolean) {
+        if (canRespond(talker, outgoing)) sendReply(talker, msgId, content)
+    }
+
+    private fun canRespond(talker: String, outgoing: Boolean): Boolean =
+        settings.isEnabled() && settings.allows(talker, outgoing)
 
     private fun normalizeContent(content: String, group: Boolean): String {
         if (!group) return content.trim()

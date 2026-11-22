@@ -106,6 +106,8 @@ import h.Hchat.hooks.items.moments.MomentsPostNotificationSettings
 import h.Hchat.hooks.items.moments.RemoveMomentsAdsSettings
 import h.Hchat.hooks.items.momentsfake.MomentsFakeInteractionSettings
 import h.Hchat.hooks.items.multirecall.MultiRecallSettings
+import h.Hchat.hooks.items.linkparse.LinkParseSettings
+import h.Hchat.hooks.items.musicorder.QQMusicOrderSettings
 import h.Hchat.hooks.items.payment.core.RedPacketSettings
 import h.Hchat.hooks.items.payment.fakebalance.FakeWalletBalanceSettings
 import h.Hchat.hooks.items.payment.transfer.AutoTransferSettings
@@ -2109,6 +2111,8 @@ internal object HchatConfigBackup {
         InputHintSettings.PREFS_NAME,
         AutoOriginalImageSettings.PREFS_NAME,
         AutoViewOriginalSettings.PREFS_NAME,
+        QQMusicOrderSettings.PREFS_NAME,
+        LinkParseSettings.PREFS_NAME,
         KeywordNotificationSettings.PREFS_NAME,
         ZombieCheckSettings.PREFS_NAME,
         BackgroundRunAssistSettings.PREFS_NAME,

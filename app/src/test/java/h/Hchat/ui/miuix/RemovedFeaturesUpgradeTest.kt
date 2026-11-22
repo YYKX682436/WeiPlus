@@ -11,6 +11,9 @@ import h.Hchat.hooks.items.autoreply.AutoReplySettings
 import h.Hchat.hooks.items.autoreply.AutoReplyStep
 import h.Hchat.hooks.items.customnotify.CustomNotificationSettings
 import h.Hchat.hooks.items.keywordnotify.KeywordNotificationSettings
+import h.Hchat.hooks.items.linkparse.LinkParseSettings
+import h.Hchat.hooks.items.musicorder.QQMusicOrderSettings
+import h.Hchat.hooks.items.talkerlist.TalkerListMode
 import h.Hchat.preferences.HchatStorage
 import org.json.JSONObject
 import org.junit.Assert.*
@@ -52,6 +55,48 @@ class RemovedFeaturesUpgradeTest {
         assertFalse(AutoReplySettings.isAiReplyMode(11))
         assertFalse(AutoReplySettings.isAiReplyMode(12))
         assertTrue(AutoReplySettings.isAiReplyMode(AutoReplySettings.REPLY_ZHILIA_AI))
+    }
+
+    @Test fun chatPermissionModesAndBothListsRoundTripThroughConfigBackup() {
+        val qqPrefs = HchatStorage.preferences(context, QQMusicOrderSettings.PREFS_NAME)
+        val linkPrefs = HchatStorage.preferences(context, LinkParseSettings.PREFS_NAME)
+        qqPrefs.edit().clear().commit()
+        linkPrefs.edit().clear().commit()
+        val qq = QQMusicOrderSettings(context)
+        val link = LinkParseSettings(context)
+        qq.saveTalkers(TalkerListMode.BLACKLIST, setOf("qq-blocked"))
+        qq.saveTalkers(TalkerListMode.WHITELIST, setOf("qq-allowed"))
+        qq.saveListMode(TalkerListMode.WHITELIST)
+        link.saveTalkers(TalkerListMode.BLACKLIST, setOf("link-blocked@chatroom"))
+        link.saveTalkers(TalkerListMode.WHITELIST, setOf("link-allowed@chatroom"))
+        link.saveListMode(TalkerListMode.BLACKLIST)
+
+        val file = tempFile("talker-list-config.json")
+        try {
+            assertTrue(HchatConfigBackup.exportToUri(context, Uri.fromFile(file)) > 0)
+            val exportedPrefs = JSONObject(file.readText()).getJSONObject("prefs")
+            assertTrue(exportedPrefs.getJSONObject(QQMusicOrderSettings.PREFS_NAME).has(QQMusicOrderSettings.KEY_LIST_MODE))
+            assertTrue(exportedPrefs.getJSONObject(QQMusicOrderSettings.PREFS_NAME).has(QQMusicOrderSettings.KEY_BLOCKED_TALKERS))
+            assertTrue(exportedPrefs.getJSONObject(LinkParseSettings.PREFS_NAME).has(LinkParseSettings.KEY_LIST_MODE))
+            assertTrue(exportedPrefs.getJSONObject(LinkParseSettings.PREFS_NAME).has(LinkParseSettings.KEY_BLOCKED_TALKERS))
+
+            qqPrefs.edit().clear().commit()
+            linkPrefs.edit().clear().commit()
+            assertTrue(HchatConfigBackup.importFromUri(context, Uri.fromFile(file)) > 0)
+
+            val restoredQq = QQMusicOrderSettings(context)
+            val restoredLink = LinkParseSettings(context)
+            assertEquals(TalkerListMode.WHITELIST, restoredQq.listMode())
+            assertEquals(setOf("qq-blocked"), restoredQq.talkersFor(TalkerListMode.BLACKLIST))
+            assertEquals(setOf("qq-allowed"), restoredQq.talkersFor(TalkerListMode.WHITELIST))
+            assertEquals(TalkerListMode.BLACKLIST, restoredLink.listMode())
+            assertEquals(setOf("link-blocked@chatroom"), restoredLink.talkersFor(TalkerListMode.BLACKLIST))
+            assertEquals(setOf("link-allowed@chatroom"), restoredLink.talkersFor(TalkerListMode.WHITELIST))
+        } finally {
+            file.delete()
+            qqPrefs.edit().clear().commit()
+            linkPrefs.edit().clear().commit()
+        }
     }
 
     @Test fun deletingLegacyStepsNeverCreatesAnUnrequestedTextReply() {

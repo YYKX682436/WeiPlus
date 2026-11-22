@@ -1,5 +1,6 @@
 package h.Hchat.hooks.items.linkparse
 
+import h.Hchat.hooks.items.talkerlist.TalkerListMode
 import h.Hchat.preferences.HchatStorage
 import org.junit.Assert.*
 import org.junit.Test
@@ -11,28 +12,127 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
 class LinkParseSettingsTest {
-    @Test fun ownMessagesBypassWhitelistAndOtherMessagesUseTheSameRuleInGroupsAndPrivateChats() {
-        val context = RuntimeEnvironment.getApplication()
-        val prefs = HchatStorage.preferences(context, LinkParseSettings.PREFS_NAME)
+    private val context get() = RuntimeEnvironment.getApplication()
+    private val prefs get() = HchatStorage.preferences(context, LinkParseSettings.PREFS_NAME)
+    private val dy get() = WorkLinkMatcher.Platform.DOUYIN
+    private val xhs get() = WorkLinkMatcher.Platform.XIAOHONGSHU
+
+    private fun freshSettings(): LinkParseSettings {
         prefs.edit().clear().commit()
+        return LinkParseSettings(context)
+    }
+
+    private fun enableDouyin() {
+        prefs.edit()
+            .putBoolean(LinkParseSettings.KEY_ENABLE, true)
+            .putBoolean(LinkParseSettings.KEY_DOUYIN, true)
+            .commit()
+    }
+
+    @Test fun freshConfigurationDefaultsToOpenBlacklistForFriendsAndGroups() {
+        val settings = freshSettings()
+        enableDouyin()
+
+        assertEquals(TalkerListMode.BLACKLIST, settings.listMode())
+        assertTrue(settings.allows(dy, "new-friend", outgoing = false))
+        assertTrue(settings.allows(dy, "new-group@chatroom", outgoing = false))
+        assertEquals(emptySet<String>(), settings.talkersFor(TalkerListMode.BLACKLIST))
+    }
+
+    @Test fun blacklistBlocksListedFriendsAndWholeGroups() {
+        val settings = freshSettings()
+        enableDouyin()
+        settings.saveTalkers(TalkerListMode.BLACKLIST, setOf("blocked-friend", "blocked-group@chatroom"))
+
+        assertFalse(settings.allows(dy, "blocked-friend", outgoing = false))
+        assertFalse(settings.allows(dy, "blocked-group@chatroom", outgoing = false))
+        assertTrue(settings.allows(dy, "other-friend", outgoing = false))
+        assertTrue(settings.allows(dy, "other-group@chatroom", outgoing = false))
+    }
+
+    @Test fun whitelistOnlyAllowsListedFriendsAndGroups() {
+        val settings = freshSettings()
+        enableDouyin()
+        settings.saveTalkers(TalkerListMode.WHITELIST, setOf("allowed-friend", "allowed-group@chatroom"))
+        settings.saveListMode(TalkerListMode.WHITELIST)
+
+        assertTrue(settings.allows(dy, "allowed-friend", outgoing = false))
+        assertTrue(settings.allows(dy, "allowed-group@chatroom", outgoing = false))
+        assertFalse(settings.allows(dy, "other-friend", outgoing = false))
+        assertFalse(settings.allows(dy, "other-group@chatroom", outgoing = false))
+        assertTrue(settings.allows(dy, "other-friend", outgoing = true))
+    }
+
+    @Test fun switchingModesKeepsBothIndependentLists() {
+        val settings = freshSettings()
+        enableDouyin()
+        settings.saveTalkers(TalkerListMode.BLACKLIST, setOf("black-id"))
+        settings.saveTalkers(TalkerListMode.WHITELIST, setOf("white-id"))
+
+        settings.saveListMode(TalkerListMode.WHITELIST)
+        assertFalse(settings.allows(dy, "black-id", outgoing = false))
+        assertTrue(settings.allows(dy, "white-id", outgoing = false))
+        settings.saveListMode(TalkerListMode.BLACKLIST)
+        assertFalse(settings.allows(dy, "black-id", outgoing = false))
+        assertTrue(settings.allows(dy, "white-id", outgoing = false))
+    }
+
+    @Test fun legacyAllowedTalkersUpgradeToWhitelistWithoutChangingBehavior() {
+        prefs.edit().clear()
+            .putBoolean(LinkParseSettings.KEY_ENABLE, true)
+            .putBoolean(LinkParseSettings.KEY_DOUYIN, true)
+            .putString(LinkParseSettings.KEY_ALLOWED_TALKERS, "[\"legacy-friend\",\"legacy-group@chatroom\"]")
+            .commit()
         val settings = LinkParseSettings(context)
-        val dy = WorkLinkMatcher.Platform.DOUYIN
-        val allowedChats = listOf("friend-id", "group-id@chatroom")
-        val otherChats = listOf("other-friend", "other-group@chatroom")
-        assertFalse(settings.allows(dy, otherChats.first(), outgoing = true))
-        prefs.edit().putBoolean(LinkParseSettings.KEY_ENABLE, true).putBoolean(LinkParseSettings.KEY_DOUYIN, true).commit()
-        assertFalse(settings.allows(dy, allowedChats.first(), outgoing = false))
-        settings.saveAllowedTalkers(allowedChats.toSet())
-        for (chat in allowedChats) {
-            assertTrue(settings.allows(dy, chat, outgoing = false))
-            assertFalse(settings.allows(WorkLinkMatcher.Platform.XIAOHONGSHU, chat, outgoing = false))
+
+        assertEquals(TalkerListMode.WHITELIST, settings.listMode())
+        assertTrue(settings.allows(dy, "legacy-friend", outgoing = false))
+        assertTrue(settings.allows(dy, "legacy-group@chatroom", outgoing = false))
+        assertFalse(settings.allows(dy, "new-friend", outgoing = false))
+    }
+
+    @Test fun featureAndPlatformSwitchesRemainHighestPriority() {
+        val settings = freshSettings()
+        prefs.edit().putBoolean(LinkParseSettings.KEY_ENABLE, true).commit()
+        settings.saveListMode(TalkerListMode.BLACKLIST)
+
+        assertFalse(settings.allows(dy, "friend-id", outgoing = false))
+        assertFalse(settings.allows(dy, "friend-id", outgoing = true))
+        prefs.edit().putBoolean(LinkParseSettings.KEY_DOUYIN, true).commit()
+        assertTrue(settings.allows(dy, "friend-id", outgoing = false))
+        assertFalse(settings.allows(xhs, "friend-id", outgoing = false))
+        prefs.edit().putBoolean(LinkParseSettings.KEY_ENABLE, false).commit()
+        assertFalse(settings.allows(dy, "friend-id", outgoing = true))
+    }
+
+    @Test fun sameSettingsInstanceAppliesChangesImmediatelyAndOutgoingKeepsItsRule() {
+        val settings = freshSettings()
+        enableDouyin()
+        assertTrue(settings.allows(dy, "immediate-id", outgoing = false))
+
+        settings.saveTalkers(TalkerListMode.BLACKLIST, setOf("immediate-id"))
+        assertFalse(settings.allows(dy, "immediate-id", outgoing = false))
+        assertTrue(settings.allows(dy, "immediate-id", outgoing = true))
+        settings.saveListMode(TalkerListMode.WHITELIST)
+        assertFalse(settings.allows(dy, "immediate-id", outgoing = false))
+        settings.saveTalkers(TalkerListMode.WHITELIST, setOf("immediate-id"))
+        assertTrue(settings.allows(dy, "immediate-id", outgoing = false))
+    }
+
+    @Test fun invalidIdsMalformedListsAndUnknownModesFailClosedForOthers() {
+        val settings = freshSettings()
+        enableDouyin()
+
+        listOf("", "   ", " friend-id", "friend-id\n").forEach { invalid ->
+            assertFalse("Expected invalid ID to be denied: $invalid", settings.allows(dy, invalid, outgoing = false))
         }
-        for (chat in otherChats) {
-            assertFalse(settings.allows(dy, chat, outgoing = false))
-            assertTrue(settings.allows(dy, chat, outgoing = true))
-            assertFalse(settings.allows(WorkLinkMatcher.Platform.XIAOHONGSHU, chat, outgoing = true))
-        }
-        assertFalse(settings.allows(dy, "", outgoing = false))
-        prefs.edit().clear().commit()
+        prefs.edit().putString(LinkParseSettings.KEY_BLOCKED_TALKERS, "not-json").commit()
+        assertFalse(settings.isTalkerListValid(TalkerListMode.BLACKLIST))
+        assertFalse(settings.allows(dy, "ordinary-friend", outgoing = false))
+
+        prefs.edit().putString(LinkParseSettings.KEY_BLOCKED_TALKERS, "[]")
+            .putString(LinkParseSettings.KEY_LIST_MODE, "future-mode").commit()
+        assertEquals(TalkerListMode.WHITELIST, settings.listMode())
+        assertFalse(settings.allows(dy, "ordinary-friend", outgoing = false))
     }
 }
