@@ -31,7 +31,7 @@ internal object AiChatClient {
     fun fetchModels(config: AiChatConfig): List<AiModel> {
         val base = config.endpoint()
         if (base.isBlank()) throw AiRequestException("请填写 API 地址")
-        val url = base.removeSuffix("/chat/completions").removeSuffix("/models") + "/models"
+        val url = base.removeSuffix(AI_OPENAI_CHAT_PATH).removeSuffix("/models") + "/models"
         val request = request(config, url).get().build()
         val body = execute(request, config.provider, false)
         return parseModels(body, config.provider)
@@ -43,7 +43,7 @@ internal object AiChatClient {
             throw AiRequestException("请先填写 API Key、地址和模型")
         }
         if (purpose == AiPurpose.CHAT && config.webSearch && !supportsWebSearch(config)) throw AiRequestException("当前模型不支持官方联网搜索")
-        val path = if (config.provider == AiProvider.CUSTOM) config.chatPath.trim().ifBlank { "/chat/completions" }
+        val path = if (config.provider == AiProvider.CUSTOM) config.chatPath.trim().ifBlank { AI_OPENAI_CHAT_PATH }
             else "/chat/completions"
         val url = config.endpoint() + if (path.startsWith('/')) path else "/$path"
         val request = request(config, url).post(requestBody(config, messages, maxOutput, purpose).toString().toRequestBody(jsonType)).build()

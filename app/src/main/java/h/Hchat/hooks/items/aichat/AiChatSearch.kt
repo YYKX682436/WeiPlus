@@ -16,17 +16,43 @@ internal object AiChatSearch {
     private data class Cached(val time: Long, val result: AiSearchResult)
     private val cache = LinkedHashMap<String, Cached>()
     private val json = "application/json; charset=utf-8".toMediaType()
+    private const val SEARCH_PREFIX = "(?:请|麻烦|帮我|帮忙|你帮我|你|可以|能否|能不能|请帮我)"
+    private const val SEARCH_NETWORK = "(?:在|到)?(?:网上|网络上|互联网|联网|上网)"
+    private const val SEARCH_VERB = "(?:搜索|搜|查询|查找|查|找)(?:一下|一查|一搜|下)?"
+    private val hashCommand = Regex("(?i)[#＃](?:搜索|search)")
+    private val hashQuery = Regex("(?i)[#＃](?:搜索|search)\\s*([^\\n]+)")
+    private val requestedSearchCommand = Regex("(?i)$SEARCH_PREFIX[^\\n]{0,8}?$SEARCH_VERB")
+    private val networkSearchCommand = Regex("(?i)$SEARCH_NETWORK\\s*(?:使用|用)?\\s*$SEARCH_VERB")
+    private val leadingSearchCommand = Regex("(?i)^\\s*$SEARCH_VERB")
+    private val requestedSearch = Regex("(?i)$SEARCH_PREFIX[^\\n]{0,8}?$SEARCH_VERB\\s*(?:[：:，,]\\s*)?(.+)")
+    private val networkSearch = Regex("(?i)$SEARCH_NETWORK\\s*(?:使用|用)?\\s*$SEARCH_VERB\\s*(?:[：:，,]\\s*)?(.+)")
+    private val leadingSearch = Regex("(?i)^\\s*$SEARCH_VERB\\s*(?:[：:，,]\\s*)?(.+)")
 
-    fun query(text: String): String? {
+    fun query(text: String, allowKnowledge: Boolean = true): String? {
         val input = text.trim()
-        val explicit = Regex("(?i)(?:^|[\\s\\u2005])#(?:搜索|search)[\\s\\u2005]+([^\\n]+)").find(input)?.groupValues?.get(1)?.trim()
-        if (!explicit.isNullOrBlank()) return explicit.take(400)
+        val hash = hashQuery.find(input)?.groupValues?.get(1)?.trim()
+            ?.replace(Regex("^(?:一下|一搜|一查)\\s*"), "")
+        if (!hash.isNullOrBlank()) return cleanQuery(hash)
+        val spoken = listOf(requestedSearch, networkSearch, leadingSearch)
+            .firstNotNullOfOrNull { it.find(input)?.groupValues?.get(1)?.trim() }
+        if (!spoken.isNullOrBlank()) return cleanQuery(spoken)
+        if (!allowKnowledge) return null
         val time = "(?:最新|实时|现在|今日|今天|近期|本周|最近|当下|current|latest|today|right now)"
-        val subject = "(?:新闻|价格|股价|汇率|天气|比赛|比分|政策|公告|事件|票价|price|news|weather|score|exchange rate)"
-        return input.take(400).takeIf { Regex("(?i)(?:$time.{0,30}$subject|$subject.{0,30}$time)").containsMatchIn(it) }
+        val currentSubjects = "(?:新闻|价格|股价|汇率|天气|比赛|比分|政策|公告|事件|票价|price|news|weather|score|exchange rate)"
+        val currentInfo = Regex("(?i)(?:$time.{0,30}$currentSubjects|$currentSubjects.{0,30}$time)")
+        val knowledgeQuestion = Regex("(?i)(?:知不知道|你知道|知道.{0,20}(?:吗|么|不)|听说过|了解.{0,15}(?:吗|不)|是什么|是啥|什么来头|谁是|是谁|什么型号|哪个型号|什么公司|哪家公司)")
+        val knowledgeMatch = knowledgeQuestion.find(input)
+        val knowledgeSubject = knowledgeMatch?.let { match ->
+            input.removeRange(match.range).replace(Regex("你们|我们|你|我|这个|那个|这|那|吗|呢|呀|什么"), "")
+                .filter { it.isLetterOrDigit() || it.code in 0x4e00..0x9fff }
+        }.orEmpty()
+        return input.take(400).takeIf { currentInfo.containsMatchIn(it) || knowledgeSubject.length >= 2 }
     }
 
-    fun isExplicit(text: String): Boolean = Regex("(?i)(?:^|[\\s\\u2005])#(?:搜索|search)(?:[\\s\\u2005]|$)").containsMatchIn(text)
+    fun isExplicit(text: String): Boolean = hashCommand.containsMatchIn(text) || requestedSearchCommand.containsMatchIn(text) ||
+        networkSearchCommand.containsMatchIn(text) || leadingSearchCommand.containsMatchIn(text)
+
+    private fun cleanQuery(query: String): String = query.trim().trimStart(' ', ':', '：', ',', '，', '。').take(400)
 
     fun requestBody(query: String): JSONObject = JSONObject().put("query", query).put("search_depth", "basic")
         .put("max_results", 4).put("include_answer", false).put("include_raw_content", false)

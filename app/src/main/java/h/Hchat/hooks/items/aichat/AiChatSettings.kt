@@ -8,6 +8,8 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
 
+internal const val AI_OPENAI_CHAT_PATH = "/chat/completions"
+
 internal enum class AiProvider { DEEPSEEK, MIMO, CUSTOM }
 
 internal data class AiModel(
@@ -23,7 +25,7 @@ internal data class AiChatConfig(
     val provider: AiProvider = AiProvider.DEEPSEEK,
     val apiKey: String = "",
     val baseUrl: String = "",
-    val chatPath: String = "/chat/completions",
+    val chatPath: String = AI_OPENAI_CHAT_PATH,
     val model: String = "",
     val image: Boolean = false,
     val audio: Boolean = false,
@@ -269,7 +271,7 @@ internal class AiChatSettings(context: Context) {
                 val models = o.optJSONArray("models") ?: JSONArray()
                 AiChatConfig(id = o.optString("id"), name = o.optString("name"),
                     provider = runCatching { AiProvider.valueOf(o.optString("provider")) }.getOrDefault(AiProvider.CUSTOM),
-                    apiKey = o.optString("key"), baseUrl = o.optString("base"), chatPath = o.optString("path", "/chat/completions"),
+                    apiKey = o.optString("key"), baseUrl = o.optString("base"), chatPath = o.optString("path", AI_OPENAI_CHAT_PATH),
                     model = o.optString("model"), image = o.optBoolean("image"), audio = o.optBoolean("audio"), video = o.optBoolean("video"), webSearch = o.optBoolean("webSearch"),
                     models = (0 until models.length()).mapNotNull { n -> models.optJSONObject(n)?.let { m ->
                         val modalities = m.optJSONArray("modalities") ?: JSONArray()

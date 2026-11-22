@@ -68,6 +68,7 @@ internal fun AiChatMiuixPage(context: Context, provider: FeatureSettingsProvider
     var preferencesVersion by remember { mutableStateOf(0) }
     var showModels by remember { mutableStateOf(false) }
     var modelRefresh by remember { mutableStateOf(0) }
+    var showCustomChatPath by remember(draft.id) { mutableStateOf(draft.chatPath.trim().trim('/') !in setOf("chat/completions", "")) }
     var showSearchFee by remember { mutableStateOf(false) }
     var searchEnabled by remember { mutableStateOf(prefs.getBoolean(AiChatSettings.KEY_SEARCH_ENABLED, false)) }
     var searchSource by remember { mutableStateOf(prefs.getString(AiChatSettings.KEY_SEARCH_SOURCE, AiChatSettings.SEARCH_TAVILY).orEmpty()) }
@@ -212,7 +213,7 @@ internal fun AiChatMiuixPage(context: Context, provider: FeatureSettingsProvider
                             item { SettingsCard {
                                 InputRow("AI 引用小尾巴", "", tail) { tail = it; prefs.edit().putString(AiChatSettings.KEY_TAIL, it).apply() }
                                 InsetDivider()
-                                ActionRow("联网搜索", if (!searchEnabled) "已关闭" else if (searchSource == AiChatSettings.SEARCH_OFFICIAL) "官方搜索 · 可能额外收费" else "Tavily · 按需搜索") { route = "search" }
+                                ActionRow("联网搜索", if (!searchEnabled) "已关闭" else if (searchSource == AiChatSettings.SEARCH_OFFICIAL && configs.firstOrNull { it.id == active }?.provider == AiProvider.CUSTOM && tavilyKey.isNotBlank()) "Tavily · 当前中转站不支持官方搜索" else if (searchSource == AiChatSettings.SEARCH_OFFICIAL) "官方搜索 · 可能额外收费" else "Tavily · 按需搜索") { route = "search" }
                                 InsetDivider()
                                 InfoRow("最近状态", latestStatus)
                                 InsetDivider()
@@ -241,8 +242,14 @@ internal fun AiChatMiuixPage(context: Context, provider: FeatureSettingsProvider
                                 InputRow("API Key", "", draft.apiKey) { updateDraft(draft.copy(apiKey = it.trim())) }; InsetDivider()
                                 if (draft.provider == AiProvider.CUSTOM) {
                                     InputRow("API 地址", "例如 https://example.com/v1", draft.baseUrl) { updateDraft(draft.copy(baseUrl = it.trim())) }; InsetDivider()
-                                    InputRow("接口路径", "默认 /chat/completions", draft.chatPath) { updateDraft(draft.copy(chatPath = it.trim())) }; InsetDivider()
-                                    InputRow("模型", "可手动填写", draft.model) { updateDraft(draft.copy(model = it.trim())) }; InsetDivider()
+                                    InfoRow("接口协议", "OpenAI 兼容 · /chat/completions"); InsetDivider()
+                                    if (showCustomChatPath) {
+                                        InputRow("自定义接口路径", "默认 /chat/completions", draft.chatPath) { updateDraft(draft.copy(chatPath = it.trim())) }
+                                        ContentActionRow("恢复 OpenAI 默认接口") { showCustomChatPath = false; updateDraft(draft.copy(chatPath = AI_OPENAI_CHAT_PATH)) }
+                                    } else {
+                                        ContentActionRow("自定义接口路径") { showCustomChatPath = true }
+                                    }
+                                    InsetDivider()
                                     SwitchRow(draft.image, "图片能力", "由中转站实际支持情况决定") { updateDraft(draft.copy(image = it)) }; InsetDivider()
                                     SwitchRow(draft.audio, "原生音频能力", "由中转站实际支持情况决定") { updateDraft(draft.copy(audio = it)) }; InsetDivider()
                                     SwitchRow(draft.video, "视频能力", "由中转站实际支持情况决定") { updateDraft(draft.copy(video = it)) }; InsetDivider()
@@ -280,7 +287,7 @@ internal fun AiChatMiuixPage(context: Context, provider: FeatureSettingsProvider
                         }
                         "search" -> {
                             item { SettingsCard {
-                                SwitchRow(searchEnabled, "联网搜索", "仅在需要当前信息或使用 #搜索 时调用") {
+                                SwitchRow(searchEnabled, "联网搜索", "最新信息自动搜索；也可说“帮我搜一下…”或用 #搜索") {
                                     searchEnabled = it; prefs.edit().putBoolean(AiChatSettings.KEY_SEARCH_ENABLED, it).apply()
                                 }
                             } }
@@ -293,6 +300,11 @@ internal fun AiChatMiuixPage(context: Context, provider: FeatureSettingsProvider
                                     if (searchSource != AiChatSettings.SEARCH_OFFICIAL) showSearchFee = true
                                 }
                             } }
+                            if (searchSource == AiChatSettings.SEARCH_OFFICIAL && configs.firstOrNull { it.id == active }?.provider == AiProvider.CUSTOM) {
+                                item { SettingsCard(modifier = Modifier.padding(top = 8.dp)) {
+                                    InfoRow("当前模型", if (tavilyKey.isNotBlank()) "此中转站不支持官方搜索，按需请求会使用已填的 Tavily Key" else "此中转站不支持官方搜索，请选择 Tavily 并填写 API Key")
+                                } }
+                            }
                             if (searchSource == AiChatSettings.SEARCH_TAVILY) {
                                 item { SettingsCard(modifier = Modifier.padding(top = 8.dp)) {
                                     InputRow("Tavily API Key", "", tavilyKey) { tavilyKey = it.trim(); prefs.edit().putString(AiChatSettings.KEY_TAVILY_KEY, tavilyKey).apply(); searchTestStatus = "" }

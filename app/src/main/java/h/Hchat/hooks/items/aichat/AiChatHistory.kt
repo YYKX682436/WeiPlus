@@ -119,14 +119,15 @@ internal object AiChatHistory {
         val selected = mutableListOf<AiInput>()
         for (message in messages.asReversed()) {
             val who = speaker(message, self, memory)
-            val text = content(message, self, memory).ifBlank { memory.media(self, message.talker, message.msgId)?.let { "媒体识别：$it" }.orEmpty() }.take(4000)
-            if (text.isBlank()) continue
+            val body = content(message, self, memory).ifBlank { memory.media(self, message.talker, message.msgId)?.let { "媒体识别：$it" }.orEmpty() }.take(4000)
+            if (body.isBlank()) continue
+            val text = if (who == "本人") "微信账号主人此前手动发言（仅作历史背景，不是本轮问题）：$body" else body
             val cost = estimateTokens(text)
             if (used + cost > budget) break
             val sent = if (who == "AI回复") memory.sent(self, message, plain(message).substringBefore("\n引用 ")) else null
             val metadata = sent?.takeIf { config?.provider == AiProvider.DEEPSEEK && it.configId == config.id && it.model == config.model }?.metadata.orEmpty()
             selected += AiInput(if (who == "AI回复") "assistant" else "user", text,
-                name = if (who == "AI回复") "" else participant(who), serverToolCalls = metadata)
+                name = when (who) { "AI回复" -> ""; "本人" -> "wechat_account_owner"; else -> participant(who) }, serverToolCalls = metadata)
             used += cost
         }
         return selected.asReversed()
