@@ -80,6 +80,12 @@ class QQMusicOrderSettingsTest {
     }
 
     @Test fun legacyEmptyWhitelistAndSwitchOnlyConfigurationUpgradeToWhitelist() {
+        prefs.edit().clear().putString(QQMusicOrderSettings.KEY_ALLOWED_TALKERS, "").commit()
+        val blankLegacyWhitelist = QQMusicOrderSettings(context)
+        assertEquals(TalkerListMode.WHITELIST, blankLegacyWhitelist.listMode())
+        assertTrue(blankLegacyWhitelist.isTalkerListValid(TalkerListMode.WHITELIST))
+        assertFalse(blankLegacyWhitelist.allows("new-friend", outgoing = false))
+
         prefs.edit().clear().putString(QQMusicOrderSettings.KEY_ALLOWED_TALKERS, "[]").commit()
         assertEquals(TalkerListMode.WHITELIST, QQMusicOrderSettings(context).listMode())
 
@@ -87,6 +93,33 @@ class QQMusicOrderSettingsTest {
         val switchOnly = QQMusicOrderSettings(context)
         assertEquals(TalkerListMode.WHITELIST, switchOnly.listMode())
         assertFalse(switchOnly.allows("new-friend", outgoing = false))
+    }
+
+    @Test fun blacklistRequiresAValidJsonArrayOfStringChatIds() {
+        val settings = freshSettings()
+        assertTrue(settings.isTalkerListValid(TalkerListMode.BLACKLIST))
+        assertTrue(settings.allows("new-friend", outgoing = false))
+
+        listOf("", "  \n", "not-json", "{\"friend\":\"id\"}", "[\"blocked\",7]", "[\"blocked\",{}]", "[\"\"]")
+            .forEach { invalidJson ->
+                prefs.edit().putString(QQMusicOrderSettings.KEY_BLOCKED_TALKERS, invalidJson).commit()
+                assertFalse("Expected invalid blacklist JSON to be rejected: $invalidJson",
+                    settings.isTalkerListValid(TalkerListMode.BLACKLIST))
+                assertFalse("Invalid blacklist JSON must deny others: $invalidJson",
+                    settings.allows("ordinary-friend", outgoing = false))
+            }
+
+        prefs.edit().putString(QQMusicOrderSettings.KEY_BLOCKED_TALKERS, "[]").commit()
+        assertTrue(settings.isTalkerListValid(TalkerListMode.BLACKLIST))
+        assertTrue(settings.allows("ordinary-friend", outgoing = false))
+    }
+
+    @Test fun legacyStringSetParserRejectsCoercedMemberTypes() {
+        assertEquals(emptySet<String>(), QQMusicOrderSettings.parseStringSet(""))
+        assertEquals(setOf("friend-id"), QQMusicOrderSettings.parseStringSet("[\"friend-id\"]"))
+        assertThrows(IllegalArgumentException::class.java) {
+            QQMusicOrderSettings.parseStringSet("[\"friend-id\",12]")
+        }
     }
 
     @Test fun enableAndDisableCommandsUpdateTheActiveListInBothModes() {

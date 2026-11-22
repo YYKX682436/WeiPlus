@@ -108,20 +108,22 @@ class QQMusicOrderSettings(context: Context?) {
     }.getOrElse { true }
 
     private fun readTalkersLocked(mode: TalkerListMode): Set<String>? {
+        val key = keyFor(mode)
         val raw = try {
-            prefs?.getString(keyFor(mode), if (mode == TalkerListMode.WHITELIST) "" else "[]").orEmpty()
+            val storedValue = prefs?.all?.get(key)
+            if (prefs?.contains(key) == true) {
+                storedValue as? String ?: return null
+            } else if (mode == TalkerListMode.WHITELIST) {
+                ""
+            } else {
+                "[]"
+            }
         } catch (_: Throwable) {
             return null
         }
-        if (raw.isBlank()) return emptySet()
-        return runCatching {
-            val array = JSONArray(raw)
-            buildSet {
-                for (index in 0 until array.length()) {
-                    array.optString(index).trim().takeIf(TalkerListPolicy::isValidChatId)?.let(::add)
-                }
-            }
-        }.getOrNull()
+        if (mode == TalkerListMode.WHITELIST && raw.isEmpty()) return emptySet()
+        if (raw.isBlank()) return null
+        return parseStringSetStrict(raw)
     }
 
     private fun keyFor(mode: TalkerListMode): String = when (mode) {
@@ -182,16 +184,21 @@ class QQMusicOrderSettings(context: Context?) {
 
         @JvmStatic
         fun parseStringSet(value: String?): Set<String> {
-            if (value.isNullOrBlank()) return emptySet()
-            return runCatching {
+            if (value.isNullOrEmpty()) return emptySet()
+            return parseStringSetStrict(value)
+                ?: throw IllegalArgumentException("名单必须是只包含有效聊天 ID 的 JSON 字符串数组")
+        }
+
+        private fun parseStringSetStrict(value: String): Set<String>? = runCatching {
                 val array = JSONArray(value)
                 buildSet {
                     for (index in 0 until array.length()) {
-                        array.optString(index).trim().takeIf(TalkerListPolicy::isValidChatId)?.let(::add)
+                        val talker = array.get(index) as? String ?: error("名单项必须是聊天 ID 字符串")
+                        check(TalkerListPolicy.isValidChatId(talker)) { "名单项不是有效聊天 ID" }
+                        add(talker)
                     }
                 }
-            }.getOrDefault(emptySet())
-        }
+            }.getOrNull()
 
         @JvmStatic
         fun encodeStringSet(values: Set<String>): String {

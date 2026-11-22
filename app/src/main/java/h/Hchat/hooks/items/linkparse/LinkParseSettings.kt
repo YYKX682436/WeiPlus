@@ -87,15 +87,24 @@ internal class LinkParseSettings(context: Context) {
     private fun readTalkersLocked(mode: TalkerListMode): Set<String>? {
         val key = keyFor(mode)
         val raw = try {
-            prefs.getString(key, if (mode == TalkerListMode.WHITELIST) "[]" else "[]").orEmpty()
+            val storedValue = prefs.all[key]
+            if (prefs.contains(key)) {
+                storedValue as? String ?: return null
+            } else {
+                "[]"
+            }
         } catch (_: Throwable) {
             return null
         }
+        if (mode == TalkerListMode.WHITELIST && raw.isEmpty()) return emptySet()
+        if (raw.isBlank()) return null
         return runCatching {
             val array = JSONArray(raw)
             buildSet {
                 for (index in 0 until array.length()) {
-                    array.optString(index).trim().takeIf(TalkerListPolicy::isValidChatId)?.let(::add)
+                    val talker = array.get(index) as? String ?: error("名单项必须是聊天 ID 字符串")
+                    check(TalkerListPolicy.isValidChatId(talker)) { "名单项不是有效聊天 ID" }
+                    add(talker)
                 }
             }
         }.getOrNull()

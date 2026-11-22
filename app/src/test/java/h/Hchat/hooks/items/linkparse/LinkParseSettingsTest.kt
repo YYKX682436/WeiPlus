@@ -92,6 +92,12 @@ class LinkParseSettingsTest {
     }
 
     @Test fun legacyEmptyWhitelistAndSwitchOnlyConfigurationUpgradeToWhitelist() {
+        prefs.edit().clear().putString(LinkParseSettings.KEY_ALLOWED_TALKERS, "").commit()
+        val blankLegacyWhitelist = LinkParseSettings(context)
+        assertEquals(TalkerListMode.WHITELIST, blankLegacyWhitelist.listMode())
+        assertTrue(blankLegacyWhitelist.isTalkerListValid(TalkerListMode.WHITELIST))
+        assertFalse(blankLegacyWhitelist.allows(dy, "new-friend", outgoing = false))
+
         prefs.edit().clear().putString(LinkParseSettings.KEY_ALLOWED_TALKERS, "[]").commit()
         assertEquals(TalkerListMode.WHITELIST, LinkParseSettings(context).listMode())
 
@@ -139,9 +145,14 @@ class LinkParseSettingsTest {
         listOf("", "   ", " friend-id", "friend-id\n").forEach { invalid ->
             assertFalse("Expected invalid ID to be denied: $invalid", settings.allows(dy, invalid, outgoing = false))
         }
-        prefs.edit().putString(LinkParseSettings.KEY_BLOCKED_TALKERS, "not-json").commit()
-        assertFalse(settings.isTalkerListValid(TalkerListMode.BLACKLIST))
-        assertFalse(settings.allows(dy, "ordinary-friend", outgoing = false))
+        listOf("", "  \n", "not-json", "{\"friend\":\"id\"}", "[\"blocked\",7]", "[\"blocked\",{}]", "[\"\"]")
+            .forEach { invalidJson ->
+                prefs.edit().putString(LinkParseSettings.KEY_BLOCKED_TALKERS, invalidJson).commit()
+                assertFalse("Expected invalid blacklist JSON to be rejected: $invalidJson",
+                    settings.isTalkerListValid(TalkerListMode.BLACKLIST))
+                assertFalse("Invalid blacklist JSON must deny others: $invalidJson",
+                    settings.allows(dy, "ordinary-friend", outgoing = false))
+            }
 
         prefs.edit().putString(LinkParseSettings.KEY_BLOCKED_TALKERS, "[]")
             .putString(LinkParseSettings.KEY_LIST_MODE, "future-mode").commit()
