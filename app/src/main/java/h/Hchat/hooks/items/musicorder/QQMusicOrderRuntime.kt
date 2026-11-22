@@ -210,14 +210,14 @@ internal class QQMusicOrderRuntime(
         return keyword.takeIf { it.isNotEmpty() }?.let { MusicCommand(it, customSinger) }
     }
 
-    private fun sendReply(talker: String, msgId: Long, content: String) {
+    private fun sendReply(talker: String, msgId: Long, content: String, outgoing: Boolean) {
         val sender = WeChatApis.message().sender() ?: return
-        if (msgId > 0L && sender.sendQuote(talker, msgId, content)) return
-        sender.sendText(talker, content)
+        if (msgId > 0L && canRespond(talker, outgoing) && sender.sendQuote(talker, msgId, content)) return
+        if (canRespond(talker, outgoing)) sender.sendText(talker, content)
     }
 
     private fun sendReplyIfAllowed(talker: String, msgId: Long, content: String, outgoing: Boolean) {
-        if (canRespond(talker, outgoing)) sendReply(talker, msgId, content)
+        if (canRespond(talker, outgoing)) sendReply(talker, msgId, content, outgoing)
     }
 
     private fun canRespond(talker: String, outgoing: Boolean): Boolean =

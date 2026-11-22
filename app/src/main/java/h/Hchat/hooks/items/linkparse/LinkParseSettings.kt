@@ -1,6 +1,7 @@
 package h.Hchat.hooks.items.linkparse
 
 import android.content.Context
+import androidx.core.content.edit
 import h.Hchat.hooks.items.talkerlist.TalkerListMode
 import h.Hchat.hooks.items.talkerlist.TalkerListPolicy
 import h.Hchat.preferences.HchatStorage
@@ -14,21 +15,22 @@ internal class LinkParseSettings(context: Context) {
         listMode()
     }
 
-    fun enabled() = prefs.getBoolean(KEY_ENABLE, false)
+    fun enabled() = boolean(KEY_ENABLE)
 
-    fun enabled(platform: WorkLinkMatcher.Platform) = prefs.getBoolean(
+    fun enabled(platform: WorkLinkMatcher.Platform) = boolean(
         when (platform) {
             WorkLinkMatcher.Platform.DOUYIN -> KEY_DOUYIN
             WorkLinkMatcher.Platform.XIAOHONGSHU -> KEY_XHS
-        },
-        false
+        }
     )
+
+    private fun boolean(key: String): Boolean = runCatching { prefs.all[key] as? Boolean ?: false }.getOrDefault(false)
 
     fun listMode(): TalkerListMode = synchronized(lock) { readListModeLocked() }
 
     fun saveListMode(mode: TalkerListMode) {
         synchronized(lock) {
-            prefs.edit().putString(KEY_LIST_MODE, mode.preferenceValue).commit()
+            prefs.edit(commit = true) { putString(KEY_LIST_MODE, mode.preferenceValue) }
         }
     }
 
@@ -44,17 +46,8 @@ internal class LinkParseSettings(context: Context) {
         val array = JSONArray()
         values.map(String::trim).filter(TalkerListPolicy::isValidChatId).distinct().forEach { array.put(it) }
         synchronized(lock) {
-            prefs.edit().putString(keyFor(mode), array.toString()).commit()
+            prefs.edit(commit = true) { putString(keyFor(mode), array.toString()) }
         }
-    }
-
-    fun setTalkerAllowed(talker: String, allowed: Boolean): Boolean = synchronized(lock) {
-        if (!TalkerListPolicy.isValidChatId(talker)) return@synchronized false
-        val mode = readListModeLocked()
-        val current = readTalkersLocked(mode) ?: return@synchronized false
-        val next = TalkerListPolicy.update(mode, current, talker, allowed)
-        val array = JSONArray().apply { next.forEach(::put) }
-        prefs.edit().putString(keyFor(mode), array.toString()).commit()
     }
 
     fun allows(platform: WorkLinkMatcher.Platform, talker: String, outgoing: Boolean): Boolean {
@@ -83,7 +76,7 @@ internal class LinkParseSettings(context: Context) {
             return TalkerListMode.fromPreferenceValue(stored) ?: TalkerListMode.WHITELIST
         }
         val inferred = if (hasLegacyConfigurationLocked()) TalkerListMode.WHITELIST else TalkerListMode.BLACKLIST
-        runCatching { prefs.edit().putString(KEY_LIST_MODE, inferred.preferenceValue).commit() }
+        runCatching { prefs.edit(commit = true) { putString(KEY_LIST_MODE, inferred.preferenceValue) } }
         return inferred
     }
 

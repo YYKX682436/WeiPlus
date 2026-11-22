@@ -40,6 +40,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
@@ -1659,6 +1660,7 @@ private fun AutoReplyFriendContent(
     onContactPicker: (ContactPickerRequest) -> Unit,
     onFavoritePicker: (FavoritePickerRequest) -> Unit
 ) {
+    val locale = LocalConfiguration.current.locales[0]
     var delayMs by rememberSaveable { mutableStateOf(sp.getLong(delayKey, 2000L).coerceAtLeast(0L).toString()) }
     var tagName by rememberSaveable { mutableStateOf(sp.getString(tagNameKey, "") ?: "") }
     var labelDateFormat by rememberSaveable {
@@ -1717,8 +1719,8 @@ private fun AutoReplyFriendContent(
                     summary = if (hasAutomation) "自动标签、备注及日期格式" else "处理后添加标签",
                     expanded = advancedExpanded,
                     onToggle = {
-                        val invalidDate = (labelDateFormat.isNotBlank() && runCatching { java.text.SimpleDateFormat(labelDateFormat, Locale.getDefault()) }.isFailure) ||
-                            (remarkDateFormat.isNotBlank() && runCatching { java.text.SimpleDateFormat(remarkDateFormat, Locale.getDefault()) }.isFailure)
+                        val invalidDate = (labelDateFormat.isNotBlank() && runCatching { java.text.SimpleDateFormat(labelDateFormat, locale) }.isFailure) ||
+                            (remarkDateFormat.isNotBlank() && runCatching { java.text.SimpleDateFormat(remarkDateFormat, locale) }.isFailure)
                         if (advancedExpanded && invalidDate) Toast.makeText(context, "请先修正日期格式", Toast.LENGTH_SHORT).show()
                         else advancedExpanded = !advancedExpanded
                     }
@@ -1735,10 +1737,10 @@ private fun AutoReplyFriendContent(
                             sp.edit().putBoolean(keys.labelDateEnable, it).apply()
                         }
                         InsetDivider()
-                        InputRow("标签日期格式", if (labelDateFormat.isNotBlank() && runCatching { java.text.SimpleDateFormat(labelDateFormat, Locale.getDefault()) }.isFailure) "日期格式无效；保留上次保存的值" else "例如 yyyy-MM-dd", labelDateFormat,
+                        InputRow("标签日期格式", if (labelDateFormat.isNotBlank() && runCatching { java.text.SimpleDateFormat(labelDateFormat, locale) }.isFailure) "日期格式无效；保留上次保存的值" else "例如 yyyy-MM-dd", labelDateFormat,
                             onEditingFinished = { if (advancedExpanded && it.isBlank()) sp.edit().putString(keys.labelDateFormat, "yyyy-MM-dd").apply() }) {
                             labelDateFormat = it
-                            if (it.isNotBlank() && runCatching { java.text.SimpleDateFormat(it, Locale.getDefault()) }.isSuccess) sp.edit().putString(keys.labelDateFormat, it.trim()).apply()
+                            if (it.isNotBlank() && runCatching { java.text.SimpleDateFormat(it, locale) }.isSuccess) sp.edit().putString(keys.labelDateFormat, it.trim()).apply()
                         }
                         InsetDivider()
                         SwitchRow(labelExistingEnabled, "自动标签已有标签", "把好友加入已选择的微信标签") {
@@ -1757,10 +1759,10 @@ private fun AutoReplyFriendContent(
                             sp.edit().putBoolean(keys.remarkDateEnable, it).apply()
                         }
                         InsetDivider()
-                        InputRow("备注日期格式", if (remarkDateFormat.isNotBlank() && runCatching { java.text.SimpleDateFormat(remarkDateFormat, Locale.getDefault()) }.isFailure) "日期格式无效；保留上次保存的值" else "例如 yyMMdd", remarkDateFormat,
+                        InputRow("备注日期格式", if (remarkDateFormat.isNotBlank() && runCatching { java.text.SimpleDateFormat(remarkDateFormat, locale) }.isFailure) "日期格式无效；保留上次保存的值" else "例如 yyMMdd", remarkDateFormat,
                             onEditingFinished = { if (advancedExpanded && it.isBlank()) sp.edit().putString(keys.remarkDateFormat, "yyMMdd").apply() }) {
                             remarkDateFormat = it
-                            if (it.isNotBlank() && runCatching { java.text.SimpleDateFormat(it, Locale.getDefault()) }.isSuccess) sp.edit().putString(keys.remarkDateFormat, it.trim()).apply()
+                            if (it.isNotBlank() && runCatching { java.text.SimpleDateFormat(it, locale) }.isSuccess) sp.edit().putString(keys.remarkDateFormat, it.trim()).apply()
                         }
                         InsetDivider()
                         SwitchRow(remarkCustomEnabled, "自动备注自定义文本", "备注里加入自定义内容") {

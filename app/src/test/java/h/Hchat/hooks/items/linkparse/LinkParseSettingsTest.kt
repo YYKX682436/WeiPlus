@@ -91,6 +91,19 @@ class LinkParseSettingsTest {
         assertFalse(settings.allows(dy, "new-friend", outgoing = false))
     }
 
+    @Test fun legacyEmptyWhitelistAndSwitchOnlyConfigurationUpgradeToWhitelist() {
+        prefs.edit().clear().putString(LinkParseSettings.KEY_ALLOWED_TALKERS, "[]").commit()
+        assertEquals(TalkerListMode.WHITELIST, LinkParseSettings(context).listMode())
+
+        prefs.edit().clear()
+            .putBoolean(LinkParseSettings.KEY_ENABLE, true)
+            .putBoolean(LinkParseSettings.KEY_DOUYIN, true)
+            .commit()
+        val switchOnly = LinkParseSettings(context)
+        assertEquals(TalkerListMode.WHITELIST, switchOnly.listMode())
+        assertFalse(switchOnly.allows(dy, "new-friend", outgoing = false))
+    }
+
     @Test fun featureAndPlatformSwitchesRemainHighestPriority() {
         val settings = freshSettings()
         prefs.edit().putBoolean(LinkParseSettings.KEY_ENABLE, true).commit()
@@ -134,5 +147,16 @@ class LinkParseSettingsTest {
             .putString(LinkParseSettings.KEY_LIST_MODE, "future-mode").commit()
         assertEquals(TalkerListMode.WHITELIST, settings.listMode())
         assertFalse(settings.allows(dy, "ordinary-friend", outgoing = false))
+    }
+
+    @Test fun corruptedFeatureAndPlatformSwitchesFailClosed() {
+        val settings = freshSettings()
+        prefs.edit().putString(LinkParseSettings.KEY_ENABLE, "true")
+            .putBoolean(LinkParseSettings.KEY_DOUYIN, true).commit()
+        assertFalse(settings.allows(dy, "friend-id", outgoing = true))
+
+        prefs.edit().putBoolean(LinkParseSettings.KEY_ENABLE, true)
+            .putString(LinkParseSettings.KEY_DOUYIN, "true").commit()
+        assertFalse(settings.allows(dy, "friend-id", outgoing = false))
     }
 }

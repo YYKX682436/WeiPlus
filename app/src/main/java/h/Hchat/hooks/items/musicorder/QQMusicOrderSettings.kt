@@ -1,6 +1,7 @@
 package h.Hchat.hooks.items.musicorder
 
 import android.content.Context
+import androidx.core.content.edit
 import h.Hchat.preferences.HchatStorage
 import h.Hchat.hooks.items.talkerlist.TalkerListMode
 import h.Hchat.hooks.items.talkerlist.TalkerListPolicy
@@ -45,7 +46,7 @@ class QQMusicOrderSettings(context: Context?) {
 
     internal fun saveListMode(mode: TalkerListMode) {
         synchronized(lock) {
-            prefs?.edit()?.putString(KEY_LIST_MODE, mode.preferenceValue)?.commit()
+            prefs?.edit(commit = true) { putString(KEY_LIST_MODE, mode.preferenceValue) }
         }
     }
 
@@ -60,16 +61,18 @@ class QQMusicOrderSettings(context: Context?) {
     internal fun saveTalkers(mode: TalkerListMode, values: Set<String>) {
         val key = keyFor(mode)
         synchronized(lock) {
-            prefs?.edit()?.putString(key, encodeStringSet(values))?.commit()
+            prefs?.edit(commit = true) { putString(key, encodeStringSet(values)) }
         }
     }
 
-    internal fun setTalkerAllowed(talker: String, allowed: Boolean): Boolean = synchronized(lock) {
-        if (!TalkerListPolicy.isValidChatId(talker)) return@synchronized false
-        val mode = readListModeLocked()
-        val current = readTalkersLocked(mode) ?: return@synchronized false
-        val next = TalkerListPolicy.update(mode, current, talker, allowed)
-        prefs?.edit()?.putString(keyFor(mode), encodeStringSet(next))?.commit() ?: false
+    internal fun setTalkerAllowed(talker: String, allowed: Boolean) {
+        if (!TalkerListPolicy.isValidChatId(talker)) return
+        synchronized(lock) {
+            val mode = readListModeLocked()
+            val current = readTalkersLocked(mode) ?: return
+            val next = TalkerListPolicy.update(mode, current, talker, allowed)
+            prefs?.edit(commit = true) { putString(keyFor(mode), encodeStringSet(next)) }
+        }
     }
 
     internal fun allows(talker: String, outgoing: Boolean): Boolean = synchronized(lock) {
@@ -96,7 +99,7 @@ class QQMusicOrderSettings(context: Context?) {
             return TalkerListMode.fromPreferenceValue(stored) ?: TalkerListMode.WHITELIST
         }
         val inferred = if (hasLegacyConfigurationLocked()) TalkerListMode.WHITELIST else TalkerListMode.BLACKLIST
-        runCatching { prefs?.edit()?.putString(KEY_LIST_MODE, inferred.preferenceValue)?.commit() }
+        runCatching { prefs?.edit(commit = true) { putString(KEY_LIST_MODE, inferred.preferenceValue) } }
         return inferred
     }
 
@@ -127,7 +130,7 @@ class QQMusicOrderSettings(context: Context?) {
     }
 
     private fun boolean(key: String, defaultValue: Boolean): Boolean = runCatching {
-        prefs?.getBoolean(key, defaultValue) ?: defaultValue
+        prefs?.all?.get(key) as? Boolean ?: defaultValue
     }.getOrDefault(defaultValue)
 
     private fun string(key: String, defaultValue: String): String = runCatching {

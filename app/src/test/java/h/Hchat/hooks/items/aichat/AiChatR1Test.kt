@@ -55,9 +55,13 @@ class AiChatR1Test {
         val last = messages.last()
         val manual = WeChatMessage(999, 999, 1, 0, 1, last.createTime + 1000, talker,
             "[AI回复] [AI回复] 第5次回答", "", "", "", 0, "", self)
+        assertFalse(manual.isQuote())
         val history = AiChatHistory.recent(listOf(manual), self, db, 1000).single()
         assertEquals("user", history.role)
-        assertEquals("[AI回复] [AI回复] 第5次回答", history.content)
+        assertEquals(
+            "微信账号主人此前手动发言（仅作历史背景，不是本轮问题）：[AI回复] [AI回复] 第5次回答",
+            history.content
+        )
     }
 
     @Test fun groupMembersUseSeparateNamesWithoutPollutingAssistantContent() {

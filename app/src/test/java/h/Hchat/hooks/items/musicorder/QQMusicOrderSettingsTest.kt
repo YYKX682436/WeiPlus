@@ -79,25 +79,38 @@ class QQMusicOrderSettingsTest {
         assertFalse(settings.allows("new-friend", outgoing = false))
     }
 
+    @Test fun legacyEmptyWhitelistAndSwitchOnlyConfigurationUpgradeToWhitelist() {
+        prefs.edit().clear().putString(QQMusicOrderSettings.KEY_ALLOWED_TALKERS, "[]").commit()
+        assertEquals(TalkerListMode.WHITELIST, QQMusicOrderSettings(context).listMode())
+
+        prefs.edit().clear().putBoolean(QQMusicOrderSettings.KEY_ENABLE, true).commit()
+        val switchOnly = QQMusicOrderSettings(context)
+        assertEquals(TalkerListMode.WHITELIST, switchOnly.listMode())
+        assertFalse(switchOnly.allows("new-friend", outgoing = false))
+    }
+
     @Test fun enableAndDisableCommandsUpdateTheActiveListInBothModes() {
         val settings = freshSettings()
         val chat = "command-chat@chatroom"
 
-        assertTrue(settings.setTalkerAllowed(chat, false))
+        settings.setTalkerAllowed(chat, false)
         assertFalse(settings.allows(chat, outgoing = false))
-        assertTrue(settings.setTalkerAllowed(chat, true))
+        settings.setTalkerAllowed(chat, true)
         assertTrue(settings.allows(chat, outgoing = false))
 
         settings.saveListMode(TalkerListMode.WHITELIST)
-        assertTrue(settings.setTalkerAllowed(chat, true))
+        settings.setTalkerAllowed(chat, true)
         assertTrue(settings.allows(chat, outgoing = false))
-        assertTrue(settings.setTalkerAllowed(chat, false))
+        settings.setTalkerAllowed(chat, false)
         assertFalse(settings.allows(chat, outgoing = false))
     }
 
     @Test fun globalSwitchAndInvalidConfigurationFailClosedForOthers() {
         val settings = freshSettings()
         assertTrue(settings.allows("friend-id", outgoing = false))
+        prefs.edit().putString(QQMusicOrderSettings.KEY_ENABLE, "true").commit()
+        assertFalse(settings.allows("friend-id", outgoing = false))
+        prefs.edit().putBoolean(QQMusicOrderSettings.KEY_ENABLE, true).commit()
         prefs.edit().putBoolean(QQMusicOrderSettings.KEY_ENABLE, false).commit()
         assertFalse(settings.allows("friend-id", outgoing = false))
         assertFalse(settings.allows("friend-id", outgoing = true))

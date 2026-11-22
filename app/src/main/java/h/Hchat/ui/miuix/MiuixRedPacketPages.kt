@@ -27,6 +27,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -1665,6 +1666,7 @@ internal fun AntiRecallMiuixPage(
     provider: FeatureSettingsProvider,
     onBack: () -> Unit
 ) {
+    val locale = LocalConfiguration.current.locales[0]
     val sp = remember { HchatStorage.preferences(context, AntiRecallSettings.PREFS_NAME) }
     var noticeText by remember {
         mutableStateOf(
@@ -1741,10 +1743,10 @@ internal fun AntiRecallMiuixPage(
                         InsetDivider()
                         InputRow(
                             "时间格式",
-                            if (noticeTimeFormat.isNotBlank() && runCatching { SimpleDateFormat(noticeTimeFormat, Locale.getDefault()).format(Date()) }.isFailure) "时间格式无效，保留上次有效配置" else "使用日期格式，例如 yyyy-MM-dd HH:mm:ss",
+                            if (noticeTimeFormat.isNotBlank() && runCatching { SimpleDateFormat(noticeTimeFormat, locale).format(Date()) }.isFailure) "时间格式无效，保留上次有效配置" else "使用日期格式，例如 yyyy-MM-dd HH:mm:ss",
                             noticeTimeFormat,
                             onEditingFinished = { if (it.isBlank()) sp.edit().putString(AntiRecallSettings.KEY_NOTICE_TIME_FORMAT, AntiRecallSettings.DEFAULT_NOTICE_TIME_FORMAT).apply() }
-                        ) { noticeTimeFormat = it; if (it.isNotBlank() && runCatching { SimpleDateFormat(it, Locale.getDefault()).format(Date()) }.isSuccess) sp.edit().putString(AntiRecallSettings.KEY_NOTICE_TIME_FORMAT, it.trim()).apply() }
+                        ) { noticeTimeFormat = it; if (it.isNotBlank() && runCatching { SimpleDateFormat(it, locale).format(Date()) }.isSuccess) sp.edit().putString(AntiRecallSettings.KEY_NOTICE_TIME_FORMAT, it.trim()).apply() }
                     }
                 }
             }

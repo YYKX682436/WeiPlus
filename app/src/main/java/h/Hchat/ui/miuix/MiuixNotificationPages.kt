@@ -36,6 +36,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -2913,6 +2914,7 @@ internal fun ChatTimeStyleMiuixPage(
     provider: FeatureSettingsProvider,
     onBack: () -> Unit
 ) {
+    val locale = LocalConfiguration.current.locales[0]
     val sp = remember { HchatStorage.preferences(context, ChatTimeStyleSettings.PREFS_NAME) }
     var enabled by remember {
         mutableStateOf(
@@ -2984,7 +2986,7 @@ internal fun ChatTimeStyleMiuixPage(
                         InsetDivider()
                         InputRow(
                             title = "时间格式",
-                            summary = if (timeFormat.isNotBlank() && runCatching { SimpleDateFormat(timeFormat, Locale.getDefault()) }.isFailure)
+                            summary = if (timeFormat.isNotBlank() && runCatching { SimpleDateFormat(timeFormat, locale) }.isFailure)
                                 "时间格式无效；保留上次保存的值" else "例如 yyyy-MM-dd HH:mm:ss",
                             value = timeFormat,
                             onEditingFinished = {
@@ -2992,7 +2994,7 @@ internal fun ChatTimeStyleMiuixPage(
                             },
                             onValueChange = {
                                 timeFormat = it
-                                if (it.isNotBlank() && runCatching { SimpleDateFormat(it, Locale.getDefault()) }.isSuccess) {
+                                if (it.isNotBlank() && runCatching { SimpleDateFormat(it, locale) }.isSuccess) {
                                     sp.edit().putString(ChatTimeStyleSettings.KEY_TIME_FORMAT, it).apply()
                                 }
                             }
